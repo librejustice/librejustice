@@ -1,0 +1,41 @@
+[package]
+name = "lj-sources"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# I/O sources : client Judilibre (reqwest), downloader ZIP opendata, lecteur ZIP.
+[dependencies]
+lj-core = { workspace = true }
+anyhow = { workspace = true }
+# `blocking` requis pour `sync_opendata` (port synchrone de `requests`).
+reqwest = { workspace = true, features = ["blocking"] }
+# Middleware async (client Judilibre) ; downloader blocking reste hors middleware.
+reqwest-middleware = { workspace = true }
+reqwest-tracing = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# sonic-rs : parse JSON SIMD sur le hot-path ingest (Judilibre). serde_json ailleurs.
+sonic-rs = { workspace = true }
+tokio = { workspace = true }
+zip = { workspace = true }
+# gzip pour les archives Judilibre `.jsonl.gz` (port du module `gzip` Python).
+flate2 = { workspace = true }
+# Lecteur tar streaming pour les bulk DILA `.tar.gz` (ADR 0093, tar_reader.rs).
+tar = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Réparation mojibake DILA JADE : localiser les spans SCT/ANA/CITATION_JP (dila.rs).
+regex = { workspace = true }
+# Extraction texte PDF born-digital (crate PUR Rust) : conclusions CRP ArianeWeb (pdf.rs, ADR 0095).
+pdf-extract = { workspace = true }
+# Extraction texte DOCX born-digital (CNDA Word, docx.rs, ADR 0110) : parse word/document.xml.
+quick-xml = { workspace = true }
+
+[dev-dependencies]
+tempfile = "3"
+# Génère un PDF born-digital valide (encodage police base-14) pour tester
+# l'extraction texte : un PDF cousu à la main n'embarque pas de quoi mapper les
+# glyphes, l'extracteur rend du vide.
+printpdf = { workspace = true }

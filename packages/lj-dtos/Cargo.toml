@@ -1,0 +1,13 @@
+[package]
+name = "lj-dtos"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# Contrats api ↔ web + taxonomie. serde rename camelCase = _CamelModel côté
+# Python. DTOs = source de vérité, importés directement par lj-api et lj-web.
+# Noyau léger serde-pur partagé backend ↔ front wasm (ADR 0060) : aucune dépendance
+# lourde, compile en `wasm32-unknown-unknown`.
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }

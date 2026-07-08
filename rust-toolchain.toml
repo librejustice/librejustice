@@ -1,0 +1,10 @@
+[toolchain]
+# Stable épinglée (déterministe). Bump manuel : `channel` est volontairement une
+# version précise, pas le canal rolling "stable" — sinon clippy dérive à chaque
+# release et casse le gate sur du code inchangé. Rien dans le workspace n'exige
+# nightly (aucun `#![feature]`, pas de rustfmt.toml instable, édition 2021).
+channel = "1.96.0"
+# `rust-analyzer` : aligne le serveur LSP des agents (plugin .agents/plugins/
+# rust-analyzer-lsp) sur la toolchain épinglée — installé par `rustup`, pas de
+# binaire divergent.
+components = ["rustfmt", "clippy", "rust-analyzer"]

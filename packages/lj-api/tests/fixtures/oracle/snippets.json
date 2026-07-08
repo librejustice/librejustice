@@ -1,0 +1,94 @@
+{
+  "_provenance": "généré depuis l'oracle Python (apps/api). NE PAS éditer à la main. Asservi par les tests Rust de lj-api.",
+  "cases": [
+    {
+      "name": "mid_text_single_match",
+      "docs": [
+        [
+          1,
+          "Préambule sans intérêt particulier pour le test. Le tribunal considère que le moyen est fondé. Fin du texte."
+        ]
+      ],
+      "query": "considère",
+      "max_chars": 500,
+      "expected": {
+        "1": "Préambule sans intérêt particulier pour le test. Le tribunal <mark>considère</mark> que le moyen est fondé. Fin du texte"
+      }
+    },
+    {
+      "name": "diacritics_insensitive",
+      "docs": [
+        [
+          1,
+          "Préambule sans intérêt particulier pour le test. Le tribunal considère que le moyen est fondé. Fin du texte."
+        ]
+      ],
+      "query": "considere",
+      "max_chars": 500,
+      "expected": {
+        "1": "Préambule sans intérêt particulier pour le test. Le tribunal <mark>considère</mark> que le moyen est fondé. Fin du texte"
+      }
+    },
+    {
+      "name": "hyphenated_compound",
+      "docs": [
+        [
+          2,
+          "Préambule sans intérêt particulier pour le test. En l'espèce le référé-suspension est ordonné par le juge. Suite."
+        ]
+      ],
+      "query": "référé-suspension",
+      "max_chars": 500,
+      "expected": {
+        "2": "Préambule sans intérêt particulier pour le test. En l'espèce le <mark>référé-suspension</mark> est ordonné par le juge. Suite"
+      }
+    },
+    {
+      "name": "no_match_absent",
+      "docs": [
+        [
+          3,
+          "Cette décision porte sur des congés payés et rien d'autre."
+        ]
+      ],
+      "query": "expulsion",
+      "max_chars": 500,
+      "expected": {}
+    },
+    {
+      "name": "stopword_only_empty",
+      "docs": [
+        [
+          4,
+          "Le tribunal de la commune."
+        ]
+      ],
+      "query": "le de la",
+      "max_chars": 500,
+      "expected": {}
+    },
+    {
+      "name": "multi_doc_two_match_one_absent",
+      "docs": [
+        [
+          10,
+          "Préambule sans intérêt particulier pour le test. Le juge prononce l'expulsion du locataire défaillant. Fin."
+        ],
+        [
+          11,
+          "Préambule sans intérêt particulier pour le test. L'expulsion est suspendue en référé par ordonnance. Fin."
+        ],
+        [
+          12,
+          "Texte sans rapport sur la fiscalité locale."
+        ]
+      ],
+      "query": "expulsion",
+      "max_chars": 500,
+      "expected": {
+        "10": "Préambule sans intérêt particulier pour le test. Le juge prononce l'<mark>expulsion</mark> du locataire défaillant. Fin",
+        "11": "Préambule sans intérêt particulier pour le test. L'<mark>expulsion</mark> est suspendue en référé par ordonnance. Fin"
+      }
+    }
+  ]
+}

@@ -1,0 +1,53 @@
+[package]
+name = "lj-api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "librejustice-api"
+path = "src/main.rs"
+
+# Serveur API (axum). Settings prefix LIBREJUSTICE_API_ (+ LIBREJUSTICE_ partagés).
+[dependencies]
+lj-core = { workspace = true }
+lj-store = { workspace = true }
+lj-llm = { workspace = true }
+lj-dtos = { workspace = true }
+lj-telemetry = { workspace = true }
+tokio = { workspace = true }
+futures = { workspace = true }
+axum = { workspace = true }
+tower = { workspace = true }
+tower-http = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true }
+jsonwebtoken = { workspace = true }
+getrandom = { workspace = true }
+rmcp = { workspace = true }
+moka = { workspace = true }
+tantivy = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+# opentelemetry (core) : instruments du scraper pg_metrics ; l'init OTLP + le
+# subscriber sont dans lj-telemetry. axum-tracing-opentelemetry : spans serveur.
+opentelemetry = { workspace = true }
+axum-tracing-opentelemetry = { workspace = true }
+base64 = { workspace = true }
+reqwest-middleware = { workspace = true }
+reqwest-tracing = { workspace = true }
+deadpool-postgres = { workspace = true }
+tokio-postgres = { workspace = true }
+pgvector = { workspace = true }
+flate2 = { workspace = true }
+docx-rs = { workspace = true }
+printpdf = { workspace = true }
+ttf-parser = { workspace = true }
+
+[dev-dependencies]
+zip = { workspace = true }

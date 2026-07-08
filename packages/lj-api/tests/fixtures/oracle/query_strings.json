@@ -1,0 +1,366 @@
+{
+  "_provenance": "GT des fonctions pures de construction de requête de lj-api/src/search.rs (detect_query_mode / translate_boolean / phrase_combo_parse / tokenize_body / content_chunks). Capturée à l'origine depuis l'oracle Python (retiré, ADR 0061) ; maintenue à la main depuis : split + strip alignés sur les stopwords de l'index chunks_bm25 (migration 0048) et dédup des clauses S5 encodés le 2026-06-10. Asservie par query_construction_parity_oracle (search.rs).",
+  "cases": [
+    {
+      "query": "expulsion locative",
+      "mode": "hybrid",
+      "translate_boolean": "+expulsion +locative",
+      "phrase_combo_parse": "expulsion locative \"expulsion locative\"",
+      "tokenize_body": [
+        "expulsion",
+        "locative"
+      ],
+      "content_chunks": [
+        [
+          "expulsion",
+          "locative"
+        ]
+      ]
+    },
+    {
+      "query": "congés payés",
+      "mode": "hybrid",
+      "translate_boolean": "+congés +payés",
+      "phrase_combo_parse": "conges payes \"conges payes\"",
+      "tokenize_body": [
+        "conges",
+        "payes"
+      ],
+      "content_chunks": [
+        [
+          "conges",
+          "payes"
+        ]
+      ]
+    },
+    {
+      "query": "responsabilité hôpital infection nosocomiale",
+      "mode": "hybrid",
+      "translate_boolean": "+responsabilité +hôpital +infection +nosocomiale",
+      "phrase_combo_parse": "responsabilite hopital infection nosocomiale \"responsabilite hopital infection nosocomiale\"",
+      "tokenize_body": [
+        "responsabilite",
+        "hopital",
+        "infection",
+        "nosocomiale"
+      ],
+      "content_chunks": [
+        [
+          "responsabilite",
+          "hopital",
+          "infection",
+          "nosocomiale"
+        ]
+      ]
+    },
+    {
+      "query": "tribunal de commerce paris",
+      "mode": "hybrid",
+      "translate_boolean": "+tribunal +commerce +paris",
+      "phrase_combo_parse": "tribunal de commerce paris \"tribunal de commerce paris\" \"commerce paris\"",
+      "tokenize_body": [
+        "tribunal",
+        "de",
+        "commerce",
+        "paris"
+      ],
+      "content_chunks": [
+        [
+          "commerce",
+          "paris"
+        ]
+      ]
+    },
+    {
+      "query": "congés de payés",
+      "mode": "hybrid",
+      "translate_boolean": "+congés +payés",
+      "phrase_combo_parse": "conges de payes \"conges de payes\"",
+      "tokenize_body": [
+        "conges",
+        "de",
+        "payes"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "podologie podologie",
+      "mode": "hybrid",
+      "translate_boolean": "+podologie +podologie",
+      "phrase_combo_parse": "podologie \"podologie podologie\"",
+      "tokenize_body": [
+        "podologie",
+        "podologie"
+      ],
+      "content_chunks": [
+        [
+          "podologie",
+          "podologie"
+        ]
+      ]
+    },
+    {
+      "query": "Référé-suspension",
+      "mode": "hybrid",
+      "translate_boolean": "+Référé-suspension",
+      "phrase_combo_parse": "refere-suspension",
+      "tokenize_body": [
+        "refere-suspension"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "l'instruction",
+      "mode": "hybrid",
+      "translate_boolean": "+l'instruction",
+      "phrase_combo_parse": "l instruction \"l instruction\"",
+      "tokenize_body": [
+        "l",
+        "instruction"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "congés ET payés",
+      "mode": "lexical",
+      "translate_boolean": "+congés +payés",
+      "phrase_combo_parse": "conges et payes \"conges et payes\"",
+      "tokenize_body": [
+        "conges",
+        "et",
+        "payes"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "congés OU payés",
+      "mode": "lexical",
+      "translate_boolean": "congés OR payés",
+      "phrase_combo_parse": "conges ou payes \"conges ou payes\"",
+      "tokenize_body": [
+        "conges",
+        "ou",
+        "payes"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "congés SAUF maladie",
+      "mode": "lexical",
+      "translate_boolean": "+congés -maladie",
+      "phrase_combo_parse": "conges sauf maladie \"conges sauf maladie\"",
+      "tokenize_body": [
+        "conges",
+        "sauf",
+        "maladie"
+      ],
+      "content_chunks": [
+        [
+          "conges",
+          "sauf",
+          "maladie"
+        ]
+      ]
+    },
+    {
+      "query": "\"phrase exacte\"",
+      "mode": "lexical",
+      "translate_boolean": "+\"phrase exacte\"",
+      "phrase_combo_parse": "phrase exacte \"phrase exacte\"",
+      "tokenize_body": [
+        "phrase",
+        "exacte"
+      ],
+      "content_chunks": [
+        [
+          "phrase",
+          "exacte"
+        ]
+      ]
+    },
+    {
+      "query": "\"force majeure\" ET épidémie",
+      "mode": "lexical",
+      "translate_boolean": "+\"force majeure\" +épidémie",
+      "phrase_combo_parse": "force majeure et epidemie \"force majeure et epidemie\" \"force majeure\"",
+      "tokenize_body": [
+        "force",
+        "majeure",
+        "et",
+        "epidemie"
+      ],
+      "content_chunks": [
+        [
+          "force",
+          "majeure"
+        ]
+      ]
+    },
+    {
+      "query": "\"commune de Saint-Denis\" SAUF Réunion",
+      "mode": "lexical",
+      "translate_boolean": "+\"commune de Saint-Denis\" -Réunion",
+      "phrase_combo_parse": "commune de saint-denis sauf reunion \"commune de saint-denis sauf reunion\" \"saint-denis sauf reunion\"",
+      "tokenize_body": [
+        "commune",
+        "de",
+        "saint-denis",
+        "sauf",
+        "reunion"
+      ],
+      "content_chunks": [
+        [
+          "saint-denis",
+          "sauf",
+          "reunion"
+        ]
+      ]
+    },
+    {
+      "query": "travail PROCHE3 dimanche",
+      "mode": "lexical",
+      "translate_boolean": "+travail +PROCHE3 +dimanche",
+      "phrase_combo_parse": "travail proche3 dimanche \"travail proche3 dimanche\"",
+      "tokenize_body": [
+        "travail",
+        "proche3",
+        "dimanche"
+      ],
+      "content_chunks": [
+        [
+          "travail",
+          "proche3",
+          "dimanche"
+        ]
+      ]
+    },
+    {
+      "query": "\"travail dominical\"PROCHE3",
+      "mode": "lexical",
+      "translate_boolean": "+\"travail dominical\" +~3",
+      "phrase_combo_parse": "travail dominical proche3 \"travail dominical proche3\"",
+      "tokenize_body": [
+        "travail",
+        "dominical",
+        "proche3"
+      ],
+      "content_chunks": [
+        [
+          "travail",
+          "dominical",
+          "proche3"
+        ]
+      ]
+    },
+    {
+      "query": "\"\"truc\"\"",
+      "mode": "lexical",
+      "translate_boolean": "+\"truc\"",
+      "phrase_combo_parse": "truc",
+      "tokenize_body": [
+        "truc"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "de la le",
+      "mode": "hybrid",
+      "translate_boolean": "",
+      "phrase_combo_parse": "de la le \"de la le\"",
+      "tokenize_body": [
+        "de",
+        "la",
+        "le"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "L 531-1 ET procédure",
+      "mode": "lexical",
+      "translate_boolean": "+531-1 +procédure",
+      "phrase_combo_parse": "l 531-1 et procedure \"l 531-1 et procedure\"",
+      "tokenize_body": [
+        "l",
+        "531-1",
+        "et",
+        "procedure"
+      ],
+      "content_chunks": []
+    },
+    {
+      "query": "société générale OU BNP",
+      "mode": "lexical",
+      "translate_boolean": "société générale OR BNP",
+      "phrase_combo_parse": "societe generale ou bnp \"societe generale ou bnp\" \"societe generale\"",
+      "tokenize_body": [
+        "societe",
+        "generale",
+        "ou",
+        "bnp"
+      ],
+      "content_chunks": [
+        [
+          "societe",
+          "generale"
+        ]
+      ]
+    },
+    {
+      "query": "Île-de-France aménagement",
+      "mode": "hybrid",
+      "translate_boolean": "+Île-de-France +aménagement",
+      "phrase_combo_parse": "ile-de-france amenagement \"ile-de-france amenagement\"",
+      "tokenize_body": [
+        "ile-de-france",
+        "amenagement"
+      ],
+      "content_chunks": [
+        [
+          "ile-de-france",
+          "amenagement"
+        ]
+      ]
+    },
+    {
+      "query": "mise sous tutelle",
+      "mode": "hybrid",
+      "translate_boolean": "+mise +sous +tutelle",
+      "phrase_combo_parse": "mise sous tutelle \"mise sous tutelle\"",
+      "tokenize_body": [
+        "mise",
+        "sous",
+        "tutelle"
+      ],
+      "content_chunks": [
+        [
+          "mise",
+          "sous",
+          "tutelle"
+        ]
+      ]
+    },
+    {
+      "query": "préavis réduit mais zone tendue",
+      "mode": "hybrid",
+      "translate_boolean": "+préavis +réduit +zone +tendue",
+      "phrase_combo_parse": "preavis reduit mais zone tendue \"preavis reduit mais zone tendue\" \"preavis reduit\" \"zone tendue\"",
+      "tokenize_body": [
+        "preavis",
+        "reduit",
+        "mais",
+        "zone",
+        "tendue"
+      ],
+      "content_chunks": [
+        [
+          "preavis",
+          "reduit"
+        ],
+        [
+          "zone",
+          "tendue"
+        ]
+      ]
+    }
+  ]
+}

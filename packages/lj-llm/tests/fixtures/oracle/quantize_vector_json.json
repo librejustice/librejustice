@@ -1,0 +1,74 @@
+{
+  "_provenance": "généré depuis l'oracle Python (librejustice_core.embedding.quantize.to_vector_json). NE PAS éditer à la main. Asservi par lj-embedding::quantize::tests.",
+  "cases": [
+    {
+      "name": "simple_halves",
+      "values": [
+        0.5,
+        -0.5,
+        0.0,
+        -0.0
+      ],
+      "dim": 4,
+      "expected": "[0.500000,-0.500000,0.000000,-0.000000]"
+    },
+    {
+      "name": "unit_3_4_5",
+      "values": [
+        0.6,
+        0.8
+      ],
+      "dim": 2,
+      "expected": "[0.600000,0.800000]"
+    },
+    {
+      "name": "tiny_rounds_to_zero",
+      "values": [
+        1e-07,
+        -1e-07,
+        4e-07
+      ],
+      "dim": 3,
+      "expected": "[0.000000,-0.000000,0.000000]"
+    },
+    {
+      "name": "round_half_even",
+      "values": [
+        0.1234565,
+        0.1234575,
+        0.9999995
+      ],
+      "dim": 3,
+      "expected": "[0.123457,0.123457,1.000000]"
+    },
+    {
+      "name": "large_and_negative",
+      "values": [
+        123.456789,
+        -987.654321
+      ],
+      "dim": 2,
+      "expected": "[123.456787,-987.654297]"
+    },
+    {
+      "name": "ones",
+      "values": [
+        1.0,
+        -1.0
+      ],
+      "dim": 2,
+      "expected": "[1.000000,-1.000000]"
+    },
+    {
+      "name": "typical_normalized",
+      "values": [
+        0.03125,
+        -0.0625,
+        0.125,
+        0.25
+      ],
+      "dim": 4,
+      "expected": "[0.031250,-0.062500,0.125000,0.250000]"
+    }
+  ]
+}

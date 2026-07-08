@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <!-- fond bordeaux palette, plein cadre : Google rogne le favicon en rond dans
+       ses résultats, un fond jusqu'aux bords donne un disque entièrement coloré
+       (les coins arrondis laissaient un carré flottant dans le rond) -->
+  <rect width="32" height="32" fill="#892122"/>
+  <!-- fléau -->
+  <rect x="5" y="10.5" width="22" height="2" rx="1" fill="#fcf8f0"/>
+  <!-- poteau central -->
+  <rect x="15" y="12.5" width="2" height="11" rx="0.7" fill="#fcf8f0"/>
+  <!-- base -->
+  <rect x="10" y="23" width="12" height="2" rx="1" fill="#fcf8f0"/>
+  <!-- pivot -->
+  <circle cx="16" cy="11.5" r="2.4" fill="#fcf8f0"/>
+  <!-- chaîne gauche -->
+  <rect x="5.5" y="12.5" width="1.2" height="3.5" fill="#fcf8f0"/>
+  <!-- chaîne droite -->
+  <rect x="25.3" y="12.5" width="1.2" height="3.5" fill="#fcf8f0"/>
+  <!-- plateau gauche -->
+  <path d="M 3 16 Q 6.1 20 9.2 16" stroke="#fcf8f0" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+  <!-- plateau droit -->
+  <path d="M 22.8 16 Q 25.9 20 29 16" stroke="#fcf8f0" stroke-width="1.8" fill="none" stroke-linecap="round"/>
+</svg>

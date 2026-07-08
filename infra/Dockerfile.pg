@@ -1,0 +1,33 @@
+# Image de base ParadeDB PINNÉE (pg_search + pgvector + pg_cron). Ne PAS repasser
+# sur :latest : le flottement silencieux 0.22.x → 0.23.5 a fait disparaître
+# l'auto-pushdown des facets `literal_normalized` (heap_filter, /search lent —
+# cf. ADR 0070). Tout bump est une action délibérée + revérification des
+# hypothèses de pushdown.
+ARG PARADEDB_VERSION=0.23.5
+ARG PG_MAJOR=18
+FROM docker.io/paradedb/paradedb:${PARADEDB_VERSION}-pg${PG_MAJOR}
+
+# VectorChord (TensorChord) - extension ANN pgvector-compatible.
+# L'image upstream paradedb/paradedb embarque pg_search + pgvector + pg_cron
+# mais pas vchord ; on l'ajoute via le .deb release officiel.
+# Ré-aligner VCHORD_VERSION + PG_MAJOR si on bump PARADEDB_VERSION.
+ARG VCHORD_VERSION=1.1.1
+# Re-déclaré : un ARG pré-FROM ne franchit pas la frontière de stage.
+ARG PG_MAJOR=18
+
+USER root
+# arch détectée à la volée : l'image de base paradedb est multi-arch (amd64 +
+# arm64) et VectorChord publie les deux .deb — on pioche celui qui correspond
+# à l'hôte de build (amd64 sur x86, arm64 sur les VM Axion/Graviton).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && arch="$(dpkg --print-architecture)" \
+    && curl -fsSL "https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_VERSION}/postgresql-${PG_MAJOR}-vchord_${VCHORD_VERSION}-1_${arch}.deb" \
+        -o /tmp/vchord.deb \
+    && apt-get install -y /tmp/vchord.deb \
+    && rm /tmp/vchord.deb \
+    && apt-get purge -y curl \
+    && apt-get autoremove -y \
+    && rm -rf /var/lib/apt/lists/*
+
+USER postgres

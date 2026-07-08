@@ -1,0 +1,126 @@
+# LibreJustice — infra + staging/prod
+# Démarrage  : docker compose up -d
+# Run manuel : docker compose exec cron librejustice <cmd>
+
+services:
+  postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile.pg
+    image: librejustice/paradedb-vchord:latest
+    container_name: librejustice-postgres
+    restart: unless-stopped
+    shm_size: 3g
+    environment:
+      POSTGRES_DB: librejustice
+      POSTGRES_USER: librejustice
+      POSTGRES_PASSWORD: ${LIBREJUSTICE_PG_PASSWORD}
+      POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+    ports:
+      # Deux ports loopback → le même Postgres. 5432 = accès local sur la VM
+      # (psql, outils). 5433 = cible locale du proxy `tailscale serve --tcp 5433`
+      # qui expose la base sur le tailnet (posé une fois au bootstrap, tailnet-only,
+      # gated ACL Tailscale — cf. ADR 0110). L'exposition tailnet ne dépend donc
+      # plus d'un bind résolu à la création du conteneur (fragile, cf. ADR 0110).
+      - "127.0.0.1:5432:5432"
+      - "127.0.0.1:5433:5432"
+    volumes:
+      - ${LIBREJUSTICE_STATE_DIR}/pgdata:/var/lib/postgresql
+      - ./postgresql.conf:/etc/postgresql/postgresql.conf:ro
+      - ./pg_hba.conf:/etc/postgresql/pg_hba.conf:ro
+    command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U librejustice -d librejustice"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Container applicatif unique (ADR 0061) : un seul binaire axum `lj-server`
+  # sert l'API REST (/api/*), OAuth/MCP (/oauth/*, /mcp, /mcp/*, /.well-known/*),
+  # le SSR Leptos + ses assets statiques, ET termine le TLS d'origine in-process
+  # (cert Cloudflare Origin CA). Remplace les anciens services api + ssr + caddy.
+  app:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.app
+    container_name: librejustice-app
+    profiles: ["staging", "prod"]
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      LIBREJUSTICE_DB_URL: postgresql://librejustice:${LIBREJUSTICE_PG_PASSWORD}@postgres:5432/librejustice
+      LIBREJUSTICE_API_BIND_HOST: "0.0.0.0"
+      # lj-server termine le TLS in-process (ADR 0061) et remplace Caddy : il bind
+      # directement 443 (le défaut 8300 est pour le dev derrière rien). Mappé 443:443.
+      LIBREJUSTICE_API_BIND_PORT: "443"
+      # TLS d'origine in-process (ADR 0061 §3) : le binaire bind :443 en TLS via
+      # axum-server/rustls avec le cert Cloudflare Origin CA — mêmes fichiers que
+      # Caddy hier (state dir, montés ci-dessous en lecture seule).
+      LIBREJUSTICE_API_TLS_CERT_PATH: /etc/librejustice/origin/cert.pem
+      LIBREJUSTICE_API_TLS_KEY_PATH: /etc/librejustice/origin/key.pem
+      # Export OTLP direct vers Grafana Cloud (traces + logs + metriques),
+      # plus de collector voisin. Auth Basic instanceID:apiKey cote app.
+      LIBREJUSTICE_GRAFANA_OTLP_ENDPOINT: ${LIBREJUSTICE_GRAFANA_OTLP_ENDPOINT}
+      LIBREJUSTICE_GRAFANA_OTLP_USER: ${LIBREJUSTICE_GRAFANA_OTLP_USER}
+      LIBREJUSTICE_GRAFANA_CLOUD_API_KEY: ${LIBREJUSTICE_GRAFANA_CLOUD_API_KEY}
+      LIBREJUSTICE_API_OTEL_SERVICE_NAME: librejustice-api
+      LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT: ${LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT}
+      LIBREJUSTICE_API_DB_APPLICATION_NAME: ${LIBREJUSTICE_API_DB_APPLICATION_NAME}
+      LIBREJUSTICE_API_WEB_BASE_URL: ${LIBREJUSTICE_API_WEB_BASE_URL:-https://librejustice.fr}
+      # ⚠️ Override explicite : .env contient l'URL dev (localhost). On force la
+      # valeur prod ici pour que les metadata OAuth/MCP pointent vers le bon host.
+      # Mono-domaine (ADR 0042) : MCP + OAuth servis sous librejustice.fr.
+      LIBREJUSTICE_API_PUBLIC_BASE_URL: https://librejustice.fr
+      LIBREJUSTICE_API_MCP_REQUIRE_AUTH: "true"
+      # Runtime Leptos : localise les assets SSR copiés depuis target/site.
+      LEPTOS_OUTPUT_NAME: lj-web
+      LEPTOS_SITE_ROOT: /app/site
+      LEPTOS_SITE_PKG_DIR: pkg
+      # Noms de bundle content-hashés (ADR 0155) : le SSR lit `hash.txt` (copié
+      # à côté du binaire) pour référencer lj-web.<sha256>.{js,wasm,css}.
+      LEPTOS_HASH_FILES: "true"
+      LOG_FORMAT: json
+      # Stopgap aarch64 : AWS-LC (backend rustls via aws-lc-rs) abort() dans son
+      # RNG matériel ARMv8 `RNDR` pendant le handshake TLS (RAND_bytes →
+      # rand_bytes_impl → abort), ce qui tue tout le process (TLS accept tourne
+      # sur le runtime mono-thread → 1 handshake KO = crash-loop, Cloudflare 525).
+      # `OPENSSL_armcap=0` masque les features CPU ARM optionnelles (dont RNDR) →
+      # AWS-LC retombe sur l'entropie OS (getrandom). Var ARM-only : ignorée sur
+      # x86 (qui lit OPENSSL_ia32cap), donc inerte après bascule x86 — à retirer
+      # alors. Hors préfixe LIBREJUSTICE_ (#5) car lue par la lib C au init ;
+      # posée ici (env conteneur), pas dans .env → ne pollue pas le shell mise.
+      OPENSSL_armcap: "0"
+    ports:
+      - "80:80"
+      - "443:443"
+    volumes:
+      # Cert Cloudflare Origin CA pour librejustice.fr (proxied → TLS origin),
+      # terminé in-process par lj-server (rustls, ADR 0061). cert.pem + key.pem.
+      - ${LIBREJUSTICE_STATE_DIR}/tls/origin:/etc/librejustice/origin:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  cron:
+    build:
+      context: ..
+      dockerfile: infra/Dockerfile.app
+    container_name: librejustice-cron
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      LIBREJUSTICE_DB_URL: postgresql://librejustice:${LIBREJUSTICE_PG_PASSWORD}@postgres:5432/librejustice
+      LIBREJUSTICE_STATE_DIR: /var/lib/librejustice
+      LOG_FORMAT: json
+      # Jobs cron observables dans Grafana (cf. ADR 0045) : export OTLP direct
+      # vers Grafana Cloud, plus de collector voisin.
+      LIBREJUSTICE_GRAFANA_OTLP_ENDPOINT: ${LIBREJUSTICE_GRAFANA_OTLP_ENDPOINT}
+      LIBREJUSTICE_GRAFANA_OTLP_USER: ${LIBREJUSTICE_GRAFANA_OTLP_USER}
+      LIBREJUSTICE_GRAFANA_CLOUD_API_KEY: ${LIBREJUSTICE_GRAFANA_CLOUD_API_KEY}
+      LIBREJUSTICE_DEPLOYMENT_ENVIRONMENT: prod
+    volumes:
+      - ${LIBREJUSTICE_STATE_DIR}/ingest:/var/lib/librejustice/ingest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    command: ["supercronic", "/etc/librejustice/crontab"]

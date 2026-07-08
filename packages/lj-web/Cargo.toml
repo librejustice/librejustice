@@ -1,0 +1,82 @@
+[package]
+name = "lj-web"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+
+# cdylib = cible wasm (hydrate) ; rlib = lib SSR consommée par `lj-server` (bin
+# de déploiement, ADR 0061) + tests.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# --- Leptos (toujours presents, default-features=false ; features fan-out via ssr/hydrate) ---
+leptos = { workspace = true }
+leptos_router = { workspace = true }
+leptos_meta = { workspace = true }
+leptos-fetch = { workspace = true }
+
+# --- DTOs (noyau leger serde-pur, ADR 0060 ; present ssr ET hydrate/wasm) ---
+# Sans feature `jsonschema` : pur serde, compile en wasm32. PAS de lj-core
+# (tire tokenizers/quick-xml, incompatibles wasm).
+lj-dtos = { workspace = true }
+
+# --- Client HTTP (ssr: backend rustls/tokio ; wasm: backend fetch du navigateur,
+# tls/gzip inertes). Present dans les deux cibles : un seul code client. ---
+reqwest = { workspace = true }
+
+# --- serveur uniquement (SSR), gates dep: dans la feature ssr ---
+leptos_axum = { workspace = true, optional = true }
+axum = { workspace = true, optional = true }
+tokio = { workspace = true, optional = true }
+tower = { workspace = true, optional = true }
+tower-http = { workspace = true, optional = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# Couche service in-process consommée par le client SSR (ADR 0061 §2) : search /
+# decisions / ensure_summary appelés sans HTTP. Tirée uniquement par `ssr` →
+# jamais dans la cible wasm (hydrate).
+lj-api = { workspace = true, optional = true }
+
+# --- client uniquement (hydrate / wasm), gates dep: dans la feature hydrate ---
+wasm-bindgen = { workspace = true, optional = true }
+wasm-bindgen-futures = { workspace = true, optional = true }
+js-sys = { workspace = true, optional = true }
+console_error_panic_hook = { workspace = true, optional = true }
+# `Window`/`Location` : origine de la page pour bâtir l'URL absolue du client
+# `/api` (reqwest-wasm rejette une URL relative → "builder error").
+web-sys = { workspace = true, optional = true, features = ["Window", "Location"] }
+send_wrapper = { workspace = true, optional = true }
+
+[features]
+# default = ssr : un `cargo build`/`clippy`/`test` workspace host compile le binaire
+# serveur (axum/tokio) sur x86_64 — jamais le wasm. La cible wasm passe EXCLUSIVEMENT
+# par cargo-leptos (lib-features=["hydrate"], lib-default-features=false).
+default = ["ssr"]
+hydrate = [
+    "leptos/hydrate",
+    "dep:wasm-bindgen",
+    "dep:wasm-bindgen-futures",
+    "dep:js-sys",
+    "dep:console_error_panic_hook",
+    "dep:web-sys",
+    "dep:send_wrapper",
+]
+ssr = [
+    "leptos/ssr",
+    "leptos_router/ssr",
+    "leptos_meta/ssr",
+    "leptos-fetch/ssr",
+    "dep:leptos_axum",
+    # `default` de leptos_axum = handlers fs (file_and_error_handler / ServeDir).
+    "leptos_axum/default",
+    "dep:axum",
+    "dep:tokio",
+    "dep:tower",
+    "dep:tower-http",
+    "dep:lj-api",
+]
+
+# La config cargo-leptos vit au niveau workspace (`[[workspace.metadata.leptos]]`
+# dans le Cargo.toml racine) : projet multi-crate bin=lj-server / lib=lj-web.

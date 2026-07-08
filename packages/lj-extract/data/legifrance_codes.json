@@ -1,0 +1,655 @@
+{
+  "source": "PISTE /list/code",
+  "fetched": "2026-05-11",
+  "total": 108,
+  "codes": [
+    {
+      "cid": "LEGITEXT000006070721",
+      "titre": "Code civil",
+      "etat": "VIGUEUR",
+      "dateDebut": "1804-03-21T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000005634379",
+      "titre": "Code de commerce",
+      "etat": "VIGUEUR",
+      "dateDebut": "2000-09-21T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069441",
+      "titre": "Code de commerce (ancien)",
+      "etat": "ABROGE",
+      "dateDebut": "1807-09-20T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071071",
+      "titre": "Code de déontologie de la police nationale",
+      "etat": "ABROGE",
+      "dateDebut": "1986-03-19T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071103",
+      "titre": "Code de déontologie de la profession de commissaire aux comptes",
+      "etat": "ABROGE",
+      "dateDebut": "2005-11-17T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070159",
+      "titre": "Code de déontologie des agents de police municipale",
+      "etat": "ABROGE",
+      "dateDebut": "2003-08-06T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074232",
+      "titre": "Code de déontologie des architectes",
+      "etat": "VIGUEUR",
+      "dateDebut": "1980-03-25T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072636",
+      "titre": "Code de déontologie des chirurgiens-dentistes",
+      "etat": "ABROGE",
+      "dateDebut": "1967-08-09T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072664",
+      "titre": "Code de déontologie des médecins",
+      "etat": "ABROGE",
+      "dateDebut": "1979-06-30T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074510",
+      "titre": "Code de déontologie des professionnels de l'expertise comptable",
+      "etat": "ABROGE",
+      "dateDebut": "2007-09-28T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072635",
+      "titre": "Code de déontologie des sages-femmes",
+      "etat": "ABROGE",
+      "dateDebut": "1949-10-05T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072634",
+      "titre": "Code de déontologie médicale",
+      "etat": "ABROGE",
+      "dateDebut": "1995-09-08T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072360",
+      "titre": "Code de déontologie vétérinaire",
+      "etat": "ABROGE",
+      "dateDebut": "1992-02-22T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070933",
+      "titre": "Code de justice administrative",
+      "etat": "VIGUEUR",
+      "dateDebut": "2000-12-31T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070884",
+      "titre": "Code de justice militaire",
+      "etat": "ABROGE",
+      "dateDebut": "1983-05-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071360",
+      "titre": "Code de justice militaire (nouveau)",
+      "etat": "VIGUEUR",
+      "dateDebut": "2007-05-11T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071737",
+      "titre": "Code de l'Office national interprofessionnel du blé",
+      "etat": "ABROGE",
+      "dateDebut": "1937-12-28T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074069",
+      "titre": "Code de l'action sociale et des familles",
+      "etat": "VIGUEUR",
+      "dateDebut": "2000-12-23T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006075116",
+      "titre": "Code de l'artisanat",
+      "etat": "VIGUEUR",
+      "dateDebut": "1952-07-20T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074234",
+      "titre": "Code de l'aviation civile",
+      "etat": "VIGUEUR",
+      "dateDebut": "1967-04-09T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071014",
+      "titre": "Code de l'enseignement technique",
+      "etat": "ABROGE",
+      "dateDebut": "1956-09-19T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070158",
+      "titre": "Code de l'entrée et du séjour des étrangers et du droit d'asile",
+      "etat": "VIGUEUR",
+      "dateDebut": "2005-01-19T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074220",
+      "titre": "Code de l'environnement",
+      "etat": "VIGUEUR",
+      "dateDebut": "2000-09-21T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074224",
+      "titre": "Code de l'expropriation pour cause d'utilité publique",
+      "etat": "VIGUEUR",
+      "dateDebut": "1977-04-14T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070882",
+      "titre": "Code de l'industrie cinématographique",
+      "etat": "ABROGE",
+      "dateDebut": "1956-01-31T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071164",
+      "titre": "Code de l'organisation judiciaire",
+      "etat": "VIGUEUR",
+      "dateDebut": "1978-03-18T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074075",
+      "titre": "Code de l'urbanisme",
+      "etat": "VIGUEUR",
+      "dateDebut": "1973-01-03T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071191",
+      "titre": "Code de l'éducation",
+      "etat": "VIGUEUR",
+      "dateDebut": "2000-06-22T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000023983208",
+      "titre": "Code de l'énergie",
+      "etat": "VIGUEUR",
+      "dateDebut": "2011-06-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071007",
+      "titre": "Code de la Légion d'honneur, de la Médaille militaire et de l'ordre national du Mérite",
+      "etat": "VIGUEUR",
+      "dateDebut": "1962-12-07T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000037701019",
+      "titre": "Code de la commande publique",
+      "etat": "VIGUEUR",
+      "dateDebut": "2019-04-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069565",
+      "titre": "Code de la consommation",
+      "etat": "VIGUEUR",
+      "dateDebut": "1993-07-27T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069472",
+      "titre": "Code de la consommation des boissons et des mesures contre l'alcoolisme applicable dans la collectivité territoriale de Mayotte",
+      "etat": "ABROGE",
+      "dateDebut": "1992-10-06T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074096",
+      "titre": "Code de la construction et de l'habitation",
+      "etat": "VIGUEUR",
+      "dateDebut": "1977-03-10T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071307",
+      "titre": "Code de la défense",
+      "etat": "VIGUEUR",
+      "dateDebut": "2004-12-21T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072637",
+      "titre": "Code de la famille et de l'aide sociale",
+      "etat": "VIGUEUR",
+      "dateDebut": "1956-01-24T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000039086952",
+      "titre": "Code de la justice pénale des mineurs",
+      "etat": "VIGUEUR",
+      "dateDebut": "2021-09-30T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074067",
+      "titre": "Code de la mutualité",
+      "etat": "VIGUEUR",
+      "dateDebut": "1985-07-26T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071189",
+      "titre": "Code de la nationalité française",
+      "etat": "ABROGE",
+      "dateDebut": "1945-10-20T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069414",
+      "titre": "Code de la propriété intellectuelle",
+      "etat": "VIGUEUR",
+      "dateDebut": "1992-07-03T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071190",
+      "titre": "Code de la recherche",
+      "etat": "VIGUEUR",
+      "dateDebut": "2004-06-16T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074228",
+      "titre": "Code de la route",
+      "etat": "VIGUEUR",
+      "dateDebut": "2001-05-27T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074947",
+      "titre": "Code de la route (ancien)",
+      "etat": "ABROGE",
+      "dateDebut": "1954-07-10T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072665",
+      "titre": "Code de la santé publique",
+      "etat": "VIGUEUR",
+      "dateDebut": "1953-10-07T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000025503132",
+      "titre": "Code de la sécurité intérieure",
+      "etat": "VIGUEUR",
+      "dateDebut": "2012-05-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006073189",
+      "titre": "Code de la sécurité sociale",
+      "etat": "VIGUEUR",
+      "dateDebut": "1958-10-16T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070667",
+      "titre": "Code de la voirie routière",
+      "etat": "VIGUEUR",
+      "dateDebut": "1989-06-24T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070716",
+      "titre": "Code de procédure civile",
+      "etat": "VIGUEUR",
+      "dateDebut": "1976-01-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070680",
+      "titre": "Code de procédure civile (1807)",
+      "etat": "ABROGE",
+      "dateDebut": "1807-01-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071154",
+      "titre": "Code de procédure pénale",
+      "etat": "VIGUEUR",
+      "dateDebut": "1958-04-08T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006073984",
+      "titre": "Code des assurances",
+      "etat": "VIGUEUR",
+      "dateDebut": "1976-07-11T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006073422",
+      "titre": "Code des caisses d'épargne",
+      "etat": "ABROGE",
+      "dateDebut": "1952-07-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070162",
+      "titre": "Code des communes",
+      "etat": "VIGUEUR",
+      "dateDebut": "1977-03-20T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070300",
+      "titre": "Code des communes de la Nouvelle-Calédonie",
+      "etat": "VIGUEUR",
+      "dateDebut": "2001-07-05T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071570",
+      "titre": "Code des douanes",
+      "etat": "VIGUEUR",
+      "dateDebut": "1949-01-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071645",
+      "titre": "Code des douanes de Mayotte",
+      "etat": "ABROGE",
+      "dateDebut": "1992-10-16T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006075115",
+      "titre": "Code des débits de boissons et des mesures contre l'alcoolisme",
+      "etat": "ABROGE",
+      "dateDebut": "1955-05-21T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000044595989",
+      "titre": "Code des impositions sur les biens et services",
+      "etat": "VIGUEUR",
+      "dateDebut": "2022-01-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070666",
+      "titre": "Code des instruments monétaires et des médailles",
+      "etat": "VIGUEUR",
+      "dateDebut": "1952-06-29T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070249",
+      "titre": "Code des juridictions financières",
+      "etat": "VIGUEUR",
+      "dateDebut": "1994-12-06T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069562",
+      "titre": "Code des marchés publics (édition 1964)",
+      "etat": "ABROGE",
+      "dateDebut": "1964-07-21T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069564",
+      "titre": "Code des marchés publics (édition 2001)",
+      "etat": "ABROGE",
+      "dateDebut": "2001-09-09T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072666",
+      "titre": "Code des marchés publics (édition 2004)",
+      "etat": "ABROGE",
+      "dateDebut": "2004-01-08T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000005627819",
+      "titre": "Code des marchés publics (édition 2006)",
+      "etat": "ABROGE",
+      "dateDebut": "2006-09-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070302",
+      "titre": "Code des pensions civiles et militaires de retraite",
+      "etat": "VIGUEUR",
+      "dateDebut": "1952-07-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074066",
+      "titre": "Code des pensions de retraite des marins français du commerce, de pêche ou de plaisance",
+      "etat": "VIGUEUR",
+      "dateDebut": "1968-03-31T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074068",
+      "titre": "Code des pensions militaires d'invalidité et des victimes de guerre",
+      "etat": "VIGUEUR",
+      "dateDebut": "1951-04-26T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074233",
+      "titre": "Code des ports maritimes",
+      "etat": "VIGUEUR",
+      "dateDebut": "1978-04-02T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070987",
+      "titre": "Code des postes et des communications électroniques",
+      "etat": "VIGUEUR",
+      "dateDebut": "1962-03-14T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000025024948",
+      "titre": "Code des procédures civiles d'exécution",
+      "etat": "VIGUEUR",
+      "dateDebut": "2012-06-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000031366350",
+      "titre": "Code des relations entre le public et l'administration",
+      "etat": "VIGUEUR",
+      "dateDebut": "2016-01-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000023086525",
+      "titre": "Code des transports",
+      "etat": "VIGUEUR",
+      "dateDebut": "2010-12-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071344",
+      "titre": "Code des tribunaux administratifs et des cours administratives d'appel",
+      "etat": "ABROGE",
+      "dateDebut": "1973-09-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071188",
+      "titre": "Code disciplinaire et pénal de la marine marchande",
+      "etat": "VIGUEUR",
+      "dateDebut": "1926-12-19T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071646",
+      "titre": "Code du blé",
+      "etat": "ABROGE",
+      "dateDebut": "1936-04-24T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000020908868",
+      "titre": "Code du cinéma et de l'image animée",
+      "etat": "VIGUEUR",
+      "dateDebut": "2009-07-26T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070208",
+      "titre": "Code du domaine de l'Etat",
+      "etat": "VIGUEUR",
+      "dateDebut": "1962-03-14T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074235",
+      "titre": "Code du domaine de l'Etat et des collectivités publiques applicable à la collectivité territoriale de Mayotte",
+      "etat": "VIGUEUR",
+      "dateDebut": "1993-07-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074237",
+      "titre": "Code du domaine public fluvial et de la navigation intérieure",
+      "etat": "VIGUEUR",
+      "dateDebut": "1956-10-13T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074236",
+      "titre": "Code du patrimoine",
+      "etat": "VIGUEUR",
+      "dateDebut": "2004-02-24T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071335",
+      "titre": "Code du service national",
+      "etat": "VIGUEUR",
+      "dateDebut": "1972-07-14T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071318",
+      "titre": "Code du sport",
+      "etat": "VIGUEUR",
+      "dateDebut": "2006-02-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006074073",
+      "titre": "Code du tourisme",
+      "etat": "VIGUEUR",
+      "dateDebut": "2005-01-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072050",
+      "titre": "Code du travail",
+      "etat": "VIGUEUR",
+      "dateDebut": "1973-01-03T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072052",
+      "titre": "Code du travail applicable à Mayotte",
+      "etat": "ABROGE",
+      "dateDebut": "1991-03-06T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072051",
+      "titre": "Code du travail maritime",
+      "etat": "VIGUEUR",
+      "dateDebut": "1926-02-15T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071657",
+      "titre": "Code du vin",
+      "etat": "ABROGE",
+      "dateDebut": "1936-12-24T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071514",
+      "titre": "Code forestier",
+      "etat": "ABROGE",
+      "dateDebut": "1979-02-07T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000025244092",
+      "titre": "Code forestier (nouveau)",
+      "etat": "VIGUEUR",
+      "dateDebut": "2012-07-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071556",
+      "titre": "Code forestier de Mayotte",
+      "etat": "ABROGE",
+      "dateDebut": "1992-10-16T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000044416551",
+      "titre": "Code général de la fonction publique",
+      "etat": "VIGUEUR",
+      "dateDebut": "2022-03-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070299",
+      "titre": "Code général de la propriété des personnes publiques",
+      "etat": "VIGUEUR",
+      "dateDebut": "2006-07-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070633",
+      "titre": "Code général des collectivités territoriales",
+      "etat": "VIGUEUR",
+      "dateDebut": "1996-02-24T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069577",
+      "titre": "Code général des impôts",
+      "etat": "VIGUEUR",
+      "dateDebut": "1952-02-14T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069568",
+      "titre": "Code général des impôts, annexe I",
+      "etat": "VIGUEUR",
+      "dateDebut": "1950-04-30T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069569",
+      "titre": "Code général des impôts, annexe II",
+      "etat": "VIGUEUR",
+      "dateDebut": "1967-09-16T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069574",
+      "titre": "Code général des impôts, annexe III",
+      "etat": "VIGUEUR",
+      "dateDebut": "1950-04-30T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069576",
+      "titre": "Code général des impôts, annexe IV",
+      "etat": "VIGUEUR",
+      "dateDebut": "1975-12-31T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071785",
+      "titre": "Code minier",
+      "etat": "VIGUEUR",
+      "dateDebut": "1956-08-21T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000023501962",
+      "titre": "Code minier (nouveau)",
+      "etat": "VIGUEUR",
+      "dateDebut": "2011-03-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006072026",
+      "titre": "Code monétaire et financier",
+      "etat": "VIGUEUR",
+      "dateDebut": "2001-01-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070719",
+      "titre": "Code pénal",
+      "etat": "VIGUEUR",
+      "dateDebut": "1990-09-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071029",
+      "titre": "Code pénal (ancien)",
+      "etat": "ABROGE",
+      "dateDebut": "1810-02-12T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000045476241",
+      "titre": "Code pénitentiaire",
+      "etat": "VIGUEUR",
+      "dateDebut": "2022-05-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071366",
+      "titre": "Code rural (ancien)",
+      "etat": "VIGUEUR",
+      "dateDebut": "1955-04-19T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006071367",
+      "titre": "Code rural et de la pêche maritime",
+      "etat": "VIGUEUR",
+      "dateDebut": "1979-12-01T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006070239",
+      "titre": "Code électoral",
+      "etat": "VIGUEUR",
+      "dateDebut": "1964-10-28T00:00:00.000+0000"
+    },
+    {
+      "cid": "LEGITEXT000006069583",
+      "titre": "Livre des procédures fiscales",
+      "etat": "VIGUEUR",
+      "dateDebut": "1938-06-01T00:00:00.000+0000"
+    }
+  ]
+}

@@ -1,0 +1,56 @@
+# Configuration file for `prek`, a git hook framework written in Rust.
+# See https://prek.j178.dev for more information.
+#:schema https://www.schemastore.org/prek.json
+
+[[repos]]
+repo = "builtin"
+hooks = [
+  # vendor/** : dépendances tierces vendorées (bundles minifiés) — jamais reformatées.
+  # collocations_fr.json : lexique généré (git-lfs) par `lj-bench mine-collocations`,
+  # jamais édité à la main — exempté des text-fixers comme les bundles vendorés.
+  # docs/working-notes/** : notes de travail, dont des snapshots capturés verbatim
+  # (HTML/DOM rendu, dumps JSON) — artefacts de référence jamais édités à la main,
+  # exemptés des text-fixers comme les bundles vendorés.
+  { id = "trailing-whitespace", exclude = { glob = ["**/vendor/**", "packages/lj-core/data/collocations_fr.json", "docs/working-notes/**"] }, pass_filenames = true },
+  # citation_aliases.rs : table d'alias de résolution curée à la main, grossit
+  # vague après vague (ponts datés FR/UE) — source légitime, pas une donnée binaire
+  # accidentelle. Plafond relevé à 400 KB pour lui laisser de la marge.
+  # gt/gold/*.jsonl : couche vivante gold (ADR 0148 §3) — git plain à dessein
+  # (diffs d'annotation revus ligne à ligne, exception LFS dans .gitattributes).
+  { id = "check-added-large-files", args = ["--maxkb=400", "--enforce-all"], exclude = { glob = ["apps/lj-bench/gt/gold/*.jsonl"] }, pass_filenames = true },
+  { id = "end-of-file-fixer", exclude = { glob = ["**/vendor/**", "packages/lj-core/data/collocations_fr.json", "docs/working-notes/**"] }, pass_filenames = true },
+  { id = "check-yaml", pass_filenames = true },
+  { id = "check-toml", pass_filenames = true },
+  { id = "check-merge-conflict", pass_filenames = true }
+]
+
+[[repos]]
+repo = "local"
+hooks = [
+  {
+    id = "rustfmt",
+    name = "rustfmt (staged)",
+    entry = "rustfmt --edition 2021",
+    language = "system",
+    pass_filenames = true,
+    files = '^(packages|apps)/.*\.rs$'
+  },
+  {
+    id = "clippy",
+    name = "cargo clippy (workspace, non-bloquant : échoue sur erreurs, pas sur warnings)",
+    entry = "cargo clippy --workspace --all-targets",
+    language = "system",
+    pass_filenames = false,
+    stages = ["pre-push"],
+    always_run = true
+  },
+  {
+    id = "test",
+    name = "lint Rust + cargo test (workspace)",
+    entry = "mise run test",
+    language = "system",
+    pass_filenames = false,
+    stages = ["pre-push"],
+    always_run = true
+  }
+]

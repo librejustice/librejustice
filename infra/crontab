@@ -1,0 +1,53 @@
+# LibreJustice — ingestion quotidienne
+# Pour un run manuel : podman compose exec cron lj-ingest <cmd>
+#
+# Chaîne post-ingest (cf. ADR 0044) : résumés des nouvelles décisions, puis
+# push IndexNow (Bing/Yandex) des URLs mises à jour < 24h. generate-summaries
+# bumpe updated_at, donc indexnow soumet chaque décision avec sa meta
+# description déjà prête. Étapes séparées = aucun ralentissement de l'ingest.
+# Régénération sitemap en fin de chaîne (après l'ingest du jour, donc reflète
+# les nouvelles décisions) : la query SELECT id, public_id, GREATEST(date_lecture,
+# updated_at::date) sur decisions est légère (~30 s sur 3M rows via l'index PK)
+# et l'écriture en table `sitemaps` (Postgres, ADR 0064) triviale → coût nul.
+# lj-server sert ensuite /sitemap.xml depuis cette table. Google (qui ne consomme
+# pas IndexNow) découvre les décisions du jour en J+0 au lieu de J+6 (sitemap hebdo).
+#
+# Fonds DILA/LEGI + sources liées (sync-dila/cedh/cjue/cnda/legi) chaînés
+# entre l'ingest Judilibre/opendata et generate-summaries (pour que résumés +
+# sitemap couvrent les nouvelles décisions). Chaque sync AUTO-SWITCH cold ↔ warm :
+# au 1er run (watermark vide) il télécharge+ingère le stock global multi-Go puis
+# les incréments ; ensuite il n'applique que les incréments. Aucun bootstrap
+# manuel requis. Throttle réseau intégré aux downloaders ; le 1er run est long
+# (stocks + ~1 an d'incréments) mais idempotent et reprenable.
+#
+# Les corpus de loi curés (droit étranger jafbase, traités + leur historique
+# versionné par article) sont chargés **ponctuellement** par `load-legal-corpus`
+# (ADR 0108/0109) — données curées, statiques, non quotidiennes : volontairement
+# HORS de cette chaîne. Leurs articles persistent en base.
+#
+# CITATIONS (ADR 0145) : l'ingest quotidien sort les décisions nouvelles/modifiées
+# déjà liées (linker in-pass sur le LinkSnapshot mémoire du run). La passe
+# intégrale du dimanche (reextract-fields ci-dessous) rejoue extract+link sur
+# tout le fonds < v1000 : véhicule unique de toute amélioration (nouveau texte
+# au catalogue, règle de linking corrigée, bump de version) — latence max 7 j.
+0 3 * * * cd /app && lj-ingest sync && lj-ingest ingest --with-embeddings && lj-ingest sync-dila jade && lj-ingest sync-dila constit && lj-ingest sync-cedh && lj-ingest sync-cjue && lj-ingest sync-cnda && lj-ingest sync-legi && lj-ingest sync-kali && lj-ingest stamp-freshness && lj-ingest generate-summaries && lj-ingest db analyze && lj-ingest db gc-mcp && lj-ingest sitemap && lj-ingest indexnow --since-hours 24
+
+# Compactage hebdo de decision_chunks (heap + tous les indexes en une op) :
+# VACUUM FULL plutôt que REINDEX car résultat plus compact sur ParadeDB
+# (12 GB vs 16 GB mesuré 2026-05-15) et nettoie en bonus le bloat heap
+# MVCC accumulé par les UPDATE quotidiens, que REINDEX ne touche pas.
+# ⚠️ Lock AccessExclusive ~30-60 min → /search down dimanche 4 h-5 h UTC.
+# Cf. docs/working-notes/migration-bloat-pattern-2026-05-15.md
+0 4 * * 0 cd /app && lj-ingest db vacuum-full-chunks
+
+# Passe intégrale extract+link (ADR 0145) : rejoue capture + linker sur TOUT
+# le fonds < 1000 (--full ; le gold n'est jamais réécrit). Le LinkSnapshot du
+# run voit le catalogue du jour → un texte fraîchement ingéré attire ses
+# citations anciennes (latence max 7 j) ; toute amélioration du linker/bump de
+# version s'applique rétroactivement. Le skip Rust des sets de citations
+# inchangés borne les écritures au delta. --workers 2 : doux sur une prod qui
+# sert du trafic (~4 h sur 3,6 M). À 6 h, après vacuum-full-chunks (5 h max).
+# Puis filet arrays de facettes (ADR 0147) : recompute complet depuis
+# legal_citation, garde IS DISTINCT FROM (lectures seules, ~6 min mesurées
+# sans dérive). Dérive corrigée > 0 = bug d'écrivain → tracing::warn Grafana.
+0 6 * * 0 cd /app && lj-ingest reextract-fields --full --workers 2 && lj-ingest resync-legal-arrays

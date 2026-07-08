@@ -1,0 +1,58 @@
+__pycache__/
+*.py[cod]
+/target
+.venv/
+.ruff_cache/
+.pytest_cache/
+.ty_cache/
+.mypy_cache/
+data/
+infra/data/
+# Données embarquées (include_str!) du crate lj-core : snapshot codes Légifrance
+# + prompt de résumé. Versionnées (la règle `data/` ci-dessus les masquerait).
+!packages/lj-core/data/
+# Police embarquée (include_bytes!) du PDF export de lj-api : Liberation Sans
+# (OFL), versionnée en LFS. Idem, la règle `data/` la masquerait.
+!packages/lj-api/data/
+# Données embarquées (include_str!) du crate lj-extract : gazetteer CCN, alias
+# d'instruments et de liaison (ADR 0145). Idem, la règle `data/` les masquerait.
+!packages/lj-extract/data/
+
+# GT de ranking (lj-bench) : on ne versionne que la GT finale `<slug>.json` +
+# `_meta_extra_*.json`. Le scratch régénérable (pools, `_bodies_*/`,
+# `_summaries_*/`, méta yaml, archives) est désormais écrit dans `bench_dir`
+# (`<state_dir>/bench`, hors repo — règle #17) ; ces règles restent un garde-fou
+# pour la GT versionnée et un `_pool_*.json` égaré.
+apps/lj-bench/gt/ranking/*
+!apps/lj-bench/gt/ranking/*.json
+apps/lj-bench/gt/ranking/_pool_*.json
+*.egg-info/
+dist/
+build/
+.DS_Store
+artifacts/
+.env
+.env.*
+!.env.example
+Screenshot*
+
+node_modules/
+
+artifacts/
+
+# Notes de travail contenant des credentials bruts. Defense-in-depth.
+docs/working-notes/*.secrets
+docs/working-notes/*-credentials*
+repo.txt
+.env.local
+oom
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
+.claude/worktrees/
+docs/working-notes/*-manifest.jsonl
+
+# vim swapfiles (ne jamais committer — peut contenir un snapshot de .env)
+*.swp
+*.swo
+.*.swp
+.*.swo

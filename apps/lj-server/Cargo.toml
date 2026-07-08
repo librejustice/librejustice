@@ -1,0 +1,28 @@
+[package]
+name = "lj-server"
+version = "0.1.0"
+edition = { workspace = true }
+license = { workspace = true }
+rust-version = { workspace = true }
+
+# Binaire de déploiement unique (ADR 0061) : API + MCP + SSR Leptos + assets +
+# TLS dans un seul process axum. Dépend de `lj-api` (lib) ET `lj-web` (lib, ssr) ;
+# `lj-api` ne dépend pas de `lj-web` → aucun cycle.
+[[bin]]
+name = "lj-server"
+path = "src/main.rs"
+
+[dependencies]
+lj-api = { workspace = true }
+lj-web = { workspace = true, features = ["ssr"] }
+lj-store = { workspace = true }
+
+leptos = { workspace = true, features = ["ssr"] }
+leptos_axum = { workspace = true, features = ["default"] }
+
+axum = { workspace = true }
+axum-server = { workspace = true }
+tower-http = { workspace = true }
+tokio = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }

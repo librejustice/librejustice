@@ -1,0 +1,29 @@
+{
+  "_provenance": "généré depuis l'oracle Python (packages/py/librejustice-core chunk_decision, mode char déterministe). NE PAS éditer à la main. Asservi par crates/lj-core/tests/chunking_parity.rs.",
+  "input": {
+    "text": "Le tribunal administratif statue sur la requête. Le requérant conteste la décision préfectorale du 12 mars.\n\nSur la légalité externe : le moyen tiré du défaut de motivation est écarté. La décision comporte les considérations de droit et de fait.\n\nSur la légalité interne : le préfet n'a pas commis d'erreur d'appréciation. La situation personnelle de l'intéressé a été examinée.\nLes pièces versées au dossier ne suffisent pas à établir le contraire.\n\nPar ces motifs, le tribunal rejette la requête. Les frais restent à la charge du requérant.",
+    "metadata_header": "Tribunal administratif | 2026-03-12 | 1ère chambre",
+    "visa_trim": "Vu la requête enregistrée",
+    "chunk_tokens": 120,
+    "overlap_min": 12,
+    "overlap_max": 30
+  },
+  "chunks": [
+    {
+      "chunk_index": 0,
+      "char_start": 0,
+      "char_end": 323,
+      "ctx_start": 0,
+      "body": "Le tribunal administratif statue sur la requête. Le requérant conteste la décision préfectorale du 12 mars.\n\nSur la légalité externe : le moyen tiré du défaut de motivation est écarté. La décision comporte les considérations de droit et de fait.\n\nSur la légalité interne : le préfet n'a pas commis d'erreur d'appréciation. ",
+      "ctx": ""
+    },
+    {
+      "chunk_index": 1,
+      "char_start": 323,
+      "char_end": 542,
+      "ctx_start": 247,
+      "body": "La situation personnelle de l'intéressé a été examinée.\nLes pièces versées au dossier ne suffisent pas à établir le contraire.\n\nPar ces motifs, le tribunal rejette la requête. Les frais restent à la charge du requérant.",
+      "ctx": "Sur la légalité interne : le préfet n'a pas commis d'erreur d'appréciation. "
+    }
+  ]
+}

@@ -1,0 +1,268 @@
+[workspace]
+resolver = "2"
+members = [
+    "packages/lj-core",
+    "packages/lj-extract",
+    "packages/lj-telemetry",
+    "packages/lj-store",
+    "packages/lj-sources",
+    "packages/lj-llm",
+    "packages/lj-dtos",
+    "packages/lj-api",
+    "packages/lj-web",
+    "apps/lj-server",
+    "apps/lj-ingest",
+]
+
+[workspace.package]
+edition = "2021"
+license = "Apache-2.0"
+rust-version = "1.96"
+
+# Versions récentes et cohérentes. Les crates membres tirent via { workspace = true }.
+[workspace.dependencies]
+# Async runtime + web
+tokio = { version = "1", features = ["full"] }
+# Combinateurs de futures (join_all concurrent sur une seule task, sans spawn).
+futures = "0.3"
+axum = { version = "0.8", features = ["macros"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = [
+    "cors",
+    "trace",
+    "compression-gzip",
+    "compression-br",
+    "fs",
+    "set-header",
+] }
+
+# Sérialisation
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# sonic-rs : parse JSON SIMD sur le hot-path ingest (Judilibre). serde_json ailleurs.
+sonic-rs = "0.5"
+schemars = { version = "1", features = ["chrono04"] }
+
+# HTTP client
+reqwest = { version = "0.13", default-features = false, features = ["json", "query", "rustls", "gzip"] }
+# Middleware reqwest : spans HTTP client sortants (equivalent HTTPXClientInstrumentor).
+# reqwest-tracing emet un span tracing NATIF (sans la feature opentelemetry_* qui
+# epinglerait une vieille version d'otel) -> capte par la couche tracing-opentelemetry.
+reqwest-middleware = { version = "0.5", features = ["json", "query"] }
+reqwest-tracing = "0.7"
+
+# Postgres (tokio-postgres + deadpool, PAS sqlx)
+# pgvector = codec client du type vector(1024) (analogue de register_vector côté
+# Python) ; l'ANN reste fait par l'extension VectorChord en SQL brut.
+tokio-postgres = { version = "0.7", features = ["with-chrono-0_4", "with-serde_json-1"] }
+deadpool-postgres = "0.14"
+pgvector = { version = "0.4", features = ["postgres"] }
+
+# Recherche plein-texte / snippets : crate tantivy NATIF, version EPINGLEE sur
+# le core exact wrappe par py-tantivy 0.26 (= crate Rust tantivy 0.26.0, verifie
+# dans le .so). Pin strict `=0.26.0` : 0.26.1 a decale les frontieres de fragment
+# du SnippetGenerator d'un token -> snippets non byte-identiques a l'oracle. On
+# replique 1-pour-1 le tokenizer ParadeDB + le SnippetGenerator de py-tantivy.
+tantivy = "=0.26.0"
+
+# XML tolérant
+quick-xml = "0.40"
+
+# Texte / regex / single-pass tokenizer
+regex = "1"
+aho-corasick = "1"
+html-escape = "0.2"
+# FxHash : hasher non-cryptographique des index de snap citations (lj-extract,
+# lookups de chaînes courtes sur le hot-path — SipHash y pesait ~15 % du profil).
+rustc-hash = "2"
+
+# Parallélisme
+rayon = "1"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+
+# Erreurs
+anyhow = "1"
+thiserror = "2"
+
+# Télémétrie : export OTLP/HTTP DIRECT vers Grafana Cloud (plus de collector
+# local). http-proto + reqwest-blocking-client = exporteurs sur thread dedie
+# des Batch/PeriodicReader (pas de runtime tokio requis) ; le TLS vient de la
+# feature rustls deja activee sur `reqwest` (unification additive cargo).
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-opentelemetry = "0.33"
+opentelemetry = "0.32"
+opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+# Bridge logs tracing -> OpenTelemetry Logs (export OTLP direct).
+opentelemetry-appender-tracing = "0.32"
+# Layer axum : spans serveur HTTP nommes {method} {route} + semconv OTel
+# (http.route / http.response.status_code) attendus par le cockpit.
+axum-tracing-opentelemetry = "0.38"
+# base64 : en-tete Authorization Basic des exporteurs OTLP/HTTP Grafana Cloud.
+base64 = "0.22"
+
+# Auth / MCP
+# jsonwebtoken 10 exige un CryptoProvider explicite. On choisit aws_lc_rs :
+# deja tire par reqwest/rustls (un seul provider crypto dans le binaire), ARM ok.
+jsonwebtoken = { version = "10", features = ["aws_lc_rs"] }
+# getrandom : octets CSPRNG de l'OS (syscall getrandom(2)) pour les secrets
+# OAuth — remplace un read bloquant de /dev/urandom sur le thread async.
+getrandom = "0.4"
+rmcp = { version = "1", features = ["server", "macros"] }
+
+# Cache in-process (mono-serveur axum) : remplace le conteneur Valkey. moka
+# try_get_with coalesce les chargements concurrents = lock anti-stampede natif.
+moka = { version = "0.12", features = ["future"] }
+zip = "8"
+# Export PDF/DOCX pur-Rust (remplacent l'ecriture std a la main) : printpdf
+# (default-features=false) + docx-rs. Pas un contrat de fil -> parite contenu.
+printpdf = { version = "0.9", default-features = false }
+# Parsing TTF (cmap + hmtx) pour embarquer une police Unicode dans le PDF :
+# printpdf en `default-features=false` n'embarque pas le parseur de police
+# (azul-layout) ; on alimente nous-mêmes ses maps glyphes via ttf-parser.
+ttf-parser = "0.25"
+docx-rs = "0.4"
+# Extraction texte PDF born-digital, crate PUR Rust (pas de dép native
+# pdfium/poppler) : conclusions CRP ArianeWeb au bord lj-sources (ADR 0095).
+pdf-extract = "0.10"
+xxhash-rust = { version = "0.8", features = ["xxh3"] }
+flate2 = "1"
+# Lecteur d'archives `.tar` (combiné a flate2 pour `.tar.gz` DILA, ADR 0093).
+tar = "0.4"
+
+# Calcul / tokenizer HF
+ndarray = "0.17"
+tokenizers = "0.23"
+
+# Dates : jiff pour la logique métier (parsing dates FR en extraction) ; chrono
+# conservé uniquement comme codec timestamptz de tokio-postgres.
+jiff = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
+
+# Front SSR/hydration (Leptos 0.8 + cargo-leptos). default-features=false sur
+# chaque crate : les features ssr/hydrate fan-out depuis lj-web. wasm-bindgen
+# epingle =0.2.108 (force par js-sys 0.3.85 dans l'arbre leptos 0.8.19 ;
+# DOIT matcher le wasm-bindgen-cli pilote par cargo-leptos, sinon hydration
+# cassee au runtime — confirmer le pin du cli au premier `cargo leptos build`).
+leptos = { version = "0.8.19", default-features = false }
+leptos_router = { version = "0.8.13", default-features = false }
+leptos_meta = { version = "0.8.6", default-features = false }
+leptos_axum = { version = "0.8.9", default-features = false }
+leptos-fetch = { version = "0.4.10", default-features = false }
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "0.4.58"
+js-sys = "0.3.85"
+console_error_panic_hook = "0.1.7"
+web-sys = "0.3.85"
+# Rend `Send` les futures de fetch cote wasm (single-thread) : les Resource
+# SSR-primees de la page decision exigent `Fut: Send`, mais reqwest/fetch et le
+# shim auth (`JsFuture`) sont `!Send` sur wasm. Meme version que leptos.
+send_wrapper = { version = "0.6", features = ["futures"] }
+
+# Workspace-internal crates
+lj-core = { path = "packages/lj-core" }
+lj-extract = { path = "packages/lj-extract" }
+lj-telemetry = { path = "packages/lj-telemetry" }
+lj-store = { path = "packages/lj-store" }
+lj-sources = { path = "packages/lj-sources" }
+lj-llm = { path = "packages/lj-llm" }
+lj-dtos = { path = "packages/lj-dtos" }
+lj-api = { path = "packages/lj-api" }
+lj-web = { path = "packages/lj-web" }
+
+# Serveur TLS in-process (ADR 0061 §3) : axum-server termine le TLS avec le cert
+# Cloudflare Origin CA statique. rustls via aws-lc-rs (déjà tiré par reqwest →
+# un seul provider crypto dans le binaire).
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+
+# Projet cargo-leptos multi-crate (ADR 0061) : le binaire de déploiement
+# `lj-server` (API + MCP + SSR + assets + TLS) sert tout ; `lj-web` reste la lib
+# (cdylib wasm `hydrate` + rlib `ssr`). Les chemins style/assets sont relatifs à
+# la racine du workspace.
+[[workspace.metadata.leptos]]
+name = "librejustice"
+bin-package = "lj-server"
+lib-package = "lj-web"
+output-name = "lj-web"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+tailwind-input-file = "packages/lj-web/style/main.css"
+assets-dir = "packages/lj-web/public"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+lib-features = ["hydrate"]
+lib-default-features = false
+# Noms de bundle content-hashés (`lj-web.<sha256>.wasm`…) → `/pkg` servi
+# `immutable` un an (cf. lj-server) : un nouveau build = de nouveaux noms, le
+# navigateur ne peut jamais hydrater un wasm périmé face au HTML SSR neuf.
+# `hash.txt` (écrit à côté du binaire) doit suivre le binaire au déploiement,
+# et `LEPTOS_HASH_FILES=true` être posé au runtime (compose).
+hash-files = true
+js-minify = true
+# Profil cargo dédié au bundle wasm (lib hydrate) : optimise la TAILLE sans
+# toucher `[profile.release]` que partage le binaire serveur (qui vise la vitesse).
+# Tout le gain vient du profil (opt-level=z + LTO fat + strip) : 931 -> 732 Ko
+# brotli (-21 %). `wasm-opt -Oz` par-dessus ne grattait plus que ~3 Ko (LLVM a
+# déjà tout fait), d'où pas de `wasm-opt-features` : pas une dépendance pour 0,4 %.
+lib-profile-release = "wasm-release"
+
+# Profil du binaire serveur (lj-server) + ingest/bench. `codegen-units = 16` +
+# `lto = false` : priorité à l'itération sur l'hôte de build, qui builde ET
+# déploie sur 2 cœurs (le thin-LTO est partiellement sériel → cher ici). Coût
+# runtime mesuré sur les hot-ops, vs `lto = "thin"` : highlight de recherche
+# +9 % (+247 µs), parse décision +4,6 % (+122 µs) — du sub-ms, noyé dans le
+# DB/ANN/rerank (dizaines de ms) d'une requête, donc invisible end-to-end ; en
+# échange le relink passe de ~secondes-à-minutes à quasi instantané. La TAILLE
+# du bundle wasm reste optimisée par `wasm-release` ci-dessous (lto=fat) qui
+# surcharge ce profil.
+[profile.release]
+lto = false
+codegen-units = 16
+
+# opt-0 sur nos deux crates serveur les plus lourds à recompiler (lj-web SSR
+# 12,7k LOC + lj-api 11,7k LOC). Un changement en amont de lj-web (lib métier)
+# force le recodegen release de cette clôture ; en opt-3 c'est ~4 min, en opt-0
+# ~1 min (mesuré : 4m04s → 1m08s, −72 %, cf. working-note build-speed). Les 646
+# deps externes restent opt-3 (cachées, non recompilées). Le bundle wasm est
+# protégé en opt-z par l'override wasm-release.package.lj-web ci-dessous (sinon il
+# hériterait de cet opt-0). Coûts assumés : render SSR ×2,2 (page décision cachée
+# CDN 7 j → ~nul en prod), binaire serveur +24 Mo (pas téléchargé), et hot-path
+# /api/search à opt-0 (non caché CDN) — risque latence à surveiller en prod
+# (span search p50/p95 Grafana) ; revert si régression.
+[profile.release.package.lj-web]
+opt-level = 0
+[profile.release.package.lj-api]
+opt-level = 0
+
+# Profil du bundle wasm (lib hydrate), sélectionné via `lib-profile-release`
+# ci-dessus. Optimise la taille : opt-level=z + lto fat + 1 codegen-unit + strip.
+# panic=abort : wasm32 n'unwind pas de toute façon, et ça retire le code
+# d'unwinding. N'affecte QUE le wasm — le serveur reste sur `[profile.release]`.
+[profile.wasm-release]
+inherits = "release"
+opt-level = "z"
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Garde l'opt-z du bundle wasm : sans ça, l'override opt-0 de
+# `[profile.release.package.lj-web]` est hérité par wasm-release et ferait tomber
+# le wasm en opt-0 (taille). lj-api n'est pas dans le graphe wasm (hydrate sans
+# feature ssr) → pas de garde nécessaire pour lui.
+[profile.wasm-release.package.lj-web]
+opt-level = "z"
+
+# Boucle dev (`cargo leptos watch`) : le coût par save est dominé par le codegen
+# de lj-web (~6 s : expansion macros `view!` + monomorphisation Leptos) et le lien
+# de lj-server (~2,8 s : empaqueter le debuginfo dans un bin de ~5 Go). Le
+# debuginfo complet (`debug = 2`, défaut dev) pèse ~40 % du codegen lj-web (mesuré
+# A/B : 43,8 → 27,8 s en line-tables) ET alourdit le lien. `line-tables-only`
+# garde `fichier:ligne` dans les backtraces (ce qu'on veut en dev) en jetant le
+# debuginfo variables/types → ~40 % de codegen en moins sur chaque rebuild, des
+# deux côtés du watch (SSR + wasm hydrate). Pas de perte runtime (profil dev).
+[profile.dev]
+debug = "line-tables-only"

@@ -1,0 +1,20 @@
+[package]
+name = "lj-core"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# PUR : aucune dépendance d'I/O (pas de reqwest, tokio-postgres, redis, zip).
+# Les données statiques (legifrance_codes.json) sont embarquées via include_str!.
+[dependencies]
+# Taxonomie (`schema`) = noyau léger partagé front+back (ADR 0060) : définie dans
+# lj-dtos, re-exportée ici. lj-dtos est pur serde (pas d'I/O), frontière #1 ok.
+lj-dtos = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+regex = { workspace = true }
+aho-corasick = { workspace = true }
+quick-xml = { workspace = true }
+html-escape = { workspace = true }
+thiserror = { workspace = true }
+jiff = { workspace = true }

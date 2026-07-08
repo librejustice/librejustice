@@ -1,0 +1,175 @@
+# LibreJustice — politique d'accès des crawlers
+#
+# Moteur de recherche libre sur la jurisprudence française (administrative et judiciaire).
+#
+# Enforcement technique : règles WAF Cloudflare (cf. zone librejustice.fr).
+# Ce fichier expose le signal d'intention conformément à l'article 4 de la
+# directive (UE) 2019/790 sur le droit d'auteur — il est complémentaire,
+# pas substitutif. Bytespider et autres non-compliants sont bloqués au WAF.
+#
+# Politique :
+# - Search engines (Google, Bing, DuckDuckGo)        : autorisés
+# - User-initiated AI fetch (ChatGPT, Claude, etc.)  : autorisés
+# - AI search / answer engines avec citations         : autorisés
+# - AI training (collecte pour pré-entraînement)      : refusés
+# - Scrapers commerciaux SEO / brand monitoring       : refusés
+
+# Signal Content-Signals (https://contentsignals.org) — directive EU 2019/790
+User-agent: *
+Content-Signal: search=yes, ai-input=yes, ai-train=no
+Allow: /
+
+# ===========================================================================
+# AI training crawlers — DISALLOW
+# ===========================================================================
+
+User-agent: GPTBot
+Disallow: /
+
+User-agent: ClaudeBot
+Disallow: /
+
+User-agent: anthropic-ai
+Disallow: /
+
+User-agent: Google-Extended
+Disallow: /
+
+User-agent: Google-CloudVertexBot
+Disallow: /
+
+User-agent: Google-NotebookLM
+Disallow: /
+
+User-agent: Applebot-Extended
+Disallow: /
+
+User-agent: CCBot
+Disallow: /
+
+User-agent: Bytespider
+Disallow: /
+
+User-agent: TikTokSpider
+Disallow: /
+
+User-agent: Meta-ExternalAgent
+Disallow: /
+
+User-agent: FacebookBot
+Disallow: /
+
+User-agent: Amazonbot
+Disallow: /
+
+User-agent: cohere-ai
+Disallow: /
+
+User-agent: cohere-training-data-crawler
+Disallow: /
+
+User-agent: PerplexityBot
+Disallow: /
+
+User-agent: Diffbot
+Disallow: /
+
+User-agent: Omgili
+Disallow: /
+
+User-agent: Omgilibot
+Disallow: /
+
+User-agent: ImagesiftBot
+Disallow: /
+
+User-agent: Webzio-extended
+Disallow: /
+
+User-agent: AI2Bot
+Disallow: /
+
+User-agent: AI2Bot-Dolma
+Disallow: /
+
+User-agent: Timpibot
+Disallow: /
+
+User-agent: PetalBot
+Disallow: /
+
+User-agent: ICC-Crawler
+Disallow: /
+
+User-agent: Youbot
+Disallow: /
+
+User-agent: AwarioBot
+Disallow: /
+
+User-agent: AwarioSmartBot
+Disallow: /
+
+User-agent: AwarioRssBot
+Disallow: /
+
+User-agent: ChatGLM-Spider
+Disallow: /
+
+User-agent: DeepSeekBot
+Disallow: /
+
+User-agent: Crawl4AI
+Disallow: /
+
+User-agent: FirecrawlAgent
+Disallow: /
+
+User-agent: FriendlyCrawler
+Disallow: /
+
+User-agent: Channel3Bot
+Disallow: /
+
+User-agent: VelenPublicWebCrawler
+Disallow: /
+
+User-agent: DuckAssistBot
+Disallow: /
+
+# Commercial SEO / brand monitoring (lourds et inutiles)
+User-agent: SemrushBot
+Disallow: /
+
+User-agent: SemrushBot-OCOB
+Disallow: /
+
+User-agent: AhrefsBot
+Disallow: /
+
+User-agent: DataForSeoBot
+Disallow: /
+
+User-agent: MJ12bot
+Disallow: /
+
+User-agent: DotBot
+Disallow: /
+
+# ===========================================================================
+# Note : les UAs suivants sont EXPLICITEMENT AUTORISÉS et NE SONT PAS
+# bloqués au WAF — il ne faut pas les ajouter à la liste Disallow ci-dessus :
+#
+#   OAI-SearchBot     (OpenAI search index, citations dans ChatGPT Search)
+#   ChatGPT-User      (fetch user-initiated dans ChatGPT)
+#   Claude-User       (fetch user-initiated dans Claude.ai)
+#   Claude-SearchBot  (Claude web search)
+#   Claude-Web        (Claude live fetch)
+#   Perplexity-User   (fetch user-initiated dans Perplexity)
+#   Googlebot         (index Google Search)
+#   Bingbot           (index Bing)
+#   DuckDuckBot       (index DuckDuckGo)
+#   Slackbot / Twitterbot / facebookexternalhit / Discordbot : link previews
+# ===========================================================================
+
+Sitemap: https://librejustice.fr/sitemap.xml

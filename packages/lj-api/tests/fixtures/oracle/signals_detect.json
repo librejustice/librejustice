@@ -1,0 +1,95 @@
+{
+  "_provenance": "généré depuis l'oracle Python (apps/api) — fonctions pures de search.py / signals.py / rerank.py. NE PAS éditer à la main : régénérer via le script de gen (cf. docs/working-notes parité). Asservi par les tests Rust de lj-api.",
+  "cases": [
+    {
+      "query": "expulsion locative",
+      "article": false,
+      "docket": false,
+      "date": false
+    },
+    {
+      "query": "article L 531-1 du CESEDA",
+      "article": true,
+      "docket": false,
+      "date": false
+    },
+    {
+      "query": "R. 222-1 du code de justice administrative",
+      "article": true,
+      "docket": false,
+      "date": false
+    },
+    {
+      "query": "D.521-2",
+      "article": true,
+      "docket": false,
+      "date": false
+    },
+    {
+      "query": "L761-1",
+      "article": true,
+      "docket": false,
+      "date": false
+    },
+    {
+      "query": "pourvoi 07-11.687",
+      "article": false,
+      "docket": true,
+      "date": false
+    },
+    {
+      "query": "arrêt 19-23664",
+      "article": false,
+      "docket": true,
+      "date": false
+    },
+    {
+      "query": "RG 23/01001",
+      "article": false,
+      "docket": true,
+      "date": false
+    },
+    {
+      "query": "requête 2202166",
+      "article": false,
+      "docket": true,
+      "date": false
+    },
+    {
+      "query": "12345",
+      "article": false,
+      "docket": false,
+      "date": false
+    },
+    {
+      "query": "décision du 13 février 2024",
+      "article": false,
+      "docket": false,
+      "date": true
+    },
+    {
+      "query": "arrêt de février 2024",
+      "article": false,
+      "docket": false,
+      "date": true
+    },
+    {
+      "query": "2024-02-13",
+      "article": false,
+      "docket": false,
+      "date": true
+    },
+    {
+      "query": "Cour de cassation 22 novembre 2000",
+      "article": false,
+      "docket": false,
+      "date": true
+    },
+    {
+      "query": "simple requête sans rien",
+      "article": false,
+      "docket": false,
+      "date": false
+    }
+  ]
+}

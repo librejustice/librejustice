@@ -1,0 +1,4 @@
+# Repo public : pas de git-LFS (binaires légers commités inline).
+* text=auto eol=lf
+*.png binary
+*.ttf binary

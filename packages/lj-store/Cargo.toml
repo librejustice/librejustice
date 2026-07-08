@@ -1,0 +1,22 @@
+[package]
+name = "lj-store"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+# I/O Postgres : tokio-postgres + deadpool (PAS sqlx). pgvector via crate
+# pgvector (feature postgres). Types d'extension (vector, rabitq8) et opérateurs
+# @@@ / <=> en SQL brut. Runner de migrations (44 .sql sous migrations/).
+[dependencies]
+lj-core = { workspace = true }
+tokio = { workspace = true }
+tokio-postgres = { workspace = true }
+deadpool-postgres = { workspace = true }
+pgvector = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+chrono = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+# Ancrage RGPD du gold : checksum xxh3-64 de decisions.full_text au load
+# (citation_gold_anchor, ADR 0144 §6).

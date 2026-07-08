@@ -1,0 +1,18 @@
+.git/
+.direnv/
+node_modules/
+**/node_modules/
+docs/working-notes/
+*.log
+
+# Contexte de build = racine du repo, mais l'image (infra/Dockerfile.app, ADR 0065)
+# ne COPY que les artefacts de `mise run build-app` : les 2 binaires release + les
+# assets SSR. On exclut le reste de target/ (debug ~19G, front, deps release) pour
+# ne pas tar 22G de contexte à chaque build d'image.
+target/*
+!target/release
+target/release/*
+!target/release/lj-server
+!target/release/lj-ingest
+!target/release/hash.txt
+!target/site

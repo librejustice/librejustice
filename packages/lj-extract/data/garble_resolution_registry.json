@@ -1,0 +1,1707 @@
+{
+ "source": "lj-ingest tier-b-mine (Mistral contraint + oracle Légifrance) + audit Opus/subagents",
+ "generated": "2026-06-11",
+ "count": 340,
+ "resolutions": [
+  {
+   "instrument": "Circulaire du ministère de l'enseignement supérieur",
+   "article": "L. 422-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction a justifié sa décision",
+   "article": "D. 12",
+   "code": "Code de procédure pénale"
+  },
+  {
+   "instrument": "Instruction de la demande",
+   "article": "L. 911-4",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction de la demande",
+   "article": "R. 431-12",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de la demande",
+   "article": "R. 431-20",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de la demande",
+   "article": "R. 441-13",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Instruction de la demande",
+   "article": "R. 441-14",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Instruction de la demande ()",
+   "article": "R. 431-20",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de la demande d'autorisation d'exploiter sollicitée",
+   "article": "L. 312-1",
+   "code": "Code rural et de la pêche maritime"
+  },
+  {
+   "instrument": "Instruction de la demande de permis présentée",
+   "article": "R. 111-2",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Instruction de leurs demandes de réexamen",
+   "article": "L. 552-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande",
+   "article": "L. 424-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande",
+   "article": "L. 435-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande",
+   "article": "R. 431-12",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande",
+   "article": "R. 431-20",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande",
+   "article": "R. 431-5",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande d'asile",
+   "article": "L. 431-2",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande de prêt",
+   "article": "L. 231-10",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Instruction de sa demande l'autorisant à travailler",
+   "article": "L. 424-11",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande lui",
+   "article": "R. 424-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande mentionnée",
+   "article": "L. 424-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande mentionnée",
+   "article": "L. 424-9",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa demande soit",
+   "article": "R. 431-15",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction de sa requête",
+   "article": "R. 532-1",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction de ses requêtes",
+   "article": "R. 532-1",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction de son dossier",
+   "article": "L. 435-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction des demandes et du service du revenu de solidarité active",
+   "article": "L. 262-11",
+   "code": "Code de l'action sociale et des familles"
+  },
+  {
+   "instrument": "Instruction du dossier",
+   "article": "L. 561-5",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Instruction du dossier",
+   "article": "R. 351-4",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction du dossier",
+   "article": "R. 441-14",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Instruction du projet",
+   "article": "R. 111-21",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Instruction du sinistre",
+   "article": "R. 441-14",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Instruction et aux formalités liées à l'audience",
+   "article": "R. 611-11",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction et aux formalités liées à l'audience",
+   "article": "R. 613-1",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction et aux formalités liées à l'audience",
+   "article": "R. 613-2",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction et aux formalités liées à l'audience",
+   "article": "R. 711-3",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction et de la possibilité de venir consulter le dossier",
+   "article": "R. 441-10",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Instruction et eu égard à ce",
+   "article": "R. 5122-3",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Instruction et il",
+   "article": "L. 2121-9",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Instruction et notamment de l'étude d'impact produite",
+   "article": "L. 214-18",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Instruction et notamment de l'étude d'impact produite",
+   "article": "R. 214-109",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Instruction et notamment de la",
+   "article": "L. 521-3",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Instruction et un droit d'accès",
+   "article": "R. 441-14",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Instruction et à accorder la reconnaissance d'un accident du travail mortel avec les conséquences de droit",
+   "article": "R. 441-14",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Instruction à sa disposition",
+   "article": "L. 423-22",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre 1er consacré à l'aménagement et à la protection de la montagne",
+   "article": "L. 122-5",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre 1er de la partie législative concernant",
+   "article": "L. 310-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre 1er de la partie législative du code des assurances concernant la prescription des actions dérivant du contrat d'assurance",
+   "article": "R. 112-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre 1er de la quatrième partie du code de la santé publique",
+   "article": "L. 245-2",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre 1er nouveau du code rural",
+   "article": "L. 143-12",
+   "code": "Code rural et de la pêche maritime"
+  },
+  {
+   "instrument": "Livre 6",
+   "article": "L. 631-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre 6 de la partie législative",
+   "article": "L. 661-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre 6 de la partie législative",
+   "article": "L. 661-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre 9",
+   "article": "L. 921-4",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre I concernant la prescription des actions dérivant du contrat d'assurance",
+   "article": "R. 321-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 113-8",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 133-3",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 211-12",
+   "code": "Code du tourisme"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 211-13",
+   "code": "Code du tourisme"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 213-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 221-29",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 225-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 251-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 252-1",
+   "code": "Code de la sécurité intérieure"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 300-1",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 311-2",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 3213-1",
+   "code": "Code de la santé publique"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 611-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "L. 752-4",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "R. 221-13",
+   "code": "Code de la route"
+  },
+  {
+   "instrument": "Livre II",
+   "article": "R. 571-44",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre II 'formation et exécution des contrats' de la partie législative nouvelle du code de la consommation",
+   "article": "L. 221-1",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre II 'formation et exécution des contrats' de la partie législative nouvelle du code de la consommation",
+   "article": "L. 221-29",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre II de ce code",
+   "article": "L. 221-1",
+   "code": "Code rural et de la pêche maritime"
+  },
+  {
+   "instrument": "Livre II de ce même code",
+   "article": "L. 1132-1",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre II de ce même code",
+   "article": "L. 251-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre II de ce même code",
+   "article": "L. 251-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre II de ce même code",
+   "article": "L. 422-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre II de la deuxième partie et du titre III du livre II de la troisième partie",
+   "article": "L. 1511-3",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre II de la deuxième partie et du titre III du livre II de la troisième partie",
+   "article": "L. 1511-7",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre II de la partie législative du code de la consommation",
+   "article": "L. 221-3",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre II de la partie réglementaire du code de l'environnement",
+   "article": "R. 211-127",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre II de la première partie du code du travail",
+   "article": "L. 1211-1",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre II de la troisième partie de la partie législative du présent code",
+   "article": "R. 3211-7",
+   "code": "Code de la santé publique"
+  },
+  {
+   "instrument": "Livre II de sa troisième partie législative",
+   "article": "L. 3213-1",
+   "code": "Code de la santé publique"
+  },
+  {
+   "instrument": "Livre II de sa troisième partie législative",
+   "article": "L. 3213-2",
+   "code": "Code de la santé publique"
+  },
+  {
+   "instrument": "Livre II du CESEDA et non de celles du livre VI de ce code",
+   "article": "L. 200-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre II du même code",
+   "article": "L. 251-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre II du présent code",
+   "article": "L. 133-3",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II du présent code",
+   "article": "L. 433-2",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre II et aux articles r",
+   "article": "L. 211-1",
+   "code": "Code de l'expropriation pour cause d'utilité publique"
+  },
+  {
+   "instrument": "Livre II et aux articles r",
+   "article": "L. 251-2",
+   "code": "Code de l'expropriation pour cause d'utilité publique"
+  },
+  {
+   "instrument": "Livre II et faisant l'objet d'une évaluation environnementale",
+   "article": "R. 571-44",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre II relatif à la formation et l'exécution des contrats",
+   "article": "L. 221-3",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre II relatif à la motivation des actes administratifs",
+   "article": "L. 211-1",
+   "code": "Code des relations entre le public et l'administration"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "D. 254-6",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 121-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 136-2",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 160-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 214-1",
+   "code": "Code de la propriété intellectuelle"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 214-5",
+   "code": "Code de la propriété intellectuelle"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 312-2",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 313-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 313-8",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 711-6",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "L. 831-1",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre III",
+   "article": "R. 522-8-1",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre III (articles L",
+   "article": "L. 311-1",
+   "code": "Code monétaire et financier"
+  },
+  {
+   "instrument": "Livre III (relatives",
+   "article": "L. 631-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre III de ce code",
+   "article": "L. 311-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre III de la partie réglementaire",
+   "article": "L. 2",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre III de la partie réglementaire",
+   "article": "L. 343-6",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre III de la première partie du code de la santé publique l'énonciation des dispositions particulières",
+   "article": "L. 211-11",
+   "code": "Code rural et de la pêche maritime"
+  },
+  {
+   "instrument": "Livre III de la sixième partie du code du travail, à l'exception de son chapitre V",
+   "article": "L. 2",
+   "code": "Code général de la fonction publique"
+  },
+  {
+   "instrument": "Livre III du même code",
+   "article": "L. 314-14",
+   "code": "Code monétaire et financier"
+  },
+  {
+   "instrument": "Livre III du présent code",
+   "article": "L. 522-1",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre III du titre IV du code monétaire et financier",
+   "article": "L. 221-2",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre III du transfert des contrats de travail des salariés",
+   "article": "L. 3311-1",
+   "code": "Code des transports"
+  },
+  {
+   "instrument": "Livre III dudit code",
+   "article": "L. 221-2",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre III dudit code",
+   "article": "L. 312-3",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre III dudit code",
+   "article": "R. 522-8-1",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre III et agréés à cet effet",
+   "article": "L. 133-1",
+   "code": "Code de la propriété intellectuelle"
+  },
+  {
+   "instrument": "Livre III lutte contre alcoolisme du titre III lutte contre les maladies et dépendances du code de la santé publique",
+   "article": "L. 3323-2",
+   "code": "Code de la santé publique"
+  },
+  {
+   "instrument": "Livre III sous réserve des dispositions de l'article L",
+   "article": "L. 242-1",
+   "code": "Code de l'expropriation pour cause d'utilité publique"
+  },
+  {
+   "instrument": "Livre III sous réserve des dispositions de l'article L",
+   "article": "L. 242-7",
+   "code": "Code de l'expropriation pour cause d'utilité publique"
+  },
+  {
+   "instrument": "Livre III, à l'exception des articles r",
+   "article": "L. 631-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre III, à l'exception des dispositions prévues",
+   "article": "L. 631-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 233-5",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 313-13",
+   "code": "Code de l'action sociale et des familles"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 313-25",
+   "code": "Code de l'action sociale et des familles"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 410-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 420-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 424-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 441-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 452-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 461-3",
+   "code": "Code rural et de la pêche maritime"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 511-2",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 511-7",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 5131-5",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 5131-6",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 5421-1",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "L. 6",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre IV",
+   "article": "R. 422-11",
+   "code": "Code de l'action sociale et des familles"
+  },
+  {
+   "instrument": "Livre IV de ce code",
+   "article": "L. 425-10",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre IV de ce dernier",
+   "article": "L. 234-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IV de la 5ème partie législative du code du travail",
+   "article": "L. 5422-20",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre IV de la deuxième partie du code de l'éducation",
+   "article": "L. 441-1",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre IV de la deuxième partie du code de l'éducation",
+   "article": "L. 441-4",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre IV de la partie législative du code",
+   "article": "L. 421-1",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre IV de la partie législative du code de commerce",
+   "article": "L. 653-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV de la partie législative du code de commerce",
+   "article": "L. 653-11",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV de la partie réglementaire du code de commerce",
+   "article": "L. 420-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV de la partie réglementaire du code de commerce",
+   "article": "L. 420-7",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV de la partie réglementaire du code de la propriété intellectuelle",
+   "article": "R. 411-20",
+   "code": "Code de la propriété intellectuelle"
+  },
+  {
+   "instrument": "Livre IV de la sécurité sociale intitulé 'déclarations et formalités'",
+   "article": "R. 441-6",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre IV de la sécurité sociale intitulé 'déclarations et formalités'",
+   "article": "R. 441-7",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre IV du même code",
+   "article": "L. 2411-1",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre IV du même code",
+   "article": "L. 2411-2",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre IV du même code",
+   "article": "L. 412-2",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre IV du même code",
+   "article": "L. 423-1",
+   "code": "Code de l'action sociale et des familles"
+  },
+  {
+   "instrument": "Livre IV du même code",
+   "article": "L. 442-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV et les règlements pris",
+   "article": "L. 421-1",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre IV et les règlements pris",
+   "article": "L. 421-5",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre IV relatif à la liberté des prix",
+   "article": "D. 442-3",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IV relatif à la liberté des prix",
+   "article": "L. 442-4",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre IX",
+   "article": "L. 921-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IX",
+   "article": "L. 921-4",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre IX",
+   "article": "L. 931-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IX de ce code",
+   "article": "L. 921-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IX de ce code de prévoir des dispositions dérogatoires à celles du code de justice administrative régissant la compétence territoriale",
+   "article": "R. 922-2",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IX de la partie réglementaire du code de l'entrée et du séjour des étrangers et du droit d'asile, à",
+   "article": "R. 922-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IX du même code",
+   "article": "L. 921-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre IX du même code relatif à l'exécution des décisions juridictionnelles",
+   "article": "L. 911-7",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre Ier",
+   "article": "L. 111-1",
+   "code": "Code de la consommation"
+  },
+  {
+   "instrument": "Livre Ier",
+   "article": "L. 123-1",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre Ier",
+   "article": "L. 214-6",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre Ier",
+   "article": "L. 411-2",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre Ier",
+   "article": "L. 441-6",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre Ier",
+   "article": "R. 433-17",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre Ier ()",
+   "article": "L. 214-6",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre Ier concernant la prescription des actions dérivant du contrat d'assurance",
+   "article": "R. 321-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre Ier de la deuxième partie",
+   "article": "L. 2122-4",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre Ier de la deuxième partie",
+   "article": "L. 5211-1",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre Ier de la deuxième partie",
+   "article": "L. 5211-2",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre Ier de la deuxième partie et du chapitre III du titre III du livre Ier de la troisième partie du code de la commande publique s'appliquent aux contrats conclus à compter du 16 mars 2013",
+   "article": "R. 3114-4",
+   "code": "Code de la commande publique"
+  },
+  {
+   "instrument": "Livre Ier de la partie législative de ce code concernant la prescription des actions dérivant du contrat d'assurances",
+   "article": "R. 321-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre Ier de la partie législative du code des assurances concernant la prescription des actions dérivant du contrat d'assurance",
+   "article": "R. 321-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre Ier de la partie législative du présent code",
+   "article": "R. 313-11",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Livre Ier de la partie législative du présent code concernant la règle proportionnelle",
+   "article": "R. 321-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre Ier du même code",
+   "article": "L. 142-1",
+   "code": "Code de l'action sociale et des familles"
+  },
+  {
+   "instrument": "Livre Ier du même code",
+   "article": "L. 142-8",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre Ier du même code",
+   "article": "R. 123-9",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre Ier du présent code",
+   "article": "L. 512-1",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre Ier et du livre III du code des relations entre le public et l'administration",
+   "article": "L. 125-10",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre Ier et du livre III du code des relations entre le public et l'administration",
+   "article": "L. 125-11",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "L. 181-1",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "L. 511-3",
+   "code": "Code de la propriété intellectuelle"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "L. 556-3",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "R. 222-14",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "R. 222-15",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "R. 611-23",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "R. 621-13",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre V",
+   "article": "R. 751-8",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre V de ce code",
+   "article": "L. 522-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre V de ce code",
+   "article": "L. 522-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre V de ce code",
+   "article": "L. 531-2",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre V du présent code",
+   "article": "L. 143-3",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre V du présent code",
+   "article": "L. 184-1",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre V fixent les règles applicables aux installations classées ayant un impact sur le milieu aquatique",
+   "article": "L. 211-3",
+   "code": "Code de l'environnement"
+  },
+  {
+   "instrument": "Livre VI",
+   "article": "L. 614-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI",
+   "article": "L. 622-22",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI",
+   "article": "L. 631-13",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre VI",
+   "article": "L. 631-15",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre VI",
+   "article": "L. 631-16",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre VI",
+   "article": "L. 714-5",
+   "code": "Code général de la fonction publique"
+  },
+  {
+   "instrument": "Livre VI de ce code",
+   "article": "L. 110-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI de ce code relatif aux mesures d'éloignement",
+   "article": "L. 542-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI de ce code relatif aux mesures d'éloignement",
+   "article": "L. 542-5",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI de code de commerce",
+   "article": "R. 662-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative de ce code",
+   "article": "L. 661-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative de ce code",
+   "article": "L. 661-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du code",
+   "article": "L. 661-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du code",
+   "article": "L. 661-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du code de commerce",
+   "article": "L. 661-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du code de commerce",
+   "article": "L. 661-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du même code",
+   "article": "L. 661-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du même code",
+   "article": "L. 661-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du présent code",
+   "article": "L. 661-1",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du présent code",
+   "article": "L. 661-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la partie législative du présent code",
+   "article": "R. 661-6",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI de la quatrième partie",
+   "article": "L. 3241-1",
+   "code": "Code du travail"
+  },
+  {
+   "instrument": "Livre VI du même code",
+   "article": "L. 610-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI du même code",
+   "article": "L. 611-1",
+   "code": "Code de la sécurité intérieure"
+  },
+  {
+   "instrument": "Livre VI du même code",
+   "article": "L. 614-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI du même code",
+   "article": "L. 622-13",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI du même code",
+   "article": "L. 631-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI du même code",
+   "article": "L. 631-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI du même code",
+   "article": "R. 621-1",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre VI du nouveau code de commerce",
+   "article": "L. 622-13",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Livre VI et aux articles L",
+   "article": "L. 214-1",
+   "code": "Code général de la fonction publique"
+  },
+  {
+   "instrument": "Livre VI et aux articles L",
+   "article": "L. 215-1",
+   "code": "Code général de la fonction publique"
+  },
+  {
+   "instrument": "Livre VI et aux articles L",
+   "article": "L. 422-1",
+   "code": "Code général de la fonction publique"
+  },
+  {
+   "instrument": "Livre VI et aux articles L",
+   "article": "L. 621-1",
+   "code": "Code général de la fonction publique"
+  },
+  {
+   "instrument": "Livre VI et des articles L",
+   "article": "L. 613-6",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VI à l'exception de celles de l'article L",
+   "article": "L. 613-6",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII",
+   "article": "L. 621-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre VII",
+   "article": "L. 731-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII",
+   "article": "L. 741-4",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII",
+   "article": "R. 711-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre VII de ce code",
+   "article": "L. 813-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII de la partie réglementaire du code de justice administrative",
+   "article": "L. 3",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre VII de la partie réglementaire du code de justice administrative",
+   "article": "L. 731-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII de la partie réglementaire du code de justice administrative",
+   "article": "L. 752-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII de la partie réglementaire du code de justice administrative",
+   "article": "L. 753-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII) à 18 heures 54",
+   "article": "L. 740-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles L",
+   "article": "L. 611-1",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles L",
+   "article": "L. 611-2",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles L",
+   "article": "L. 611-8",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles L",
+   "article": "L. 612-1",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles L",
+   "article": "L. 612-7",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles L",
+   "article": "L. 613-1",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles L",
+   "article": "L. 613-2",
+   "code": "Code de l'éducation"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles r",
+   "article": "R. 741-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles r",
+   "article": "R. 741-2",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles r",
+   "article": "R. 741-3",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles r",
+   "article": "R. 742-2",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VII, à l'exception des articles r",
+   "article": "R. 751-8",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre VIII",
+   "article": "D. 821-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre VIII du même code",
+   "article": "L. 2",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre VIII du même code",
+   "article": "L. 511-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre VIII du même code",
+   "article": "L. 6",
+   "code": "Code de justice administrative"
+  },
+  {
+   "instrument": "Livre VIII du présent code",
+   "article": "L. 511-1",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre VIII du présent code",
+   "article": "L. 831-1",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre VIII du présent code, à l'article L",
+   "article": "L. 511-1",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Livre VIII dudit code",
+   "article": "L. 825-1",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Livre VIII traite des congés maladie",
+   "article": "L. 514-4",
+   "code": "Code général de la fonction publique"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 10",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 16",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 192",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 208",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 277",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 47",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 50",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 57",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 62",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 69",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 73",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 92",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscale",
+   "article": "L. 97",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédure fiscales les sommes",
+   "article": "L. 69",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 12",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 143",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 175",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 193",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 208",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 227",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 229",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 277",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 47",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 57",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 61",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 62",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 64",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 69",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 73",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 81",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "L. 83",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "R. 193",
+   "code": "Code de procédure pénale"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "R. 194",
+   "code": "Code de procédure pénale"
+  },
+  {
+   "instrument": "Livre de procédures fiscales",
+   "article": "R. 57-1",
+   "code": "Code de procédure pénale"
+  },
+  {
+   "instrument": "Livre de procédures fiscales (qui",
+   "article": "L. 269",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales auprès des onze principaux fournisseurs",
+   "article": "L. 81",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales auprès des onze principaux fournisseurs",
+   "article": "L. 85",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales de contrôler sur pièces les déclarations d'un contribuable sans être obligée de faire précéder ce contrôle de certaines garanties prévues à l'article L",
+   "article": "L. 10",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales et de mettre à la charge de l'Etat une somme de 2 000 euros",
+   "article": "L. 277",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de procédures fiscales, à compter du jour de chaque perception de taxe jusqu'à la date de remboursement",
+   "article": "L. 208",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre de rocédures fiscales",
+   "article": "L. 64",
+   "code": "Livre des procédures fiscales"
+  },
+  {
+   "instrument": "Livre premier",
+   "article": "L. 121-1",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Livre premier",
+   "article": "L. 2122-22",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre premier de la deuxième partie",
+   "article": "L. 2122-4",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre premier de la deuxième partie",
+   "article": "L. 5211-2",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre premier de la deuxième partie du code général des collectivités territoriales",
+   "article": "L. 2131-1",
+   "code": "Code général des collectivités territoriales"
+  },
+  {
+   "instrument": "Livre premier de la partie législative du code des assurances concernant la prescription des actions dérivant du contrat d'assurance",
+   "article": "R. 321-1",
+   "code": "Code des assurances"
+  },
+  {
+   "instrument": "Livre premier et des titres I",
+   "article": "L. 154-4",
+   "code": "Code des pensions militaires d'invalidité et des victimes de guerre"
+  },
+  {
+   "instrument": "Nouveau",
+   "article": "R. 16",
+   "code": "Code de procédure pénale"
+  },
+  {
+   "instrument": "Nouveau bail et de surcroît",
+   "article": "L. 145-4",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Nouveau bail six mois après la demande",
+   "article": "L. 145-9",
+   "code": "Code de commerce"
+  },
+  {
+   "instrument": "Nouveau bail y compris la prorogation de plein droit prévue à l'article L",
+   "article": "L. 416-3",
+   "code": "Code rural et de la pêche maritime"
+  },
+  {
+   "instrument": "Nouveau constructeur",
+   "article": "L. 231-6",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Nouveau dernier alinéa du code de l'action sociale et des familles et des articles L",
+   "article": "L. 314-2",
+   "code": "Code de l'action sociale et des familles"
+  },
+  {
+   "instrument": "Nouveau délai de prescription",
+   "article": "L. 244-2",
+   "code": "Code de la sécurité sociale"
+  },
+  {
+   "instrument": "Nouveau logement",
+   "article": "L. 441-1",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Nouveau loyer destiné à couvrir leurs frais de réinstallation",
+   "article": "L. 521-3-1",
+   "code": "Code de la construction et de l'habitation"
+  },
+  {
+   "instrument": "Nouveau motif de fait tiré de ce",
+   "article": "L. 423-7",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Nouveau parcellaire",
+   "article": "L. 121-14",
+   "code": "Code rural et de la pêche maritime"
+  },
+  {
+   "instrument": "Nouveau plan local d'urbanisme de riantec",
+   "article": "L. 153-11",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Nouveau plan local d'urbanisme de riantec",
+   "article": "L. 424-1",
+   "code": "Code de l'urbanisme"
+  },
+  {
+   "instrument": "Nouveau régime de refus et de cessation des conditions matérielles d'accueil",
+   "article": "D. 551-19",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Nouveau régime de refus et de cessation des conditions matérielles d'accueil",
+   "article": "D. 551-20",
+   "code": "Code de l'entrée et du séjour des étrangers et du droit d'asile"
+  },
+  {
+   "instrument": "Nouveau veuvage",
+   "article": "L. 46",
+   "code": "Code des pensions civiles et militaires de retraite"
+  }
+ ]
+}

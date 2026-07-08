@@ -1,0 +1,38 @@
+//! Composants de recherche : port de `apps/web/src/components/search/*`.
+
+pub mod active_filters;
+pub mod compact_search;
+pub mod date_range_picker;
+pub mod facet_widgets;
+pub mod filter_bar;
+pub mod filter_dropdown;
+pub mod hero_search;
+pub mod legal_instrument_filter;
+pub mod pagination;
+pub mod result_card;
+pub mod result_empty;
+pub mod result_error;
+pub mod result_list;
+pub mod result_skeleton;
+pub mod results_rail;
+pub mod search_submit;
+pub mod sort_select;
+pub mod syntax_hint;
+pub mod text_results;
+
+pub use active_filters::ActiveFilterChips;
+pub use compact_search::CompactSearch;
+pub use date_range_picker::DateRangePicker;
+pub use filter_bar::DecisionsFilterBar;
+pub use hero_search::HeroSearch;
+pub use pagination::Pagination;
+pub use result_card::ResultCard;
+pub use result_empty::ResultEmpty;
+pub use result_error::ResultError;
+pub use result_list::ResultList;
+pub use result_skeleton::ResultSkeleton;
+pub use results_rail::SearchRail;
+pub use search_submit::SearchSubmit;
+pub use sort_select::SortSelect;
+pub use syntax_hint::SyntaxHint;
+pub use text_results::TextesView;

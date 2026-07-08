@@ -1,0 +1,335 @@
+[settings]
+experimental = true
+
+[env]
+_.file = [".env", ".env.local"]
+
+# Stack applicative pure Rust : cargo (toolchain pinned via rust-toolchain.toml
+# + rustup). Le reste est de la tooling ops/dev, pas du code applicatif :
+#   node = npx (add-mcp / skills, cf. AGENTS.md) + bw (Bitwarden CLI, bootstrap).
+#   uv   = installe podman-compose 1.5.0 (le `podman compose` intégré ne gère pas
+#          `--profile`, requis par `deploy`) — cf. scripts/bootstrap-server.sh.
+#   prek = hooks pre-commit ; usage = parsing des flags de task ; hurl = smoke HTTP.
+[tools]
+node = "24"
+uv = "latest"
+prek = "latest"
+usage = "latest"
+hurl = "latest"
+
+[hooks]
+postinstall = "prek install --prepare-hooks"
+
+[tasks.lint]
+description = "Linters Rust (rustfmt --check + clippy -D warnings)"
+run = """
+cargo fmt --all --check
+cargo clippy --workspace --all-targets -- -D warnings
+"""
+
+[tasks.test-only]
+description = "Tous les tests du workspace SANS le lint (cargo test, sans DB) : query/RRF/signals/rerank, extraction (oracle_parity), chunking, legal-refs, DTOs, SSR SEO."
+run = "cargo test --workspace"
+
+[tasks.test]
+description = "Lint Rust + tous les tests du workspace"
+depends = ["lint"]
+run = "cargo test --workspace"
+
+# Une UNIQUE note Bitwarden `librejustice` regroupe tous les secrets serveur :
+# .env (racine repo) + cert/clé Cloudflare Origin (state dir, hors-repo).
+# `scripts/secrets.sh` assemble (push) / re-scinde (pull) par sentinelles.
+# Aucun token CF requis pour le TLS (cert statique, valide ~2041).
+[tasks.secrets-pull]
+description = "Reconstitue .env + cert/clé Origin depuis l'unique note Bitwarden."
+run = 'BW_SESSION="$(bw unlock --raw)" ./scripts/secrets.sh pull'
+
+[tasks.secrets-push]
+description = "Pousse .env + cert/clé Origin dans l'unique note Bitwarden."
+run = 'BW_SESSION="$(bw unlock --raw)" ./scripts/secrets.sh push'
+
+[tasks.ensure-pgdata]
+description = "Aligne le propriétaire du bind-mount pgdata sur l'uid postgres (999) mappé en rootless podman."
+run = """
+mkdir -p "$LIBREJUSTICE_STATE_DIR/pgdata"
+# Rootless : postgres tourne en uid 999 dans le conteneur ; le dossier hôte doit
+# appartenir au subuid mappé, sinon `mkdir /var/lib/postgresql/18` est refusé au
+# tout premier démarrage. Idempotent (no-op une fois la base initialisée).
+podman unshare chown 999:999 "$LIBREJUSTICE_STATE_DIR/pgdata"
+"""
+
+[tasks.dbs]
+description = "Infra locale (postgres) — sans cron ni app"
+depends = ["ensure-pgdata"]
+run = """
+podman compose -f infra/docker-compose.yml up -d --no-recreate postgres
+"""
+
+# Mono-process fusionné (ADR 0061) : lj-server = API + MCP + SSR Leptos + assets,
+# servi sur :3000 via cargo-leptos (build bin lj-server + wasm hydrate lj-web +
+# Tailwind, hot-reload :3001). Pas de `dbs` : on tape directement la DB de
+# `LIBREJUSTICE_DB_URL` (.env → prod distante par Tailscale), embeddings via Cloudflare
+# (`auto`). L'API Rust cache en mémoire — aucun Postgres local requis.
+[tasks.dev]
+description = "lj-server fusionné (API + MCP + SSR Leptos, :3000) via cargo-leptos watch ; DB = LIBREJUSTICE_DB_URL (.env → prod)"
+env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "dev" }
+run = "cargo leptos watch"
+
+[tasks.deploy-staging]
+env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "staging", LIBREJUSTICE_API_DB_APPLICATION_NAME = "librejustice-api-staging" }
+depends = ["ensure-pgdata"]
+run = """
+podman compose -f infra/docker-compose.yml --profile staging up -d --build --force-recreate
+"""
+
+[tasks.precompress]
+description = "Précompresse /pkg (wasm/js/css) en brotli q11 + gzip -9 ; ServeDir.precompressed_* les sert tels quels (zéro recompression par requête, cf. lj-server). À lancer après `cargo leptos build --release`."
+run = """
+pkg="${LEPTOS_SITE_ROOT:-target/site}/pkg"
+# Noms content-hashés (`hash-files = true`) : lj-web.<sha256>.{wasm,js,css}.
+for f in "$pkg"/lj-web.*.wasm "$pkg"/lj-web.*.js "$pkg"/lj-web.*.css; do
+  [ -f "$f" ] || continue
+  gzip -9 -kf "$f"
+  if command -v brotli >/dev/null 2>&1; then
+    brotli -q 11 -kf "$f"
+  else
+    python3 -c "import brotli,sys; p=sys.argv[1]; open(p+'.br','wb').write(brotli.compress(open(p,'rb').read(),quality=11))" "$f"
+  fi
+done
+"""
+
+[tasks.clean]
+description = "Récupère du disque côté user (rapide, sans sudo) : caches de compilation incrémentale Cargo (target/*/incremental) + images podman dangling. Garde les rlibs de deps → rebuild incrémental rapide derrière."
+run = """
+rm -rf target/*/incremental
+podman image prune -f
+"""
+
+# Build HÔTE des artefacts applicatifs (ADR 0065) : binaires lj-server +
+# lj-ingest + assets SSR, compilés en release sur la machine (glibc hôte), puis
+# précompressés. L'image conteneur (infra/Dockerfile.app) ne fait ensuite que COPY
+# ces artefacts → zéro compilation en conteneur, deploys incrémentaux rapides.
+# Outils en binaires pré-compilés (cargo-leptos, wasm-bindgen-cli, tailwindcss,
+# cf. scripts/bootstrap-server.sh) ; cargo/rustup hors tools mise → PATH explicite.
+[tasks.build-app]
+description = "Compile lj-server + lj-ingest + assets SSR (release, hôte) et précompresse — artefacts pour l'image fine (infra/Dockerfile.app, ADR 0065)."
+run = """
+export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
+rustup target add wasm32-unknown-unknown
+cargo leptos build --release --project librejustice
+cargo build --release --locked --bin lj-ingest
+mise run precompress
+"""
+
+# Déploiement unique du mono-serveur (ADR 0061) : le container applicatif `app`
+# (API + MCP + OAuth + SSR Leptos + assets + TLS in-process) + `cron` recréés
+# depuis le code committé. Plus de services `caddy`/`ssr` (fusionnés dans `app`).
+# Build HÔTE des artefacts (ADR 0065, via `build-app`) puis l'image ne fait que
+# COPY → `--build` est trivial. Postgres laissé tel quel (juste `up` s'il est absent).
+[tasks.deploy]
+env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "prod", LIBREJUSTICE_API_DB_APPLICATION_NAME = "librejustice-api-prod" }
+depends = ["ensure-pgdata", "build-app"]
+run = """
+podman compose -f infra/docker-compose.yml up -d --no-recreate postgres
+podman compose -f infra/docker-compose.yml --profile prod stop app cron
+# Schéma d'abord. Le `cron` (binaire `lj-ingest` neuf, seul à embarquer les
+# migrations récentes via `include_str!`) est recréé puis applique les migrations
+# en attente AVANT que le nouveau `lj-server` ne serve du trafic — sinon le serveur
+# appelle un schéma (fonctions/colonnes) pas encore créé et 500. L'app est déjà
+# stoppée ci-dessus : intercaler `migrate` n'ajoute pas de downtime.
+podman compose -f infra/docker-compose.yml --profile prod up -d --build --force-recreate --no-deps cron
+podman compose -f infra/docker-compose.yml exec -T cron lj-ingest migrate
+podman compose -f infra/docker-compose.yml --profile prod up -d --build --force-recreate --no-deps app
+# Chaque rebuild laisse une couche `<none>:<none>` orpheline (~250 MB).
+# Cf. fuzz disque 2026-05-13 : on a accumulé ~4.5 GB de dangling avant audit.
+podman image prune -f
+# Purge le CDN : le build change les hash des chunks `/assets/*.js`. Les pages
+# décision sont cachées par Cloudflare (s-maxage 7 j, cf. packages/lj-web/src/pages/decision_page.rs)
+# → sans purge leur HTML continue de pointer vers des chunks périmés (404) jusqu'à
+# expiration, et un simple reload ne suffit pas (le CDN ressert le vieux HTML).
+mise run cdn-purge
+"""
+
+# Purge le cache Cloudflare de librejustice.fr. Appelé en fin de `deploy` ; aussi
+# lançable seul en dépannage (`mise run cdn-purge`). Purge globale : les assets
+# immuables se re-peuplent à la 1re requête, le coût est un court pic origine.
+[tasks.cdn-purge]
+description = "Purge le cache CDN Cloudflare (chunks /assets après deploy)."
+run = """
+zone=$(curl -fsS "https://api.cloudflare.com/client/v4/zones?name=${LIBREJUSTICE_DOMAIN:-librejustice.fr}" \
+  -H "Authorization: Bearer $LIBREJUSTICE_CLOUDFLARE_MANAGEMENT_TOKEN" \
+  | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"][0]["id"])')
+curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/$zone/purge_cache" \
+  -H "Authorization: Bearer $LIBREJUSTICE_CLOUDFLARE_MANAGEMENT_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data '{"purge_everything":true}' \
+  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("success"), d.get("errors"); print("✓ CDN Cloudflare purgé")'
+"""
+
+[tasks.logs]
+run = "podman compose -f infra/docker-compose.yml logs -f"
+
+# Restart Postgres SANS laisser l'app avec un pool pourri. Après un restart PG,
+# le pool deadpool de l'app garde des connexions tuées (AdminShutdown) et en
+# ressert → 500 intermittents. On bounce donc l'app juste après (pool neuf).
+# Toujours passer par CETTE tâche, jamais `compose restart postgres` nu.
+# (On a écarté check=check_connection par requête : 0.07 ms × chaque requête
+# pour un événement rare ne vaut pas la taxe permanente.)
+#
+# --recreate : force-recreate au lieu d'un simple restart, pour ré-appliquer la
+# config figée à la CRÉATION du conteneur (env, image) qu'un restart ne relit
+# jamais. L'exposition tailnet de la base ne dépend plus du conteneur (proxy
+# `tailscale serve --tcp 5433`, posé hors compose — ADR 0110) → un simple restart
+# suffit dans le cas courant ; --recreate ne sert plus qu'aux changements env/image.
+[tasks.db-restart]
+description = "Restart (ou --recreate) Postgres puis bounce l'app (pool neuf — évite les 500 post-restart)."
+usage = '''
+flag "--recreate" help="force-recreate postgres (ré-applique env/image) au lieu d'un simple restart"
+'''
+run = """
+if [ "${usage_recreate:-}" = "true" ]; then
+  echo "→ recreate postgres (ré-applique env/image)"
+  podman compose -f infra/docker-compose.yml up -d --force-recreate --no-deps postgres
+else
+  podman compose -f infra/docker-compose.yml restart postgres
+fi
+for i in $(seq 1 30); do
+  podman compose -f infra/docker-compose.yml exec -T postgres pg_isready -U librejustice -d librejustice >/dev/null 2>&1 && break
+  sleep 1
+done
+podman compose -f infra/docker-compose.yml --profile prod restart app
+"""
+
+[tasks.vllm]
+description = "Lance vLLM (GPU) — écoute sur 0.0.0.0:8400 (loopback + Tailscale)"
+usage = '''
+flag "-g --gpu-memory-utilization <val>" help="Fraction GPU vLLM" default="0.75"
+flag "-m --max-model-len <val>" help="Contexte max" default="10240"
+'''
+run = """
+uvx vllm serve Qwen/Qwen3-Embedding-0.6B \
+  --runner pooling \
+  --host 0.0.0.0 \
+  --port 8400 \
+  --max-model-len "$usage_max_model_len" \
+  --gpu-memory-utilization "$usage_gpu_memory_utilization" \
+  ${LIBREJUSTICE_EMBED_API_KEY:+--api-key "$LIBREJUSTICE_EMBED_API_KEY"}
+"""
+
+[tasks.smoke]
+description = "Smoke tests HTTP sur l'API locale (sans DB)"
+run = "hurl --variable api_url=${LIBREJUSTICE_DEV_API_BASE_URL:-http://localhost:8300} tests/smoke/health.hurl --test"
+
+[tasks.smoke-staging]
+description = "Smoke tests staging complets (requiert DB + staging up)"
+run = "hurl --variable api_url=$LIBREJUSTICE_STAGING_API_BASE_URL tests/smoke/*.hurl --test"
+
+# Sync DB via réplication physique Postgres (préserve les index BM25/VectorChord).
+# Deux tâches, toujours exécutées sur la machine qui REÇOIT les données :
+#   db-pull      : incrémental (pg_rewind) — rapide, requiert WAL intact
+#   db-pull-full : plein (pg_basebackup) — secours si pg_rewind échoue
+#
+# Pour pousser local → serveur : ssh <serveur>, puis mise run db-pull[/full].
+# PG_SYNC_REMOTE=host:port — fonctionne avec Tailscale, localhost, ou toute adresse réseau.
+#
+# Pré-requis : PG_SYNC_REMOTE défini, source postgres up, version PG identique.
+
+[tasks.db-pull]
+description = "Sync DB source → local (incrémental, pg_rewind)."
+run = """
+set -eu
+PG_HOST="${LIBREJUSTICE_PG_SYNC_REMOTE%%:*}"
+PG_PORT="${LIBREJUSTICE_PG_SYNC_REMOTE##*:}"
+RUNNING_SERVICES="$(podman compose -f infra/docker-compose.yml ps --services --filter status=running | tr '\n' ' ')"
+SERVICES_TO_RESTART=""
+
+for svc in postgres app cron; do
+  case " $RUNNING_SERVICES " in
+    *" $svc "*) SERVICES_TO_RESTART="${SERVICES_TO_RESTART:+$SERVICES_TO_RESTART }$svc" ;;
+  esac
+done
+
+echo "→ stop running services among postgres/app/cron (clean shutdown requis pour pg_rewind)"
+if [ -n "$SERVICES_TO_RESTART" ]; then
+  podman compose -f infra/docker-compose.yml stop $SERVICES_TO_RESTART
+else
+  echo "  no matching running services"
+fi
+
+echo "→ pg_rewind depuis $PG_HOST:$PG_PORT"
+podman run --rm \
+  -v "$LIBREJUSTICE_STATE_DIR/pgdata:/var/lib/postgresql" \
+  --network host \
+  --user postgres \
+  librejustice/paradedb-vchord:latest \
+  pg_rewind \
+    --target-pgdata=/var/lib/postgresql/18/docker \
+    --source-server="host=$PG_HOST port=$PG_PORT user=librejustice dbname=librejustice password=$LIBREJUSTICE_PG_PASSWORD" \
+    --progress
+
+echo "→ restart previously running services"
+if [ -n "$SERVICES_TO_RESTART" ]; then
+  podman compose -f infra/docker-compose.yml start $SERVICES_TO_RESTART
+else
+  echo "  nothing to restart"
+fi
+echo "✓ DB synchronisée (incrémental). Si erreur \\"WAL not found\\" : utiliser db-pull-full."
+"""
+
+[tasks.db-pull-full]
+description = "Sync DB source → local (plein, pg_basebackup). Secours si pg_rewind échoue."
+run = """
+set -eu
+PG_HOST="${LIBREJUSTICE_PG_SYNC_REMOTE%%:*}"
+PG_PORT="${LIBREJUSTICE_PG_SYNC_REMOTE##*:}"
+RUNNING_SERVICES="$(podman compose -f infra/docker-compose.yml ps --services --filter status=running | tr '\n' ' ')"
+SERVICES_TO_RESTART=""
+
+for svc in postgres app cron; do
+  case " $RUNNING_SERVICES " in
+    *" $svc "*) SERVICES_TO_RESTART="${SERVICES_TO_RESTART:+$SERVICES_TO_RESTART }$svc" ;;
+  esac
+done
+
+echo "→ stop running services among postgres/app/cron"
+if [ -n "$SERVICES_TO_RESTART" ]; then
+  podman compose -f infra/docker-compose.yml stop $SERVICES_TO_RESTART
+else
+  echo "  no matching running services"
+fi
+
+ts=$(date +%s)
+echo "→ ensure pgdata/18 exists"
+podman run --rm \
+  -v "$LIBREJUSTICE_STATE_DIR/pgdata:/var/lib/postgresql" \
+  --user postgres \
+  librejustice/paradedb-vchord:latest \
+  mkdir -p "/var/lib/postgresql/18"
+
+echo "→ rename pgdata/18/docker → docker.old.$ts if present (rollback possible)"
+podman run --rm \
+  -v "$LIBREJUSTICE_STATE_DIR/pgdata:/var/lib/postgresql" \
+  --user postgres \
+  librejustice/paradedb-vchord:latest \
+  sh -c 'if [ -d "/var/lib/postgresql/18/docker" ]; then mv "/var/lib/postgresql/18/docker" "/var/lib/postgresql/18/docker.old.'"$ts"'"; else echo "  no existing docker dir"; fi'
+
+echo "→ pg_basebackup depuis $PG_HOST:$PG_PORT"
+podman run --rm \
+  -v "$LIBREJUSTICE_STATE_DIR/pgdata:/var/lib/postgresql" \
+  --network host \
+  --user postgres \
+  librejustice/paradedb-vchord:latest \
+  pg_basebackup \
+    -h "$PG_HOST" -p "$PG_PORT" -U librejustice \
+    -D /var/lib/postgresql/18/docker \
+    -Fp -X stream -P \
+    -d "dbname=librejustice password=$LIBREJUSTICE_PG_PASSWORD"
+
+echo "→ restart previously running services"
+if [ -n "$SERVICES_TO_RESTART" ]; then
+  podman compose -f infra/docker-compose.yml start $SERVICES_TO_RESTART
+else
+  echo "  nothing to restart"
+fi
+echo "✓ DB synchronisée (plein). Ancien volume : pgdata/18/docker.old.$ts (supprimer après vérif)."
+"""

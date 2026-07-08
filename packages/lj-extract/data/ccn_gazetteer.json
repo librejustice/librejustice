@@ -1,0 +1,2045 @@
+{
+"_doc": "Gazetteer CCN (ADR 0123) — conteneurs KALICONT titrés « Convention collective » du fond KALI, titre nettoyé (tête avant statut/extension/avenant/date-JORF). Régén : SELECT text_uid,title FROM legal_text WHERE text_uid LIKE 'KALICONT%' AND title ILIKE 'convention collective%' ; puis clean_title (cf. working-note). Skeleton de matching en Rust.",
+"conventions": [
+{
+"kalicont": "KALICONT000005635085",
+"title": "Convention collective nationale du commerce de détail et de gros à prédominance alimentaire du 12 juillet 2001"
+},
+{
+"kalicont": "KALICONT000005635091",
+"title": "Convention collective nationale des missions locales et PAIO du 21 février 2001"
+},
+{
+"kalicont": "KALICONT000005635092",
+"title": "Convention collective nationale du notariat du 8 juin 2001 actualisée par l'accord du 16 décembre 2021"
+},
+{
+"kalicont": "KALICONT000005635093",
+"title": "Convention collective nationale des grands magasins et des magasins populaires du 30 juin 2000"
+},
+{
+"kalicont": "KALICONT000005635096",
+"title": "Convention collective nationale de l'édition du 14 janvier 2000"
+},
+{
+"kalicont": "KALICONT000005635097",
+"title": "Convention collective nationale des centres immatriculés de conditionnement, de commercialisation et de transformation des œufs et des industries en produits d'œufs du 10 mai 1999"
+},
+{
+"kalicont": "KALICONT000005635100",
+"title": "Convention collective nationale du travail des employés des agences de presse du 1er juin 1998"
+},
+{
+"kalicont": "KALICONT000005635109",
+"title": "Convention collective nationale des industries de la maroquinerie, articles de voyage, chasse-sellerie, gainerie, bracelets en cuir du 9 septembre 2005"
+},
+{
+"kalicont": "KALICONT000005635115",
+"title": "Convention collective nationale du négoce de l'ameublement du 31 mai 1995"
+},
+{
+"kalicont": "KALICONT000005635125",
+"title": "Convention collective nationale de la coiffure et professions connexes"
+},
+{
+"kalicont": "KALICONT000005635128",
+"title": "Convention collective nationale de la distribution directe du 9 février 2004"
+},
+{
+"kalicont": "KALICONT000005635129",
+"title": "Convention collective nationale de la production de films d'animation du 6 juillet 2004"
+},
+{
+"kalicont": "KALICONT000005635133",
+"title": "Convention collective nationale de l'assainissement et de la maintenance industrielle du 21 mai 2002"
+},
+{
+"kalicont": "KALICONT000005635138",
+"title": "Convention collective nationale des mannequins adultes et mannequins enfants de moins de 16 ans employés par les agences de mannequins du 22 juin 2004"
+},
+{
+"kalicont": "KALICONT000005635141",
+"title": "Convention collective nationale des personnels des auberges de jeunesse"
+},
+{
+"kalicont": "KALICONT000005635142",
+"title": "Convention collective nationale des entreprises d'expédition et d'exportation de fruits et légumes du 17 décembre 1985"
+},
+{
+"kalicont": "KALICONT000005635143",
+"title": "Convention collective nationale du bricolage"
+},
+{
+"kalicont": "KALICONT000005635144",
+"title": "Convention collective nationale de travail du personnel employé de maison"
+},
+{
+"kalicont": "KALICONT000005635149",
+"title": "Convention collective régionale des industries métallurgiques, mécaniques et connexes de la région parisienne du 16 juillet 1954"
+},
+{
+"kalicont": "KALICONT000005635150",
+"title": "Convention collective nationale de l'édition du 27 juillet 1954"
+},
+{
+"kalicont": "KALICONT000005635154",
+"title": "Convention collective nationale des établissements privés sanitaires et sociaux du 22 janvier 1992"
+},
+{
+"kalicont": "KALICONT000005635155",
+"title": "Convention collective nationale de travail des employés des agences de presse"
+},
+{
+"kalicont": "KALICONT000005635157",
+"title": "Convention collective nationale du négoce du tissu Mise à jour au 1er juillet 1979"
+},
+{
+"kalicont": "KALICONT000005635158",
+"title": "Convention collective nationale de travail des cadres et employés salariés des cabinets de courtage d'assurances et/ou de réassurances du 20 décembre 1977"
+},
+{
+"kalicont": "KALICONT000005635159",
+"title": "Convention collective nationale des cadres et agents de maîtrise des laboratoires de tirage et de développement de films cinématographiques"
+},
+{
+"kalicont": "KALICONT000005635164",
+"title": "Convention collective nationale des commerces et services de l'audiovisuel, de l'électronique et de l'équipement ménager du 26 novembre 1992"
+},
+{
+"kalicont": "KALICONT000005635166",
+"title": "Convention collective nationale des sociétés financières"
+},
+{
+"kalicont": "KALICONT000005635167",
+"title": "Convention collective nationale de l'ameublement"
+},
+{
+"kalicont": "KALICONT000005635169",
+"title": "Convention collective nationale des employés de la presse périodique du 1er avril 1974"
+},
+{
+"kalicont": "KALICONT000005635173",
+"title": "Convention collective nationale des bureaux d'études techniques, des cabinets d'ingénieurs-conseils et des sociétés de conseils du 15 décembre 1987 mise à jour par avenant n° 46 du 16 juillet 2021"
+},
+{
+"kalicont": "KALICONT000005635175",
+"title": "Convention collective nationale des ouvriers des travaux publics"
+},
+{
+"kalicont": "KALICONT000005635176",
+"title": "Convention collective nationale des établissements d'enseignement de la conduite des véhicules terrestres à moteur et de l'éducation à la sécurité routière du 19 mai 1987"
+},
+{
+"kalicont": "KALICONT000005635177",
+"title": "Convention collective nationale des métiers de l'éducation, de la culture, des loisirs et de l'animation agissant pour l'utilité sociale et environnementale, au service des territoires"
+},
+{
+"kalicont": "KALICONT000005635178",
+"title": "Convention collective nationale des centres de conditionnement, commercialisation et transformation des oeufs et des industries en produits d'oeufs révisée le 1er avril 1988"
+},
+{
+"kalicont": "KALICONT000005635179",
+"title": "Convention collective nationale des médecins spécialistes qualifiés au regard du conseil de l'ordre travaillant dans les établissements et services pour personnes inadaptées et handicapées du 1er mars 1979"
+},
+{
+"kalicont": "KALICONT000005635180",
+"title": "Convention collective nationale de la miroiterie, de la transformation et du négoce du verre du 9 mars 1988"
+},
+{
+"kalicont": "KALICONT000005635181",
+"title": "Convention collective nationale de la promotion immobilière du 18 mai 1988"
+},
+{
+"kalicont": "KALICONT000005635182",
+"title": "Convention collective nationale de la parfumerie de détail et de l'esthétique du 11 mai 1978"
+},
+{
+"kalicont": "KALICONT000005635184",
+"title": "Convention collective nationale de l'industrie pharmaceutique du 6 avril 1956 mise à jour par accord du 11 avril 2019 -"
+},
+{
+"kalicont": "KALICONT000005635185",
+"title": "Convention collective nationale des avocats et de leur personnel du 20 février 1979"
+},
+{
+"kalicont": "KALICONT000005635186",
+"title": "Convention collective nationale de travail de l'industrie des cuirs et peaux du 6 juin 2018"
+},
+{
+"kalicont": "KALICONT000005635187",
+"title": "Convention collective nationale des animateurs-éducateurs de l'enseignement privé"
+},
+{
+"kalicont": "KALICONT000005635189",
+"title": "Convention collective nationale de la boulangerie-pâtisserie industrielle"
+},
+{
+"kalicont": "KALICONT000005635190",
+"title": "Convention collective nationale des entrepôts d'alimentation"
+},
+{
+"kalicont": "KALICONT000005635191",
+"title": "Convention collective nationale du commerce et de la réparation de l'automobile, du cycle et du motocycle et des activités connexes, ainsi que du contrôle technique automobile du 15 janvier 1981"
+},
+{
+"kalicont": "KALICONT000005635192",
+"title": "Convention collective nationale des ouvriers, employés, dessinateurs, techniciens et agents de maîtrise de la production des papiers, cartons et celluloses du 20 janvier 1988"
+},
+{
+"kalicont": "KALICONT000005635193",
+"title": "Convention collective nationale de la fourrure du 29 juin 1972"
+},
+{
+"kalicont": "KALICONT000005635194",
+"title": "Convention collective nationale des ouvriers, employés, dessinateurs, techniciens et agents de maîtrise de la transformation des papiers et cartons et des industries connexes du 16 février 1988"
+},
+{
+"kalicont": "KALICONT000005635201",
+"title": "Convention collective nationale des organismes de tourisme à caractère non lucratif"
+},
+{
+"kalicont": "KALICONT000005635203",
+"title": "Convention collective nationale de l'exploitation cinématographique du 19 juillet 1984"
+},
+{
+"kalicont": "KALICONT000005635205",
+"title": "Convention collective nationale des commerces de gros de la confiserie, chocolaterie, biscuiterie et alimentation fine et des négociants-distributeurs de levure"
+},
+{
+"kalicont": "KALICONT000005635206",
+"title": "Convention collective nationale relative aux conditions de travail des ouvriers des industries de carrières et de matériaux du 22 avril 1955"
+},
+{
+"kalicont": "KALICONT000005635207",
+"title": "Convention collective nationale du négoce du tissu"
+},
+{
+"kalicont": "KALICONT000005635208",
+"title": "Convention collective nationale de la bourse du 26 octobre 1990"
+},
+{
+"kalicont": "KALICONT000005635209",
+"title": "Convention collective nationale des mareyeurs-expéditeurs du 15 mai 1990"
+},
+{
+"kalicont": "KALICONT000005635218",
+"title": "Convention collective nationale du notariat"
+},
+{
+"kalicont": "KALICONT000005635220",
+"title": "Convention collective nationale des ouvriers employés par les entreprises du bâtiment non visées par le décret du 1er mars 1962"
+},
+{
+"kalicont": "KALICONT000005635221",
+"title": "Convention collective nationale des ouvriers employés par les entreprises du bâtiment visées par le décret du 1er mars 1962"
+},
+{
+"kalicont": "KALICONT000005635223",
+"title": "Convention collective nationale des services de prévention et de santé au travail interentreprises du 20 juillet 1976"
+},
+{
+"kalicont": "KALICONT000005635224",
+"title": "Convention collective nationale du commerce des cuirs et peaux bruts du 1er avril 1982"
+},
+{
+"kalicont": "KALICONT000005635225",
+"title": "Convention collective nationale du commerce de gros de la confiserie, chocolaterie , biscuiterie et alimentation fine et des négociants-distributeurs de levure du 1er janvier 1985"
+},
+{
+"kalicont": "KALICONT000005635230",
+"title": "Convention collective nationale des collaborateurs salariés des cabinets d'économistes de la construction et de métreurs vérificateurs du 16 avril 1993"
+},
+{
+"kalicont": "KALICONT000005635231",
+"title": "Convention collective nationale des établissements médicaux pour enfants et adolescents du 12 juin 1975 refondue le 12 mars 1982"
+},
+{
+"kalicont": "KALICONT000005635232",
+"title": "Convention collective nationale de la répartition pharmaceutique du 7 janvier 1992"
+},
+{
+"kalicont": "KALICONT000005635234",
+"title": "Convention collective nationale des établissements privés d'hospitalisation, de soins, de cure et de garde à but non lucratif du 31 octobre 1951"
+},
+{
+"kalicont": "KALICONT000005635245",
+"title": "Convention collective de travail des ouvriers de la presse quotidienne départementale du 25 octobre 1980"
+},
+{
+"kalicont": "KALICONT000005635247",
+"title": "Convention collective nationale du commerce de gros des tissus, tapis et linge de maison du 15 décembre 1993"
+},
+{
+"kalicont": "KALICONT000005635248",
+"title": "Convention collective nationale de travail des employés des magasins populaires résultant de la transformation du champ d'application de la convention collective de la région parisienne du 19 octobre 1955"
+},
+{
+"kalicont": "KALICONT000005635249",
+"title": "Convention collective nationale de travail des cadres des magasins populaires résultant de la transformation du champ d'application de la convention collective de la région parisienne du 28 janvier 1956"
+},
+{
+"kalicont": "KALICONT000005635251",
+"title": "Convention collective nationale de l'industrie des tuiles et briques du 17 février 1982"
+},
+{
+"kalicont": "KALICONT000005635252",
+"title": "Convention collective nationale de l'hôtellerie de plein air du 2 juin 1993"
+},
+{
+"kalicont": "KALICONT000005635254",
+"title": "Convention collective nationale des employés de l'édition de musique du 15 avril 1982"
+},
+{
+"kalicont": "KALICONT000005635255",
+"title": "Convention collective nationale du camping du 13 janvier 1970 mise à jour par accord du 20 janvier 2015"
+},
+{
+"kalicont": "KALICONT000005635256",
+"title": "Convention collective nationale de la postsynchronisation et du doublage"
+},
+{
+"kalicont": "KALICONT000005635257",
+"title": "Convention collective nationale du personnel des études et des organismes professionnels des commissaires-priseurs du 8 décembre 1983"
+},
+{
+"kalicont": "KALICONT000005635258",
+"title": "Convention collective nationale des exploitations frigorifiques du 10 juillet 1956"
+},
+{
+"kalicont": "KALICONT000005635259",
+"title": "Convention collective de travail de l'encadrement de la presse quotidienne régionale du 12 décembre 1995"
+},
+{
+"kalicont": "KALICONT000005635264",
+"title": "Convention collective nationale des employés et ouvriers de la distribution cinématographique du 1er mars 1973"
+},
+{
+"kalicont": "KALICONT000005635265",
+"title": "Convention collective nationale des cadres et agents de maîtrise de la distribution des films de l'industrie cinématographique du 30 juin 1976"
+},
+{
+"kalicont": "KALICONT000005635266",
+"title": "Convention collective nationale des ingénieurs, assimilés et cadres du bâtiment"
+},
+{
+"kalicont": "KALICONT000005635267",
+"title": "Convention collective nationale de l'industrie du pétrole du 3 septembre 1985"
+},
+{
+"kalicont": "KALICONT000005635268",
+"title": "Convention collective de travail des professeurs de l'enseignement secondaire libre enseignant dans les établissements hors contrat et dans les établissements sous contrat mais sans être contractuels du 23 juillet 1964"
+},
+{
+"kalicont": "KALICONT000005635269",
+"title": "Convention collective nationale des personnels des élevages aquacoles du 22 août 2016"
+},
+{
+"kalicont": "KALICONT000005635270",
+"title": "Convention collective nationale de travail concernant le personnel d'encadrement des entreprises paysagistes du 6 juin 1988"
+},
+{
+"kalicont": "KALICONT000005635273",
+"title": "Convention collective nationale des artistes musiciens de la production cinématographique du 1er juillet 1964"
+},
+{
+"kalicont": "KALICONT000005635275",
+"title": "Convention collective nationale du personnel des agences générales d'assurances"
+},
+{
+"kalicont": "KALICONT000005635282",
+"title": "Convention collective nationale concernant les caves coopératives vinicoles et leurs unions du 22 avril 1986"
+},
+{
+"kalicont": "KALICONT000005635283",
+"title": "Convention collective nationale des ouvriers de l'importation charbonnière maritime et usines d'agglomération de houille du littoral du 15 septembre 1994"
+},
+{
+"kalicont": "KALICONT000005635284",
+"title": "Convention collective nationale des industries de la transformation des volailles du 10 juillet 1996"
+},
+{
+"kalicont": "KALICONT000005635286",
+"title": "Convention collective nationale des artistes-interprètes engagés pour des émissions de télévision du 30 décembre 1992"
+},
+{
+"kalicont": "KALICONT000005635288",
+"title": "Convention collective de travail du personnel d'éducation des établissements d'enseignement privés"
+},
+{
+"kalicont": "KALICONT000005635325",
+"title": "Convention collective nationale des entreprises du paysage du 10 octobre 2008"
+},
+{
+"kalicont": "KALICONT000005635326",
+"title": "Convention collective nationale des chaînes de cafétérias et assimilés du 28 août 1998"
+},
+{
+"kalicont": "KALICONT000005635331",
+"title": "Convention collective nationale des personnels des sociétés anonymes et fondations d'HLM du 27 avril 2000"
+},
+{
+"kalicont": "KALICONT000005635332",
+"title": "Convention collective nationale de l'enseignement privé à distance du 21 juin 1999"
+},
+{
+"kalicont": "KALICONT000005635336",
+"title": "Convention collective nationale du personnel d'encadrement des agences de presse du 1er janvier 1996"
+},
+{
+"kalicont": "KALICONT000005635337",
+"title": "Convention collective nationale de l'industrie des panneaux à base de bois du 29 juin 1999"
+},
+{
+"kalicont": "KALICONT000005635338",
+"title": "Convention collective nationale des entreprises des services d'eau et d'assainissement du 12 avril 2000"
+},
+{
+"kalicont": "KALICONT000005635350",
+"title": "Convention collective nationale concernant le personnel des organismes de contrôle laitier du 16 septembre 2002"
+},
+{
+"kalicont": "KALICONT000005635351",
+"title": "Convention collective nationale des associations agréées de surveillance de la qualité de l'air du 3 octobre 2001"
+},
+{
+"kalicont": "KALICONT000005635361",
+"title": "Convention collective nationale du personnel des agences générales d'assurances du 17 septembre 2019"
+},
+{
+"kalicont": "KALICONT000005635365",
+"title": "Convention collective nationale des entreprises d'architecture du 27 février 2003"
+},
+{
+"kalicont": "KALICONT000005635373",
+"title": "Convention collective nationale de commerces de gros du 23 juin 1970"
+},
+{
+"kalicont": "KALICONT000005635374",
+"title": "Convention collective nationale de la conchyliculture du 19 octobre 2000"
+},
+{
+"kalicont": "KALICONT000005635375",
+"title": "Convention collective nationale de la charcuterie de détail du 1er décembre 1977, réécrite par l'avenant n° 113 du 4 avril 2007"
+},
+{
+"kalicont": "KALICONT000005635376",
+"title": "Convention collective nationale des organisations professionnelles de l'habitat social du 20 septembre 2005"
+},
+{
+"kalicont": "KALICONT000005635380",
+"title": "Convention collective nationale des industries alimentaires diverses du 27 mars 1969"
+},
+{
+"kalicont": "KALICONT000005635383",
+"title": "Convention collective nationale de la coiffure"
+},
+{
+"kalicont": "KALICONT000005635384",
+"title": "Convention collective nationale des acteurs du lien social et familial : centres sociaux et socioculturels, associations d'accueil de jeunes enfants, associations de développement social local du 4 juin 1983"
+},
+{
+"kalicont": "KALICONT000005635390",
+"title": "Convention collective régionale du bâtiment de la région parisienne"
+},
+{
+"kalicont": "KALICONT000005635391",
+"title": "Convention collective nationale de travail du personnel des agences de voyages, bureaux de voyages et de tourisme"
+},
+{
+"kalicont": "KALICONT000005635392",
+"title": "Convention collective nationale du personnel de la branche des jeux dans les casinos autorisés"
+},
+{
+"kalicont": "KALICONT000005635393",
+"title": "Convention collective nationale du personnel des organismes de tourisme à caractère non lucratif du 5 octobre 1983"
+},
+{
+"kalicont": "KALICONT000005635394",
+"title": "Convention collective nationale du commerce succursaliste de la chaussure du 2 juillet 1968, mise à jour le 18 novembre 1971"
+},
+{
+"kalicont": "KALICONT000005635395",
+"title": "Convention collective nationale du personnel des agents immobiliers et mandataires en vente de fonds de commerce du 8 décembre 1971"
+},
+{
+"kalicont": "KALICONT000005635396",
+"title": "Convention collective nationale des entreprises d'installation sans fabrication, y compris entretien, réparation, dépannage de matériel aéraulique, thermique, frigorifique et connexes du 21 janvier 1986"
+},
+{
+"kalicont": "KALICONT000005635399",
+"title": "Convention collective nationale de travail du personnel des agences de voyages et de tourisme du 12 mars 1993"
+},
+{
+"kalicont": "KALICONT000005635400",
+"title": "Convention collective nationale des personnels ouvriers des laboratoires de tirage et de développement de films cinématographiques"
+},
+{
+"kalicont": "KALICONT000005635401",
+"title": "Convention collective nationale des employés des services administratifs des laboratoires de tirage et de développement de films cinématographiques du 28 juin 1968"
+},
+{
+"kalicont": "KALICONT000005635402",
+"title": "Convention collective nationale de l'industrie du vitrail du 27 décembre 1957"
+},
+{
+"kalicont": "KALICONT000005635405",
+"title": "Convention collective nationale des entreprises de prévention et de sécurité du 15 février 1985"
+},
+{
+"kalicont": "KALICONT000005635406",
+"title": "Convention collective nationale du personnel des sociétés de crédit immobilier de France du 18 mai 1988"
+},
+{
+"kalicont": "KALICONT000005635407",
+"title": "Convention collective nationale de travail des établissements et services pour personnes inadaptées et handicapées du 15 mars 1966"
+},
+{
+"kalicont": "KALICONT000005635408",
+"title": "Convention collective nationale des studios de photographie"
+},
+{
+"kalicont": "KALICONT000005635409",
+"title": "Convention collective nationale du personnel des cabinets médicaux du 14 octobre 1981"
+},
+{
+"kalicont": "KALICONT000005635410",
+"title": "Convention collective nationale de la poissonnerie du 12 avril 1988"
+},
+{
+"kalicont": "KALICONT000005635411",
+"title": "Convention collective nationale des activités de production des eaux embouteillées et boissons rafraîchissantes sans alcool et de bière du 1er septembre 2010"
+},
+{
+"kalicont": "KALICONT000005635412",
+"title": "Convention collective nationale de la bijouterie, joaillerie, orfèvrerie et activités qui s'y rattachent du 5 juin 1970"
+},
+{
+"kalicont": "KALICONT000005635413",
+"title": "Convention collective nationale de l'immobilier, administrateurs de biens, sociétés immobilières, agents immobiliers, etc"
+},
+{
+"kalicont": "KALICONT000005635414",
+"title": "Convention collective nationale des prothésistes dentaires et des personnels des laboratoires de prothèse dentaire du 18 décembre 1978"
+},
+{
+"kalicont": "KALICONT000005635415",
+"title": "Convention collective interrégionale des entreprises de blanchisserie, laverie, location de linge, nettoyage, pressing et teinturerie"
+},
+{
+"kalicont": "KALICONT000005635416",
+"title": "Convention collective nationale des aides familiales rurales et personnel de l'aide à domicile en milieu rural"
+},
+{
+"kalicont": "KALICONT000005635417",
+"title": "Convention collective nationale des cadres du négoce des matériaux de construction du 21 mars 1972"
+},
+{
+"kalicont": "KALICONT000005635418",
+"title": "Convention collective nationale du personnel des entreprises de restauration de collectivités du 20 juin 1983"
+},
+{
+"kalicont": "KALICONT000005635420",
+"title": "Convention collective nationale des cadres éducatifs de l'enseignement privé secondaire et technique"
+},
+{
+"kalicont": "KALICONT000005635421",
+"title": "Convention collective nationale du commerce de détail alimentaire non spécialisé du 12 janvier 2021"
+},
+{
+"kalicont": "KALICONT000005635422",
+"title": "Convention collective nationale du personnel des agences générales d'assurances"
+},
+{
+"kalicont": "KALICONT000005635423",
+"title": "Convention collective nationale des industries françaises de la porcelaine"
+},
+{
+"kalicont": "KALICONT000005635427",
+"title": "Convention collective nationale et accords de branche des entreprises de la distribution, logistique et services des énergies de proximité du 20 décembre 1985"
+},
+{
+"kalicont": "KALICONT000005635429",
+"title": "Convention collective nationale des entreprises relevant de la navigation de plaisance du 31 mars 1979"
+},
+{
+"kalicont": "KALICONT000005635430",
+"title": "Convention collective nationale des cadres des industries de carrières et matériaux du 6 décembre 1956"
+},
+{
+"kalicont": "KALICONT000005635434",
+"title": "Convention collective nationale des entreprises du bureau et du numérique – Commerces et services du 15 décembre 1988"
+},
+{
+"kalicont": "KALICONT000005635435",
+"title": "Convention collective nationale des organismes de formation du 10 juin 1988"
+},
+{
+"kalicont": "KALICONT000005635436",
+"title": "Convention collective nationale de l'industrie de la chaussure et des articles chaussants du 31 mai 1968, révisée par protocole d'accord du 7 mars 1990"
+},
+{
+"kalicont": "KALICONT000005635437",
+"title": "Convention collective nationale des entreprises de désinfection, désinsectisation, dératisation"
+},
+{
+"kalicont": "KALICONT000005635440",
+"title": "Convention collective nationale des ingénieurs et cadres de la production des papiers, cartons et celluloses du 4 décembre 1972"
+},
+{
+"kalicont": "KALICONT000005635441",
+"title": "Convention collective nationale de la distribution des papiers-cartons commerces de gros pour les ouvriers, employés, techniciens et agents de maîtrise du 28 juillet 1975"
+},
+{
+"kalicont": "KALICONT000005635442",
+"title": "Convention collective nationale de la boyauderie du 19 février 1989"
+},
+{
+"kalicont": "KALICONT000005635444",
+"title": "Convention collective nationale des journalistes du 1er novembre 1976, refondue le 27 octobre 1987"
+},
+{
+"kalicont": "KALICONT000005635449",
+"title": "Convention collective nationale de l'industrie laitière du 20 mai 1955, modifiée par avenant n° 34 du 29 juin 2006"
+},
+{
+"kalicont": "KALICONT000005635450",
+"title": "Convention collective nationale des employés, techniciens et agents de maîtrise de l'importation charbonnière, des usines d'agglomération de houille et du commerce des combustibles en gros du 10 décembre 1991"
+},
+{
+"kalicont": "KALICONT000005635451",
+"title": "Convention collective nationale des entreprises de l'industrie et des commerces en gros des viandes du 27 juin 2018"
+},
+{
+"kalicont": "KALICONT000005635452",
+"title": "Convention collective nationale des ouvriers, employés, techniciens et agents de maîtrise de l'exploitation d'équipements thermiques et de génie climatique du 7 février 1979"
+},
+{
+"kalicont": "KALICONT000005635453",
+"title": "Convention collective nationale des espaces de loisirs, d'attractions et culturels du 5 janvier 1994"
+},
+{
+"kalicont": "KALICONT000005635458",
+"title": "Convention collective nationale des activités du déchet"
+},
+{
+"kalicont": "KALICONT000005635462",
+"title": "Convention collective nationale de travail des ingénieurs et cadres de l'industrie de la fabrication des ciments du 5 juillet 1963"
+},
+{
+"kalicont": "KALICONT000005635463",
+"title": "Convention collective nationale des établissements d'hospitalisation privée à but lucratif du 4 février 1983"
+},
+{
+"kalicont": "KALICONT000005635465",
+"title": "Convention collective de travail des employés de la presse quotidienne régionale du 28 novembre 1972"
+},
+{
+"kalicont": "KALICONT000005635466",
+"title": "Convention collective nationale des industries et du commerce de la récupération du 6 décembre 1971"
+},
+{
+"kalicont": "KALICONT000005635467",
+"title": "Convention collective nationale des ouvriers des travaux publics du 15 décembre 1992"
+},
+{
+"kalicont": "KALICONT000005635468",
+"title": "Convention collective nationale de la manutention portuaire du 31 décembre 1993"
+},
+{
+"kalicont": "KALICONT000005635469",
+"title": "Convention collective nationale des sociétés de doublage et de postsynchronisation du 23 mars 1982"
+},
+{
+"kalicont": "KALICONT000005635473",
+"title": "Convention collective régionale concernant le personnel de l'industrie de la manutention et du nettoyage sur les aéroports de la région parisienne ouverts à la circulation publique du 27 juillet 2016"
+},
+{
+"kalicont": "KALICONT000005635474",
+"title": "Convention collective nationale des entreprises de logistique de communication écrite directe du 19 novembre 1991"
+},
+{
+"kalicont": "KALICONT000005635475",
+"title": "Convention collective nationale de l'inspection d'assurance du 27 juillet 1992"
+},
+{
+"kalicont": "KALICONT000005635477",
+"title": "Convention collective nationale de travail des foyers de jeunes travailleurs modifiée les 5 décembre 1972 et 27 avril 1982"
+},
+{
+"kalicont": "KALICONT000005635478",
+"title": "Convention collective nationale des organismes d'aide ou de maintien à domicile du 11 mai 1983"
+},
+{
+"kalicont": "KALICONT000005635480",
+"title": "Convention collective nationale des entreprises d'accouvage et de sélection du 2 avril 1974"
+},
+{
+"kalicont": "KALICONT000005635482",
+"title": "Convention collective nationale des employés, techniciens et agents de maîtrise du bâtiment"
+},
+{
+"kalicont": "KALICONT000005635486",
+"title": "Convention collective nationale des cadres de la presse hebdomadaire régionale d'information du 15 octobre 1989"
+},
+{
+"kalicont": "KALICONT000005635489",
+"title": "Convention collective nationale de travail concernant le personnel occupé dans les établissements d'entraînement de chevaux de courses au trot du 9 janvier 1979"
+},
+{
+"kalicont": "KALICONT000005635490",
+"title": "Convention collective nationale des pompes funèbres du 1er mars 1974"
+},
+{
+"kalicont": "KALICONT000005635491",
+"title": "Convention collective nationale de la blanchisserie, laverie, location de linge, nettoyage à sec, pressing et teinturerie du 17 novembre 1997, étendue par arrêté du 10 août 1998"
+},
+{
+"kalicont": "KALICONT000005635492",
+"title": "Convention collective nationale du travail des industries de la maroquinerie, articles de voyage, chasse-sellerie, gainerie, bracelets cuirs"
+},
+{
+"kalicont": "KALICONT000005635497",
+"title": "Convention collective nationale des sociétés d'assistance du 13 avril 1994"
+},
+{
+"kalicont": "KALICONT000005635504",
+"title": "Convention collective nationale des conserveries coopératives et SICA"
+},
+{
+"kalicont": "KALICONT000005635507",
+"title": "Convention collective nationale des fleuristes, de la vente et des services des animaux familiers du 21 janvier 1997, étendue par arrêté du 7 octobre 1997"
+},
+{
+"kalicont": "KALICONT000005635520",
+"title": "Convention collective nationale des coopératives et SICA bétail et viande"
+},
+{
+"kalicont": "KALICONT000005635521",
+"title": "Convention collective nationale du personnel des huissiers de justice du 11 avril 1996"
+},
+{
+"kalicont": "KALICONT000005635523",
+"title": "Convention collective nationale du personnel navigant technique des exploitants d'hélicoptères du 13 novembre 1996"
+},
+{
+"kalicont": "KALICONT000005635524",
+"title": "Convention collective nationale des métiers de la transformation des grains du 9 novembre 2016"
+},
+{
+"kalicont": "KALICONT000005635528",
+"title": "Convention collective nationale de la pharmacie d'officine du 3 décembre 1997"
+},
+{
+"kalicont": "KALICONT000005635534",
+"title": "Convention collective nationale des hôtels, cafés restaurants"
+},
+{
+"kalicont": "KALICONT000005635535",
+"title": "Convention collective nationale des établissements d'entraînement de chevaux de courses au galop du 11 janvier 2019 -"
+},
+{
+"kalicont": "KALICONT000005635545",
+"title": "Convention collective nationale du thermalisme du 10 septembre 1999"
+},
+{
+"kalicont": "KALICONT000005635550",
+"title": "Convention collective nationale du personnel des prestataires de services dans le domaine du secteur tertiaire du 13 août 1999"
+},
+{
+"kalicont": "KALICONT000005635552",
+"title": "Convention collective nationale de la couture parisienne et des autres métiers de la mode"
+},
+{
+"kalicont": "KALICONT000005635553",
+"title": "Convention collective nationale des laboratoires cinématographiques et sous-titrage du 17 mars 1999"
+},
+{
+"kalicont": "KALICONT000005635557",
+"title": "Convention collective nationale des télécommunications du 26 avril 2000"
+},
+{
+"kalicont": "KALICONT000005635559",
+"title": "Convention collective nationale du golf du 13 juillet 1998"
+},
+{
+"kalicont": "KALICONT000005635560",
+"title": "Convention collective nationale de l'habitat et du logement accompagnés du 16 juillet 2003"
+},
+{
+"kalicont": "KALICONT000005635578",
+"title": "Convention collective nationale du personnel des entreprises de transport de passagers en navigation intérieure du 23 avril 1997"
+},
+{
+"kalicont": "KALICONT000005635584",
+"title": "Convention collective nationale du personnel sédentaire des entreprises de transport de marchandises de la navigation intérieure"
+},
+{
+"kalicont": "KALICONT000005635585",
+"title": "Convention collective nationale des chaînes thématiques du 19 juin 2017"
+},
+{
+"kalicont": "KALICONT000005635589",
+"title": "Convention collective nationale régissant les rapports entre les entrepreneurs de spectacles et les artistes dramatiques, lyriques, chorégraphiques, marionnettistes, de variétés et musiciens en tournées du 7 février 2003"
+},
+{
+"kalicont": "KALICONT000005635591",
+"title": "Convention collective nationale des employés et agents de maîtrise des commerces de quincaillerie, fournitures industrielles, fers, métaux et équipement de la maison"
+},
+{
+"kalicont": "KALICONT000005635592",
+"title": "Convention collective nationale des cadres des commerces de quincaillerie, fournitures industrielles, fers, métaux et équipement de la maison du 23 juin 1971"
+},
+{
+"kalicont": "KALICONT000005635593",
+"title": "Convention collective nationale de la boucherie, boucherie-charcuterie, boucherie hippophagique, triperie, commerces de volailles et gibiers du 12 décembre 1978, actualisée par l'avenant n° 114 du 10 juillet 2006"
+},
+{
+"kalicont": "KALICONT000005635594",
+"title": "Convention collective nationale du commerce de détail de l'habillement et des articles textiles du 25 novembre 1987, révisée par avenant du 17 juin 2004"
+},
+{
+"kalicont": "KALICONT000005635596",
+"title": "Convention collective nationale de la restauration rapide du 18 mars 1988"
+},
+{
+"kalicont": "KALICONT000005635597",
+"title": "Convention collective nationale du caoutchouc du 6 mars 1953"
+},
+{
+"kalicont": "KALICONT000005635605",
+"title": "Convention collective nationale de travail du personnel et des conseils juridiques collaborateurs salariés des cabinets de conseils juridiques du 17 décembre 1976"
+},
+{
+"kalicont": "KALICONT000005635607",
+"title": "Convention collective nationale du golf"
+},
+{
+"kalicont": "KALICONT000005635611",
+"title": "Convention collective nationale de la pâtisserie du 30 juin 1983"
+},
+{
+"kalicont": "KALICONT000005635612",
+"title": "Convention collective nationale de l'import-export et du commerce international du 18 décembre 1952"
+},
+{
+"kalicont": "KALICONT000005635613",
+"title": "Convention collective nationale des industries chimiques et connexes du 30 décembre 1952"
+},
+{
+"kalicont": "KALICONT000005635615",
+"title": "Convention collective nationale de travail des employés de presse hebdomadaire régionale"
+},
+{
+"kalicont": "KALICONT000005635616",
+"title": "Convention collective nationale de la fabrication de l'ameublement du 14 janvier 1986"
+},
+{
+"kalicont": "KALICONT000005635617",
+"title": "Convention collective nationale des maisons à succursales de vente au détail d'habillement du 30 juin 1972"
+},
+{
+"kalicont": "KALICONT000005635618",
+"title": "Convention collective nationale des casinos du 29 mars 2002"
+},
+{
+"kalicont": "KALICONT000005635623",
+"title": "Convention collective nationale des employés, techniciens et agents de maîtrise des entreprises de travaux publics du 21 juillet 1965"
+},
+{
+"kalicont": "KALICONT000005635624",
+"title": "Convention collective nationale des transports routiers et activités auxiliaires du transport du 21 décembre 1950"
+},
+{
+"kalicont": "KALICONT000005635625",
+"title": "Convention collective nationale des ingénieurs, assimilés et cadres des entreprises de travaux publics"
+},
+{
+"kalicont": "KALICONT000005635629",
+"title": "Convention collective nationale des détaillants en chaussures du 27 juin 1973"
+},
+{
+"kalicont": "KALICONT000005635630",
+"title": "Convention collective nationale de travail des cadres, techniciens et employés de la publicité française du 22 avril 1955"
+},
+{
+"kalicont": "KALICONT000005635631",
+"title": "Convention collective nationale de l'industrie de la salaison, charcuterie en gros et conserves de viandes du 29 mars 1972"
+},
+{
+"kalicont": "KALICONT000005635632",
+"title": "Convention collective nationale de travail des industries de la maroquinerie"
+},
+{
+"kalicont": "KALICONT000005635633",
+"title": "Convention collective nationale des cabinets d'architectes"
+},
+{
+"kalicont": "KALICONT000005635634",
+"title": "Convention collective nationale des employés, techniciens et agents de maîtrise du négoce des matériaux de construction du 17 novembre 1969, étendue par arrêté du 12 avril 1972"
+},
+{
+"kalicont": "KALICONT000005635638",
+"title": "Convention collective nationale de travail des abattoirs, ateliers de découpe et centres de conditionnement de volailles"
+},
+{
+"kalicont": "KALICONT000005635640",
+"title": "Convention collective nationale des commerces de gros de l'habillement, de la mercerie, de la chaussure et du jouet du 13 mars 1969, étendue par arrêté du 2 novembre 1970"
+},
+{
+"kalicont": "KALICONT000005635641",
+"title": "Convention collective nationale du notariat du 13 octobre 1975"
+},
+{
+"kalicont": "KALICONT000005635642",
+"title": "Convention collective nationale des remontées mécaniques et domaines skiables du 15 mai 1968 mise à jour par l'avenant n° 73 du 30 septembre 2021"
+},
+{
+"kalicont": "KALICONT000005635643",
+"title": "Convention collective nationale des ouvriers du négoce des matériaux de construction du 17 juin 1965, étendue par arrêté du 12 avril 1972"
+},
+{
+"kalicont": "KALICONT000005635645",
+"title": "Convention collective nationale du commerce des articles de sports et d'équipements de loisirs du 26 juin 1989"
+},
+{
+"kalicont": "KALICONT000005635647",
+"title": "Convention collective nationale des industries de l'habillement du 17 février 1958"
+},
+{
+"kalicont": "KALICONT000005635648",
+"title": "Convention collective nationale de travail des industries de la sérigraphie et des procédés d'impression numérique connexes du 23 mars 1971"
+},
+{
+"kalicont": "KALICONT000005635649",
+"title": "Convention collective nationale relative aux conditions de travail des employés, techniciens et agents de maîtrise des industries de carrières et de matériaux du 12 juillet 1955"
+},
+{
+"kalicont": "KALICONT000005635650",
+"title": "Convention collective nationale des industries de fabrication mécanique du verre du 8 juin 1972"
+},
+{
+"kalicont": "KALICONT000005635651",
+"title": "Convention collective nationale du personnel des voies ferrées d'intérêt local du 26 septembre 1974"
+},
+{
+"kalicont": "KALICONT000005635652",
+"title": "Convention collective nationale des personnels PACT et ARIM du 21 octobre 1983"
+},
+{
+"kalicont": "KALICONT000005635653",
+"title": "Convention collective nationale métropolitaine des entreprises de la maintenance, distribution et location de matériels agricoles, de travaux publics, de bâtiment, de manutention, de motoculture de plaisance et activités connexes, dite SDLM du 23 avril 2012"
+},
+{
+"kalicont": "KALICONT000005635654",
+"title": "Convention collective nationale des entreprises de commerce de gros de jouets, bimbeloterie, bazars du 1er mai 1968"
+},
+{
+"kalicont": "KALICONT000005635655",
+"title": "Convention collective nationale des cabinets dentaires du 17 janvier 1992 -"
+},
+{
+"kalicont": "KALICONT000005635657",
+"title": "Convention collective nationale des distributeurs conseils hors domicile"
+},
+{
+"kalicont": "KALICONT000005635658",
+"title": "Convention collective régionale des hôtels de tourisme trois, quatre et quatre étoiles luxe de Paris et de la région parisienne du 1er mai 1985"
+},
+{
+"kalicont": "KALICONT000005635659",
+"title": "Convention collective nationale du personnel sédentaire des entreprises de navigation du 20 février 1951"
+},
+{
+"kalicont": "KALICONT000005635660",
+"title": "Convention collective nationale de la branche des sociétés d'expertises et d'évaluations du 7 décembre 1976"
+},
+{
+"kalicont": "KALICONT000005635662",
+"title": "Convention collective nationale de la cordonnerie multiservice du 7 août 1989"
+},
+{
+"kalicont": "KALICONT000005635666",
+"title": "Convention collective nationale de l'industrie des panneaux à base de bois du 23 octobre 1984"
+},
+{
+"kalicont": "KALICONT000005635667",
+"title": "Convention collective nationale du personnel Employé, technicien, dessinateur, et agent de maîtrise de l'industrie de la fabrication de la chaux du 21 mars 1974"
+},
+{
+"kalicont": "KALICONT000005635668",
+"title": "Convention collective nationale pour le personnel d'encadrement de l'industrie de la fabrication de la chaux du 27 avril 1981, mise à jour au 1er mars 1982"
+},
+{
+"kalicont": "KALICONT000005635669",
+"title": "Convention collective nationale des ingénieurs et cadres de la transformation des papiers, cartons et de la pellicule cellulosique du 21 décembre 1972"
+},
+{
+"kalicont": "KALICONT000005635670",
+"title": "Convention collective nationale de la pharmacie d'officine, mise à jour le 13 avril 1992"
+},
+{
+"kalicont": "KALICONT000005635671",
+"title": "Convention collective nationale des cadres, ingénieurs et assimilés des entreprises de gestion d'équipements thermiques et de climatisation du 3 mai 1983"
+},
+{
+"kalicont": "KALICONT000005635672",
+"title": "Convention collective nationale de l'industrie de la ganterie de peau du 27 novembre 1962"
+},
+{
+"kalicont": "KALICONT000005635674",
+"title": "Convention collective de travail des cadres administratifs de la presse quotidienne régionale"
+},
+{
+"kalicont": "KALICONT000005635675",
+"title": "Convention collective de travail des cadres techniques de la presse quotidienne régionale"
+},
+{
+"kalicont": "KALICONT000005635676",
+"title": "Convention collective nationale du personnel employés, techniciens, dessinateurs et agents de maîtrise de l'industrie de la fabrication des ciments du 2 février 1976"
+},
+{
+"kalicont": "KALICONT000005635680",
+"title": "Convention collective de travail des employés de la presse quotidienne départementale du 11 octobre 1972"
+},
+{
+"kalicont": "KALICONT000005635681",
+"title": "Convention collective nationale de travail des ouvriers, employés, agents de maîtrise et cadres des fabriques d'articles de papeterie et de bureau du 24 novembre 1992"
+},
+{
+"kalicont": "KALICONT000005635683",
+"title": "Convention collective nationale des employés des grands magasins résultant de la transformation du champ d'application de la convention collective de la région parisienne du 30 juillet 1955"
+},
+{
+"kalicont": "KALICONT000005635684",
+"title": "Convention collective nationale du personnel ouvrier de l'industrie de la fabrication des ciments du 2 février 1976"
+},
+{
+"kalicont": "KALICONT000005635685",
+"title": "Convention collective régionale des ouvriers du bâtiment de la région parisienne du 28 juin 1993"
+},
+{
+"kalicont": "KALICONT000005635687",
+"title": "Convention collective nationale des établissements et services privés sanitaires, sociaux et médico-sociaux C.R.R.R"
+},
+{
+"kalicont": "KALICONT000005635689",
+"title": "Convention collective nationale de l'industrie textile du 1er février 1951"
+},
+{
+"kalicont": "KALICONT000005635690",
+"title": "Convention collective nationale des cabinets ou entreprises de géomètres-experts, topographes, photogrammètres, experts-fonciers"
+},
+{
+"kalicont": "KALICONT000005635691",
+"title": "Convention collective nationale des activités industrielles de boulangerie et pâtisserie du 13 juillet 1993"
+},
+{
+"kalicont": "KALICONT000005635692",
+"title": "Convention collective nationale de travail du personnel des banques mise à jour au 1er juin 1975"
+},
+{
+"kalicont": "KALICONT000005635693",
+"title": "Convention collective nationale des cadres de l'importation charbonnière, des usines d'agglomération de houille et du commerce de combustibles en gros du 1er juin 1990"
+},
+{
+"kalicont": "KALICONT000005635694",
+"title": "Convention collective nationale de la restauration ferroviaire du 4 septembre 1984"
+},
+{
+"kalicont": "KALICONT000005635695",
+"title": "Convention collective nationale du commerce des machines à coudre du 1er juillet 1973"
+},
+{
+"kalicont": "KALICONT000005635696",
+"title": "Convention collective nationale pour le personnel non médical des centres de lutte contre le cancer"
+},
+{
+"kalicont": "KALICONT000005635697",
+"title": "Convention collective régionale de travail des guides interprètes de la région parisienne du 21 juin 1962"
+},
+{
+"kalicont": "KALICONT000005635698",
+"title": "Convention collective nationale de travail du personnel des institutions de retraite complémentaire et de prévoyance du 9 décembre 1993"
+},
+{
+"kalicont": "KALICONT000005635699",
+"title": "Convention collective nationale du travail concernant les gardes-chasse et gardes-pêche particuliers du 2 mai 1973"
+},
+{
+"kalicont": "KALICONT000005635700",
+"title": "Convention collective nationale des coopératives agricoles laitières du 7 juin 1984"
+},
+{
+"kalicont": "KALICONT000005635702",
+"title": "Convention collective nationale du personnel des entreprises de manutention ferroviaire et travaux connexes du 6 janvier 1970 actualisée par accord du 12 juin 2019 -"
+},
+{
+"kalicont": "KALICONT000005635703",
+"title": "Convention collective nationale des biscotteries, biscuiteries, céréales prêtes à consommer ou à préparer, chocolateries, confiseries, aliments de l'enfance et de la diététique, préparations pour entremets et desserts ménagers"
+},
+{
+"kalicont": "KALICONT000005635706",
+"title": "Convention collective nationale des personnels des services administratifs et économiques des établissements d'enseignement privé"
+},
+{
+"kalicont": "KALICONT000005635708",
+"title": "Convention collective nationale de la céramique d'art du 29 avril 1994"
+},
+{
+"kalicont": "KALICONT000005635711",
+"title": "Convention collective nationale des entreprises de propreté du 1er juillet 1994"
+},
+{
+"kalicont": "KALICONT000005635713",
+"title": "Convention collective nationale du doublage et de la post-synchronisation"
+},
+{
+"kalicont": "KALICONT000005635716",
+"title": "Convention collective nationale régissant les rapports entre les entrepreneurs de spectacles et les artistes dramatiques, lyriques, chorégraphiques et de variété"
+},
+{
+"kalicont": "KALICONT000005635718",
+"title": "Convention collective nationale de travail concernant les jardiniers et jardiniers-gardiens de propriétés privées du 30 janvier 1986"
+},
+{
+"kalicont": "KALICONT000005635719",
+"title": "Convention collective nationale des techniciens de la production cinématographique du 30 avril 1950"
+},
+{
+"kalicont": "KALICONT000005635720",
+"title": "Convention collective nationale des entreprises de courtage d'assurances et/ou de réassurances du 18 janvier 2002, étendue par arrêté du 14 octobre 2002"
+},
+{
+"kalicont": "KALICONT000005635721",
+"title": "Convention collective nationale des ouvriers indépendants des studios de la production cinématographique du 1er août 1960"
+},
+{
+"kalicont": "KALICONT000005635724",
+"title": "Convention collective régionale de travail de la maîtrise et des employés des commerces de quincaillerie de la région parisienne et de Bourgogne"
+},
+{
+"kalicont": "KALICONT000005635726",
+"title": "Convention collective nationale des théâtres privés du 25 novembre 1977"
+},
+{
+"kalicont": "KALICONT000005635728",
+"title": "Convention collective nationale des organismes de tourisme du 5 février 1996"
+},
+{
+"kalicont": "KALICONT000005635736",
+"title": "Convention collective nationale de l'industrie du vitrail du 15 novembre 1996"
+},
+{
+"kalicont": "KALICONT000005635737",
+"title": "Convention collective nationale de travail concernant le personnel des organismes de contrôle laitier du 14 novembre 1983"
+},
+{
+"kalicont": "KALICONT000005635740",
+"title": "Convention collective nationale des réseaux de transports publics urbains de voyageurs du 11 avril 1986"
+},
+{
+"kalicont": "KALICONT000005635741",
+"title": "Convention collective nationale de la radiodiffusion du 11 avril 1996"
+},
+{
+"kalicont": "KALICONT000005635749",
+"title": "Convention collective nationale de l'industrie des glaces, sorbets et crèmes glacées"
+},
+{
+"kalicont": "KALICONT000005635751",
+"title": "Convention collective nationale du négoce de bois d'oeuvre et de produits dérivés du 17 décembre 1996"
+},
+{
+"kalicont": "KALICONT000005635752",
+"title": "Convention collective nationale de travail concernant les coopératives agricoles, unions de coopératives agricoles et SICA de fleurs, de fruits et légumes et de pommes de terre du 16 novembre 2011"
+},
+{
+"kalicont": "KALICONT000005635758",
+"title": "Convention collective nationale des pâtes alimentaires sèches et du couscous non préparé du 3 juillet 1997"
+},
+{
+"kalicont": "KALICONT000005635761",
+"title": "Convention collective nationale des cadres, techniciens, agents de maîtrise de la presse d'information spécialisée du 1er juillet 1995"
+},
+{
+"kalicont": "KALICONT000005635764",
+"title": "Convention collective nationale des employés de la presse d'information spécialisée du 1er juillet 1995"
+},
+{
+"kalicont": "KALICONT000005635780",
+"title": "Convention collective nationale de la banque du 10 janvier 2000"
+},
+{
+"kalicont": "KALICONT000005635781",
+"title": "Convention collective nationale du personnel des coopératives de consommation du 30 avril 1956"
+},
+{
+"kalicont": "KALICONT000005635782",
+"title": "Convention collective nationale des activités du déchet du 16 avril 2019"
+},
+{
+"kalicont": "KALICONT000005635784",
+"title": "Convention collective nationale de la mutualité du 31 janvier 2000"
+},
+{
+"kalicont": "KALICONT000005635791",
+"title": "Convention collective nationale des professions de la photographie du 31 mars 2000"
+},
+{
+"kalicont": "KALICONT000005635792",
+"title": "Convention collective nationale des salariés du particulier employeur du 24 novembre 1999"
+},
+{
+"kalicont": "KALICONT000005635798",
+"title": "Convention collective du commerce à distance et du E-commerce du 6 février 2001"
+},
+{
+"kalicont": "KALICONT000005635804",
+"title": "Convention collective nationale des cabinets ou entreprises de géomètres-experts, géomètres-topographes, photogrammètres et experts fonciers du 13 octobre 2005"
+},
+{
+"kalicont": "KALICONT000005635807",
+"title": "Convention collective nationale des assistants maternels du particulier employeur du 1er juillet 2004"
+},
+{
+"kalicont": "KALICONT000005635810",
+"title": "Convention collective nationale des sociétés financières du 22 novembre 1968"
+},
+{
+"kalicont": "KALICONT000005635813",
+"title": "Convention collective nationale de l'hospitalisation privée du 18 avril 2002"
+},
+{
+"kalicont": "KALICONT000005635816",
+"title": "Convention collective nationale des personnels des services administratifs et économiques, personnels d'éducation et documentalistes des établissements d'enseignement privés du 14 juin 2004"
+},
+{
+"kalicont": "KALICONT000005635817",
+"title": "Convention collective nationale des biscotteries, biscuiteries, céréales prêtes à consommer ou à préparer, chocolateries, confiseries, aliments de l'enfance et de la diététique, préparation pour entremets et desserts ménagers, des glaces, sorbets et crèmes glacées du 17 mai 2004"
+},
+{
+"kalicont": "KALICONT000005635822",
+"title": "Convention collective nationale de l'Union des chambres syndicales des métiers du verre du 18 décembre 2002"
+},
+{
+"kalicont": "KALICONT000005635824",
+"title": "Convention collective nationale des vétérinaires praticiens salariés du 31 janvier 2006 : annexe VII de la CCN des cabinets et cliniques vétérinaires"
+},
+{
+"kalicont": "KALICONT000005635825",
+"title": "Convention collective nationale des fleuristes, de la vente et du toilettage des petits animaux familiers, de la vente et du toilettage des petits animaux familiers mise à jour le 24 septembre 1968"
+},
+{
+"kalicont": "KALICONT000005635826",
+"title": "Convention collective nationale des cabinets d'experts-comptables et de commissaires aux comptes du 9 décembre 1974"
+},
+{
+"kalicont": "KALICONT000005635827",
+"title": "Convention collective nationale du commerce de détail de l'horlogerie bijouterie du 17 décembre 1987"
+},
+{
+"kalicont": "KALICONT000005635840",
+"title": "Convention collective nationale pour les industries de produits alimentaires élaborés du 17 janvier 1952"
+},
+{
+"kalicont": "KALICONT000005635841",
+"title": "Convention collective nationale du commerce du flaconnage"
+},
+{
+"kalicont": "KALICONT000005635842",
+"title": "Convention collective nationale des ingénieurs et cadres de la métallurgie du 13 mars 1972"
+},
+{
+"kalicont": "KALICONT000005635843",
+"title": "Convention collective nationale de l'audio-vidéo informatique"
+},
+{
+"kalicont": "KALICONT000005635844",
+"title": "Convention collective nationale des laboratoires de biologie médicale extra-hospitaliers du 3 février 1978"
+},
+{
+"kalicont": "KALICONT000005635847",
+"title": "Convention collective nationale de travail des guides accompagnateurs et accompagnateurs au service des agences de voyages et de tourisme du 10 mars 1966"
+},
+{
+"kalicont": "KALICONT000005635848",
+"title": "Convention collective nationale du commerce électronique, radio-télévision, et de l'équipement ménager"
+},
+{
+"kalicont": "KALICONT000005635849",
+"title": "Convention collective régionale de la librairie de détail de la région parisienne.Mise à jour au 15 octobre 1965"
+},
+{
+"kalicont": "KALICONT000005635851",
+"title": "Convention collective nationale du négoce en fournitures dentaires"
+},
+{
+"kalicont": "KALICONT000005635852",
+"title": "Convention collective nationale de l'hospitalisation privée à but lucratif"
+},
+{
+"kalicont": "KALICONT000005635854",
+"title": "Convention collective nationale du personnel de la céramique d'art du 25 mars 1974"
+},
+{
+"kalicont": "KALICONT000005635856",
+"title": "Convention collective nationale de la plasturgie du 1er juillet 1960"
+},
+{
+"kalicont": "KALICONT000005635857",
+"title": "Convention collective nationale des cadres de la presse hebdomadaire régionale"
+},
+{
+"kalicont": "KALICONT000005635866",
+"title": "Convention collective nationale des documentalistes des établissements d'enseignement secondaire et technique privés"
+},
+{
+"kalicont": "KALICONT000005635867",
+"title": "Convention collective nationale de tourisme social et familial du 28 juin 1979, mise à jour du 10 octobre 1984"
+},
+{
+"kalicont": "KALICONT000005635868",
+"title": "Convention collective départementale des professions de la blanchisserie, de la teinturerie des Bouches-du Rhône"
+},
+{
+"kalicont": "KALICONT000005635870",
+"title": "Convention collective nationale des commerces de détail non alimentaires : antiquités, brocante, galeries d'art"
+},
+{
+"kalicont": "KALICONT000005635871",
+"title": "Convention collective nationale du bricolage"
+},
+{
+"kalicont": "KALICONT000005635872",
+"title": "Convention collective nationale du personnel au sol des entreprises de transport aérien du 22 mai 1959"
+},
+{
+"kalicont": "KALICONT000005635873",
+"title": "Convention collective nationale des instruments à écrire et des industries connexes du 13 février 1973"
+},
+{
+"kalicont": "KALICONT000005635875",
+"title": "Convention collective nationale de la meunerie"
+},
+{
+"kalicont": "KALICONT000005635876",
+"title": "Convention collective nationale du personnel des entreprises de nettoyage de locaux"
+},
+{
+"kalicont": "KALICONT000005635878",
+"title": "Convention collective nationale des personnels enseignant hors contrat et des chefs de travaux exerçant des responsabilités hors contrat dans les établissements d'enseignement technique privés révisée le 7 janvier 2013"
+},
+{
+"kalicont": "KALICONT000005635886",
+"title": "Convention collective nationale de la boulangerie-pâtisserie du 19 mars 1976"
+},
+{
+"kalicont": "KALICONT000005635887",
+"title": "Convention collective nationale de l'horlogerie du 17 décembre 1979"
+},
+{
+"kalicont": "KALICONT000005635888",
+"title": "Convention collective nationale de travail en sucrerie, en sucrerie-distillerie et en raffinerie du 1er octobre 1986"
+},
+{
+"kalicont": "KALICONT000005635890",
+"title": "Convention collective nationale des peintres en lettres, décorateurs et graphistes en signalisation, enseignes, publicité peinte du 12 juin 1987"
+},
+{
+"kalicont": "KALICONT000005635891",
+"title": "Convention collective nationale du personnel de la reprographie du 18 décembre 1972"
+},
+{
+"kalicont": "KALICONT000005635899",
+"title": "Convention collective nationale des détaillants et détaillants-fabricants de la confiserie, chocolaterie, biscuiterie du 1er janvier 1984"
+},
+{
+"kalicont": "KALICONT000005635900",
+"title": "Convention collective nationale de la fabrication et du commerce des produits à usage pharmaceutique, parapharmaceutique et vétérinaire du 17 janvier 2018"
+},
+{
+"kalicont": "KALICONT000005635903",
+"title": "Convention collective nationale des chocolateries et confiseries"
+},
+{
+"kalicont": "KALICONT000005635904",
+"title": "Convention collective nationale des industries des jeux, jouets, articles de fêtes et ornements de Noël, articles de puériculture et voitures d'enfants, modélisme et industries connexes du 25 janvier 1991"
+},
+{
+"kalicont": "KALICONT000005635906",
+"title": "Convention collective nationale des personnels des ports de plaisance du 8 mars 2012"
+},
+{
+"kalicont": "KALICONT000005635907",
+"title": "Convention collective nationale du personnel des sociétés coopératives d'HLM du 15 mai 1990"
+},
+{
+"kalicont": "KALICONT000005635909",
+"title": "Convention collective nationale des centres de gestion agréés du 17 janvier 1983"
+},
+{
+"kalicont": "KALICONT000005635910",
+"title": "Convention collective nationale des entreprises du négoce et de l'industrie des produits du sol, engrais et produits connexes du 2 juillet 1980"
+},
+{
+"kalicont": "KALICONT000005635912",
+"title": "Convention collective nationale de l'optique-lunetterie de détail du 13 juin 2019"
+},
+{
+"kalicont": "KALICONT000005635913",
+"title": "Convention collective nationale des industries de la fabrication de la chaux - Ouvriers du 15 juin 1970"
+},
+{
+"kalicont": "KALICONT000005635914",
+"title": "Convention collective nationale des ingénieurs et cadres de la distribution des papiers et cartons, commerce de gros du 12 janvier 1977"
+},
+{
+"kalicont": "KALICONT000005635915",
+"title": "Convention collective des sociétés d'économie mixte d'autoroutes du 1er juin 1979"
+},
+{
+"kalicont": "KALICONT000005635916",
+"title": "Convention collective nationale du travail aérien du 21 janvier 1991"
+},
+{
+"kalicont": "KALICONT000005635917",
+"title": "Convention collective nationale des maisons d'étudiants du 27 mai 1992"
+},
+{
+"kalicont": "KALICONT000005635918",
+"title": "Convention collective nationale des sociétés d'assurances du 27 mai 1992"
+},
+{
+"kalicont": "KALICONT000005635920",
+"title": "Convention collective nationale de l'industrie et commerce de gros des glaces, sorbets et crèmes glacées"
+},
+{
+"kalicont": "KALICONT000005635927",
+"title": "Convention collective nationale du rouissage-teillage de lin du 28 janvier 1992, issue de l'annexe à l'avenant n° 12 du 6 mars 2002"
+},
+{
+"kalicont": "KALICONT000005635936",
+"title": "Convention collective nationale concernant le personnel des centres équestres du 11 juillet 1975"
+},
+{
+"kalicont": "KALICONT000005635937",
+"title": "Convention collective nationale de l'édition du 6 janvier 1994"
+},
+{
+"kalicont": "KALICONT000005635938",
+"title": "Convention collective nationale des jardineries et graineteries du 3 décembre 1993 actualisée par l'accord du 10 octobre 2022 -"
+},
+{
+"kalicont": "KALICONT000005635944",
+"title": "Convention collective nationale relative aux conditions de travail du personnel des industries céramiques de France du 6 juillet 1989"
+},
+{
+"kalicont": "KALICONT000005635946",
+"title": "Convention collective nationale des cadres des grands magasins résultant de la transformation du champ d'application de la convention collective d'Ile-de-France du 28 janvier 1956 par accord du 8 octobre 1982, mise à jour par accord du 8 février 1983"
+},
+{
+"kalicont": "KALICONT000005635947",
+"title": "Convention collective nationale des cadres et agents de maîtrise de l'édition de musique du 14 juin 1979"
+},
+{
+"kalicont": "KALICONT000005635951",
+"title": "Convention collective des cadres administratifs de la presse quotidienne départementale du 1er octobre 1974"
+},
+{
+"kalicont": "KALICONT000005635952",
+"title": "Convention collective des cadres techniques de la presse quotidienne départementale du 12 juin 1979"
+},
+{
+"kalicont": "KALICONT000005635953",
+"title": "Convention collective nationale des gardiens, concierges et employés d'immeubles"
+},
+{
+"kalicont": "KALICONT000005635955",
+"title": "Convention collective nationale de travail du personnel des imprimeries de labeur et des industries graphiques"
+},
+{
+"kalicont": "KALICONT000005635956",
+"title": "Convention collective nationale des maîtres de l'enseignement primaire privé enseignant dans les classes hors contrat et sous contrat simple et ne relevant pas de la convention collective de travail de l'enseignement primaire catholique du 27 novembre 1984"
+},
+{
+"kalicont": "KALICONT000005635957",
+"title": "Convention collective nationale des psychologues de l'enseignement privé du 11 janvier 1985"
+},
+{
+"kalicont": "KALICONT000005635963",
+"title": "Convention collective régionale des cadres des commerces de quincaillerie des régions Bretagne et Pays de Loire"
+},
+{
+"kalicont": "KALICONT000005635964",
+"title": "Convention collective nationale pour les entreprises artistiques et culturelles du 1er janvier 1984"
+},
+{
+"kalicont": "KALICONT000005635966",
+"title": "Convention collective nationale du travail mécanique du bois, des scieries, du négoce et de l'importation des bois du 28 novembre 1955"
+},
+{
+"kalicont": "KALICONT000005635969",
+"title": "Convention collective nationale de l'enseignement privé à distance"
+},
+{
+"kalicont": "KALICONT000005635973",
+"title": "Convention collective nationale du cartonnage du 17 avril 2019"
+},
+{
+"kalicont": "KALICONT000005635975",
+"title": "Convention collective nationale du personnel des huissiers de justice"
+},
+{
+"kalicont": "KALICONT000005635984",
+"title": "Convention collective nationale des cadres, agents de maîtrise et assistants des auditoriums cinématographiques du 30 juin 1994"
+},
+{
+"kalicont": "KALICONT000005635989",
+"title": "Convention collective régionale de travail des cadres des commerces de quincaillerie de la région parisienne et de Bourgogne"
+},
+{
+"kalicont": "KALICONT000005635994",
+"title": "Convention collective nationale des cabinets et cliniques vétérinaires du 5 juillet 1995"
+},
+{
+"kalicont": "KALICONT000005635995",
+"title": "Convention collective nationale des acteurs et acteurs de complément de la production cinématographique du 1er septembre 1967"
+},
+{
+"kalicont": "KALICONT000005636001",
+"title": "Convention collective nationale de travail concernant le personnel des parcs et jardins zoologiques privés ouverts au public du 24 janvier 2012"
+},
+{
+"kalicont": "KALICONT000005636003",
+"title": "Convention collective nationale des textiles artificiels et synthétiques et produits assimilés du 6 juin 1996"
+},
+{
+"kalicont": "KALICONT000005636008",
+"title": "Convention collective nationale des cabinets d'avocats"
+},
+{
+"kalicont": "KALICONT000005636009",
+"title": "Convention collective nationale des cabinets ou entreprises d'expertises en automobile du 20 novembre 1996"
+},
+{
+"kalicont": "KALICONT000005636015",
+"title": "Convention collective nationale des établissements de suite et de réadaptation privés"
+},
+{
+"kalicont": "KALICONT000005636018",
+"title": "Convention collective des coopératives agricoles de céréales, de meunerie, d'approvisionnement, d'alimentation du bétail et d'oléagineux"
+},
+{
+"kalicont": "KALICONT000005636023",
+"title": "Convention collective nationale du négoce et des prestations de services dans les domaines médico-techniques du 9 avril 1997"
+},
+{
+"kalicont": "KALICONT000017577652",
+"title": "Convention collective nationale du sport du 7 juillet 2005 étendue par arrêté du 21 novembre 2006"
+},
+{
+"kalicont": "KALICONT000017941839",
+"title": "Convention collective nationale des cadres du bâtiment du 1er juin 2004"
+},
+{
+"kalicont": "KALICONT000017960038",
+"title": "Convention collective régionale des employés, techniciens et agents de maîtrise du bâtiment de la région parisienne du 12 avril 1960"
+},
+{
+"kalicont": "KALICONT000017960049",
+"title": "Convention collective régionale des ingénieurs, assimilés et cadres du bâtiment de la région parisienne du 12 avril 1960"
+},
+{
+"kalicont": "KALICONT000018563634",
+"title": "Convention collective nationale de la coopération maritime du 7 décembre 2004"
+},
+{
+"kalicont": "KALICONT000018563755",
+"title": "Convention collective nationale de la coiffure et des professions connexes du 10 juillet 2006"
+},
+{
+"kalicont": "KALICONT000018773893",
+"title": "Convention collective nationale des employés, techniciens et agents de maîtrise du bâtiment du 12 juillet 2006"
+},
+{
+"kalicont": "KALICONT000018797550",
+"title": "Convention collective nationale relative aux appointements minima des ingénieurs, assimilés et cadres du bâtiment et des travaux publics du 30 avril 1951"
+},
+{
+"kalicont": "KALICONT000018827610",
+"title": "Convention collective nationale de l'industrie des glaces, sorbets et crèmes glacées du 3 mars 2006"
+},
+{
+"kalicont": "KALICONT000018828041",
+"title": "Convention collective nationale de la production audiovisuelle du 13 décembre 2006"
+},
+{
+"kalicont": "KALICONT000018879385",
+"title": "Convention collective nationale de l'enseignement, écoles supérieures d'ingénieurs et de cadres ― FESIC du 5 décembre 2006"
+},
+{
+"kalicont": "KALICONT000018902144",
+"title": "Convention collective nationale des professions regroupées du cristal, du verre et du vitrail du 3 novembre 1994"
+},
+{
+"kalicont": "KALICONT000018925934",
+"title": "Convention collective nationale des cadres des travaux publics du 1er juin 2004"
+},
+{
+"kalicont": "KALICONT000018926209",
+"title": "Convention collective nationale des employés, techniciens et agents de maîtrise des travaux publics du 12 juillet 2006"
+},
+{
+"kalicont": "KALICONT000018977636",
+"title": "Convention collective nationale des sociétés concessionnaires ou exploitantes d'autoroutes ou d'ouvrages routiers du 27 juin 2006"
+},
+{
+"kalicont": "KALICONT000019074546",
+"title": "Convention collective nationale des praticiens-conseils du régime général de sécurité sociale du 4 avril 2006"
+},
+{
+"kalicont": "KALICONT000019074623",
+"title": "Convention collective régionale du travail des guides d'expédition, guides accompagnateurs et guides animateurs en milieu amazonien du 12 mai 2007"
+},
+{
+"kalicont": "KALICONT000019382978",
+"title": "Convention collective nationale des entreprises relevant de la sélection et de la reproduction animale du 15 avril 2008"
+},
+{
+"kalicont": "KALICONT000019423552",
+"title": "Convention collective nationale de travail des cadres de la presse périodique du 30 juin 1972"
+},
+{
+"kalicont": "KALICONT000019423612",
+"title": "Convention collective nationale des cadres de la presse hebdomadaire et périodique du 25 avril 1988"
+},
+{
+"kalicont": "KALICONT000019423645",
+"title": "Convention collective nationale de travail des cadres administratifs et voyageurs des entreprises de presse hebdomadaire du 1er juillet 1972"
+},
+{
+"kalicont": "KALICONT000019423727",
+"title": "Convention collective nationale de travail des employés de la presse hebdomadaire parisienne du 1er avril 1974"
+},
+{
+"kalicont": "KALICONT000019459287",
+"title": "Convention collective de travail des ouvriers de la presse quotidienne régionale du 2 décembre 1970"
+},
+{
+"kalicont": "KALICONT000019593660",
+"title": "Convention collective nationale de l'enseignement privé indépendant du 27 novembre 2007"
+},
+{
+"kalicont": "KALICONT000019647647",
+"title": "Convention collective nationale des personnels des structures associatives cynégétiques du 13 décembre 2007"
+},
+{
+"kalicont": "KALICONT000019647748",
+"title": "Convention collective nationale du personnel des administrateurs et des mandataires judiciaires du 20 décembre 2007"
+},
+{
+"kalicont": "KALICONT000019765628",
+"title": "Convention collective nationale des magasins prestataires de services de cuisine à usage domestique du 17 juillet 2008"
+},
+{
+"kalicont": "KALICONT000019901252",
+"title": "Convention collective nationale du portage de presse du 26 juin 2007"
+},
+{
+"kalicont": "KALICONT000019906336",
+"title": "Convention collective nationale du Crédit maritime mutuel du 18 janvier 2002"
+},
+{
+"kalicont": "KALICONT000019906603",
+"title": "Convention collective nationale des entreprises techniques au service de la création et de l'événement du 21 février 2008"
+},
+{
+"kalicont": "KALICONT000019938657",
+"title": "Convention collective départementale des industries métallurgiques, mécaniques et connexes de l'Aisne du 30 septembre 2005"
+},
+{
+"kalicont": "KALICONT000020089210",
+"title": "Convention collective nationale des acteurs du développement et de l'ingénierie territoriale d'intérêt général"
+},
+{
+"kalicont": "KALICONT000021124943",
+"title": "Convention collective nationale des universités et instituts catholiques de France du 4 juin 2002"
+},
+{
+"kalicont": "KALICONT000021125058",
+"title": "Convention collective nationale des taxis du 11 septembre 2001"
+},
+{
+"kalicont": "KALICONT000021213367",
+"title": "Convention collective nationale des centres de lutte contre le cancer du 1er janvier 1999"
+},
+{
+"kalicont": "KALICONT000021213399",
+"title": "Convention collective nationale de la branche chanson, variétés, jazz, musiques actuelles du 30 avril 2003"
+},
+{
+"kalicont": "KALICONT000021259110",
+"title": "Convention collective nationale des installateurs en remontées mécaniques du 15 mai 2006"
+},
+{
+"kalicont": "KALICONT000021284958",
+"title": "Convention collective nationale de la sidérurgie du 20 novembre 2001"
+},
+{
+"kalicont": "KALICONT000021636922",
+"title": "Convention collective nationale des sociétés de ventes volontaires de meubles aux enchères publiques et des offices de commissaires-priseurs judiciaires du 17 décembre 2008"
+},
+{
+"kalicont": "KALICONT000022206280",
+"title": "Convention collective de la manutention portuaire du port de Fort-de-France du 4 juillet 2003"
+},
+{
+"kalicont": "KALICONT000022238768",
+"title": "Convention collective nationale des coopératives agricoles de teillage du lin du 21 mars 1985"
+},
+{
+"kalicont": "KALICONT000022355776",
+"title": "Convention collective du personnel du Crédit mutuel Centre Est Europe, Sud-Est du 22 octobre 2004"
+},
+{
+"kalicont": "KALICONT000023276150",
+"title": "Convention collective des cadres de la presse magazine et d'information du 25 juin 1998"
+},
+{
+"kalicont": "KALICONT000023276712",
+"title": "Convention collective des employés de la presse magazine et d'information"
+},
+{
+"kalicont": "KALICONT000023278100",
+"title": "Convention collective des industries métallurgiques et connexes de Loir-et-Cher du 5 juillet 1991"
+},
+{
+"kalicont": "KALICONT000023822189",
+"title": "Convention collective nationale des employés et cadres du régime social des indépendants du 20 mars 2008"
+},
+{
+"kalicont": "KALICONT000023973173",
+"title": "Convention collective du personnel des banques de la Guadeloupe, de Saint-Martin et de Saint-Barthélemy du 19 décembre 2007"
+},
+{
+"kalicont": "KALICONT000023973390",
+"title": "Convention collective du travail du personnel des banques de la Guyane du 18 décembre 2007"
+},
+{
+"kalicont": "KALICONT000023973576",
+"title": "Convention collective du travail du personnel des banques de la Martinique du 17 décembre 2007"
+},
+{
+"kalicont": "KALICONT000023973762",
+"title": "Convention collective nationale des omnipraticiens exerçant dans les centres de santé miniers du 23 janvier 2008"
+},
+{
+"kalicont": "KALICONT000023974024",
+"title": "Convention collective nationale de l'édition phonographique du 30 juin 2008"
+},
+{
+"kalicont": "KALICONT000023974594",
+"title": "Convention collective du personnel de direction du régime social des indépendants du 20 mars 2008"
+},
+{
+"kalicont": "KALICONT000023974782",
+"title": "Convention collective nationale des praticiens-conseils du régime social des indépendants du 15 juin 2007"
+},
+{
+"kalicont": "KALICONT000024794551",
+"title": "Convention collective régionale des employés, techniciens et agents de maîtrise du bâtiment de la région Ile-de-France"
+},
+{
+"kalicont": "KALICONT000025196564",
+"title": "Convention collective nationale des sucreries, sucreries-distilleries et raffineries de sucre du 31 janvier 2008"
+},
+{
+"kalicont": "KALICONT000025278390",
+"title": "Convention collective nationale de Pôle emploi du 21 novembre 2009"
+},
+{
+"kalicont": "KALICONT000025393730",
+"title": "Convention collective des industries métallurgiques, mécaniques et connexes"
+},
+{
+"kalicont": "KALICONT000025496787",
+"title": "Convention collective nationale des activités de marchés financiers du 11 juin 2010"
+},
+{
+"kalicont": "KALICONT000025805800",
+"title": "Convention collective nationale de la branche de l'aide, de l'accompagnement, des soins et des services à domicile du 21 mai 2010"
+},
+{
+"kalicont": "KALICONT000025844703",
+"title": "Convention collective nationale du personnel sédentaire des entreprises de navigation du 14 septembre 2010"
+},
+{
+"kalicont": "KALICONT000027040696",
+"title": "Convention collective nationale des 5 branches industries alimentaires diverses du 21 mars 2012"
+},
+{
+"kalicont": "KALICONT000027065067",
+"title": "Convention collective nationale de l'esthétique-cosmétique et de l'enseignement technique et professionnel lié aux métiers de l'esthétique et de la parfumerie du 24 juin 2011"
+},
+{
+"kalicont": "KALICONT000027084096",
+"title": "Convention collective nationale des entreprises de services à la personne du 20 septembre 2012"
+},
+{
+"kalicont": "KALICONT000027172335",
+"title": "Convention collective nationale des entreprises de propreté et services associés du 26 juillet 2011"
+},
+{
+"kalicont": "KALICONT000027180935",
+"title": "Convention collective nationale de la librairie du 24 mars 2011"
+},
+{
+"kalicont": "KALICONT000027181035",
+"title": "Convention collective nationale des ateliers et chantiers d'insertion du 31 mars 2011"
+},
+{
+"kalicont": "KALICONT000027199162",
+"title": "Convention collective nationale des régies de quartier du 2 avril 2012"
+},
+{
+"kalicont": "KALICONT000027334050",
+"title": "Convention collective des employés, techniciens et agents de maîtrise du bâtiment et travaux publics"
+},
+{
+"kalicont": "KALICONT000027343053",
+"title": "Convention collective des employés, techniciens et agents de maîtrise du bâtiment, travaux publics et activités annexes"
+},
+{
+"kalicont": "KALICONT000027343232",
+"title": "Convention collective régionale des ouvriers, employés et techniciens des entreprises d'ambulances"
+},
+{
+"kalicont": "KALICONT000027556857",
+"title": "Convention collective nationale des industries de la fabrication de la chaux du 4 décembre 2012"
+},
+{
+"kalicont": "KALICONT000027939865",
+"title": "Convention collective nationale des associations de gestion et de comptabilité du 8 janvier 2013"
+},
+{
+"kalicont": "KALICONT000027961162",
+"title": "Convention collective nationale des professions de la photographie du 13 février 2013"
+},
+{
+"kalicont": "KALICONT000028059838",
+"title": "Convention collective nationale de la production cinématographique du 19 janvier 2012"
+},
+{
+"kalicont": "KALICONT000028157262",
+"title": "Convention collective nationale des entreprises du secteur privé du spectacle vivant du 3 février 2012"
+},
+{
+"kalicont": "KALICONT000028837824",
+"title": "Convention collective nationale des éditeurs de la presse magazine"
+},
+{
+"kalicont": "KALICONT000028837830",
+"title": "Convention collective nationale des éditeurs de la presse magazine"
+},
+{
+"kalicont": "KALICONT000029100418",
+"title": "Convention collective nationale des structures associatives de pêche de loisir et de protection du milieu aquatique du 22 juin 2013"
+},
+{
+"kalicont": "KALICONT000029142476",
+"title": "Convention collective nationale unifiée ports et manutention du 15 avril 2011"
+},
+{
+"kalicont": "KALICONT000030185307",
+"title": "Convention collective nationale des coopératives de consommateurs salariés du 23 novembre 2018"
+},
+{
+"kalicont": "KALICONT000030264028",
+"title": "Convention collective interrégionale de l'industrie du bois de pin maritime en forêt de Gascogne du 1er juillet 2014"
+},
+{
+"kalicont": "KALICONT000031197865",
+"title": "Convention collective Banque populaire du 15 juin 2015 -"
+},
+{
+"kalicont": "KALICONT000031822323",
+"title": "Convention collective des salariés des établissements privés du 7 juillet 2015"
+},
+{
+"kalicont": "KALICONT000032437525",
+"title": "Convention collective nationale des cadres des travaux publics du 20 novembre 2015 -"
+},
+{
+"kalicont": "KALICONT000032494008",
+"title": "Convention collective nationale des collaborateurs salariés des entreprises d'économistes de la construction et des métreurs-vérificateurs du 16 décembre 2015"
+},
+{
+"kalicont": "KALICONT000033373201",
+"title": "Convention collective nationale de la branche ferroviaire du 31 mai 2016"
+},
+{
+"kalicont": "KALICONT000034335661",
+"title": "Convention collective nationale des salariés du négoce des matériaux de construction du 8 décembre 2015"
+},
+{
+"kalicont": "KALICONT000035326397",
+"title": "Convention collective de branche des salariés en portage salarial du 22 mars 2017"
+},
+{
+"kalicont": "KALICONT000035385554",
+"title": "Convention collective nationale des employés, techniciens et cadres des agences de presse du 7 avril 2017"
+},
+{
+"kalicont": "KALICONT000035564539",
+"title": "Convention collective des personnels navigants officiers des entreprises de transport et services maritimes du 19 novembre 2012"
+},
+{
+"kalicont": "KALICONT000036572933",
+"title": "Convention collective nationale des éditeurs de la presse magazine"
+},
+{
+"kalicont": "KALICONT000036605374",
+"title": "Convention collective nationale de la distribution et du commerce de gros des papiers-cartons du 12 juillet 2017 -"
+},
+{
+"kalicont": "KALICONT000036872099",
+"title": "Convention collective nationale des organismes publics et coopératifs de l'habitat social du 6 avril 2017 -"
+},
+{
+"kalicont": "KALICONT000037263473",
+"title": "Convention collective nationale des industries de la fabrication de la chaux du 16 janvier 2018"
+},
+{
+"kalicont": "KALICONT000037974872",
+"title": "Convention collective nationale du personnel navigant du groupement des armateurs de services de passages d'eau du 23 mai 2018"
+},
+{
+"kalicont": "KALICONT000038263817",
+"title": "Convention collective nationale des entreprises agricoles de déshydratation du 15 novembre 2017"
+},
+{
+"kalicont": "KALICONT000038292684",
+"title": "Convention collective nationale de travail du personnel des organismes de sécurité sociale du 8 février 1957"
+},
+{
+"kalicont": "KALICONT000038661444",
+"title": "Convention collective nationale des employés, techniciens, agents de maîtrise et cadres de la presse d'information spécialisée du 27 décembre 2018"
+},
+{
+"kalicont": "KALICONT000038723112",
+"title": "Convention collective nationale des menuiseries, charpentes et constructions industrialisées et portes planes du 19 janvier 2017"
+},
+{
+"kalicont": "KALICONT000039800704",
+"title": "Convention collective nationale des agents de direction des organismes du régime général de sécurité sociale du 18 septembre 2018"
+},
+{
+"kalicont": "KALICONT000043006530",
+"title": "Convention collective nationale du personnel des entreprises de transport en navigation intérieure du 20 décembre 2018 -"
+},
+{
+"kalicont": "KALICONT000043036630",
+"title": "Convention collective nationale de la production agricole et CUMA du 15 septembre 2020"
+},
+{
+"kalicont": "KALICONT000043157451",
+"title": "Convention collective nationale de l'industrie et des services nautiques du 13 octobre 2020"
+},
+{
+"kalicont": "KALICONT000043169441",
+"title": "Convention collective nationale des entreprises de travaux et services agricoles, ruraux et forestiers"
+},
+{
+"kalicont": "KALICONT000043874879",
+"title": "Convention collective nationale de l'enseignement privé non lucratif du 13 octobre 2020"
+},
+{
+"kalicont": "KALICONT000043996969",
+"title": "Convention collective nationale de l'industrie de la fabrication des ciments du 2 octobre 2019 -"
+},
+{
+"kalicont": "KALICONT000044261829",
+"title": "Convention collective nationale de la télédiffusion du 2 juillet 2021"
+},
+{
+"kalicont": "KALICONT000044349436",
+"title": "Convention collective nationale de la presse quotidienne et hebdomadaire en régions du 9 août 2021"
+},
+{
+"kalicont": "KALICONT000044594539",
+"title": "Convention collective de la branche du secteur des particuliers employeurs et de l'emploi à domicile du 15 mars 2021 -"
+},
+{
+"kalicont": "KALICONT000044617302",
+"title": "Convention collective nationale des métiers du commerce de détail alimentaire spécialisé du 12 janvier 2021 -"
+},
+{
+"kalicont": "KALICONT000045699459",
+"title": "Convention collective nationale de la production et de la transformation des papiers et cartons du 29 janvier 2021"
+},
+{
+"kalicont": "KALICONT000046139444",
+"title": "Convention collective nationale des opérateurs de voyages et des guides du 19 avril 2022 -"
+},
+{
+"kalicont": "KALICONT000046993250",
+"title": "Convention collective nationale de la métallurgie du 7 février 2022 -"
+},
+{
+"kalicont": "KALICONT000047802239",
+"title": "Convention collective nationale des commissaires de justice et sociétés de ventes volontaires du 16 novembre 2022 -"
+},
+{
+"kalicont": "KALICONT000047839180",
+"title": "Convention collective nationale des commerces de quincaillerie, fournitures industrielles, fers, métaux et équipement de la maison du 24 novembre 2021 -"
+},
+{
+"kalicont": "KALICONT000048202801",
+"title": "Convention collective nationale des professions réglementées auprès des juridictions du 26 janvier 2022"
+},
+{
+"kalicont": "KALICONT000048984729",
+"title": "Convention collective nationale de la bijouterie, joaillerie, orfèvrerie, horlogerie"
+},
+{
+"kalicont": "KALICONT000049618033",
+"title": "Convention collective nationale des personnels des activités hippiques du 16 novembre 2023 -"
+},
+{
+"kalicont": "KALICONT000050098057",
+"title": "Convention collective nationale de conseil et service en élevage du 6 juillet 2023 -"
+},
+{
+"kalicont": "KALICONT000050412438",
+"title": "Convention collective nationale des salariés des établissements d'enseignement et organismes de formation aux métiers du territoire"
+},
+{
+"kalicont": "KALICONT000050551393",
+"title": "Convention collective nationale des industries de carrières et matériaux de construction du 6 juillet 2022 -"
+},
+{
+"kalicont": "KALICONT000051160618",
+"title": "Convention collective nationale des activités industrielles de boulangerie et pâtisserie et des professionnels de l'oeuf du 1er octobre 2024 -"
+},
+{
+"kalicont": "KALICONT000051346072",
+"title": "Convention collective nationale des entreprises au service de la création et de l'événement du 27 juin 2024 -"
+},
+{
+"kalicont": "KALICONT000052331573",
+"title": "Convention collective nationale des salariés des cabinets d'avocats du 21 juin 2024 -"
+},
+{
+"kalicont": "KALICONT000052370692",
+"title": "Convention collective nationale de la boucherie, boucherie-charcuterie-traiteur, poissonnerie"
+},
+{
+"kalicont": "KALICONT000052437653",
+"title": "Convention collective nationale du personnel sédentaire"
+},
+{
+"kalicont": "KALICONT000053059927",
+"title": "Convention collective nationale des coopératives agricoles, unions de coopératives agricoles et sociétés d'intérêt collectif agricole de fleurs, fruits et légumes frais, transformés et conserveries, de teillage de lin-chanvre et de déshydratation du 25 mars 2025 -"
+}
+]
+}

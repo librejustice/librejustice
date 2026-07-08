@@ -1,0 +1,37 @@
+[package]
+name = "lj-ingest"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "lj-ingest"
+path = "src/main.rs"
+
+# CLI ingest (clap). Settings prefix LIBREJUSTICE_. Pipelines offline.
+[dependencies]
+lj-core = { workspace = true }
+lj-extract = { workspace = true }
+lj-store = { workspace = true }
+lj-sources = { workspace = true }
+lj-llm = { workspace = true }
+lj-telemetry = { workspace = true }
+tokenizers = { workspace = true }
+tokio = { workspace = true }
+clap = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# sonic-rs : parse JSON SIMD sur le hot-path ingest (Judilibre). serde_json ailleurs.
+sonic-rs = { workspace = true }
+reqwest = { workspace = true }
+reqwest-middleware = { workspace = true }
+reqwest-tracing = { workspace = true }
+rayon = { workspace = true }
+futures = { workspace = true }
+flate2 = { workspace = true }
+xxhash-rust = { workspace = true }
+chrono = { workspace = true }
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tracing-subscriber = { workspace = true }
+deadpool-postgres = { workspace = true }

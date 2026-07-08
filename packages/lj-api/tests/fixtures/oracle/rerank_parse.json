@@ -1,0 +1,89 @@
+{
+  "_provenance": "généré depuis l'oracle Python (apps/api) — fonctions pures de search.py / signals.py / rerank.py. NE PAS éditer à la main : régénérer via le script de gen (cf. docs/working-notes parité). Asservi par les tests Rust de lj-api.",
+  "cases": [
+    {
+      "content": "1: 90\n2: 70\n3: 50",
+      "k": 3,
+      "scores": [
+        90.0,
+        70.0,
+        50.0
+      ]
+    },
+    {
+      "content": "1: 90\n2: 70",
+      "k": 3,
+      "scores": null
+    },
+    {
+      "content": "1. 88\n2. 12",
+      "k": 2,
+      "scores": [
+        88.0,
+        12.0
+      ]
+    },
+    {
+      "content": "1 - 95\n2 - 30\n3 - 60",
+      "k": 3,
+      "scores": [
+        95.0,
+        30.0,
+        60.0
+      ]
+    },
+    {
+      "content": "  1:  90.5 \n 2 : 70 ",
+      "k": 2,
+      "scores": [
+        90.5,
+        70.0
+      ]
+    },
+    {
+      "content": "garbage\n1: 90\nblah\n2: 70",
+      "k": 2,
+      "scores": [
+        90.0,
+        70.0
+      ]
+    },
+    {
+      "content": "0: 99\n1: 90\n2: 70",
+      "k": 2,
+      "scores": [
+        90.0,
+        70.0
+      ]
+    },
+    {
+      "content": "1: 90\n2: 70\n4: 50",
+      "k": 3,
+      "scores": null
+    },
+    {
+      "content": "1: 90\n1: 80\n2: 70",
+      "k": 2,
+      "scores": [
+        80.0,
+        70.0
+      ]
+    },
+    {
+      "content": "rien du tout",
+      "k": 1,
+      "scores": null
+    },
+    {
+      "content": "1: 90\n2: 70\n3: 50\n4: 40\n5: 30",
+      "k": 5,
+      "scores": [
+        90.0,
+        70.0,
+        50.0,
+        40.0,
+        30.0
+      ]
+    }
+  ]
+}
