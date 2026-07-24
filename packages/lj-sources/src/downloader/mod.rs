@@ -17,7 +17,7 @@
 
 mod calendar;
 mod compact;
-mod http;
+pub(crate) mod http;
 mod judilibre;
 mod manifest;
 mod opendata;

@@ -6,7 +6,7 @@
 # Variable: {{base}} = host root (e.g. http://localhost:8300).
 # The route is auth-OPTIONAL: public callers get results; a JWT only triggers
 # search-history recording (no response-shape change).
-# Facettes = référentiel ADR 0146 (juridiction/legalDomain/solution/publication/
+# Facettes = référentiel ADR 0146 (jurisdiction/legalDomain/solution/publication/
 # dateLectureYear/legalInstrument).
 # ============================================================================
 
@@ -35,7 +35,7 @@ jsonpath "$.queryMode" == "hybrid"
 jsonpath "$.allHitIds" isCollection
 jsonpath "$.facets" exists
 # facets struct (ADR 0146): every dimension present as an array
-jsonpath "$.facets.juridiction" isCollection
+jsonpath "$.facets.jurisdiction" isCollection
 jsonpath "$.facets.legalDomain" isCollection
 jsonpath "$.facets.solution" isCollection
 jsonpath "$.facets.publication" isCollection
@@ -54,7 +54,7 @@ HTTP 200
 jsonpath "$.hits" count <= 5
 # When hits exist, each carries the required SearchHit fields.
 jsonpath "$.hits[0].id" isString
-jsonpath "$.hits[0].juridictionType" matches /^(TA|CAA|CE|CONSTIT|TC|CC|CA|TJ|TCOM|CEDH|CJUE|CNDA)$/
+jsonpath "$.hits[0].jurisdictionType" matches /^(TA|CAA|CE|CONSTIT|TC|CC|CA|TJ|TCOM|CEDH|CJUE|CNDA)$/
 jsonpath "$.hits[0].titleHtml" isString
 jsonpath "$.hits[0].score" isNumber
 jsonpath "$.hits[0].bestChunk" exists
@@ -146,12 +146,12 @@ jsonpath "$.total" isInteger
 jsonpath "$.allHitIds" isCollection
 
 
-# ── 14. Single filter: juridictionType (repeated query param) ────────────────
-GET {{base}}/api/search?q=contrat&juridictionType=CE&juridictionType=CAA
+# ── 14. Single filter: jurisdictionType (repeated query param) ────────────────
+GET {{base}}/api/search?q=contrat&jurisdictionType=CE&jurisdictionType=CAA
 HTTP 200
 [Asserts]
 jsonpath "$.hits" isCollection
-jsonpath "$.facets.juridiction" isCollection
+jsonpath "$.facets.jurisdiction" isCollection
 
 
 # ── 15. Single filter: solution (référentiel solution:*, ADR 0146) ───────────
@@ -161,8 +161,8 @@ HTTP 200
 jsonpath "$.hits" isCollection
 
 
-# ── 16. Single filter: voie (référentiel voie:*) ─────────────────────────────
-GET {{base}}/api/search?q=suspension&voie=REFERE_SUSPENSION
+# ── 16. Single filter: procedure (référentiel procedure:*) ──────────────────
+GET {{base}}/api/search?q=suspension&procedure=REFERE_SUSPENSION
 HTTP 200
 [Asserts]
 jsonpath "$.hits" isCollection
@@ -218,7 +218,7 @@ jsonpath "$.hits" isCollection
 
 
 # ── 24. Combined filters (many dimensions at once + date range) ──────────────
-GET {{base}}/api/search?q=expulsion&juridictionType=CA&solution=CONFIRMATION&legalDomain=CIVIL_DROIT_LOCATIF&dateFrom=2018-01-01&dateTo=2024-12-31&publication=B
+GET {{base}}/api/search?q=expulsion&jurisdictionType=CA&solution=CONFIRMATION&legalDomain=CIVIL_DROIT_LOCATIF&dateFrom=2018-01-01&dateTo=2024-12-31&publication=B
 HTTP 200
 [Asserts]
 jsonpath "$.hits" isCollection
@@ -245,16 +245,17 @@ jsonpath "$.facets.legalInstrument[0].count" isInteger
 jsonpath "$.facets.legalInstrument[0].articles" isCollection
 
 
-# ── 27. juridiction facet = arbre 2 niveaux (racines uid, enfants parent) ────
+# ── 27. jurisdiction facet = arbre 2 niveaux (racines uid, enfants parent) ────
 GET {{base}}/api/search?q=permis%20de%20construire&limit=10
 HTTP 200
 [Asserts]
-jsonpath "$.facets.juridiction" isCollection
-jsonpath "$.facets.juridiction[0].value" isString
-jsonpath "$.facets.juridiction[0].label" isString
-jsonpath "$.facets.juridiction[0].count" isInteger
-# racines = uids complets du référentiel (juridiction:TA / office:JEX)
-jsonpath "$.facets.juridiction[0].value" matches /^(juridiction|office):/
+jsonpath "$.facets.jurisdiction" isCollection
+jsonpath "$.facets.jurisdiction[0].value" isString
+jsonpath "$.facets.jurisdiction[0].label" isString
+jsonpath "$.facets.jurisdiction[0].count" isInteger
+# racines = tokens jurisdiction_type (TA, CC, …), sans préfixe d'uid (ADR 0213)
+jsonpath "$.facets.jurisdiction[0].value" matches /^[A-Z]{2,6}$/
+jsonpath "$.facets.jurisdiction[0].parent" not exists
 
 
 # ============================================================================
@@ -313,6 +314,31 @@ status < 500
 
 # ── 34. Invalid sort enum ────────────────────────────────────────────────────
 GET {{base}}/api/search?q=test&sort=price
+HTTP *
+[Asserts]
+status >= 400
+status < 500
+
+
+# ── 35. Unknown token on a typed facet axis (never silently unfiltered) ──────
+# JAF is a valid office token, not a procedure one: axis mixups get corrected.
+GET {{base}}/api/search?q=test&procedure=JAF
+HTTP *
+[Asserts]
+status >= 400
+status < 500
+
+
+# ── 36. Unknown token on a referential facet axis (never silently zero) ──────
+GET {{base}}/api/search?q=test&chamber=JAF
+HTTP *
+[Asserts]
+status >= 400
+status < 500
+
+
+# ── 37. Unknown jurisdictionCode (corrective error, not silently zero) ───────
+GET {{base}}/api/search?q=test&jurisdictionCode=tribunal_paris
 HTTP *
 [Asserts]
 status >= 400

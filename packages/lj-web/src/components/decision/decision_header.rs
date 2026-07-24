@@ -23,7 +23,7 @@ use crate::components::decision_bar::{
 pub fn DecisionHeader(detail: DecisionDetail) -> impl IntoView {
     #[cfg(feature = "hydrate")]
     {
-        let title = build_decision_references(&detail).full;
+        let title = build_decision_references(&detail).heading;
         let id = detail.id.clone();
         let bar = use_decision_bar();
         let seed = use_result_nav();

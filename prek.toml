@@ -27,6 +27,19 @@ hooks = [
 [[repos]]
 repo = "local"
 hooks = [
+  # Deux sessions parallèles qui prennent chacune « le prochain numéro » d'ADR
+  # produisent une collision silencieuse (vécu : 0110, 0175, 0177, 0205).
+  # `always_run` (pas de gating `files`) : la collision est un état du repo, pas
+  # d'un fichier stagé — on la revérifie à CHAQUE commit, même sans toucher à
+  # docs/adr/ (un commit voisin doit refuser de bâtir sur une collision).
+  {
+    id = "adr-unique",
+    name = "unicité des numéros d'ADR",
+    entry = "bash -c 'd=$(ls docs/adr | grep -oE \"^[0-9]{4}\" | sort | uniq -d); [ -z \"$d\" ] || { echo \"collision de numéros ADR : $d\" >&2; exit 1; }'",
+    language = "system",
+    pass_filenames = false,
+    always_run = true
+  },
   {
     id = "rustfmt",
     name = "rustfmt (staged)",

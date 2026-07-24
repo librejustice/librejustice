@@ -72,7 +72,7 @@ fn xml_escape(text: &str) -> String {
 /// Ordre : titre (juridiction) → sous-titre (1er numéro de rôle ou `id`) →
 /// lignes de méta (date de lecture, formation) → espaceur si méta → corps.
 pub fn build_decision_story(detail: &DecisionDetail) -> Vec<PdfBlock> {
-    let juridiction =
+    let jurisdiction =
         decision_jurisdiction(jur_type_code(detail), detail.jurisdiction_name.as_deref());
     let docket = detail
         .docket_numbers
@@ -84,7 +84,7 @@ pub fn build_decision_story(detail: &DecisionDetail) -> Vec<PdfBlock> {
     let mut story: Vec<PdfBlock> = vec![
         PdfBlock {
             style: PdfBlockStyle::Title,
-            content: xml_escape(&juridiction),
+            content: xml_escape(&jurisdiction),
         },
         PdfBlock {
             style: PdfBlockStyle::Subtitle,
@@ -96,12 +96,8 @@ pub fn build_decision_story(detail: &DecisionDetail) -> Vec<PdfBlock> {
     if let Some(date) = detail.date_lecture.as_deref().filter(|s| !s.is_empty()) {
         meta_lines.push(format!("Date de lecture : {date}"));
     }
-    if let Some(formation) = detail
-        .formation_or_chamber
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
-        meta_lines.push(format!("Formation : {formation}"));
+    if let Some(seat) = detail.seat.as_deref().filter(|s| !s.is_empty()) {
+        meta_lines.push(format!("Formation : {seat}"));
     }
 
     for line in &meta_lines {
@@ -514,11 +510,11 @@ fn assemble_pdf(pages: &[Page]) -> Vec<u8> {
         .save(&PdfSaveOptions::default(), &mut Vec::new())
 }
 
-/// Code `juridiction_type` (forme DB « TA »/« CC »…) du DTO, pour
+/// Code `jurisdiction_type` (forme DB « TA »/« CC »…) du DTO, pour
 /// [`decision_jurisdiction`] qui attend le code brut.
 fn jur_type_code(detail: &DecisionDetail) -> &'static str {
-    use lj_dtos::JuridictionType::*;
-    match detail.juridiction_type {
+    use lj_dtos::JurisdictionType::*;
+    match detail.jurisdiction_type {
         Ta => "TA",
         Caa => "CAA",
         Ce => "CE",
@@ -531,6 +527,7 @@ fn jur_type_code(detail: &DecisionDetail) -> &'static str {
         Cedh => "CEDH",
         Cjue => "CJUE",
         Cnda => "CNDA",
+        Cnil => "CNIL",
     }
 }
 
@@ -718,27 +715,31 @@ const fn build_helvetica_bold_widths() -> [u16; 256] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lj_dtos::JuridictionType;
+    use lj_dtos::JurisdictionType;
 
     fn detail() -> DecisionDetail {
         DecisionDetail {
             id: "abc123".to_string(),
-            juridiction_type: JuridictionType::Cc,
+            jurisdiction_type: JurisdictionType::Cc,
             title: "ignored".to_string(),
             paragraphs: vec!["Premier <para> & suite".to_string(), "Second".to_string()],
             paragraph_spans: Vec::new(),
             sections: None,
             summary: None,
+            jurisdiction_code: None,
             jurisdiction_name: Some("Cour de cassation".to_string()),
             date_lecture: Some("2026-05-29".to_string()),
             solution: None,
-            voie: None,
+            procedure: None,
             office: None,
             legal_domain: None,
+            publication: None,
             publication_codes: Vec::new(),
             date_audience: None,
             docket_numbers: Some(vec!["24-17.384".to_string()]),
-            formation_or_chamber: Some("Chambre sociale".to_string()),
+            seat: Some("Chambre sociale".to_string()),
+            chamber: None,
+            formation: None,
             legal_references: None,
             source_xml: None,
             themes: Vec::new(),
@@ -746,6 +747,7 @@ mod tests {
             ecli: None,
             source: None,
             chronology: Vec::new(),
+            commentaires: vec![],
         }
     }
 
@@ -793,7 +795,7 @@ mod tests {
     fn no_meta_means_no_spacer() {
         let mut d = detail();
         d.date_lecture = None;
-        d.formation_or_chamber = None;
+        d.seat = None;
         let story = build_decision_story(&d);
         // titre, sous-titre, puis directement le corps (pas de spacer).
         assert_eq!(story[2].style, PdfBlockStyle::Body);

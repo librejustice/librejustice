@@ -30,7 +30,7 @@ impl DecisionRepository<'_> {
             return Ok(0);
         }
 
-        let jur_type = &decision.juridiction_type;
+        let jur_type = &decision.jurisdiction_type;
 
         // Sous-requêtes dénormalisées (pre-filter ADR 0033). `$1` factorise le
         // decision_id. Les arrays légaux (`legal_instruments` = `ref_text_uid`,
@@ -41,21 +41,20 @@ impl DecisionRepository<'_> {
         // `replace_chunks`). `search_title` n'est porté que par le chunk 0 (un
         // doc-titre par décision dans `chunks_bm25`, ADR 0073).
         const DENORM: &str = "\
-            (SELECT jurisdiction_name FROM decisions WHERE id=(SELECT did FROM did_cte)),\
             (SELECT publication_codes FROM decisions WHERE id=(SELECT did FROM did_cte)),\
             (SELECT date_lecture FROM decisions WHERE id=(SELECT did FROM did_cte)),\
-            (SELECT array_agg(DISTINCT lc.ref_text_uid ORDER BY lc.ref_text_uid) \
-                    FILTER (WHERE lc.ref_text_uid IS NOT NULL) \
-             FROM legal_citation lc \
+            (SELECT array_agg(DISTINCT el->>2 ORDER BY el->>2) \
+                    FILTER (WHERE el->>2 IS NOT NULL) \
+             FROM legal_citation lc, jsonb_array_elements(lc.spans) AS el \
              WHERE lc.decision_id=(SELECT did FROM did_cte)),\
-            (SELECT array_agg(DISTINCT lc.ref_text_uid || '|' || lc.ref_num_key \
-                              ORDER BY lc.ref_text_uid || '|' || lc.ref_num_key) \
-                    FILTER (WHERE lc.ref_num_key IS NOT NULL) \
-             FROM legal_citation lc \
+            (SELECT array_agg(DISTINCT (el->>2) || '|' || (el->>3) \
+                              ORDER BY (el->>2) || '|' || (el->>3)) \
+                    FILTER (WHERE el->>3 IS NOT NULL) \
+             FROM legal_citation lc, jsonb_array_elements(lc.spans) AS el \
              WHERE lc.decision_id=(SELECT did FROM did_cte))";
 
-        let cols = "decision_id, chunk_index, juridiction_type, char_start, char_end, \
-                    embedding, jurisdiction_name, publication_codes, date_lecture, \
+        let cols = "decision_id, chunk_index, jurisdiction_type, char_start, char_end, \
+                    embedding, publication_codes, date_lecture, \
                     legal_instruments, legal_article_composite, search_title";
 
         // Params positionnels : $1 = decision_id (CTE), puis 6 par chunk.
@@ -65,7 +64,7 @@ impl DecisionRepository<'_> {
         let mut value_rows: Vec<String> = Vec::with_capacity(chunks.len());
         let mut idx = 2; // $1 réservé au CTE.
         for c in chunks {
-            // (decision_id, chunk_index, juridiction_type, char_start, char_end,
+            // (decision_id, chunk_index, jurisdiction_type, char_start, char_end,
             //  quantize_to_rabitq8($n::vector)::rabitq8(1024), <denorm>, search_title)
             // `body` n'est plus stocké : le texte vit dans decisions.full_text (ADR 0084).
             let row = format!(

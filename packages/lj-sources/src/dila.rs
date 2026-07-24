@@ -28,7 +28,7 @@ use tracing::instrument;
 
 const DILA_BASE_URL: &str = "https://echanges.dila.gouv.fr/OPENDATA";
 const DILA_USER_AGENT: &str = "librejustice-dila-downloader/0.1 (+https://github.com/)";
-const DILA_SOURCE_DIR: &str = "dila";
+use crate::state_paths::DILA_DIR;
 
 /// Fonds DILA bulk no-auth (ADR 0093). Le segment de listing est en majuscules
 /// (`OPENDATA/JADE/`), le préfixe d'incrément aussi (`JADE_YYYYMMDD-HHMMSS`),
@@ -37,6 +37,8 @@ const DILA_SOURCE_DIR: &str = "dila";
 pub enum DilaFond {
     Jade,
     Constit,
+    /// Délibérations/décisions de la CNIL (fond `OPENDATA/CNIL/`, ADR 0185).
+    Cnil,
     Legi,
     /// Journal officiel : décrets de publication des traités/accords (référentiel
     /// `source='treaty'`, ADR 0109) + usage JORF général futur.
@@ -51,6 +53,7 @@ impl DilaFond {
         match self {
             DilaFond::Jade => "JADE",
             DilaFond::Constit => "CONSTIT",
+            DilaFond::Cnil => "CNIL",
             DilaFond::Legi => "LEGI",
             DilaFond::Jorf => "JORF",
             DilaFond::Kali => "KALI",
@@ -62,6 +65,7 @@ impl DilaFond {
         match self {
             DilaFond::Jade => "jade",
             DilaFond::Constit => "constit",
+            DilaFond::Cnil => "cnil",
             DilaFond::Legi => "legi",
             DilaFond::Jorf => "jorf",
             DilaFond::Kali => "kali",
@@ -72,6 +76,7 @@ impl DilaFond {
         match s.to_ascii_lowercase().as_str() {
             "jade" => Ok(DilaFond::Jade),
             "constit" => Ok(DilaFond::Constit),
+            "cnil" => Ok(DilaFond::Cnil),
             "legi" => Ok(DilaFond::Legi),
             "jorf" => Ok(DilaFond::Jorf),
             "kali" => Ok(DilaFond::Kali),
@@ -86,7 +91,7 @@ impl DilaFond {
 /// relit). Le stock global (bootstrap auto au cold start) y est aussi déposé.
 pub fn tarballs_dir(data_dir: &Path, fond: DilaFond) -> std::path::PathBuf {
     data_dir
-        .join(DILA_SOURCE_DIR)
+        .join(DILA_DIR)
         .join(fond.stock_infix())
         .join("tarballs")
 }
@@ -177,7 +182,7 @@ fn classify_listing(html: &str, fond: DilaFond) -> Vec<DilaTarball> {
     out
 }
 
-fn http_client() -> Result<reqwest::blocking::Client> {
+pub(crate) fn http_client() -> Result<reqwest::blocking::Client> {
     Ok(reqwest::blocking::Client::builder()
         .user_agent(DILA_USER_AGENT)
         .connect_timeout(Duration::from_secs(10))
@@ -221,7 +226,7 @@ fn list_tarballs(client: &reqwest::blocking::Client, fond: DilaFond) -> Result<V
 /// interrompre le spin (on ne tue pas proprement un thread bloqué) : il rend
 /// l'incident VISIBLE/alertable (`message=~"dila_network_stall"`). `drop(tx)` au
 /// retour réveille le watchdog immédiatement → zéro latence sur le cas normal.
-fn with_stall_watchdog<T>(what: &str, threshold: Duration, op: impl FnOnce() -> T) -> T {
+pub(crate) fn with_stall_watchdog<T>(what: &str, threshold: Duration, op: impl FnOnce() -> T) -> T {
     let (tx, rx) = std::sync::mpsc::channel::<()>();
     let label = what.to_string();
     let watchdog = std::thread::spawn(move || {
@@ -307,7 +312,7 @@ fn download_tarball(
 pub fn sync_dila(data_dir: &Path, fond: DilaFond) -> Result<Vec<std::path::PathBuf>> {
     let tarballs_path = tarballs_dir(data_dir, fond);
     fs::create_dir_all(&tarballs_path)?;
-    let source_dir = data_dir.join(DILA_SOURCE_DIR).join(fond.stock_infix());
+    let source_dir = data_dir.join(DILA_DIR).join(fond.stock_infix());
     let manifest_path = source_dir.join("manifest.json");
     let mut manifest = DilaManifest::load(&manifest_path)?;
 

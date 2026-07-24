@@ -35,7 +35,6 @@ const CNDA_MAX_PAGES: u32 = 200;
 /// nomenclature opendata/Judilibre ne sont pas routés par `extract::routed`).
 fn cnda_candidate(parsed: CndaParsed, raw_source: &[u8], payload_format: &str) -> Candidate {
     let extracted = ExtractedFields {
-        jurisdiction_name: parsed.decision.juridiction_nom.clone(),
         // `parse_cnda` normalise déjà la date FR (`3 avril 2025`) en ISO
         // `YYYY-MM-DD` sur `Decision.date_lecture`/`date_audience` (#12, bord
         // source) ; on les parse ici en `NaiveDate` pour la colonne. Le texte FR
@@ -51,7 +50,6 @@ fn cnda_candidate(parsed: CndaParsed, raw_source: &[u8], payload_format: &str) -
             .as_deref()
             .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()),
         docket_numbers: parsed.decision.numero_dossiers.clone().unwrap_or_default(),
-        formation_or_chamber: parsed.decision.formation.clone(),
         publication_codes: parsed.decision.publication_codes.clone(),
         solution_uid: parsed.solution_uid.clone(),
         ..Default::default()
@@ -85,7 +83,7 @@ fn pdf_has_text_layer(extracted: &str) -> bool {
 
 /// Repli OCR pour un PDF CNDA **scanné** (ADR 0124 : marginal, ~1,5 % du corpus,
 /// vieux). Cache-first : relit le markdown caché (`<cache_dir>/cnda/ocr/<numero>.md`)
-/// — donc zéro appel live si déjà OCR-isé ; sinon OCR Mistral si une clé DOCAPI est
+/// — donc zéro appel live si déjà OCR-isé ; sinon OCR Mistral si une clé est
 /// disponible (puis cache + throttle, l'IP datacenter se fait flaguer en rafale).
 /// `None` si pas de cache ET pas de clé/échec OCR → l'appelant skippe la décision
 /// (pas de downgrade fiche-only : retry ultérieur, le PDF reste caché).
@@ -156,16 +154,14 @@ async fn run_cnda(
     // Extraction texte PDF : déterministe par défaut (`pdftotext` + recollage par
     // règles, ADR 0124), fidèle et sans dépendance cloud sur le chemin chaud.
     // L'OCR Mistral n'est qu'un **repli marginal** pour les rares PDF scannés
-    // (vieux, ~1,5 %, cache-first) — donc la clé DOCAPI est **optionnelle** : son
-    // absence ne bloque que le ré-OCR d'un scanné non encore caché. Client
-    // **collant** quand présent : une clé doc ne vit que ~30 min après sa 1ʳᵉ
-    // utilisation (IP datacenter flaguée) ; on la consomme seule puis on bascule
-    // à l'épuisement (≠ round-robin qui brûlerait le pool en une fenêtre).
-    let ocr_client = if settings.mistral_docapi_keys.is_empty() {
+    // (vieux, ~1,5 %, cache-first). Client **collant** sur le pool standard : on
+    // consomme une clé seule puis on bascule à l'épuisement (≠ round-robin qui
+    // exposerait tout le pool au flag OCR en une fenêtre).
+    let ocr_client = if settings.mistral_api_keys.is_empty() {
         None
     } else {
         Some(MistralClient::new_sticky(
-            settings.mistral_docapi_keys.clone(),
+            settings.mistral_api_keys.clone(),
             "mistral-ocr-latest".to_string(),
         )?)
     };

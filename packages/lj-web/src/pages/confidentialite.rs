@@ -1,18 +1,20 @@
-//! Politique de confidentialité. Port de `privacy-page.tsx`. Herite du
-//! title/description racine (pas de `<Title>` propre).
+//! Politique de confidentialité. Port de `privacy-page.tsx`. `<Title>`
+//! propre, hérite de la description racine.
 
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::components::A;
 
 #[component]
 pub fn Confidentialite() -> impl IntoView {
     view! {
+        <Title text="Confidentialité - LibreJustice" />
         <div class="mx-auto flex w-full max-w-2xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <h1 class="font-sans text-3xl text-[var(--color-ink)]">
                 "Politique de confidentialité"
             </h1>
             <p class="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                "En vigueur au 15 mai 2026"
+                "En vigueur au 20 juillet 2026"
             </p>
 
             <Section title="Responsable de traitement">
@@ -78,6 +80,22 @@ pub fn Confidentialite() -> impl IntoView {
                         " (New York, données à Francfort) : logs et traces."
                     </li>
                 </ul>
+            </Section>
+
+            <Section title="Personnes citées dans les données publiées">
+                <p>
+                    "Les décisions indexées sont publiées par l'État, pseudonymisées à la source (Judilibre, Open Data du Conseil d'État). Les fiches de l'annuaire des acteurs du contentieux (avocats, entités) sont dérivées de ces décisions publiques."
+                </p>
+                <p class="mt-3">
+                    "Si vous êtes cité dans une décision ou une fiche — anonymisation défaillante, donnée inexacte, ou simple volonté de ne plus apparaître — vous pouvez exercer votre droit d'opposition ou demander une correction par courriel à "
+                    <a
+                        class="text-[var(--color-accent)] underline-offset-4 hover:underline"
+                        href="mailto:contact@librejustice.fr"
+                    >
+                        "contact@librejustice.fr"
+                    </a>
+                    ", en indiquant l'URL de la page concernée. Réponse sous un mois au plus."
+                </p>
             </Section>
 
             <Section title="Vos droits">

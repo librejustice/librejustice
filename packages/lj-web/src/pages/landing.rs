@@ -34,7 +34,7 @@ fn McpCta() -> impl IntoView {
                         "Intégration IA"
                     </p>
                     <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                        "Connectez vos agents IA à la jurisprudence française via le protocole MCP."
+                        "Connectez vos agents IA au droit français via le protocole MCP."
                     </p>
                 </div>
                 <A
@@ -76,14 +76,15 @@ async fn fetch_stats() -> Result<CorpusStatsResponse, PageError> {
 #[component]
 fn StatsGrid(stats: CorpusStatsResponse) -> impl IntoView {
     // Pas de lien « Données & sources » ici : il vit déjà dans le footer (avec
-    // Mentions légales / Confidentialité). La rangée reste des chiffres purs.
+    // Mentions légales / Confidentialité). Chaque carte est un LIEN vers son
+    // univers (annoncer le fond doit y mener — note landing-didactique).
     // `gap-px` + fond `rule` : les cellules `parchment` laissent voir une hairline
     // entre elles, propre en 2×2 (mobile) comme en 1×4 (desktop).
     view! {
         <section class="mx-auto grid w-full max-w-5xl grid-cols-1 gap-px overflow-hidden rounded-lg border border-[var(--color-rule)] bg-[var(--color-rule)] sm:grid-cols-3">
-            <Stat label="Décisions indexées" value=format_millions(stats.decisions_count) />
-            <Stat label="Codes & lois" value=format_thousands(stats.codes_count) />
-            <Stat label="Articles consolidés" value=format_thousands(stats.articles_count) />
+            <Stat label="Décisions" value=format_thousands(stats.decisions_count) href="/decisions" />
+            <Stat label="Textes normatifs" value=format_thousands(stats.texts_count) href="/codes" />
+            <Stat label="Articles" value=format_thousands(stats.articles_count) href="/textes" />
         </section>
     }
 }
@@ -109,29 +110,17 @@ fn StatsSkeleton() -> impl IntoView {
 }
 
 #[component]
-fn Stat(label: &'static str, value: String) -> impl IntoView {
+fn Stat(label: &'static str, value: String, href: &'static str) -> impl IntoView {
     view! {
-        <div class="flex flex-col gap-1 bg-[var(--color-parchment)] px-6 py-5">
-            <span class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
+        <A
+            href=href
+            attr:class="group flex flex-col gap-1 bg-[var(--color-parchment)] px-6 py-5 no-underline transition-colors hover:bg-[var(--color-vellum)]"
+        >
+            <span class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)] transition-colors group-hover:text-[var(--color-ink)]">
                 {label}
             </span>
             <span class="font-sans text-2xl tabular-nums text-[var(--color-ink)]">{value}</span>
-        </div>
-    }
-}
-
-/// Formate un compte volumineux en repère court « 3,5 M+ » (virgule décimale
-/// française). Tronqué au dixième de million (pas arrondi) : « X,Y M+ » veut dire
-/// « au moins X,Y millions », donc le « + » reste vrai entre deux rafraîchissements.
-/// Sous le million, repli sur un groupement par milliers avec « + ».
-fn format_millions(n: i64) -> String {
-    if n >= 1_000_000 {
-        let tenths = n / 100_000; // dixièmes de million, tronqués
-        format!("{},{} M+", tenths / 10, tenths % 10)
-    } else if n >= 1_000 {
-        format!("{}+", format_thousands(n))
-    } else {
-        n.to_string()
+        </A>
     }
 }
 

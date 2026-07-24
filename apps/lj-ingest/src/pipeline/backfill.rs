@@ -1,5 +1,5 @@
-//! Backfills hors-migration et dédup rétroactive (provenances, canonical_ref,
-//! clustering union-find + fusion, ECLI).
+//! Backfills hors-migration et dédup rétroactive (canonical_ref, fusion
+//! cross-source, ECLI).
 
 use anyhow::{anyhow, Result};
 use rayon::prelude::*;
@@ -8,64 +8,6 @@ use lj_core::decision::Decision;
 use lj_store::repository::DecisionRepository;
 
 use crate::config::Settings;
-
-/// Backfill hors-migration des provenances existantes vers `decision_sources`
-/// (ADR 0080). Parcourt `decisions` par keyset (`backfill_decision_sources_batch`,
-/// curseur par id), une transaction implicite par lot — jamais une transaction
-/// 3M lignes qui bloquerait les écritures (base low-IOPS). Idempotent (`ON
-/// CONFLICT (source_uid) DO NOTHING`) : repris sans duplication après
-/// interruption. Sorti de la migration 0056 (cf. son en-tête).
-pub async fn backfill_decision_sources() -> Result<()> {
-    let settings = Settings::from_env()?;
-
-    let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
-    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
-    // Backfill de maintenance : on lève la borne API (build_pool pose
-    // statement_timeout=30s). Les scans de frontière du keyset au resume (sauter
-    // un préfixe déjà traité) et les agrégats de fusion (GROUP BY sur ~3M) la
-    // dépassent — ce sont des batches longs assumés, pas des requêtes interactives.
-    conn.batch_execute("SET statement_timeout = 0")
-        .await
-        .map_err(|e| anyhow!("set statement_timeout: {e}"))?;
-    let repo = DecisionRepository::new(&conn);
-
-    let mut last_id: i64 = 0;
-    let mut inserted_total: u64 = 0;
-    const BATCH: i64 = 1024;
-
-    while let Some((inserted, max_batch_id)) =
-        repo.backfill_decision_sources_batch(last_id, BATCH).await?
-    {
-        last_id = max_batch_id;
-        inserted_total += inserted;
-        tracing::info!(
-            inserted_total,
-            last_id,
-            "backfill-decision-sources progress"
-        );
-    }
-
-    tracing::info!(inserted_total, "Backfill provenances terminé");
-    Ok(())
-}
-
-/// Orchestrateur des backfills rétroactifs de la dédup (ADR 0098 §7 / ADR 0104).
-/// Enchaîne les passes idempotentes, chacune reprenable indépendamment :
-/// (1) portage des provenances vers `decision_sources` + `source_fields`,
-/// (2) calcul de `decisions.canonical_ref`. **Plus de passe de fusion** : la
-/// fusion rétroactive par `canonical_ref` (clé non unique) recollait des
-/// décisions distinctes same-source (faux merges) ; elle est abandonnée (ADR
-/// 0104, invariant ≤1 provenance/source). Le merge cross-source par ECLI/clé se
-/// fait désormais uniquement at-ingest (`resolve_identity`).
-pub async fn dedup_backfill() -> Result<()> {
-    tracing::info!("dedup-backfill passe 1/2 — portage provenances");
-    backfill_decision_sources().await?;
-    tracing::info!("dedup-backfill passe 2/2 — calcul canonical_ref");
-    backfill_canonical_ref(false).await?;
-    tracing::info!("dedup-backfill terminé");
-    Ok(())
-}
 
 /// Backfill hors-migration de `decisions.canonical_ref` (ADR 0100) :
 /// **matérialise** la colonne (recalcule `canonical_ref` pour les décisions où
@@ -236,7 +178,7 @@ pub async fn merge_cross_source_duplicates() -> Result<()> {
 
 /// Backfill batché de la colonne `decisions.ecli` depuis `source_fields->>'ecli'`
 /// (ADR 0093, fondation ECLI-first ADR 0080). Boucle keyset sur
-/// `backfill_ecli_batch` (calque [`backfill_decision_sources`]). Idempotent :
+/// `backfill_ecli_batch`. Idempotent :
 /// n'écrit que les lignes `ecli IS NULL` portant la clé `ecli` ; un ECLI déjà
 /// posé n'est jamais écrasé.
 pub async fn backfill_ecli() -> Result<()> {

@@ -7,8 +7,9 @@ use leptos_router::{ParamSegment, SsrMode, StaticSegment};
 
 use crate::components::AppShell;
 use crate::pages::{
-    ActivityPage, AuthorizeMcpPage, CodeCataloguePage, Confidentialite, DecisionPage, Landing,
-    LawArticlePage, LawCodePage, LoginPage, McpGuide, MentionsLegales, NotFound, ProfilePage,
+    ActivityPage, AnnuaireDirectoryPage, AnnuairePage, AuthorizeMcpPage, CodeCataloguePage,
+    Confidentialite, DecisionPage, EntityPage, Landing, LawArticlePage, LawCodePage,
+    LawComparePage, LawSectionPage, LoginPage, McpGuide, MentionsLegales, NotFound, ProfilePage,
     ResetPasswordPage, SearchPage, SourcesPage, TextesPage,
 };
 use crate::seo::site_default;
@@ -65,7 +66,14 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                     content="#1B1612"
                     media="(prefers-color-scheme: dark)"
                 />
-                <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+                // Set complet : Google sonde /favicon.ico à la racine et veut un
+                // raster ≥ 48 px ; l'ICO 16/32/48 + le PNG 192 (rond du SERP sur
+                // écrans denses) servent de repli fiable quand le SVG n'est pas
+                // (re)pris. apple-touch-icon pour iOS.
+                <link rel="icon" href="/favicon.ico" sizes="48x48" />
+                <link rel="icon" href="/icon-192.png" type="image/png" sizes="192x192" />
+                <link rel="icon" href="/favicon.svg" type="image/svg+xml" sizes="any" />
+                <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
                 // Précharge la police du LCP (Geist latin, h1 du hero) en
                 // parallèle du CSS plutôt qu'après son parsing : casse la chaîne
                 // critique HTML → CSS → woff2 qui laissait `font-display: swap`
@@ -117,10 +125,10 @@ pub fn App() -> impl IntoView {
                     // ── Pages publiques (SSR streaming par defaut, OutOfOrder) ──
                     <Route path=StaticSegment("") view=Landing />
                     // ── Recherche (gabarit de référence) : deux pages distinctes —
-                    // décisions (`/recherche`, hybride BM25+ANN) et textes
+                    // décisions (`/decisions`, hybride BM25+ANN) et textes
                     // (`/textes`, BM25 seul) : moteurs et filtres propres,
                     // aucune recherche transverse. ──
-                    <Route path=StaticSegment("recherche") view=SearchPage />
+                    <Route path=StaticSegment("decisions") view=SearchPage />
                     <Route path=StaticSegment("textes") view=TextesPage />
                     <Route path=StaticSegment("sources") view=SourcesPage />
                     // ── Decision : similaires en streaming (PartiallyBlocked :
@@ -130,28 +138,76 @@ pub fn App() -> impl IntoView {
                         view=DecisionPage
                         ssr=SsrMode::PartiallyBlocked
                     />
+                    // ── Fiche entité (ADR 0189) : en-tête + agrégats contentieux
+                    // bloquants SSR (SEO) ; liste de décisions citantes streamée
+                    // (PartiallyBlocked), paginée par `?page=`. Rendu adapté au
+                    // namespace (`siren`/`rna`/`cnb`/`oacc`). ──
+                    <Route
+                        path=(StaticSegment("entite"), ParamSegment("ns"), ParamSegment("id"))
+                        view=EntityPage
+                        ssr=SsrMode::PartiallyBlocked
+                    />
+                    // ── Annuaire des entités (ADR 0192) : accueil (recherche +
+                    // cartes de catégories) et listing paginé par catégorie.
+                    // Résultats `?q=` et listing bloquants SSR (crawlables) ;
+                    // compteurs des cartes streamés. ──
+                    <Route
+                        path=StaticSegment("annuaire")
+                        view=AnnuairePage
+                        ssr=SsrMode::PartiallyBlocked
+                    />
+                    <Route
+                        path=(StaticSegment("annuaire"), ParamSegment("kind"))
+                        view=AnnuaireDirectoryPage
+                        ssr=SsrMode::PartiallyBlocked
+                    />
                     // ── Référentiel LEGI (ADR 0092) : sommaire de code, article
                     // en vigueur, article à une date. L'article (en-tête/méta/
                     // corps/timeline) est bloquant SSR (SEO) ; les décisions
                     // citantes sont streamées (PartiallyBlocked). La date est une
                     // route séparée, pas un segment optionnel. ──
                     // Catalogue des codes (SSR, indexable) : point d'entrée du
-                    // référentiel, à côté des routes `/loi`.
+                    // référentiel, à côté des routes `/texte`.
                     <Route path=StaticSegment("codes") view=CodeCataloguePage />
-                    <Route path=(StaticSegment("loi"), ParamSegment("code")) view=LawCodePage />
+                    <Route path=(StaticSegment("texte"), ParamSegment("code")) view=LawCodePage />
+                    // Vue-lecture d'une section (ADR 0207) : segment littéral
+                    // `section`, déclaré avant la capture `{num}`.
                     <Route
-                        path=(StaticSegment("loi"), ParamSegment("code"), ParamSegment("num"))
+                        path=(
+                            StaticSegment("texte"),
+                            ParamSegment("code"),
+                            StaticSegment("section"),
+                            ParamSegment("cid"),
+                        )
+                        view=LawSectionPage
+                    />
+                    <Route
+                        path=(StaticSegment("texte"), ParamSegment("code"), ParamSegment("num"))
                         view=LawArticlePage
                         ssr=SsrMode::PartiallyBlocked
                     />
                     <Route
                         path=(
-                            StaticSegment("loi"),
+                            StaticSegment("texte"),
                             ParamSegment("code"),
                             ParamSegment("num"),
                             ParamSegment("date"),
                         )
                         view=LawArticlePage
+                        ssr=SsrMode::PartiallyBlocked
+                    />
+                    // Comparateur de versions (ADR 0193) : diff serveur entre
+                    // deux rédactions, bornes = dates de fenêtre de version.
+                    <Route
+                        path=(
+                            StaticSegment("texte"),
+                            ParamSegment("code"),
+                            ParamSegment("num"),
+                            StaticSegment("comparer"),
+                            ParamSegment("de"),
+                            ParamSegment("a"),
+                        )
+                        view=LawComparePage
                         ssr=SsrMode::PartiallyBlocked
                     />
                     // ── Pages auth client-side : rendu SSR du shell, decision
@@ -163,11 +219,22 @@ pub fn App() -> impl IntoView {
                     />
                     <Route path=StaticSegment("authorize-mcp") view=AuthorizeMcpPage />
                     <Route path=StaticSegment("profil") view=ProfilePage />
-                    // ── Activite : meme composant, route distincte (recherches /
-                    // signets / lectures). Le panneau est choisi via le path. ──
-                    <Route path=StaticSegment("recherches") view=ActivityPage />
-                    <Route path=StaticSegment("signets") view=ActivityPage />
-                    <Route path=StaticSegment("lectures") view=ActivityPage />
+                    // ── Activite : meme composant, une route explicite par
+                    // onglet sous `/activite/` (y compris le defaut — si le
+                    // defaut change, aucune URL ne change de sens). `/activite`
+                    // nu = 308 vers l'onglet recherches (lj-server). ──
+                    <Route
+                        path=(StaticSegment("activite"), StaticSegment("recherches"))
+                        view=ActivityPage
+                    />
+                    <Route
+                        path=(StaticSegment("activite"), StaticSegment("signets"))
+                        view=ActivityPage
+                    />
+                    <Route
+                        path=(StaticSegment("activite"), StaticSegment("lectures"))
+                        view=ActivityPage
+                    />
                     // ── Pages statiques publiques ──
                     <Route path=StaticSegment("mcp-guide") view=McpGuide />
                     <Route path=StaticSegment("mentions-legales") view=MentionsLegales />

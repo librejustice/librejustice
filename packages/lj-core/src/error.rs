@@ -6,7 +6,7 @@ use thiserror::Error;
 pub enum CoreError {
     #[error("XML parse error: {0}")]
     Xml(String),
-    #[error("unknown juridiction_type: {0:?}")]
+    #[error("unknown jurisdiction_type: {0:?}")]
     UnknownJuridiction(Option<String>),
 }
 

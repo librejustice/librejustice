@@ -7,7 +7,7 @@ use leptos_router::components::A;
 
 use crate::components::hover_preview::{HoverPreview, PreviewKind};
 use crate::helpers::{format_iso_date, format_juridiction};
-use crate::pages::decision_page::labels::{portee_label, publication_label};
+use crate::pages::decision_page::labels::{publication_label, significance_label};
 
 /// Champ de synthèse (label + valeur, `mono` = police monospace).
 #[derive(Clone)]
@@ -25,7 +25,7 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
         value: detail
             .jurisdiction_name
             .clone()
-            .unwrap_or_else(|| format_juridiction(detail.juridiction_type).to_string()),
+            .unwrap_or_else(|| format_juridiction(detail.jurisdiction_type).to_string()),
         mono: false,
     });
     // 2. Numéros de dossier (si non vide).
@@ -48,7 +48,7 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     // libellés servis. `voie` absente = procédure ordinaire (pas de champ).
     let tags: [(&'static str, &Option<FacetTag>); 3] = [
         ("Solution", &detail.solution),
-        ("Procédure", &detail.voie),
+        ("Procédure", &detail.procedure),
         ("Domaine", &detail.legal_domain),
     ];
     for (label, tag) in tags {
@@ -60,11 +60,11 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
             });
         }
     }
-    // 9. Formation.
-    if let Some(formation) = detail.formation_or_chamber.clone() {
+    // 9. Siège (position de chambre qualifiée, axes ADR 0170).
+    if let Some(seat) = detail.seat.clone() {
         fields.push(MetaField {
             label: "Formation",
-            value: formation,
+            value: seat,
             mono: false,
         });
     }
@@ -85,10 +85,10 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
             mono: false,
         });
     }
-    if let Some(portee) = portee_label(&detail.publication_codes) {
+    if let Some(significance) = significance_label(&detail.publication_codes) {
         fields.push(MetaField {
             label: "Portée",
-            value: portee.to_string(),
+            value: significance.to_string(),
             mono: false,
         });
     }
@@ -212,7 +212,7 @@ fn LegalRefRow(
         slug,
         articles,
     } = reference;
-    // Chaque article devient un lien `/loi/{slug}/{numKey}` quand la citation est
+    // Chaque article devient un lien `/texte/{slug}/{numKey}` quand la citation est
     // **résolue** au catalogue (FK déterministe à l'ingest, ADR 0123 §2) : `slug`
     // du `legal_text` + `numKey` canonique posés au DTO ; sinon texte brut. Plus de
     // re-slugification côté front. Articles séparés par « , ».
@@ -226,7 +226,7 @@ fn LegalRefRow(
                 let target = slug.as_ref().filter(|_| !article.num_key.is_empty()).map(
                     |s| {
                         (
-                            format!("/loi/{s}/{}", article.num_key),
+                            format!("/texte/{s}/{}", article.num_key),
                             PreviewKind::Article {
                                 code: s.to_string(),
                                 num: article.num_key.clone(),
@@ -259,9 +259,28 @@ fn LegalRefRow(
             <span class="text-[var(--color-ink-muted)]">"art.\u{00A0}"{items}</span>
         }
     });
+    // Nom de l'instrument cliquable vers `/texte/{slug}` (le texte entier) dès que la
+    // citation est résolue au catalogue — même doctrine que le corps, où une
+    // mention nue mène à `/texte/{slug}` (decisions.rs, 2026-07-05). Sans ce lien, un
+    // texte cité EN BLOC (articles vides) n'ouvrait rien depuis l'encart.
+    let instrument_view = match slug {
+        Some(s) => view! {
+            <A
+                href=format!("/texte/{s}")
+                attr:class="font-medium text-[var(--color-ink)] underline underline-offset-4 hover:text-[var(--color-accent)]"
+            >
+                {instrument}
+            </A>
+        }
+        .into_any(),
+        None => view! {
+            <span class="font-medium text-[var(--color-ink)]">{instrument}</span>
+        }
+        .into_any(),
+    };
     view! {
         <li class="flex flex-wrap items-baseline gap-2 text-sm">
-            <span class="font-medium text-[var(--color-ink)]">{instrument}</span>
+            {instrument_view}
             {articles_view}
         </li>
     }

@@ -7,7 +7,7 @@
 //! non liés de `legal_citation`, retranchés de `full_text`), pas tout EUR-Lex.
 //!
 //! Ce module est un GÉNÉRATEUR de datasets : il écrit un JSON par acte sous
-//! `<state_dir>/sources/legal-corpus/` (règle #17), consommé ensuite par le loader
+//! `<state_dir>/ingest/corpus/` (règle #17), consommé ensuite par le loader
 //! `load_legal_corpus` (frontière d'écriture DB unique, règle #2). Idempotent : un
 //! dataset déjà présent n'est pas re-fetché (reprise après interruption).
 //!

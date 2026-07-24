@@ -56,3 +56,10 @@ docs/working-notes/*-manifest.jsonl
 *.swo
 .*.swp
 .*.swo
+
+# Overrides mise machine-locaux (jamais partagés)
+.mise.local.toml
+mise.local.toml
+
+# Archives sources des skills portés dans le plugin (référence locale, hors git)
+/plugins/sources/

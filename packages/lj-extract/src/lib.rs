@@ -24,4 +24,6 @@ pub mod jorf;
 pub mod kali;
 pub mod legi;
 pub mod link;
+pub mod parties;
+pub mod registry;
 pub mod scan;

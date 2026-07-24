@@ -47,12 +47,21 @@ pub struct Decision {
     /// d'identité inter-sources (ADR 0080).
     pub ecli: Option<String>,
     // ── Optionnels (padding inter-sources) ───────────────────────────────
-    pub juridiction_code: Option<String>,
-    pub juridiction_nom: Option<String>,
+    /// Code juridiction du greffe opendata (`Code_Juridiction`, ex. « TA13 »).
+    pub jurisdiction_source_code: Option<String>,
+    /// Chambre Judilibre (payload `chamber`) : code CC (`soc`, `civ1`…) ou
+    /// texte libre de greffe CA/TJ/TCOM.
+    pub chamber: Option<String>,
+    /// Code NAC (nomenclature des affaires civiles, payload Judilibre `nac`,
+    /// ex. `14H`) posé par le greffe à l'enregistrement de l'affaire — porté
+    /// par les TJ (100 %) et CA (90 %), absent ailleurs.
+    #[serde(default)]
+    pub nac: Option<String>,
+    pub jurisdiction_name: Option<String>,
     /// TA / CAA / CE / CC / CA / TJ / TCOM (déduit du préfixe uid ou Judilibre).
-    pub juridiction_type: Option<String>,
+    pub jurisdiction_type: Option<String>,
     /// Code Judilibre (ca_paris, tj75056…).
-    pub juridiction_location: Option<String>,
+    pub jurisdiction_location: Option<String>,
     pub numero_dossier: Option<String>,
     /// Liste propre des numéros (Judilibre `numbers`, multi-valeur).
     pub numero_dossiers: Option<Vec<String>>,

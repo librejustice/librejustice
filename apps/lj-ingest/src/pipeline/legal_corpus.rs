@@ -3,7 +3,7 @@
 //! Source-agnostique (ADR 0108/0118) : la moitié **adaptative** (OCR, choix du
 //! document, juridiction/nature/statut, **segmentation**) vit en **Python jettable**
 //! (`scripts/segment_jafbase.py`, `scripts/curate_*.py`) qui produit un dataset JSON
-//! par texte sous `<state_dir>/sources/legal-corpus/`, **articles déjà découpés ET
+//! par texte sous `<state_dir>/ingest/corpus/`, **articles déjà découpés ET
 //! déjà nettoyés** (ADR 0118). Ce module n'est qu'un **pur inséreur** : il upsert le
 //! texte et insère les articles fournis, `texte` inséré **VERBATIM**. Les seules
 //! dérivations tolérées sont des CLÉS/colonnes calculées à partir des champs fournis
@@ -124,6 +124,14 @@ struct CorpusArticle {
     /// Multi-versions : historique daté (avenants des traités). Exclusif avec `texte`.
     #[serde(default)]
     versions: Option<Vec<CorpusVersion>>,
+    /// Fil d'Ariane des divisions englobantes (ADR 0186), segments joints par
+    /// ` > ` — même sérialisation que `legal_article.title_path` côté LEGI.
+    /// Produit par la curation ; le loader en dérive aussi les arêtes
+    /// `legal_toc_edge` (sommaire arborescent + vue-lecture par division).
+    /// Pour un article multi-versions (ADR 0187), le chemin est celui de la
+    /// structure COURANTE — chaque version reçoit une arête fenêtrée à sa place.
+    #[serde(default)]
+    title_path: Option<String>,
 }
 
 /// Défaut de `CorpusDoc::translation` (cas jafbase courant : traduction tierce).
@@ -139,7 +147,11 @@ fn default_translation() -> String {
 /// diffuseur** (`legifrance`, `jorf`…), jamais une URL ni une catégorie.
 #[derive(Deserialize)]
 struct CorpusVersion {
-    date_debut: String,
+    /// Absente ⇒ borne ouverte (version la plus ancienne dont le début n'est
+    /// pas connu — historique reconstitué d'instantanés, ADR 0187). Au plus
+    /// une par article (la PK `(text_uid, num_key, date_debut)` sentinelle).
+    #[serde(default)]
+    date_debut: Option<String>,
     #[serde(default)]
     date_fin: Option<String>,
     status: String,
@@ -187,33 +199,6 @@ fn file_mtime_date(path: &std::path::Path) -> Result<chrono::NaiveDate> {
     Ok(chrono::DateTime::<chrono::Utc>::from(mtime).date_naive())
 }
 
-/// `num_key` d'un article fourni en ligne — même canonicalisation que
-/// `segment::num_key_latin` (la clé de jointure des citations) : `premier`/`1er`
-/// → `1`, sinon `normalize_article`. Dupliqué (4 lignes) plutôt que d'élargir
-/// l'API publique de lj-core.
-fn num_key_of(num: &str) -> String {
-    let low = num.to_lowercase();
-    if low.starts_with("premier") || low.starts_with("1er") {
-        "1".to_string()
-    } else {
-        lj_extract::extract::normalize_article(num)
-    }
-}
-
-/// Clé de dé-collision : `normalize_article` est la clé de citation, volontairement
-/// *lossy* — elle tronque les sous-numéros (« 164/7 » → « 164 », ADR 0097). Pour un
-/// code servi INTÉGRAL, l'article de base ET ses sous-articles « /N » coexistent et
-/// doivent être stockés sous des PK `(text_uid, num_key, date_debut)` distinctes :
-/// sans ça, base + sous-articles s'écrasent (perte silencieuse). Quand plusieurs
-/// articles d'un même doc partagent la clé citation, on retombe ici sur le num brut
-/// canonicalisé (minuscule + espaces compactés) qui préserve « /N »/« bis »/labels.
-fn distinct_num_key(num: &str) -> String {
-    num.split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-        .to_lowercase()
-}
-
 fn dataset_files(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     if !dir.is_dir() {
         return Ok(Vec::new());
@@ -227,7 +212,7 @@ fn dataset_files(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(files)
 }
 
-/// Charge les datasets de `<state_dir>/sources/legal-corpus/*.json`. `only` (sous-chaîne
+/// Charge les datasets de `<state_dir>/ingest/corpus/*.json`. `only` (sous-chaîne
 /// du nom de fichier) restreint le chargement — chargement chirurgical d'un lot curé
 /// (ex. `eu-rproc`) sans réasserter les 3800 datasets déjà en base.
 pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
@@ -286,6 +271,8 @@ pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
             eli: None,
             nor: None,
             instrument_key: None,
+            body: None,
+            status: None,
         };
         repo.upsert_legal_text(&trow)
             .await
@@ -302,50 +289,61 @@ pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
             .await
             .map_err(|e| anyhow!("purge {}: {e}", doc.text_uid))?;
 
-        // Pré-passe : compter les clés de citation pour détecter les collisions
-        // (base « 164 » + sous-articles « 164/1 »… partagent `num_key_of`). Les
-        // articles dont la clé est partagée seront stockés sous une clé distincte.
-        let mut cite_key_counts: std::collections::HashMap<String, usize> =
-            std::collections::HashMap::new();
-        for art in &doc.articles {
-            *cite_key_counts.entry(num_key_of(&art.num)).or_default() += 1;
-        }
-
         // Articles déjà segmentés par la curation Python (ADR 0118). Une ligne par
         // article (mono `texte`) ou par version datée (multi `versions[]`).
         let mut n = 0usize;
+        let mut toc_articles: Vec<super::corpus_toc::TocArticle> = Vec::new();
         for (pos, art) in doc.articles.iter().enumerate() {
-            let cite_key = num_key_of(&art.num);
-            // Clé citation partagée dans le doc → dé-collision par num brut (préserve
-            // « /N »/« bis ») ; sinon clé citation (compat résolution de citations).
-            let num_key = if cite_key_counts.get(&cite_key).copied().unwrap_or(0) > 1 {
-                distinct_num_key(&art.num)
-            } else {
-                cite_key
-            };
+            // Clé d'identité (ADR 0236) : sans perte, injective par texte — la
+            // dé-collision base « 164 » / sous-articles « 164/1 » est intrinsèque.
+            let num_key = lj_core::article_key::identity_key(&art.num);
             match (&art.texte, &art.versions) {
                 (Some(_), Some(_)) | (None, None) => bail!(
                     "dataset {} article {} : `texte` (mono) et `versions` (multi) exclusifs, un requis",
                     doc.text_uid,
                     art.num
                 ),
-                // Multi-versions : une ligne par version datée (avenants des traités).
+                // Multi-versions : une ligne par version datée (avenants des
+                // traités, historiques reconstitués ADR 0187).
                 (None, Some(versions)) => {
+                    if versions.iter().filter(|v| v.date_debut.is_none()).count() > 1 {
+                        bail!(
+                            "dataset {} article {} : plusieurs versions à borne ouverte \
+                             (PK sentinelle (text_uid, num_key, date_debut))",
+                            doc.text_uid,
+                            art.num
+                        );
+                    }
+                    let mut toc_versions = Vec::with_capacity(versions.len());
                     for v in versions {
                         // Provenance par version (ADR 0131) : override de l'avenant, sinon doc-level.
                         let v_asof = match v.source_asof.as_deref() {
                             Some(s) => Some(parse_date(s)?),
                             None => source_asof,
                         };
+                        // Borne ouverte (pas de début connu) : identité mono-forme,
+                        // même `source_uid` que joindrait une arête TOC sans date.
+                        let source_uid = match v.date_debut.as_deref() {
+                            Some(d) => format!("{}#{}@{}", doc.text_uid, num_key, d),
+                            None => format!("{}#{}", doc.text_uid, num_key),
+                        };
+                        let date_debut = v.date_debut.as_deref().map(parse_date).transpose()?;
+                        let date_fin = v.date_fin.as_deref().map(parse_date).transpose()?;
+                        toc_versions.push(super::corpus_toc::TocVersion {
+                            source_uid: source_uid.clone(),
+                            status: v.status.clone(),
+                            date_debut,
+                            date_fin,
+                        });
                         let row = LegalArticleRow {
                             text_uid: doc.text_uid.clone(),
                             num: art.num.clone(),
                             num_key: num_key.clone(),
                             position: Some(pos as i32),
-                            title_path: None,
+                            title_path: art.title_path.clone(),
                             status: v.status.clone(),
-                            date_debut: Some(parse_date(&v.date_debut)?),
-                            date_fin: v.date_fin.as_deref().map(parse_date).transpose()?,
+                            date_debut,
+                            date_fin,
                             texte: Some(v.texte.clone()),
                             // Original par version non géré (avenants traités) ; ADR 0116.
                             texte_original: None,
@@ -354,7 +352,7 @@ pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
                             nota: art.nota.clone(),
                             content_checksum: xxhash_rust::xxh3::xxh3_64(v.texte.as_bytes()),
                             source: v.source.clone().unwrap_or_else(|| doc.source.clone()),
-                            source_uid: format!("{}#{}@{}", doc.text_uid, num_key, v.date_debut),
+                            source_uid,
                             source_url: v.source_url.clone().or_else(|| doc.source_url.clone()),
                             source_asof: v_asof,
                             source_upstream_url: v
@@ -367,20 +365,38 @@ pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
                             .map_err(|e| anyhow!("upsert {}: {e}", row.source_uid))?;
                         n += 1;
                     }
+                    toc_articles.push(super::corpus_toc::TocArticle {
+                        num: art.num.clone(),
+                        num_key: num_key.clone(),
+                        versions: toc_versions,
+                        title_path: art.title_path.clone(),
+                    });
                 }
                 // Mono-version : `effect_date` partagé (law-at-date) ou borne ouverte.
                 (Some(texte), None) => {
+                    let status = if doc.detect_abrogation {
+                        article_status(texte).to_string()
+                    } else {
+                        "VIGUEUR".to_string()
+                    };
+                    toc_articles.push(super::corpus_toc::TocArticle {
+                        num: art.num.clone(),
+                        num_key: num_key.clone(),
+                        versions: vec![super::corpus_toc::TocVersion {
+                            source_uid: format!("{}#{}", doc.text_uid, num_key),
+                            status: status.clone(),
+                            date_debut: None,
+                            date_fin: None,
+                        }],
+                        title_path: art.title_path.clone(),
+                    });
                     let row = LegalArticleRow {
                         text_uid: doc.text_uid.clone(),
                         num: art.num.clone(),
                         num_key: num_key.clone(),
                         position: Some(pos as i32),
-                        title_path: None,
-                        status: if doc.detect_abrogation {
-                            article_status(texte).to_string()
-                        } else {
-                            "VIGUEUR".to_string()
-                        },
+                        title_path: art.title_path.clone(),
+                        status,
                         date_debut: effect_date,
                         date_fin: None,
                         texte: Some(texte.clone()),
@@ -402,12 +418,24 @@ pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
                 }
             }
         }
+        // Structure (ADR 0186) : purge autoritaire des arêtes du texte, puis
+        // réécriture de l'arbre dérivé des `title_path` (vide = corpus à plat).
+        repo.delete_toc_edges_by_text(&doc.text_uid)
+            .await
+            .map_err(|e| anyhow!("delete_toc_edges_by_text {}: {e}", doc.text_uid))?;
+        let toc = super::corpus_toc::derive_corpus_toc(&doc.text_uid, &toc_articles);
+        let toc_edges = repo
+            .replace_toc_edges(&toc)
+            .await
+            .map_err(|e| anyhow!("replace_toc_edges {}: {e}", doc.text_uid))?;
+
         tracing::info!(
             text_uid = doc.text_uid,
             source = doc.source,
             jurisdiction = doc.jurisdiction,
             articles = n,
             deleted,
+            toc_edges,
             "legal corpus loaded"
         );
     }

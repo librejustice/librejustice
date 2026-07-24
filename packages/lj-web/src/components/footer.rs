@@ -6,8 +6,27 @@ use leptos::prelude::*;
 pub fn Footer() -> impl IntoView {
     view! {
         <footer class="border-t border-[var(--color-rule)] bg-[var(--color-vellum)]">
-            <div class="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-8 text-sm text-[var(--color-ink-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
-                <p class="text-base">
+            <div class="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-6 text-sm text-[var(--color-ink-muted)] sm:flex-row sm:items-center sm:justify-between sm:px-6 sm:py-8 lg:px-8">
+                <nav class="flex flex-wrap gap-x-5 gap-y-2">
+                    <a class="hover:text-[var(--color-ink)]" href="/sources">
+                        "Données"
+                    </a>
+                    <a class="hover:text-[var(--color-ink)]" href="/mentions-legales">
+                        "Mentions légales"
+                    </a>
+                    <a class="hover:text-[var(--color-ink)]" href="/confidentialite">
+                        "Confidentialité"
+                    </a>
+                    <a
+                        class="hover:text-[var(--color-ink)]"
+                        href="https://github.com/librejustice/librejustice"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                    >
+                        "Code source"
+                    </a>
+                </nav>
+                <p class="hidden text-base sm:block">
                     <span
                         class="font-sans tracking-[0.02em] text-[var(--color-ink-muted)]"
                         style="font-variation-settings: 'wght' 300"
@@ -21,17 +40,6 @@ pub fn Footer() -> impl IntoView {
                         "Justice"
                     </span>
                 </p>
-                <nav class="flex flex-wrap gap-x-5 gap-y-2">
-                    <a class="hover:text-[var(--color-ink)]" href="/sources">
-                        "Données & sources"
-                    </a>
-                    <a class="hover:text-[var(--color-ink)]" href="/mentions-legales">
-                        "Mentions légales"
-                    </a>
-                    <a class="hover:text-[var(--color-ink)]" href="/confidentialite">
-                        "Confidentialité"
-                    </a>
-                </nav>
             </div>
         </footer>
     }

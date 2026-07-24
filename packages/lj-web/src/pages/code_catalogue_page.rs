@@ -1,8 +1,12 @@
 //! Page `/codes` (CodeCataloguePage) — catalogue des codes et lois du corpus
-//! (`legal_text`). Rendue SSR (liste crawlable, route indexable), groupée par
-//! ordre/origine (FR / UE / international / codes étrangers), chaque code liant
-//! son sommaire `/loi/{code}`. Une boîte de filtre client affine la liste par
-//! titre sans rappel réseau.
+//! (`legal_text`), groupé par ordre/origine (FR / UE / international / codes
+//! étrangers), chaque code liant son sommaire `/texte/{code}`.
+//!
+//! Le SSR ne rend que les familles de TÊTE (codes, constitutions — ~200
+//! entrées) : rendre les 6 700 entrées pesait 6,2 Mo de DOM + payload
+//! d'hydratation. La longue traîne (lois, ordonnances, règlements UE) se
+//! charge à la demande — dépliage explicite ou première frappe du filtre.
+//! Les textes de la traîne restent crawlables par les sitemaps `/texte`.
 
 use leptos::either::Either;
 use leptos::prelude::*;
@@ -15,16 +19,16 @@ use crate::pages::law_page::data::{sendable, PageError};
 
 #[component]
 pub fn CodeCataloguePage() -> impl IntoView {
-    // Catalogue bloquant SSR (liste dans le document initial pour le SEO).
+    // Familles de tête, bloquant SSR (dans le document initial pour le SEO).
     let entries = Resource::new_blocking(|| (), |_| sendable(fetch_catalogue()));
 
     view! {
         <Suspense fallback=CatalogueSkeleton>
             {move || Suspend::new(async move {
                 match entries.await {
-                    Ok(entries) => {
+                    Ok(r) => {
                         set_cache_control(200);
-                        Either::Left(view! { <CatalogueLoaded entries=entries /> })
+                        Either::Left(view! { <CatalogueLoaded entries=r.entries total=r.total /> })
                     }
                     Err(err) => {
                         set_cache_control(err.status);
@@ -36,24 +40,28 @@ pub fn CodeCataloguePage() -> impl IntoView {
     }
 }
 
-/// Charge le catalogue des codes. Bloquant SSR.
-async fn fetch_catalogue() -> Result<Vec<CodeCatalogueEntry>, PageError> {
+/// Charge les familles de tête du catalogue. Bloquant SSR.
+async fn fetch_catalogue() -> Result<lj_dtos::CodeCatalogueResponse, PageError> {
     ApiClient::from_context()
-        .fetch_codes_catalogue()
+        .fetch_codes_catalogue(true)
         .await
-        .map(|r| r.entries)
         .map_err(PageError::from)
 }
 
 #[cfg(feature = "ssr")]
 fn set_cache_control(status: u16) {
-    use axum::http::{header::CACHE_CONTROL, HeaderValue};
+    use axum::http::{header::CACHE_CONTROL, HeaderValue, StatusCode};
     let value = match status {
         200 => "public, max-age=0, s-maxage=604800, stale-while-revalidate=86400",
         404 | 400 | 422 => "public, max-age=0, s-maxage=300",
         _ => "no-store",
     };
     if let Some(resp) = use_context::<leptos_axum::ResponseOptions>() {
+        if status != 200 {
+            if let Ok(code) = StatusCode::from_u16(status) {
+                resp.set_status(code);
+            }
+        }
         if let Ok(hv) = HeaderValue::from_str(value) {
             resp.insert_header(CACHE_CONTROL, hv);
         }
@@ -65,7 +73,7 @@ fn set_cache_control(_status: u16) {}
 
 #[component]
 fn CatalogueError(err: PageError) -> impl IntoView {
-    let title = "Catalogue indisponible — LibreJustice";
+    let title = "Catalogue indisponible - LibreJustice";
     view! {
         <Title text=title />
         <Meta name="robots" content="noindex" />
@@ -127,34 +135,52 @@ fn nature_category(nature: &str) -> (u8, &'static str) {
 }
 
 #[component]
-fn CatalogueLoaded(entries: Vec<CodeCatalogueEntry>) -> impl IntoView {
-    let title = "Codes & lois — LibreJustice";
+fn CatalogueLoaded(entries: Vec<CodeCatalogueEntry>, total: u64) -> impl IntoView {
+    let title = "Codes & lois - LibreJustice";
     let description =
         "Catalogue des codes et lois consolidés : droit français, droit de l'Union européenne, \
          conventions internationales et codes étrangers. Versions à date, articles liés.";
 
     // Filtre texte (client) : signal saisi par l'utilisateur, appliqué sur le
-    // titre. En SSR le filtre est vide ⇒ tout le catalogue est rendu (crawlable).
+    // titre. En SSR le filtre est vide ⇒ les familles de tête sont rendues.
     let filter = RwSignal::new(String::new());
+    let tail_count = total.saturating_sub(entries.len() as u64);
+    let head = StoredValue::new(entries);
 
-    // Groupes ordonnés (FR, UE, INTL, autres) à partir des entrées du corpus. Calculé
-    // une fois (données non réactives) ; chaque groupe garde son ordre d'arrivée.
-    let mut groups: Vec<(String, Vec<CodeCatalogueEntry>)> = Vec::new();
-    for entry in entries {
-        if let Some(g) = groups.iter_mut().find(|(j, _)| *j == entry.jurisdiction) {
-            g.1.push(entry);
-        } else {
-            groups.push((entry.jurisdiction.clone(), vec![entry]));
+    // Longue traîne : chargée UNE fois, à la demande — dépliage explicite ou
+    // première frappe du filtre (le filtre cherche sur tout le catalogue).
+    let want_full = RwSignal::new(false);
+    let full = RwSignal::new(None::<Vec<CodeCatalogueEntry>>);
+    Effect::new(move |_| {
+        if !want_full.get() || full.with(Option::is_some) {
+            return;
         }
-    }
-    groups.sort_by_key(|(j, _)| group_rank(j));
+        leptos::task::spawn_local(async move {
+            if let Ok(r) = ApiClient::from_context().fetch_codes_catalogue(false).await {
+                full.set(Some(r.entries));
+            }
+        });
+    });
 
-    let sections = groups
-        .into_iter()
-        .map(|(jurisdiction, codes)| {
-            view! { <CatalogueSection jurisdiction=jurisdiction codes=codes filter=filter /> }
-        })
-        .collect_view();
+    // Jeu actif : la traîne complète dès qu'elle est chargée, la tête sinon.
+    let dataset = Memo::new(move |_| {
+        full.get()
+            .filter(|_| want_full.get())
+            .unwrap_or_else(|| head.get_value())
+    });
+    // Groupes ordonnés (FR, UE, INTL, autres), recalculés au changement de jeu.
+    let groups = Memo::new(move |_| {
+        let mut groups: Vec<(String, Vec<CodeCatalogueEntry>)> = Vec::new();
+        for entry in dataset.get() {
+            if let Some(g) = groups.iter_mut().find(|(j, _)| *j == entry.jurisdiction) {
+                g.1.push(entry);
+            } else {
+                groups.push((entry.jurisdiction.clone(), vec![entry]));
+            }
+        }
+        groups.sort_by_key(|(j, _)| group_rank(j));
+        groups
+    });
 
     view! {
         <Title text=title />
@@ -175,13 +201,41 @@ fn CatalogueLoaded(entries: Vec<CodeCatalogueEntry>) -> impl IntoView {
             <input
                 type="search"
                 prop:value=move || filter.get()
-                on:input=move |ev| filter.set(event_target_value(&ev))
+                on:input=move |ev| {
+                    let v = event_target_value(&ev);
+                    if !v.trim().is_empty() {
+                        want_full.set(true);
+                    }
+                    filter.set(v);
+                }
                 placeholder="Filtrer par titre (ex. « civil »)…"
                 autocomplete="off"
                 class="w-full rounded-lg border border-[var(--color-rule)] bg-[var(--color-parchment)] px-4 py-2.5 text-sm text-[var(--color-ink)] outline-none focus:border-[var(--color-accent)]"
             />
 
-            {sections}
+            <Show when=move || want_full.get() && full.with(Option::is_none)>
+                <p class="text-sm text-[var(--color-ink-subtle)]">
+                    "Chargement du catalogue complet…"
+                </p>
+            </Show>
+
+            <For
+                each=move || groups.get()
+                key=|(j, codes): &(String, Vec<CodeCatalogueEntry>)| (j.clone(), codes.len())
+                children=move |(jurisdiction, codes): (String, Vec<CodeCatalogueEntry>)| {
+                    view! { <CatalogueSection jurisdiction=jurisdiction codes=codes filter=filter /> }
+                }
+            />
+
+            <Show when=move || { tail_count > 0 && !want_full.get() }>
+                <button
+                    type="button"
+                    on:click=move |_| want_full.set(true)
+                    class="self-start rounded-lg border border-[var(--color-rule)] px-4 py-2.5 text-sm text-[var(--color-ink-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                >
+                    {format!("Afficher les {tail_count} lois, ordonnances et règlements du corpus")}
+                </button>
+            </Show>
         </div>
     }
 }
@@ -261,7 +315,7 @@ fn CatalogueCategory(label: &'static str, codes: Vec<CodeCatalogueEntry>) -> imp
 
 #[component]
 fn CatalogueRow(entry: CodeCatalogueEntry) -> impl IntoView {
-    let href = format!("/loi/{}", entry.code);
+    let href = format!("/texte/{}", entry.code);
     let count = format!(
         "{} article{}",
         entry.article_count,

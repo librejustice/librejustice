@@ -6,7 +6,7 @@
 //! directement dans l'INSERT (`WHERE EXISTS`, ADR 0056).
 
 use deadpool_postgres::Pool;
-use lj_dtos::{BookmarkItem, JuridictionType};
+use lj_dtos::{BookmarkItem, JurisdictionType};
 
 use crate::error::ApiError;
 use crate::me::ts_to_rfc3339;
@@ -42,9 +42,9 @@ async fn resolve_decision_id(pool: &Pool, public_id: &str) -> Result<i64, ApiErr
 }
 
 /// Désérialise une valeur TEXT de juridiction (`"TA"`, `"CE"`, …) vers l'enum.
-fn parse_juridiction_type(raw: &str) -> Result<JuridictionType, ApiError> {
+fn parse_jurisdiction_type(raw: &str) -> Result<JurisdictionType, ApiError> {
     serde_json::from_value(serde_json::Value::String(raw.to_string()))
-        .map_err(|e| ApiError::Internal(format!("juridiction_type invalide {raw:?}: {e}")))
+        .map_err(|e| ApiError::Internal(format!("jurisdiction_type invalide {raw:?}: {e}")))
 }
 
 /// Page de signets (plus récents d'abord) + total complet (parité
@@ -67,7 +67,7 @@ pub async fn fetch_bookmarks(
         .query(
             "SELECT \
                d.public_id, \
-               d.juridiction_type, \
+               d.jurisdiction_type, \
                d.jurisdiction_code, \
                to_char(d.date_lecture, 'YYYY-MM-DD') AS date_lecture, \
                d.docket_numbers, \
@@ -97,10 +97,10 @@ pub async fn fetch_bookmarks(
             .as_deref()
             .and_then(|c| refs.jurisdiction(c))
             .map(|j| j.label.clone());
-        // Titre composé depuis les référentiels (ADR 0146 §4), jamais la colonne
-        // `search_title` (formation source brute).
+        // Titre court composé depuis les référentiels (ADR 0146 §4), sans
+        // siège — la liste des signets n'a pas besoin de la chambre.
         let title = decision_title(
-            refs.juridiction_type_label(jur_type_raw)
+            refs.jurisdiction_type_label(jur_type_raw)
                 .unwrap_or(jur_type_raw),
             jurisdiction_name.as_deref(),
             None,
@@ -110,7 +110,7 @@ pub async fn fetch_bookmarks(
         items.push(BookmarkItem {
             id: row.get(0),
             title,
-            juridiction_type: parse_juridiction_type(jur_type_raw)?,
+            jurisdiction_type: parse_jurisdiction_type(jur_type_raw)?,
             jurisdiction_name,
             date_lecture,
             docket_numbers,
@@ -184,13 +184,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_juridiction_type_roundtrip() {
-        assert_eq!(parse_juridiction_type("TA").unwrap(), JuridictionType::Ta);
-        assert_eq!(parse_juridiction_type("CE").unwrap(), JuridictionType::Ce);
+    fn parse_jurisdiction_type_roundtrip() {
+        assert_eq!(parse_jurisdiction_type("TA").unwrap(), JurisdictionType::Ta);
+        assert_eq!(parse_jurisdiction_type("CE").unwrap(), JurisdictionType::Ce);
         assert_eq!(
-            parse_juridiction_type("TCOM").unwrap(),
-            JuridictionType::Tcom
+            parse_jurisdiction_type("TCOM").unwrap(),
+            JurisdictionType::Tcom
         );
-        assert!(parse_juridiction_type("NOPE").is_err());
+        assert!(parse_jurisdiction_type("NOPE").is_err());
     }
 }

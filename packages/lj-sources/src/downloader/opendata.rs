@@ -16,12 +16,12 @@ use tracing::instrument;
 // ----------------------------------------------------------------------------
 
 const OPENDATA_BASE_URL: &str = "https://opendata.justice-administrative.fr";
-const OPENDATA_SOURCE_DIR: &str = "opendata_conseil_etat";
+use crate::state_paths::OPENDATA_DIR;
 const OPENDATA_USER_AGENT: &str = "librejustice-downloader/0.1 (+https://github.com/)";
 const DEFAULT_EARLIEST: &str = "2021-01";
 
 /// `(sub_path, file_prefix, reverses_csv)` par juridiction opendata.
-fn juridiction_meta(jur: &str) -> Option<(&'static str, &'static str, &'static str)> {
+fn jurisdiction_meta(jur: &str) -> Option<(&'static str, &'static str, &'static str)> {
     match jur {
         "TA" => Some(("DTA", "TA", "TA_documents_reverses.csv")),
         "CAA" => Some(("DCA", "CAA", "CAA_documents_reverses.csv")),
@@ -30,11 +30,11 @@ fn juridiction_meta(jur: &str) -> Option<(&'static str, &'static str, &'static s
     }
 }
 
-const OPENDATA_JURIDICTIONS: &[&str] = &["TA", "CAA", "CE"];
+const OPENDATA_JURISDICTIONS: &[&str] = &["TA", "CAA", "CE"];
 
 /// Construit l'URL d'une archive opendata (port de `_build_url`).
 fn build_opendata_url(jur: &str, yyyymm: &str) -> String {
-    let (sub, prefix, _) = juridiction_meta(jur).expect("juridiction opendata connue");
+    let (sub, prefix, _) = jurisdiction_meta(jur).expect("juridiction opendata connue");
     let (y, m) = (&yyyymm[0..4], &yyyymm[4..6]);
     format!("{OPENDATA_BASE_URL}/{sub}/{y}/{m}/{prefix}_{yyyymm}.zip")
 }
@@ -56,7 +56,7 @@ fn build_opendata_url(jur: &str, yyyymm: &str) -> String {
 /// span parent couvrant tout le sync opendata.
 #[instrument(skip(data_dir))]
 pub fn sync_opendata(data_dir: &Path, force: bool) -> Result<Manifest> {
-    let source_dir = data_dir.join(OPENDATA_SOURCE_DIR);
+    let source_dir = data_dir.join(OPENDATA_DIR);
     fs::create_dir_all(source_dir.join("zips"))?;
     let manifest_path = source_dir.join("manifest.json");
     let mut manifest = Manifest::load(&manifest_path)?;
@@ -73,7 +73,7 @@ pub fn sync_opendata(data_dir: &Path, force: bool) -> Result<Manifest> {
         .timeout(std::time::Duration::from_secs(300))
         .build()?;
 
-    for jur in OPENDATA_JURIDICTIONS {
+    for jur in OPENDATA_JURISDICTIONS {
         download_reverses_csv(&client, jur, &source_dir)?;
         let registry = load_reverses_registry(jur, &source_dir)?;
         for yyyymm in &months {
@@ -136,7 +136,7 @@ pub fn sync_opendata(data_dir: &Path, force: bool) -> Result<Manifest> {
 /// reversement. Le sync en dépend pour la détection de fraîcheur → registry
 /// absent/illisible = erreur franche (pas de fallback HEAD silencieux).
 fn load_reverses_registry(jur: &str, source_dir: &Path) -> Result<BTreeMap<String, String>> {
-    let (_, _, csv_name) = juridiction_meta(jur).expect("juridiction opendata connue");
+    let (_, _, csv_name) = jurisdiction_meta(jur).expect("juridiction opendata connue");
     let path = source_dir.join("documents_reverses").join(csv_name);
     // CSV opendata non-UTF-8 (Latin-1/Windows-1252 : accents dans les noms de
     // fichiers / numéros). Les colonnes lues (ZIP, date) sont ASCII → décodage
@@ -249,7 +249,7 @@ fn download_reverses_csv(
     jur: &str,
     data_dir: &Path,
 ) -> Result<()> {
-    let (sub, _, csv_name) = juridiction_meta(jur).expect("juridiction opendata connue");
+    let (sub, _, csv_name) = jurisdiction_meta(jur).expect("juridiction opendata connue");
     let url = format!("{OPENDATA_BASE_URL}/{sub}/{csv_name}");
     let dst = data_dir.join("documents_reverses").join(csv_name);
     if let Some(parent) = dst.parent() {

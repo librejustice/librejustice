@@ -45,7 +45,10 @@ pub type SearchResult = Result<SearchResponse, String>;
 async fn run_search(key: SearchKey) -> SearchResult {
     let client = ApiClient::from_context();
     let request = request_from_key(&key);
-    client.search(&request).await.map_err(|e| e.message)
+    client
+        .search(&request, lj_dtos::SearchContext::User)
+        .await
+        .map_err(|e| e.message)
 }
 
 /// Scope de cache partagé : `QueryScope::new` dérive sa `cache_key` du `TypeId`

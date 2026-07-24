@@ -6,13 +6,16 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-// Suffixes d'article RÉELS (articles distincts : « L. 80 B », « 1 bis »…).
+// Suffixes d'article RÉELS (articles distincts : « L. 80 B », « 1 bis »…),
+// triés longueur décroissante : l'alternation `regex` est leftmost-first, un
+// préfixe placé avant son mot long le court-circuiterait (« quater » mangeait
+// « quatertricies » → clé tronquée, collision CGI — ADR 0236).
 // Les marqueurs ordinaux (1er, 1ère, 1re, 2ème) ne sont PAS des suffixes
 // distinctifs : « article 1er » = « article premier » = article 1. On les exclut
 // pour que `article_core` tronque au chiffre (1er → 1), forme canonique que la GT
 // emploie. La comparaison de l'éval normalisant les deux côtés, ça ne peut
 // qu'apparier davantage (1er ≡ 1), jamais créer de faux appariement.
-const ART_NUM_SUFFIX: &str = r"bis|ter|quater|quarto|quinquies|sexies|septies|octies|nonies|decies|undecies|duodecies|terdecies|quaterdecies|quindecies|sexdecies|septdecies|octodecies|novodecies|vicies";
+pub(crate) const ART_NUM_SUFFIX: &str = r"quatertricies|quinquedecies|quaterdecies|quatervicies|quintricies|septtricies|duotricies|novodecies|novovicies|octodecies|octovicies|quindecies|quinvicies|septdecies|septvicies|sextricies|tertricies|duodecies|duovicies|quinquies|sexdecies|sexvicies|terdecies|tervicies|untricies|cinquies|undecies|unvicies|septies|sexties|tricies|decies|nonies|novies|octies|quarto|quater|sexies|vicies|bis|ter";
 
 // `_RE_ART_TRAILING_NOISE`.
 static RE_ART_TRAILING_NOISE: LazyLock<Regex> = LazyLock::new(|| {
@@ -48,6 +51,7 @@ static RE_ART_PREFIX_NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^[
 // s'enchaîner (« 600-4 -1 » → « 600-4-1 »), fidèle au zéro-largeur Python ;
 // un `(\d)…(\d)` consommerait le `4` partagé et laisserait « 600-4 -1 ».
 static RE_ART_NORM_DASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*-\s*").unwrap());
+static RE_ART_NORM_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*\.\s*").unwrap());
 static RE_ART_NORM_SPACE_DASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 static RE_ART_NORM_TRAILING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\s+(?:précit[eé]e?s?|susvis[éè]e?s?|modifi[ée]e?s?)$").unwrap()
@@ -91,6 +95,11 @@ pub fn normalize_article(raw: &str) -> String {
         .to_string();
     raw = collapse_between_digits(&raw, &RE_ART_NORM_DASH);
     raw = collapse_between_digits(&raw, &RE_ART_NORM_SPACE_DASH);
+    // Sous-numéros pointés (conventions KALI « 1.01 », « 31.5 ») : le point
+    // inter-chiffres est un séparateur de segment comme le tiret — même pliage
+    // que `article_key` (« 1.01 » ≡ clé `1-01`), sinon `article_core` tronque
+    // au premier segment et confond « 1.01 » avec « 1 » (ADR 0236).
+    raw = collapse_between_digits(&raw, &RE_ART_NORM_DOT);
     raw = RE_ART_NORM_TRAILING.replace(&raw, "").into_owned();
     raw = RE_ART_NORM_SUBPART.replace(&raw, "").into_owned();
     raw = RE_ART_NORM_SUIVANTS.replace(&raw, "").into_owned();
@@ -132,11 +141,27 @@ fn article_core(raw: &str) -> Option<String> {
         LazyLock::new(|| Regex::new(r"(?i)^(?:[LRDA]\.\s*)?\d+(?:-\d+)*").unwrap());
     static RE_SUFFIX_ORDINAL: LazyLock<Regex> =
         LazyLock::new(|| Regex::new(&format!(r"(?i)^\s*(?:{ART_NUM_SUFFIX})")).unwrap());
+    static RE_DASH_NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^\s*-\s*\d+").unwrap());
     let head = RE_HEAD.find(raw)?;
     let mut end = head.end();
     loop {
         let rest = &raw[end..];
         if let Some(m) = RE_SUFFIX_ORDINAL.find(rest) {
+            // Frontière de mot : un ordinal suivi d'une minuscule est un mot de
+            // prose qui COMMENCE comme un ordinal (« ter » dans « termine »),
+            // pas un suffixe — même règle latin-1 que `match_isolated_letter`.
+            let cont = rest[m.end()..]
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_lowercase() || ('\u{e0}'..='\u{ff}').contains(&c));
+            if m.start() == 0 && !cont {
+                end += m.end();
+                continue;
+            }
+        }
+        // Groupes tiret-chiffres APRÈS un suffixe ou une lettre (« 46 quater-0 W » :
+        // le « -0 » est un discriminant d'article distinct, pas une troncature).
+        if let Some(m) = RE_DASH_NUM.find(rest) {
             if m.start() == 0 {
                 end += m.end();
                 continue;
@@ -218,6 +243,39 @@ mod tests {
             normalize_article("605-11 quarto"),
             normalize_article("605-11")
         );
+    }
+
+    #[test]
+    fn normalize_article_serie_ordinale_complete_et_frontiere() {
+        // Série ordinale au-delà de « vicies » (annexes CGI, ADR 0236) : le mot
+        // ENTIER est le suffixe — l'alternation longueur-décroissante empêche
+        // « quater » de manger « quatertricies ».
+        assert_eq!(normalize_article("199 duovicies"), "199 duovicies");
+        assert_eq!(normalize_article("199 novovicies"), "199 novovicies");
+        assert_eq!(normalize_article("199 quatertricies"), "199 quatertricies");
+        assert_ne!(
+            normalize_article("199 quatertricies"),
+            normalize_article("199 quater")
+        );
+        // Frontière de mot : un mot de prose qui COMMENCE comme un ordinal
+        // n'est pas un suffixe (« terrain » ≠ « ter »).
+        assert_eq!(normalize_article("15 terrain"), "15");
+    }
+
+    #[test]
+    fn normalize_article_discriminants_post_suffixe_et_points() {
+        // Discriminant tiret-chiffre APRÈS le suffixe (« 46 quater-0 W », CGI
+        // annexe III) : article distinct, préservé intégralement.
+        assert_eq!(normalize_article("46 quater-0 W"), "46 quater-0 W");
+        assert_ne!(
+            normalize_article("46 quater-0 W"),
+            normalize_article("46 quater")
+        );
+        // Sous-numéros pointés (conventions KALI) : « 1.01 » ≡ clé « 1-01 »,
+        // distinct de « 1 » — même pliage que `article_key`.
+        assert_eq!(normalize_article("1.01"), "1-01");
+        assert_eq!(normalize_article("31.5"), "31-5");
+        assert_ne!(normalize_article("1.01"), normalize_article("1"));
     }
 
     #[test]

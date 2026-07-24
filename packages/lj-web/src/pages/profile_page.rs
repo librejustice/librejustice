@@ -21,7 +21,7 @@ const DELETE_CONFIRM_WORD: &str = "SUPPRIMER";
 #[component]
 pub fn ProfilePage() -> impl IntoView {
     view! {
-        <Title text="Profil — LibreJustice" />
+        <Title text="Profil - LibreJustice" />
         <Meta name="robots" content="noindex" />
         <AuthGuard fallback=|| view! { <ProfileSkeleton /> }>
             <ProfileView />

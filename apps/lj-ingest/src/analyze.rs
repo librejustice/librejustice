@@ -161,7 +161,7 @@ fn sample_entry(decision: &lj_core::decision::Decision, texte: &str, n_tokens: u
     let texte_debut: String = texte.chars().take(600).collect();
     json!({
         "source_uid": decision.source_uid,
-        "juridiction": decision.juridiction_code,
+        "juridiction": decision.jurisdiction_source_code,
         "date": decision.date_lecture,
         "type_recours": decision.type_recours,
         "solution": decision.solution,
@@ -197,8 +197,13 @@ pub fn run(data_dir: &Path, extra_dirs: &[PathBuf], sample: usize, seed: u64) ->
         for w in &decision.parse_warnings {
             warnings.bump(w);
         }
-        juridictions.bump(decision.juridiction_code.as_deref().unwrap_or("UNKNOWN"));
-        jur_types.bump(decision.juridiction_type.as_deref().unwrap_or("UNKNOWN"));
+        juridictions.bump(
+            decision
+                .jurisdiction_source_code
+                .as_deref()
+                .unwrap_or("UNKNOWN"),
+        );
+        jur_types.bump(decision.jurisdiction_type.as_deref().unwrap_or("UNKNOWN"));
         if let Some(tr) = &decision.type_recours {
             types_recours.bump(tr);
         }
@@ -243,7 +248,7 @@ pub fn run(data_dir: &Path, extra_dirs: &[PathBuf], sample: usize, seed: u64) ->
     Ok(json!({
         "total_decisions": total,
         "missing_texte_integral": missing_text,
-        "juridiction_types": jur_types.to_json(None),
+        "jurisdiction_types": jur_types.to_json(None),
         "juridictions_top_30": juridictions.to_json(Some(30)),
         "types_recours": types_recours.to_json(None),
         "solutions_top_20": solutions.to_json(Some(20)),

@@ -104,9 +104,10 @@ fn from_source_fields_xml_round_trips_decision_scalars() {
     let new = Decision::from_source_fields(&orig.texte_integral_clean, &sf, "DTA_1");
 
     // Scalaires (entrée des extractors facettes) identiques.
-    assert_eq!(new.juridiction_code, orig.juridiction_code);
-    assert_eq!(new.juridiction_nom, orig.juridiction_nom);
-    assert_eq!(new.juridiction_type, orig.juridiction_type);
+    assert_eq!(new.jurisdiction_source_code, orig.jurisdiction_source_code);
+    assert_eq!(new.chamber, orig.chamber);
+    assert_eq!(new.jurisdiction_name, orig.jurisdiction_name);
+    assert_eq!(new.jurisdiction_type, orig.jurisdiction_type);
     assert_eq!(new.numero_dossier, orig.numero_dossier);
     assert_eq!(new.date_lecture, orig.date_lecture);
     assert_eq!(new.type_recours, orig.type_recours);
@@ -138,7 +139,7 @@ fn from_source_fields_dispatches_on_source_fields_shape() {
     let xml_sf = build_source_fields_xml(xml);
     assert!(source_fields_is_xml(&xml_sf));
     let xml_new = Decision::from_source_fields(&xml_orig.texte_integral_clean, &xml_sf, "DTA_1");
-    assert_eq!(xml_new.juridiction_nom, xml_orig.juridiction_nom);
+    assert_eq!(xml_new.jurisdiction_name, xml_orig.jurisdiction_name);
     assert_eq!(xml_new.texte_integral_clean, xml_orig.texte_integral_clean);
     assert_eq!(xml_new.sections, xml_orig.sections);
 
@@ -163,14 +164,14 @@ fn from_source_fields_dispatches_on_source_fields_shape() {
     // Familles scrapées (#37) : le préfixe du `source_uid` route AVANT la forme
     // de `source_fields` (les colonnes HUDOC `appno`/`ecli` n'ont aucun
     // discriminant XML/DILA → tomberaient sinon dans la branche JSON). Le préfixe
-    // `cedh/` route vers le parseur dédié — `juridiction_type = CEDH`, pas le repli
+    // `cedh/` route vers le parseur dédié — `jurisdiction_type = CEDH`, pas le repli
     // JSON (`None`).
     let cedh_columns = json!({ "appno": "1/20", "ecli": "ECLI:CE:ECHR:2026:X" });
     let cedh_body = "Considérant ce qui suit : motifs. PAR CES MOTIFS, la Cour décide.";
     let cedh_sf = build_source_fields(&cedh_columns, &[]);
     assert!(!source_fields_is_xml(&cedh_sf));
     let cedh_new = Decision::from_source_fields(cedh_body, &cedh_sf, "cedh/001-1");
-    assert_eq!(cedh_new.juridiction_type.as_deref(), Some("CEDH"));
+    assert_eq!(cedh_new.jurisdiction_type.as_deref(), Some("CEDH"));
 }
 
 #[test]
@@ -242,7 +243,7 @@ fn chunker_input_reconstructible_from_full_text_and_source_fields() {
         }
         let payload: Value = serde_json::from_str(line).expect("json");
         let d = parse_judilibre(&payload, None);
-        if d.juridiction_type.is_none() || d.texte_integral_clean.is_empty() {
+        if d.jurisdiction_type.is_none() || d.texte_integral_clean.is_empty() {
             skipped += 1;
             continue;
         }
@@ -440,7 +441,7 @@ fn xml_general_entity_refs_are_resolved_in_text() {
 <Nom_Juridiction>Conseil&#160;d&#39;Etat</Nom_Juridiction>\
 </Dossier></Document>";
     let d2 = parse_xml(xml2, "DCE_2.xml", None);
-    assert_eq!(d2.juridiction_nom.as_deref(), Some("Conseil\u{a0}d'Etat"));
+    assert_eq!(d2.jurisdiction_name.as_deref(), Some("Conseil\u{a0}d'Etat"));
 }
 
 // ── Vocab ────────────────────────────────────────────────────────────────
@@ -564,10 +565,11 @@ fn parse_basic_identity_and_numbers() {
 
     assert_eq!(d.source_uid, "judilibre/abc123");
     assert_eq!(d.member_name, "abc123"); // member_name None → decision_id
-    assert_eq!(d.juridiction_code.as_deref(), Some("soc"));
-    assert_eq!(d.juridiction_nom.as_deref(), Some("Cour de cassation"));
-    assert_eq!(d.juridiction_type.as_deref(), Some("CC"));
-    assert_eq!(d.juridiction_location.as_deref(), Some("cc"));
+    assert_eq!(d.jurisdiction_source_code, None);
+    assert_eq!(d.chamber.as_deref(), Some("soc"));
+    assert_eq!(d.jurisdiction_name.as_deref(), Some("Cour de cassation"));
+    assert_eq!(d.jurisdiction_type.as_deref(), Some("CC"));
+    assert_eq!(d.jurisdiction_location.as_deref(), Some("cc"));
     // dédoublonnage + trim, ordre préservé.
     assert_eq!(
         d.numero_dossiers.as_deref(),
@@ -692,7 +694,7 @@ fn xml_source_uid_with_archive_prefix() {
     let xml = br#"<Document><Donnees_Techniques><Identification>X</Identification></Donnees_Techniques></Document>"#;
     let d = parse_xml(xml, "DTA_1_2.xml", Some("TA_202208.zip/TA34"));
     assert_eq!(d.source_uid, "TA_202208.zip/TA34/DTA_1_2.xml");
-    assert_eq!(d.juridiction_type.as_deref(), Some("TA"));
+    assert_eq!(d.jurisdiction_type.as_deref(), Some("TA"));
 }
 
 #[test]
@@ -700,7 +702,7 @@ fn xml_source_uid_fallback_uses_identification() {
     let xml = br#"<Document><Donnees_Techniques><Identification>DTA_42_99</Identification></Donnees_Techniques></Document>"#;
     let d = parse_xml(xml, "anyname.xml", None);
     assert_eq!(d.source_uid, "DTA_42_99");
-    assert_eq!(d.juridiction_type.as_deref(), Some("TA"));
+    assert_eq!(d.jurisdiction_type.as_deref(), Some("TA"));
 }
 
 #[test]
@@ -720,9 +722,9 @@ fn xml_fields_and_metadata_header() {
             </Audience>
         </Document>"#;
     let d = parse_xml(xml, "DTA_2204150_20220829.xml", Some("TA_202208.zip"));
-    assert_eq!(d.juridiction_code.as_deref(), Some("TA13"));
+    assert_eq!(d.jurisdiction_source_code.as_deref(), Some("TA13"));
     assert_eq!(
-        d.juridiction_nom.as_deref(),
+        d.jurisdiction_name.as_deref(),
         Some("Tribunal Administratif de Marseille")
     );
     assert_eq!(d.numero_dossier.as_deref(), Some("2204150"));
@@ -766,7 +768,7 @@ fn xml_itertext_aggregates_nested_text() {
     // <br/> imbriqué : itertext() doit recoller les morceaux.
     let xml = b"<Document><Dossier><Nom_Juridiction>Conseil <br/>d'Etat</Nom_Juridiction></Dossier></Document>";
     let d = parse_xml(xml, "DCE_1.xml", None);
-    assert_eq!(d.juridiction_nom.as_deref(), Some("Conseil d'Etat"));
+    assert_eq!(d.jurisdiction_name.as_deref(), Some("Conseil d'Etat"));
 }
 
 #[test]

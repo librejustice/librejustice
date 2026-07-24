@@ -1,4 +1,4 @@
-//! Logique SEO pure des pages /loi (titre, meta description, JSON-LD). Calqué
+//! Logique SEO pure des pages /texte (titre, meta description, JSON-LD). Calqué
 //! sur [`crate::seo::decision`] : module pur (aucun accès DOM/réseau), la donnée
 //! vient des DTO `lj-dtos`. Rust pur, PAS de `lj-core` (règle wasm).
 
@@ -6,21 +6,26 @@ use lj_dtos::LawArticleResponse;
 
 use super::generic::CANONICAL_BASE;
 
-/// URL canonique d'un article LEGI (`/loi/{code}/{num}`). La version-à-date
+/// URL canonique d'un article LEGI (`/texte/{code}/{num}`). La version-à-date
 /// (`…/{date}`) n'est jamais canonique : toutes les versions canonicalisent vers
 /// l'article courant pour ne pas fragmenter le SEO.
 pub fn article_canonical_url(code: &str, num: &str) -> String {
-    format!("{CANONICAL_BASE}/loi/{code}/{num}")
+    format!("{CANONICAL_BASE}/texte/{code}/{num}")
 }
 
-/// URL canonique d'un code (`/loi/{code}`).
+/// URL canonique d'un code (`/texte/{code}`).
 pub fn code_canonical_url(code: &str) -> String {
-    format!("{CANONICAL_BASE}/loi/{code}")
+    format!("{CANONICAL_BASE}/texte/{code}")
 }
 
 /// `<meta description>` d'un article : début du texte de l'article (ou son
 /// intitulé / fil d'Ariane à défaut de texte), tronqué sur une frontière de mot.
 pub fn article_meta_description(article: &LawArticleResponse, title: &str) -> String {
+    // Article modificatif : le `texte` est le résumé de liens brut (illisible en
+    // snippet SERP). On résume proprement depuis `modifications` (ADR 0173).
+    if !article.modifications.is_empty() {
+        return truncate_at_word(&modifying_description(article, title), META_DESCRIPTION_MAX);
+    }
     let raw = match article
         .texte
         .as_deref()
@@ -31,6 +36,44 @@ pub fn article_meta_description(article: &LawArticleResponse, title: &str) -> St
         None => title,
     };
     truncate_at_word(raw, META_DESCRIPTION_MAX)
+}
+
+/// Description SERP d'un article modificatif : verbes présents (modifie/crée/
+/// abroge) + codes cibles distincts, dérivés de `modifications`.
+fn modifying_description(article: &LawArticleResponse, title: &str) -> String {
+    let mut verbs: Vec<&str> = Vec::new();
+    for m in &article.modifications {
+        let v = match m.action.as_str() {
+            "modifie" => "modifie",
+            "cree" => "crée",
+            "abroge" => "abroge",
+            _ => continue,
+        };
+        if !verbs.contains(&v) {
+            verbs.push(v);
+        }
+    }
+    let mut codes: Vec<&str> = Vec::new();
+    for m in &article.modifications {
+        if !codes.contains(&m.code.as_str()) {
+            codes.push(&m.code);
+        }
+    }
+    let verbs = join_fr(&verbs);
+    let codes = join_fr(&codes);
+    if verbs.is_empty() || codes.is_empty() {
+        return title.to_string();
+    }
+    format!("{title} : {verbs} des dispositions de {codes}.")
+}
+
+/// Joint des libellés en français : « a, b et c ».
+fn join_fr(parts: &[&str]) -> String {
+    match parts {
+        [] => String::new(),
+        [only] => only.to_string(),
+        [head @ .., last] => format!("{} et {}", head.join(", "), last),
+    }
 }
 
 /// Cap meta description (limite SERP Google). Aligné sur `seo::decision`.

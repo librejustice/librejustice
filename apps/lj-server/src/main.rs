@@ -84,7 +84,7 @@ async fn run() -> Result<()> {
     // **précompressées** `.br`/`.gz` quand le client les accepte (générées au
     // build, cf. Dockerfile `precompress`). Le wasm release fait ~3,8 Mo brut,
     // ~1 Mo brotli : sans ça, chaque 1ʳᵉ visite télécharge 3,8 Mo — d'autant plus
-    // sensible que `/recherche` est CSR (le 1ᵉʳ paint attend le bundle, ADR 0063).
+    // sensible que `/decisions` est CSR (le 1ᵉʳ paint attend le bundle, ADR 0063).
     // Servir le `.br` pré-généré = zéro recompression par requête sur le nœud ARM.
     let pkg_dir = std::path::Path::new(&leptos_options.site_root.to_string())
         .join(leptos_options.site_pkg_dir.to_string());
@@ -115,6 +115,18 @@ async fn run() -> Result<()> {
 
     // Routeur SSR Leptos : l'`AppState` est fourni au contexte de chaque requête
     // (le client SSR `lj-web` l'y lit pour appeler la couche service in-process).
+    // Le fallback reçoit le même contexte : le Router Leptos matche les chemins à
+    // slash final (`/codes/`) sur leurs routes (`/codes`) alors qu'axum ne les
+    // route pas — le rendu de fallback traverse donc les vraies pages, qui lisent
+    // l'`AppState`. Sans contexte : panic `ApiClient::from_context` (520 en prod).
+    // On redirige d'abord ces chemins vers la forme canonique sans slash.
+    let leptos_fallback = leptos_axum::file_and_error_handler_with_context(
+        {
+            let state = state.clone();
+            move || provide_context(state.clone())
+        },
+        shell,
+    );
     let leptos_router = Router::new()
         .leptos_routes_with_context(
             &leptos_options,
@@ -128,7 +140,27 @@ async fn run() -> Result<()> {
                 move || shell(leptos_options.clone())
             },
         )
-        .fallback(leptos_axum::file_and_error_handler(shell))
+        .fallback(
+            move |uri: axum::http::Uri,
+                  st: axum::extract::State<LeptosOptions>,
+                  req: axum::extract::Request| {
+                let leptos_fallback = leptos_fallback.clone();
+                async move {
+                    let path = uri.path();
+                    if path.len() > 1 && path.ends_with('/') {
+                        let canonical = path.trim_end_matches('/');
+                        let target = match uri.query() {
+                            Some(q) => format!("{canonical}?{q}"),
+                            None => canonical.to_string(),
+                        };
+                        return axum::response::IntoResponse::into_response(
+                            axum::response::Redirect::permanent(&target),
+                        );
+                    }
+                    leptos_fallback(uri, st, req).await
+                }
+            },
+        )
         .with_state(leptos_options);
 
     // Fusion : routes données/MCP/OAuth (`lj-api`, sans fallback — c'est le
@@ -144,20 +176,16 @@ async fn run() -> Result<()> {
             "/mcp",
             axum::routing::get(|| async { axum::response::Redirect::temporary("/mcp/") }),
         )
-        // Anciennes routes de la recherche (ADR 0114) → pages actuelles
-        // (`/recherche` décisions, `/textes` lois et règlements), query
-        // préservée. Redirects 308 côté axum (un alias est une redirection
-        // HTTP, pas une page rendue) ; `lj-web` n'a plus ces routes. Côté
-        // textes, le filtre provenance a changé de clé (`source` → `origine`).
+        // Anciennes routes → pages actuelles, query préservée. Redirects 308
+        // côté axum (un alias est une redirection HTTP, pas une page rendue) ;
+        // `lj-web` n'a plus ces routes. Trois générations : recherche ADR 0114
+        // (`/recherche-*`), renommages 2026-07 (`/recherche` → `/decisions`,
+        // activité sous `/activite/`). Côté textes, le filtre provenance a
+        // changé de clé (`source` → `origine`).
+        .route("/recherche", redirect_preserving_query("/decisions"))
         .route(
             "/recherche-decisions",
-            axum::routing::get(|raw: axum::extract::RawQuery| async move {
-                let target = match raw.0.filter(|q| !q.is_empty()) {
-                    Some(q) => format!("/recherche?{q}"),
-                    None => "/recherche".to_string(),
-                };
-                axum::response::Redirect::permanent(&target)
-            }),
+            redirect_preserving_query("/decisions"),
         )
         .route(
             "/recherche-textes",
@@ -181,9 +209,38 @@ async fn run() -> Result<()> {
                 axum::response::Redirect::permanent(&target)
             }),
         )
+        // Activité : une route explicite par onglet sous `/activite/` ;
+        // `/activite` nu redirige vers l'onglet recherches (un seul chemin par
+        // concept). Les trois routes historiques restent servies en 308.
+        .route(
+            "/activite",
+            redirect_preserving_query("/activite/recherches"),
+        )
+        .route(
+            "/recherches",
+            redirect_preserving_query("/activite/recherches"),
+        )
+        .route("/signets", redirect_preserving_query("/activite/signets"))
+        .route("/lectures", redirect_preserving_query("/activite/lectures"))
+        // Référentiel : `/loi/*` → `/texte/*` (renommage 2026-07). Wildcard :
+        // ~1,05 M de pages d'articles indexées sous l'ancien schéma, plus les
+        // liens cités dans des conversations MCP passées. `uri.path()` reste
+        // percent-encodé tel quel — aucune réécriture des segments.
+        .route(
+            "/loi/{*rest}",
+            axum::routing::get(|uri: axum::http::Uri| async move {
+                let path = uri.path().strip_prefix("/loi").unwrap_or(uri.path());
+                let dest = match uri.query() {
+                    Some(q) => format!("/texte{path}?{q}"),
+                    None => format!("/texte{path}"),
+                };
+                axum::response::Redirect::permanent(&dest)
+            }),
+        )
         .nest_service("/pkg", pkg_service)
         .nest_service("/fonts", fonts_service)
-        .layer(CompressionLayer::new());
+        .layer(CompressionLayer::new())
+        .layer(axum::middleware::from_fn(pageview_span));
 
     // TLS in-process si le cert/clé Origin CA est configuré (prod, ADR §3) ;
     // sinon HTTP clair sur l'adresse cargo-leptos (dev).
@@ -207,4 +264,55 @@ async fn run() -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// Span `pageview` d'attribution d'acquisition (ADR 0251 / note
+/// landing-didactique) : émis pour les requêtes de **document** (GET, `Accept`
+/// contenant `text/html`) portant un `Referer` **externe** — jusqu'ici le canal
+/// d'entrée d'un utilisateur était invérifiable (aucun referer nulle part, ni
+/// DB ni spans). Les navigations internes (referer du site) et les crawlers
+/// (pas de Referer) sont exclus → volume faible côté Tempo ; aucune identité
+/// (RGPD / ADR 0039), seulement chemin d'atterrissage + origine.
+async fn pageview_span(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use tracing::Instrument;
+
+    let is_document = req.method() == axum::http::Method::GET
+        && req
+            .headers()
+            .get(axum::http::header::ACCEPT)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|a| a.contains("text/html"));
+    let external_referer = req
+        .headers()
+        .get(axum::http::header::REFERER)
+        .and_then(|v| v.to_str().ok())
+        .filter(|r| !r.contains("librejustice.fr"))
+        .map(str::to_owned);
+    match external_referer.filter(|_| is_document) {
+        Some(referer) => {
+            let span = tracing::info_span!(
+                "pageview",
+                librejustice.pageview.path = %req.uri().path(),
+                librejustice.pageview.referer = %referer,
+            );
+            next.run(req).instrument(span).await
+        }
+        None => next.run(req).await,
+    }
+}
+
+/// Route GET répondant un 308 vers `target`, query string préservée telle
+/// quelle (aucune réécriture de clés — les redirects qui en demandent une
+/// gardent leur closure dédiée).
+fn redirect_preserving_query(target: &'static str) -> axum::routing::MethodRouter {
+    axum::routing::get(move |raw: axum::extract::RawQuery| async move {
+        let dest = match raw.0.filter(|q| !q.is_empty()) {
+            Some(q) => format!("{target}?{q}"),
+            None => target.to_string(),
+        };
+        axum::response::Redirect::permanent(&dest)
+    })
 }

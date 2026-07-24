@@ -13,17 +13,19 @@
 //!    `text_uid` sur le **conteneur** (KALICONT) : c'est la convention qu'on cite
 //!    (« art. X de la CCN des Y »), pas l'avenant.
 //! 2. **Articles sans numéro** : beaucoup de `KALIARTI` ont `<NUM/>` vide
-//!    (organisés par titre de section, pas numérotés). Sans numéro ils ne sont pas
-//!    une cible de citation → [`parse_kali_article`] renvoie `Ok(None)` (skip
-//!    normal, pas une erreur de données comme le `NUM` absent côté LEGI).
+//!    (organisés par titre de section, pas numérotés). Le parseur les rend
+//!    quand même (`num_key` vide) : le référentiel citable les saute côté
+//!    pipeline d'ingest, mais l'assemblage du corps des TI (ADR 0223) les
+//!    consomme — le skip est une décision du consommateur, pas du parseur.
 //!
 //! Les `ETAT` étendus de KALI (`VIGUEUR_ETEN` convention étendue par arrêté,
 //! `VIGUEUR_NON_ETEN` en vigueur pour les seuls signataires) sont **repliés sur
 //! `VIGUEUR`** : ce sont des articles en vigueur, qui doivent compter comme tels
 //! pour le pick « texte vivant » et l'index partiel `status='VIGUEUR'`.
 
-use crate::extract::normalize_article;
-use crate::legi::{clean_contenu, collect_titre_tm, date_or_none, find_anywhere};
+use crate::legi::{
+    clean_contenu, collect_liens, collect_titre_tm, date_or_none, find_anywhere, LegiLien,
+};
 use lj_core::error::CoreError;
 use lj_core::parsing::{build_tree, node_text};
 
@@ -34,6 +36,11 @@ use lj_core::parsing::{build_tree, node_text};
 pub struct KaliArticle {
     pub kaliarti: String,
     pub kalicont: String,
+    /// Texte porteur (`CONTEXTE/TEXTE@cid`, le texte de base ou un avenant) —
+    /// sert à ordonner les blocs d'un conteneur (ADR 0223). Absent sur certains
+    /// articles ancrés directement au conteneur.
+    pub kalitext: Option<String>,
+    /// Vide pour les articles non numérotés (sections titrées) ; idem `num_key`.
     pub num: String,
     pub num_key: String,
     pub titre_text: Option<String>,
@@ -41,6 +48,7 @@ pub struct KaliArticle {
     pub date_debut: String,
     pub date_fin: Option<String>,
     pub texte: Option<String>,
+    pub liens: Vec<LegiLien>,
 }
 
 /// Un conteneur du fond KALI (`KALICONT*.xml`, racine `<IDCC>`) = une convention
@@ -54,6 +62,10 @@ pub struct KaliConteneur {
     pub etat: String,
     pub date_publi: Option<String>,
     pub num_broch: Option<String>,
+    /// `KALITEXT` du sommaire (`STRUCTURE_TXT/…/LIEN_TXT@idtxt`), dans l'ordre
+    /// du fichier : texte de base d'abord, puis textes attachés/salaires.
+    /// L'ordre inter-textes de l'assemblage du corps des TI (ADR 0223).
+    pub textes: Vec<String>,
 }
 
 /// Replie les `ETAT` « en vigueur » de KALI sur `VIGUEUR` (cf. doc module). Les
@@ -69,22 +81,22 @@ fn canon_etat(raw: &str) -> String {
 
 /// Parse un `KALIARTI*.xml` (racine `<ARTICLE>`) en [`KaliArticle`].
 ///
-/// `Ok(None)` si l'article n'a **pas de numéro** (`<NUM/>` vide) : non citable, on
-/// le saute (≠ erreur). `Err` ([`CoreError::Xml`]) si `ID`/`DATE_DEBUT`/`CONTENEUR
-/// @cid` manquent — frontière de validation source (#12).
-pub fn parse_kali_article(raw: &[u8]) -> Result<Option<KaliArticle>, CoreError> {
+/// Un article **sans numéro** (`<NUM/>` vide, section titrée) est rendu avec
+/// `num_key` vide — au consommateur de le sauter (référentiel citable) ou de le
+/// consommer (corps des TI, ADR 0223). `Err` ([`CoreError::Xml`]) si
+/// `ID`/`DATE_DEBUT`/`CONTENEUR@cid` manquent — frontière de validation
+/// source (#12).
+pub fn parse_kali_article(raw: &[u8]) -> Result<KaliArticle, CoreError> {
     let root =
         build_tree(raw).ok_or_else(|| CoreError::Xml("ARTICLE KALI: XML illisible".into()))?;
 
     let kaliarti = node_text(find_anywhere(&root, "META_COMMUN/ID"))
         .ok_or_else(|| CoreError::Xml("ARTICLE KALI: META_COMMUN/ID manquant".into()))?;
 
-    // NUM souvent vide en KALI (articles organisés par titre de section) → skip.
+    // NUM souvent vide en KALI (articles organisés par titre de section) :
+    // num/num_key vides, rendus quand même (cf. doc).
     let num = node_text(find_anywhere(&root, "META_ARTICLE/NUM")).unwrap_or_default();
-    let num_key = normalize_article(&num);
-    if num_key.is_empty() {
-        return Ok(None);
-    }
+    let num_key = lj_core::article_key::identity_key(&num);
 
     let date_debut =
         node_text(find_anywhere(&root, "META_ARTICLE/DATE_DEBUT")).ok_or_else(|| {
@@ -103,14 +115,20 @@ pub fn parse_kali_article(raw: &[u8]) -> Result<Option<KaliArticle>, CoreError> 
         })?
         .to_string();
 
+    let kalitext = find_anywhere(&root, "CONTEXTE/TEXTE")
+        .and_then(|t| t.attr("cid"))
+        .filter(|cid| !cid.is_empty())
+        .map(str::to_string);
+
     let etat =
         canon_etat(&node_text(find_anywhere(&root, "META_ARTICLE/ETAT")).unwrap_or_default());
     let date_fin = date_or_none(node_text(find_anywhere(&root, "META_ARTICLE/DATE_FIN")));
     let titre_text = find_anywhere(&root, "CONTEXTE").and_then(collect_titre_tm);
 
-    Ok(Some(KaliArticle {
+    Ok(KaliArticle {
         kaliarti,
         kalicont,
+        kalitext,
         num,
         num_key,
         titre_text,
@@ -118,7 +136,8 @@ pub fn parse_kali_article(raw: &[u8]) -> Result<Option<KaliArticle>, CoreError> 
         date_debut,
         date_fin,
         texte: clean_contenu(find_anywhere(&root, "BLOC_TEXTUEL/CONTENU")),
-    }))
+        liens: collect_liens(&root),
+    })
 }
 
 /// Parse un `KALICONT*.xml` (racine `<IDCC>`) en [`KaliConteneur`]. Erreur franche
@@ -139,6 +158,7 @@ pub fn parse_kali_conteneur(raw: &[u8]) -> Result<KaliConteneur, CoreError> {
         canon_etat(&node_text(find_anywhere(&root, "META_CONTENEUR/ETAT")).unwrap_or_default());
     let date_publi = node_text(find_anywhere(&root, "META_CONTENEUR/DATE_PUBLI"));
     let num_broch = node_text(find_anywhere(&root, "NUMS_BROCH/NUM_BROCH"));
+    let textes = collect_lien_txt(&root);
 
     Ok(KaliConteneur {
         kalicont,
@@ -147,7 +167,28 @@ pub fn parse_kali_conteneur(raw: &[u8]) -> Result<KaliConteneur, CoreError> {
         etat,
         date_publi,
         num_broch,
+        textes,
     })
+}
+
+/// `LIEN_TXT@idtxt` du sommaire (`STRUCTURE_TXT`, imbriqués sous des `TM`),
+/// dans l'ordre du fichier. Vide si le conteneur n'a pas de sommaire.
+fn collect_lien_txt(root: &lj_core::parsing::XmlNode) -> Vec<String> {
+    fn walk(node: &lj_core::parsing::XmlNode, out: &mut Vec<String>) {
+        for child in &node.children {
+            if child.tag == "LIEN_TXT" {
+                if let Some(id) = child.attr("idtxt").filter(|v| !v.is_empty()) {
+                    out.push(id.to_string());
+                }
+            }
+            walk(child, out);
+        }
+    }
+    let mut out = Vec::new();
+    if let Some(s) = find_anywhere(root, "STRUCTURE_TXT") {
+        walk(s, &mut out);
+    }
+    out
 }
 
 #[cfg(test)]
@@ -176,14 +217,14 @@ mod tests {
 
     #[test]
     fn parse_arti_anchors_on_conteneur_and_folds_etat() {
-        let a = parse_kali_article(ARTI.as_bytes())
-            .expect("ok")
-            .expect("some");
+        let a = parse_kali_article(ARTI.as_bytes()).expect("ok");
         assert_eq!(a.kaliarti, "KALIARTI000005833715");
-        // text_uid = CONTENEUR (la convention), PAS le TEXTE/avenant.
+        // text_uid = CONTENEUR (la convention), PAS le TEXTE/avenant — mais le
+        // TEXTE porteur reste capté (ordre des blocs, ADR 0223).
         assert_eq!(a.kalicont, "KALICONT000005635585");
+        assert_eq!(a.kalitext.as_deref(), Some("KALITEXT000024359407"));
         assert_eq!(a.num, "5");
-        assert_eq!(a.num_key, normalize_article("5"));
+        assert_eq!(a.num_key, "5");
         // VIGUEUR_ETEN → VIGUEUR.
         assert_eq!(a.etat, "VIGUEUR");
         assert_eq!(a.date_debut, "2011-07-26");
@@ -197,15 +238,19 @@ mod tests {
     }
 
     #[test]
-    fn parse_arti_empty_num_is_skipped() {
+    fn parse_arti_empty_num_is_returned_with_empty_key() {
         let xml = br#"<ARTICLE>
   <META_COMMUN><ID>KALIARTI000000000001</ID></META_COMMUN>
   <META_ARTICLE><NUM/><ETAT>VIGUEUR</ETAT><DATE_DEBUT>2000-09-01</DATE_DEBUT></META_ARTICLE>
   <CONTEXTE><CONTENEUR cid="KALICONT000005635082"/></CONTEXTE>
   <BLOC_TEXTUEL><CONTENU>Sans numero.</CONTENU></BLOC_TEXTUEL>
 </ARTICLE>"#;
-        // NUM vide → non citable → Ok(None) (skip, pas d'erreur).
-        assert_eq!(parse_kali_article(xml).expect("ok"), None);
+        // NUM vide → article rendu quand même, num_key vide (le skip citable
+        // appartient au consommateur, ADR 0223) ; TEXTE absent → kalitext None.
+        let a = parse_kali_article(xml).expect("ok");
+        assert!(a.num_key.is_empty());
+        assert_eq!(a.kalitext, None);
+        assert_eq!(a.texte.as_deref(), Some("Sans numero."));
     }
 
     #[test]
@@ -228,6 +273,14 @@ mod tests {
       <ETAT>VIGUEUR_ETEN</ETAT><NUM/><DATE_PUBLI>2011-09-01</DATE_PUBLI>
     </META_CONTENEUR></META_SPEC>
   </META>
+  <STRUCTURE_TXT>
+    <TM niv="1"><TITRE_TM>Texte de base</TITRE_TM>
+      <LIEN_TXT idtxt="KALITEXT000024359407" titretxt="Convention collective"/>
+    </TM>
+    <TM niv="1"><TITRE_TM>Textes Attachés</TITRE_TM>
+      <LIEN_TXT idtxt="KALITEXT000024359999" titretxt="Avenant n°1"/>
+    </TM>
+  </STRUCTURE_TXT>
   <NUMS_BROCH><NUM_BROCH>3173</NUM_BROCH></NUMS_BROCH>
 </IDCC>"#;
         let c = parse_kali_conteneur(xml.as_bytes()).expect("conteneur");
@@ -240,6 +293,11 @@ mod tests {
         assert_eq!(c.etat, "VIGUEUR");
         assert_eq!(c.date_publi.as_deref(), Some("2011-09-01"));
         assert_eq!(c.num_broch.as_deref(), Some("3173"));
+        // Sommaire dans l'ordre du fichier : texte de base puis attachés.
+        assert_eq!(
+            c.textes,
+            vec!["KALITEXT000024359407", "KALITEXT000024359999"]
+        );
     }
 
     #[test]

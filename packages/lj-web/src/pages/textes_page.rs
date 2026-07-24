@@ -1,12 +1,13 @@
 //! Page de recherche de textes `/textes` (lois et règlements, ADR 0114) —
-//! page distincte de `/recherche` : le corpus articles est servi par un moteur
+//! page distincte de `/decisions` : le corpus articles est servi par un moteur
 //! BM25 seul, avec ses propres filtres ; aucune recherche transverse.
 //!
-//! Rendue côté client comme `/recherche` (ADR 0063) : route non indexée,
-//! mêmes îlots interactifs (barre, dropdowns). Hérite du title/description
-//! racine.
+//! Rendue côté client comme `/decisions` (ADR 0063) : route non indexée,
+//! mêmes îlots interactifs (barre, dropdowns). `<Title>` dynamique reflétant
+//! la requête `q` de l'URL ; hérite de la description racine.
 
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::hooks::use_query_map;
 
 use crate::components::client_only::ClientOnly;
@@ -15,7 +16,18 @@ use crate::components::search::TextesView;
 
 #[component]
 pub fn TextesPage() -> impl IntoView {
+    let query_map = use_query_map();
+    let title = move || {
+        let q = query_map.get().get("q").unwrap_or_default();
+        let q = q.trim();
+        if q.is_empty() {
+            "Textes - LibreJustice".to_string()
+        } else {
+            format!("{q} - Textes - LibreJustice")
+        }
+    };
     view! {
+        <Title text=title />
         <ClientOnly fallback=|| {
             view! { <TextesPageSkeleton /> }
         }>
@@ -25,7 +37,7 @@ pub fn TextesPage() -> impl IntoView {
 }
 
 /// Squelette statique du fallback SSR/1er rendu : même grille que le corps
-/// (rail vide + colonne contenu, gabarit `/recherche`), barre inerte +
+/// (rail vide + colonne contenu, gabarit `/decisions`), barre inerte +
 /// placeholder de liste. Aucun signal dépendant de `window`/`localStorage` →
 /// hydratation sans divergence.
 #[component]
@@ -56,7 +68,7 @@ fn TextesPageSkeleton() -> impl IntoView {
 fn TextesPageBody() -> impl IntoView {
     let query_map = use_query_map();
     // Texte de la barre partagé avec les filtres (même mécanique que
-    // `/recherche`) : une mutation de filtre applique le texte non soumis.
+    // `/decisions`) : une mutation de filtre applique le texte non soumis.
     provide_context(DraftQuery(RwSignal::new(
         query_map.get_untracked().get("q").unwrap_or_default(),
     )));

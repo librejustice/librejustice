@@ -84,11 +84,11 @@ pub fn ResetPasswordPage() -> impl IntoView {
     // (non-`Copy`) y serait « moved-out » (probleme `FnOnce`).
     let on_continue = Callback::new(move |_: leptos::ev::MouseEvent| {
         #[cfg(feature = "hydrate")]
-        navigate("/recherche", Default::default());
+        navigate("/decisions", Default::default());
     });
 
     view! {
-        <Title text="Réinitialiser le mot de passe — LibreJustice" />
+        <Title text="Réinitialiser le mot de passe - LibreJustice" />
         <Meta name="robots" content="noindex" />
         <Show
             when=move || phase.get() == Phase::Done

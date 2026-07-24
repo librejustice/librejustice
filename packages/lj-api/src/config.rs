@@ -37,6 +37,10 @@ pub struct Settings {
     /// ChatGPT (servi en `text/plain` sur `/.well-known/openai-apps-challenge`).
     /// Valeur publique (non secrète) mais propre au déploiement. Absent → 404.
     pub openai_apps_challenge_token: Option<String>,
+    /// Mainteneur déclaré pour le claim du connecteur sur Glama (servi en JSON
+    /// sur `/.well-known/glama.json` : `{"maintainers": [<valeur>]}` — email du
+    /// compte Glama ou login GitHub). Valeur publique. Absent → 404.
+    pub glama_maintainer: Option<String>,
     /// Clé IndexNow (ADR 0044), partagée avec le cron `lj-ingest indexnow` :
     /// le protocole exige qu'elle soit servie à `https://<host>/<clé>.txt`,
     /// sinon les soumissions sont rejetées. Publique par protocole. Absent →
@@ -176,6 +180,7 @@ impl Settings {
         };
 
         let openai_apps_challenge_token = opt("LIBREJUSTICE_API_OPENAI_APPS_CHALLENGE_TOKEN");
+        let glama_maintainer = opt("LIBREJUSTICE_API_GLAMA_MAINTAINER");
         let indexnow_key = opt("LIBREJUSTICE_INDEXNOW_KEY");
 
         let gunicorn_workers =
@@ -209,7 +214,7 @@ impl Settings {
         );
 
         let mistral_api_keys = parse_csv("LIBREJUSTICE_MISTRAL_API_KEYS");
-        let mistral_model = or_default("LIBREJUSTICE_MISTRAL_MODEL", "mistral-small-2506");
+        let mistral_model = or_default("LIBREJUSTICE_MISTRAL_MODEL", "mistral-small-2603");
 
         let tls_cert_path = opt("LIBREJUSTICE_API_TLS_CERT_PATH");
         let tls_key_path = opt("LIBREJUSTICE_API_TLS_KEY_PATH");
@@ -235,6 +240,7 @@ impl Settings {
             mcp_require_auth,
             mcp_allowed_hosts,
             openai_apps_challenge_token,
+            glama_maintainer,
             indexnow_key,
             gunicorn_workers,
             version,

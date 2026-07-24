@@ -9,7 +9,7 @@
 use serde_json::Value;
 use tokio_postgres::types::ToSql;
 
-use lj_dtos::{Domaine, JuridictionType, SearchRequest};
+use lj_dtos::{Domain, JurisdictionType, SearchRequest};
 
 /// Param dynamique : on accumule `Box<dyn ToSql>` et on génère les `$n`.
 /// `Send` requis pour que les futures de handler axum restent `Send`.
@@ -22,24 +22,25 @@ pub(crate) fn as_refs(params: &Params) -> Vec<&(dyn ToSql + Sync)> {
         .collect()
 }
 
-fn jt_codes(types: &[JuridictionType]) -> Vec<String> {
+fn jt_codes(types: &[JurisdictionType]) -> Vec<String> {
     types.iter().map(|t| jt_to_str(*t).to_string()).collect()
 }
 
-pub(crate) fn jt_to_str(t: JuridictionType) -> &'static str {
+pub(crate) fn jt_to_str(t: JurisdictionType) -> &'static str {
     match t {
-        JuridictionType::Ta => "TA",
-        JuridictionType::Caa => "CAA",
-        JuridictionType::Ce => "CE",
-        JuridictionType::Constit => "CONSTIT",
-        JuridictionType::Tc => "TC",
-        JuridictionType::Cc => "CC",
-        JuridictionType::Ca => "CA",
-        JuridictionType::Tj => "TJ",
-        JuridictionType::Tcom => "TCOM",
-        JuridictionType::Cedh => "CEDH",
-        JuridictionType::Cjue => "CJUE",
-        JuridictionType::Cnda => "CNDA",
+        JurisdictionType::Ta => "TA",
+        JurisdictionType::Caa => "CAA",
+        JurisdictionType::Ce => "CE",
+        JurisdictionType::Constit => "CONSTIT",
+        JurisdictionType::Tc => "TC",
+        JurisdictionType::Cc => "CC",
+        JurisdictionType::Ca => "CA",
+        JurisdictionType::Tj => "TJ",
+        JurisdictionType::Tcom => "TCOM",
+        JurisdictionType::Cedh => "CEDH",
+        JurisdictionType::Cjue => "CJUE",
+        JurisdictionType::Cnda => "CNDA",
+        JurisdictionType::Cnil => "CNIL",
     }
 }
 
@@ -59,18 +60,18 @@ fn enum_uids<T: serde::Serialize>(prefix: &str, vs: &[T]) -> Vec<String> {
 }
 
 /// Expansion domaine (ADR 0146 §2) : une racine sélectionnée matche elle-même
-/// et toutes ses feuilles (codes préfixés `<RACINE>_` dans `Domaine::ALL`) ;
+/// et toutes ses feuilles (codes préfixés `<RACINE>_` dans `Domain::ALL`) ;
 /// une racine sans feuille (FISCAL, EUROPEEN…) ou une feuille matche elle seule.
-fn domaine_uids(selected: &[Domaine]) -> Vec<String> {
+fn legal_domain_uids(selected: &[Domain]) -> Vec<String> {
     let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for d in selected {
         let code = enum_code(d);
         let leaf_prefix = format!("{code}_");
-        out.insert(format!("domaine:{code}"));
-        for other in Domaine::ALL {
+        out.insert(format!("legal_domain:{code}"));
+        for other in Domain::ALL {
             let oc = enum_code(&other);
             if oc.starts_with(&leaf_prefix) {
-                out.insert(format!("domaine:{oc}"));
+                out.insert(format!("legal_domain:{oc}"));
             }
         }
     }
@@ -116,12 +117,12 @@ pub(crate) fn build_facet_filter(
     };
     let mut clauses: Vec<String> = Vec::new();
     // Colonnes présentes sur les deux tables (dénormalisées côté chunks).
-    if let Some(types) = &req.juridiction_type {
+    if let Some(types) = &req.jurisdiction_type {
         add_clause(
             &mut clauses,
             params,
             next_idx,
-            &format!("{alias}.juridiction_type = ANY($?)"),
+            &format!("{alias}.jurisdiction_type = ANY($?)"),
             Box::new(jt_codes(types)),
         );
     }
@@ -142,8 +143,8 @@ pub(crate) fn build_facet_filter(
         // [`build_array_filter_queries`] : le `&&` SQL y devenait un
         // `heap_filter` — et sa négation un `must_not` évalué sur tout l'index
         // (3,2 s vs 1,1 s mesurés sur la requête à 4 mots, 2026-07-06).
-        if let Some(v) = &req.portee {
-            if let Some(clause) = portee_clause(alias, v) {
+        if let Some(v) = &req.significance {
+            if let Some(clause) = significance_clause(alias, v) {
                 clauses.push(clause);
             }
         }
@@ -181,13 +182,13 @@ pub(crate) fn build_facet_filter(
             Box::new(enum_uids("solution", v)),
         );
     }
-    if let Some(v) = &req.voie {
+    if let Some(v) = &req.procedure {
         add_clause(
             &mut ref_clauses,
             params,
             next_idx,
-            &format!("{ref_alias}.voie_uid = ANY($?)"),
-            Box::new(enum_uids("voie", v)),
+            &format!("{ref_alias}.procedure_uid = ANY($?)"),
+            Box::new(enum_uids("procedure", v)),
         );
     }
     if let Some(v) = &req.office {
@@ -205,7 +206,7 @@ pub(crate) fn build_facet_filter(
             params,
             next_idx,
             &format!("{ref_alias}.legal_domain_uid = ANY($?)"),
-            Box::new(domaine_uids(v)),
+            Box::new(legal_domain_uids(v)),
         );
     }
     if let Some(v) = nonempty(&req.jurisdiction_code) {
@@ -215,6 +216,20 @@ pub(crate) fn build_facet_filter(
             next_idx,
             &format!("{ref_alias}.jurisdiction_code = ANY($?)"),
             Box::new(v),
+        );
+    }
+    // Chambre (ADR 0172) : catégorie contrôlée uniforme, suffixes → `chamber:*`.
+    if let Some(v) = nonempty(&req.chamber) {
+        add_clause(
+            &mut ref_clauses,
+            params,
+            next_idx,
+            &format!("{ref_alias}.chamber_uid = ANY($?)"),
+            Box::new(
+                v.into_iter()
+                    .map(|s| format!("chamber:{s}"))
+                    .collect::<Vec<String>>(),
+            ),
         );
     }
     if let Some(v) = nonempty(&req.publication) {
@@ -248,10 +263,10 @@ pub(crate) fn build_facet_filter(
 
 /// Littéral SQL `ARRAY['r','A']` d'un groupe de portée (codes constants du
 /// référentiel lj-core, jamais d'entrée utilisateur — pas de paramètre).
-fn portee_sql_array(groups: &[&str]) -> String {
+fn significance_sql_array(groups: &[&str]) -> String {
     let codes: Vec<String> = groups
         .iter()
-        .flat_map(|g| lj_core::publication::portee_codes(g))
+        .flat_map(|g| lj_core::publication::significance_codes(g))
         .map(|c| format!("'{c}'"))
         .collect();
     format!("ARRAY[{}]", codes.join(","))
@@ -260,10 +275,10 @@ fn portee_sql_array(groups: &[&str]) -> String {
 /// `term_set` tantivy d'un groupe de portée sur `publication_codes` (champ
 /// `pdb.literal` de `decisions_bm25` : termes exacts, pas de lowercasing —
 /// parité `&&` vérifiée en prod, `r`≠`R`, `C+` intact).
-fn portee_term_set(groups: &[&str]) -> String {
+fn significance_term_set(groups: &[&str]) -> String {
     let terms: Vec<String> = groups
         .iter()
-        .flat_map(|g| lj_core::publication::portee_codes(g))
+        .flat_map(|g| lj_core::publication::significance_codes(g))
         .map(|c| format!("paradedb.term('publication_codes', '{c}')"))
         .collect();
     if terms.len() == 1 {
@@ -274,31 +289,31 @@ fn portee_term_set(groups: &[&str]) -> String {
 }
 
 /// Filtre `portee` composé dans le `@@@` des jambes BM25 (mêmes sémantiques
-/// rang-le-plus-fort que [`portee_clause`], mais en requêtes tantivy indexées :
+/// rang-le-plus-fort que [`significance_clause`], mais en requêtes tantivy indexées :
 /// la négation passe par un `must_not` sur l'index inversé au lieu d'un
 /// `heap_filter` sur tout le corpus). `None` si la sélection est vide.
-fn portee_tantivy(selected: &[lj_dtos::Portee]) -> Option<String> {
-    use lj_dtos::Portee;
-    let majeure = || portee_term_set(&["majeure"]);
-    let importante = || portee_term_set(&["importante"]);
-    let limitee = || portee_term_set(&["limitee"]);
+fn significance_tantivy(selected: &[lj_dtos::Significance]) -> Option<String> {
+    use lj_dtos::Significance;
+    let majeure = || significance_term_set(&["majeure"]);
+    let importante = || significance_term_set(&["importante"]);
+    let limitee = || significance_term_set(&["limitee"]);
     let mut branches: Vec<String> = Vec::new();
     for p in selected {
         let branch = match p {
-            Portee::Majeure => majeure(),
-            Portee::Importante => format!(
+            Significance::Majeure => majeure(),
+            Significance::Importante => format!(
                 "paradedb.boolean(must => ARRAY[{}], must_not => ARRAY[{}])",
                 importante(),
                 majeure()
             ),
-            Portee::Limitee => format!(
+            Significance::Limitee => format!(
                 "paradedb.boolean(must => ARRAY[{}], must_not => ARRAY[{}])",
                 limitee(),
-                portee_term_set(&["majeure", "importante"])
+                significance_term_set(&["majeure", "importante"])
             ),
-            Portee::Indeterminee => format!(
+            Significance::Indeterminee => format!(
                 "paradedb.boolean(must => ARRAY[paradedb.all()], must_not => ARRAY[{}])",
-                portee_term_set(&["majeure", "importante", "limitee"])
+                significance_term_set(&["majeure", "importante", "limitee"])
             ),
         };
         if !branches.contains(&branch) {
@@ -320,23 +335,23 @@ fn portee_tantivy(selected: &[lj_dtos::Portee]) -> Option<String> {
 /// compterait deux fois. Chaque groupe matche son overlap MOINS les groupes
 /// plus forts ; `INDETERMINEE` = aucun code classant. Sélections OR-ées.
 /// `None` si la sélection est vide (aucune contrainte).
-fn portee_clause(alias: &str, selected: &[lj_dtos::Portee]) -> Option<String> {
-    use lj_dtos::Portee;
+fn significance_clause(alias: &str, selected: &[lj_dtos::Significance]) -> Option<String> {
+    use lj_dtos::Significance;
     let col = format!("{alias}.publication_codes");
-    let majeure = portee_sql_array(&["majeure"]);
-    let importante = portee_sql_array(&["importante"]);
-    let limitee = portee_sql_array(&["limitee"]);
-    let classant = portee_sql_array(&["majeure", "importante", "limitee"]);
-    let m_i = portee_sql_array(&["majeure", "importante"]);
+    let majeure = significance_sql_array(&["majeure"]);
+    let importante = significance_sql_array(&["importante"]);
+    let limitee = significance_sql_array(&["limitee"]);
+    let classant = significance_sql_array(&["majeure", "importante", "limitee"]);
+    let m_i = significance_sql_array(&["majeure", "importante"]);
     let mut ors: Vec<String> = Vec::new();
     for p in selected {
         let cond = match p {
-            Portee::Majeure => format!("{col} && {majeure}"),
-            Portee::Importante => {
+            Significance::Majeure => format!("{col} && {majeure}"),
+            Significance::Importante => {
                 format!("({col} && {importante} AND NOT {col} && {majeure})")
             }
-            Portee::Limitee => format!("({col} && {limitee} AND NOT {col} && {m_i})"),
-            Portee::Indeterminee => format!("NOT {col} && {classant}"),
+            Significance::Limitee => format!("({col} && {limitee} AND NOT {col} && {m_i})"),
+            Significance::Indeterminee => format!("NOT {col} && {classant}"),
         };
         if !ors.contains(&cond) {
             ors.push(cond);
@@ -378,7 +393,7 @@ fn array_filter_values(req: &SearchRequest) -> Vec<(&'static str, Vec<String>)> 
 
 /// Requêtes tantivy des filtres tableau — `paradedb.term` (1 valeur) ou
 /// `paradedb.term_set` (overlap = ANY) — plus le filtre portée composé
-/// ([`portee_tantivy`]). À AND-er dans le `@@@` via [`compose_tantivy_query`].
+/// ([`significance_tantivy`]). À AND-er dans le `@@@` via [`compose_tantivy_query`].
 pub(crate) fn build_array_filter_queries(
     req: &SearchRequest,
     next_idx: &mut usize,
@@ -401,8 +416,8 @@ pub(crate) fn build_array_filter_queries(
             format!("paradedb.term_set(terms => ARRAY[{}])", terms.join(", "))
         });
     }
-    if let Some(v) = &req.portee {
-        if let Some(expr) = portee_tantivy(v) {
+    if let Some(v) = &req.significance {
+        if let Some(expr) = significance_tantivy(v) {
             out.push(expr);
         }
     }
@@ -441,28 +456,28 @@ mod tests {
     #[test]
     fn domaine_root_expands_to_leaves() {
         // CIVIL (racine à feuilles) : elle-même + ses 15 feuilles, rien d'autre.
-        let uids = domaine_uids(&[Domaine::Civil]);
-        assert!(uids.contains(&"domaine:CIVIL".to_string()));
-        assert!(uids.contains(&"domaine:CIVIL_DROIT_LOCATIF".to_string()));
+        let uids = legal_domain_uids(&[Domain::Civil]);
+        assert!(uids.contains(&"legal_domain:CIVIL".to_string()));
+        assert!(uids.contains(&"legal_domain:CIVIL_DROIT_LOCATIF".to_string()));
         assert_eq!(uids.len(), 16);
-        assert!(uids.iter().all(|u| u.starts_with("domaine:CIVIL")));
+        assert!(uids.iter().all(|u| u.starts_with("legal_domain:CIVIL")));
         // FISCAL (racine sans feuille) : elle seule.
         assert_eq!(
-            domaine_uids(&[Domaine::Fiscal]),
-            vec!["domaine:FISCAL".to_string()]
+            legal_domain_uids(&[Domain::Fiscal]),
+            vec!["legal_domain:FISCAL".to_string()]
         );
         // Une feuille : elle seule.
         assert_eq!(
-            domaine_uids(&[Domaine::SocialDroitTravail]),
-            vec!["domaine:SOCIAL_DROIT_TRAVAIL".to_string()]
+            legal_domain_uids(&[Domain::SocialDroitTravail]),
+            vec!["legal_domain:SOCIAL_DROIT_TRAVAIL".to_string()]
         );
     }
 
     #[test]
-    fn portee_filter_routes_by_leg_with_strongest_rank_semantics() {
+    fn significance_filter_routes_by_leg_with_strongest_rank_semantics() {
         let req: SearchRequest = serde_json::from_value(serde_json::json!({
             "query": "x",
-            "portee": ["IMPORTANTE", "INDETERMINEE"],
+            "significance": ["IMPORTANTE", "INDETERMINEE"],
         }))
         .unwrap();
         // Jambes BM25 : composé DANS le `@@@` (index inversé), absent du

@@ -110,7 +110,7 @@ pub(crate) fn normalize_component(s: &str) -> String {
 /// NB Phase A (ADR 0100) : le n° de décision (sépare QPC vs fond d'une même cour)
 /// et Portalis viendront enrichir la clé (champs à capter à l'extraction).
 pub fn decision_canonical_ref(d: &Decision) -> Option<String> {
-    let jt = d.juridiction_type.as_deref()?;
+    let jt = d.jurisdiction_type.as_deref()?;
     let date = crate::extract::extract_date_lecture(d).or_else(|| d.date_lecture.clone())?;
     let date = date.trim();
     if date.is_empty() {
@@ -130,7 +130,10 @@ pub fn decision_canonical_ref(d: &Decision) -> Option<String> {
         }
         "CA" | "TJ" | "TCOM" => {
             // RG scopé au tribunal : la `location` (code Judilibre) est requise.
-            let location = d.juridiction_location.as_deref().map(normalize_component)?;
+            let location = d
+                .jurisdiction_location
+                .as_deref()
+                .map(normalize_component)?;
             let rg = dockets.first().map(|n| normalize_component(n))?;
             if location.is_empty() || rg.is_empty() {
                 return None;
@@ -153,7 +156,7 @@ pub fn decision_canonical_ref(d: &Decision) -> Option<String> {
                 return Some(format!("caa|{rg}|{date}"));
             }
             let jur = crate::extract::extract_jurisdiction_name(d)
-                .or_else(|| d.juridiction_nom.clone())
+                .or_else(|| d.jurisdiction_name.clone())
                 .map(|s| normalize_component(&s))
                 .filter(|j| !j.is_empty())?;
             Some(format!("{jur}|{rg}|{date}"))
@@ -162,7 +165,7 @@ pub fn decision_canonical_ref(d: &Decision) -> Option<String> {
             // Admin TA/CE : la ville vit dans le nom de juridiction (le RG n'est
             // pas préfixé-cour — TA mono-source opendata ; CE national mono-cour).
             let jur = crate::extract::extract_jurisdiction_name(d)
-                .or_else(|| d.juridiction_nom.clone())
+                .or_else(|| d.jurisdiction_name.clone())
                 .map(|s| normalize_component(&s))?;
             let rg = dockets.first().map(|n| normalize_component(n))?;
             if jur.is_empty() || rg.is_empty() {
@@ -190,10 +193,12 @@ mod tests {
             source_uid: "t".into(),
             member_name: "t".into(),
             ecli: None,
-            juridiction_code: None,
-            juridiction_nom: None,
-            juridiction_type: None,
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: None,
+            jurisdiction_type: None,
+            jurisdiction_location: None,
             numero_dossier: None,
             numero_dossiers: None,
             numero_role: None,
@@ -244,8 +249,8 @@ mod tests {
     #[test]
     fn admin_key_uses_docket_and_jurisdiction_name() {
         let mut d = base();
-        d.juridiction_type = Some("TA".into());
-        d.juridiction_nom = Some("Tribunal administratif d'Amiens".into());
+        d.jurisdiction_type = Some("TA".into());
+        d.jurisdiction_name = Some("Tribunal administratif d'Amiens".into());
         d.numero_dossier = Some("2204150".into());
         d.date_lecture = Some("2022-08-15".into());
         // jurisdiction_name de l'extracteur opendata peut différer ; on vérifie la
@@ -266,12 +271,12 @@ mod tests {
         // Cœur du bug : « 26/00051 » à deux tribunaux distincts = décisions
         // différentes. La `location` (code tribunal) doit les séparer.
         let mut amiens = base();
-        amiens.juridiction_type = Some("TJ".into());
-        amiens.juridiction_location = Some("tj80021".into());
+        amiens.jurisdiction_type = Some("TJ".into());
+        amiens.jurisdiction_location = Some("tj80021".into());
         amiens.numero_dossiers = Some(vec!["26/00051".into()]);
         amiens.date_lecture = Some("2026-01-20".into());
         let mut compiegne = amiens.clone();
-        compiegne.juridiction_location = Some("tj60159".into());
+        compiegne.jurisdiction_location = Some("tj60159".into());
 
         assert!(cref(&amiens).is_some());
         assert_ne!(cref(&amiens), cref(&compiegne));
@@ -284,7 +289,7 @@ mod tests {
     fn canonical_ref_tj_without_location_is_none() {
         // Sans location, le RG n'est pas une identité sûre → pas de clé.
         let mut d = base();
-        d.juridiction_type = Some("TJ".into());
+        d.jurisdiction_type = Some("TJ".into());
         d.numero_dossiers = Some(vec!["26/00051".into()]);
         d.date_lecture = Some("2026-01-20".into());
         assert_eq!(cref(&d), None);
@@ -295,12 +300,12 @@ mod tests {
         // Cœur du fix (ADR 0106) : le RG CAA porte le code cour → clé `caa|rg|date`
         // identique côté JADE (nom complet) et opendata (placeholder « CAA »).
         let mut jade = base();
-        jade.juridiction_type = Some("CAA".into());
-        jade.juridiction_nom = Some("Cour administrative d'appel de Marseille".into());
+        jade.jurisdiction_type = Some("CAA".into());
+        jade.jurisdiction_name = Some("Cour administrative d'appel de Marseille".into());
         jade.numero_dossier = Some("23MA01123".into());
         jade.date_lecture = Some("2024-05-14".into());
         let mut opendata = jade.clone();
-        opendata.juridiction_nom = Some("CAA".into()); // placeholder opendata
+        opendata.jurisdiction_name = Some("CAA".into()); // placeholder opendata
 
         assert_eq!(cref(&jade).unwrap(), "caa|23ma01123|2024-05-14");
         assert_eq!(cref(&jade), cref(&opendata));
@@ -311,7 +316,7 @@ mod tests {
         // Le préfixe du RG (MA vs NT) discrimine la cour : pas de collision même
         // n° d'ordre + même date entre deux cours distinctes.
         let mut marseille = base();
-        marseille.juridiction_type = Some("CAA".into());
+        marseille.jurisdiction_type = Some("CAA".into());
         marseille.numero_dossier = Some("24MA00434".into());
         marseille.date_lecture = Some("2024-11-08".into());
         let mut nantes = marseille.clone();
@@ -324,8 +329,8 @@ mod tests {
         // RG déchet (non préfixé-cour) → repli sur le nom (qui porte la ville),
         // jamais `caa|rectification|date` (collisionnerait entre cours).
         let mut d = base();
-        d.juridiction_type = Some("CAA".into());
-        d.juridiction_nom = Some("Cour administrative d'appel de Lyon".into());
+        d.jurisdiction_type = Some("CAA".into());
+        d.jurisdiction_name = Some("Cour administrative d'appel de Lyon".into());
         d.numero_dossier = Some("rectification".into());
         d.date_lecture = Some("2025-03-04".into());
         let key = cref(&d).unwrap();
@@ -337,7 +342,7 @@ mod tests {
         assert!(key.contains("|rectification|2025-03-04"));
         // Même RG déchet sans nom → pas de clé (pas de clé bancale, #12).
         let mut noname = d.clone();
-        noname.juridiction_nom = None;
+        noname.jurisdiction_name = None;
         assert_eq!(cref(&noname), None);
     }
 
@@ -346,7 +351,7 @@ mod tests {
         // Abrégé Bulletin (pourvois joints) et intégrale (un seul) → même clé
         // via le pourvoi minimal.
         let mut integrale = base();
-        integrale.juridiction_type = Some("CC".into());
+        integrale.jurisdiction_type = Some("CC".into());
         integrale.numero_dossiers = Some(vec!["88-14.611".into()]);
         integrale.date_lecture = Some("1990-12-12".into());
         let mut abrege = integrale.clone();

@@ -17,7 +17,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use lj_llm::mistral::{MistralClient, MistralError};
+use lj_llm::mistral::{is_retryable_status, rand01, MistralClient, MistralError};
 use regex::Regex;
 use tracing::instrument;
 
@@ -30,6 +30,9 @@ pub const RERANK_K: usize = 50;
 const N_SHUFFLES: u64 = 3;
 /// Nb de batches listwise par shuffle (divisor de stratification `x5`).
 const N_BATCHES: usize = 5;
+/// Tentatives max par appel Mistral (rerank live) : 1 essai + jusqu'à 3 retries
+/// (rotation de clé sur 401, back-off court sur 429/5xx/transport). Cf. `mistral_chat`.
+const RERANK_MAX_ATTEMPTS: u32 = 4;
 
 /// Prompt système listwise-scoring (copié de `_LISTWISE_SCORE_SYS`, barème std).
 const LISTWISE_SCORE_SYS: &str = concat!(
@@ -91,26 +94,47 @@ fn parse_listwise_scores(content: &str, k: usize) -> Option<Vec<f64>> {
 /// Un appel Mistral chat-completions via le client partagé ([`lj_llm::mistral`]),
 /// température 0, `prompt_cache_key` stable (cache du prompt système côté Mistral).
 ///
-/// Politique de retry **propre au rerank** : un seul retry sur 429 avec backoff
-/// fixe 1 s, échec franc sinon (parité `_mistral_chat`). Les 15 appels parallèles
-/// veulent fail-fast — pas le back-off exponentiel long des helpers d'ingest.
+/// Politique de retry **propre au rerank**, bornée pour une recherche *live* :
+/// jusqu'à [`RERANK_MAX_ATTEMPTS`] tentatives par appel.
+/// - **401** (clé morte — quota mensuel, ADR 0247) : retry immédiat, sans
+///   back-off. Le [`MistralClient`] tourne la clé en round-robin et la marque
+///   morte ; on retombe aussitôt sur une clé vivante.
+/// - **429 / 5xx / erreur transport** : back-off exponentiel **court** + jitter
+///   (~0,4 s, 0,8 s, 1,6 s), pour absorber les transitoires sans faire traîner
+///   la requête. Au pire ~3 s ajoutées, puis l'appelant retombe sur l'ordre de
+///   récupération (`reranked_order` → `Ok(None)`), jamais de 500.
+/// - **4xx non-retryable** (400…) : échec franc immédiat, retry inutile.
+///
+/// Back-off volontairement plus court que les helpers d'ingest : les 15 appels
+/// parallèles servent une requête utilisateur, la latence prime sur l'obstination.
 async fn mistral_chat(
     client: &MistralClient,
     system: &str,
     user: &str,
 ) -> Result<String, ApiError> {
-    for attempt in 0..2 {
+    let mut backoff_step = 0u32;
+    let mut last_err = String::new();
+    for _ in 0..RERANK_MAX_ATTEMPTS {
         match client.chat(system, user, None, Some("rr-lws-v1")).await {
             Ok(content) => return Ok(content),
-            // 429 au 1ᵉʳ essai : un seul retry après 1 s.
-            Err(MistralError::Status(429)) if attempt == 0 => {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            // 401 : clé morte — le client marque + tourne la clé, retry immédiat.
+            Err(MistralError::Status(401)) => last_err = "401".into(),
+            // 4xx non-retryable (400…) : échec franc immédiat.
+            Err(MistralError::Status(code)) if !is_retryable_status(code) => {
+                return Err(ApiError::Internal(format!("mistral: status {code}")));
             }
-            Err(e) => return Err(ApiError::Internal(format!("mistral: {e}"))),
+            // 429 / 5xx / transport : back-off court + jitter, puis retry.
+            Err(e) => {
+                last_err = e.to_string();
+                let delay = 0.4 * 2f64.powi(backoff_step as i32) * (0.75 + rand01() * 0.5);
+                backoff_step += 1;
+                tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
+            }
         }
     }
-    // attempt 1 a aussi reçu 429 : échec franc.
-    Err(ApiError::Internal("mistral: 429 after retry".into()))
+    Err(ApiError::Internal(format!(
+        "mistral: échec après {RERANK_MAX_ATTEMPTS} tentatives ({last_err})"
+    )))
 }
 
 /// Construit le prompt listwise utilisateur (parité `_build_listwise_prompt`).
@@ -209,25 +233,18 @@ async fn score_shuffle(
 /// Retourne les `decision_id` dans le nouvel ordre, taille ≤ [`RERANK_K`].
 /// Sur shortlist < 3 docs : retourne tel quel (no-op silencieux).
 ///
-/// `api_keys` : liste non vide. Round-robin sur les 15 appels parallèles
+/// `client` : fourni par l'appelant. Round-robin sur les 15 appels parallèles
 /// (3 shuffles × 5 batches) pour répartir la charge entre clés.
-#[instrument(skip(items, api_keys), fields(n = items.len()))]
+#[instrument(skip(items, client), fields(n = items.len()))]
 pub async fn rerank_shortlist(
     items: Vec<RerankItem>,
     query: &str,
-    api_keys: Vec<String>,
-    model: &str,
+    client: Arc<MistralClient>,
 ) -> Result<Vec<i64>, ApiError> {
     if items.len() < 3 {
         return Ok(items.into_iter().map(|it| it.decision_id).collect());
     }
     let items: Vec<RerankItem> = items.into_iter().take(RERANK_K).collect();
-    // Client Mistral partagé : round-robin sur les clés, un span HTTP par appel
-    // (TracingMiddleware) pour Tempo. Construit par requête (comme avant).
-    let client = Arc::new(
-        MistralClient::new(api_keys, model.to_string())
-            .map_err(|e| ApiError::Internal(format!("rerank mistral client: {e}")))?,
-    );
     let items = Arc::new(items);
 
     let mut shuffle_handles = Vec::new();

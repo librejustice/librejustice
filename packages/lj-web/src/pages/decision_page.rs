@@ -5,8 +5,8 @@
 //!   initial (crawlables). Équivaut au loader bloquant + export `meta` RR.
 //! - Similaires : `Resource` non bloquante + `<Suspense>` ⇒ streamées après le
 //!   shell (SsrMode::PartiallyBlocked posé par la substrate dans `app.rs`).
-//! - `Cache-Control` (SSR) posé sur la réponse document via `ResponseOptions`
-//!   selon le statut (200 → 7 j CDN, 404/400 → 5 min, 5xx → no-store). Port de
+//! - Statut HTTP + `Cache-Control` (SSR) posés sur la réponse document via
+//!   `ResponseOptions` (200 → 7 j CDN, 404/400 → 5 min, 5xx → no-store). Port de
 //!   `decisionCacheControl` (`loaders.ts`). ADR 0061 : le cache CDN est posé par
 //!   l'app (Caddy supprimé), plus par un reverse-proxy.
 
@@ -21,13 +21,16 @@ use leptos::prelude::*;
 use leptos_meta::{Link, Meta, Script, Title};
 
 use crate::components::decision::{
-    DecisionBody, DecisionHeader, DecisionLayout, DecisionMeta, DecisionProvenance,
-    DecisionSimilar, DecisionSkeleton, DecisionToc,
+    DecisionBody, DecisionCommentaires, DecisionHeader, DecisionLayout, DecisionMeta,
+    DecisionParties, DecisionProvenance, DecisionSimilar, DecisionSkeleton, DecisionToc,
 };
 use crate::seo::decision::{build_json_ld, meta_description};
 use crate::seo::{canonical_url, OG_IMAGE};
 
-use data::{decision_id, fetch_detail, fetch_similar, sendable, PageError, SimilarResult};
+use data::{
+    decision_id, fetch_detail, fetch_parties, fetch_similar, sendable, PageError, PartiesResult,
+    SimilarResult,
+};
 use reference::build_decision_references;
 use sections::{resolve_decision_sections, toc_sections};
 
@@ -39,6 +42,8 @@ pub fn DecisionPage() -> impl IntoView {
     let detail = Resource::new_blocking(move || id.get(), |id| sendable(fetch_detail(id)));
     // Voisins non bloquants (streamés via <Suspense>).
     let similar = Resource::new(move || id.get(), |id| sendable(fetch_similar(id)));
+    // Parties (encart) non bloquantes (streamées via <Suspense>).
+    let parties = Resource::new(move || id.get(), |id| sendable(fetch_parties(id)));
 
     view! {
         <Suspense fallback=DecisionSkeleton>
@@ -46,7 +51,11 @@ pub fn DecisionPage() -> impl IntoView {
                 match detail.await {
                     Ok(detail) => {
                         set_cache_control(200, detail.summary.is_some());
-                        Either::Left(view! { <DecisionLoaded detail=detail similar=similar /> })
+                        Either::Left(
+                            view! {
+                                <DecisionLoaded detail=detail similar=similar parties=parties />
+                            },
+                        )
                     }
                     Err(err) => {
                         set_cache_control(err.status, false);
@@ -58,12 +67,13 @@ pub fn DecisionPage() -> impl IntoView {
     }
 }
 
-/// Pose le `Cache-Control` de la réponse document SSR selon le statut. Le détail
-/// étant bloquant, l'en-tête est posé avant le flush des headers. No-op côté
-/// hydrate.
+/// Pose le statut HTTP et le `Cache-Control` de la réponse document SSR. Le
+/// détail étant bloquant, tout est posé avant le flush des headers. Sans le
+/// statut, une décision inconnue partirait en 200 (soft 404) — Bing indexe
+/// alors ces URLs comme valides malgré le `noindex`. No-op côté hydrate.
 #[cfg(feature = "ssr")]
 fn set_cache_control(status: u16, summary_present: bool) {
-    use axum::http::{header::CACHE_CONTROL, HeaderValue};
+    use axum::http::{header::CACHE_CONTROL, HeaderValue, StatusCode};
     let value = match status {
         // Résumé manquant (cas résiduel : décision pas encore résumée par le cron
         // ou le rerank) : on NE fige PAS la page sans synthèse 7 j au CDN — sinon
@@ -75,6 +85,11 @@ fn set_cache_control(status: u16, summary_present: bool) {
         _ => "no-store",
     };
     if let Some(resp) = use_context::<leptos_axum::ResponseOptions>() {
+        if status != 200 {
+            if let Ok(code) = StatusCode::from_u16(status) {
+                resp.set_status(code);
+            }
+        }
         if let Ok(hv) = HeaderValue::from_str(value) {
             resp.insert_header(CACHE_CONTROL, hv);
         }
@@ -95,7 +110,7 @@ fn DecisionError(err: PageError) -> impl IntoView {
     };
     // Détail absent ⇒ noindex + titre « introuvable » (parité `meta` branche
     // `!data.detail` ; le cas « Chargement… » correspond au fallback Suspense).
-    let title = "Décision introuvable — LibreJustice";
+    let title = "Décision introuvable - LibreJustice";
     view! {
         <Title text=title />
         <Meta name="robots" content="noindex" />
@@ -114,6 +129,7 @@ fn DecisionError(err: PageError) -> impl IntoView {
 fn DecisionLoaded(
     detail: lj_dtos::DecisionDetail,
     similar: Resource<SimilarResult>,
+    parties: Resource<PartiesResult>,
 ) -> impl IntoView {
     let title = detail.title.clone();
     let description = meta_description(&detail, &title);
@@ -121,10 +137,14 @@ fn DecisionLoaded(
     let jsonld = serde_json::to_string(&build_json_ld(&detail, &title, &description))
         .unwrap_or_else(|_| "{}".to_string());
 
-    let page_title = format!("{title} — LibreJustice");
+    let page_title = format!("{title} - LibreJustice");
     let references_full = build_decision_references(&detail).full;
 
     let body_sections = resolve_decision_sections(&detail);
+    // Décision sans texte intégral (lacune de la source) : la page rend
+    // « Texte intégral non disponible » en 200 — noindex pour ne pas faire
+    // indexer une coquille comme une vraie décision.
+    let has_text = body_sections.iter().any(|s| !s.paragraphs.is_empty());
     let toc = toc_sections(&detail, &body_sections);
 
     let detail_header = detail.clone();
@@ -136,12 +156,30 @@ fn DecisionLoaded(
 
     let toc_view =
         view! { <DecisionToc sections=toc chronology=detail.chronology.clone() /> }.into_any();
+    // Encart « Parties » (ADR 0189) sous la synthèse : streamé, masqué si vide.
+    let parties_view = view! {
+        <Suspense fallback=|| ()>
+            {move || Suspend::new(async move {
+                let resolved = parties.await;
+                match resolved.error {
+                    // Erreur silencieuse : l'encart est un enrichissement, pas un
+                    // contenu porteur — on ne pollue pas la page décision.
+                    Some(_) => ().into_any(),
+                    None => view! { <DecisionParties parties=resolved.parties /> }.into_any(),
+                }
+            })}
+        </Suspense>
+    }
+    .into_any();
+
     let main_view = view! {
         <article class="flex flex-col gap-10">
             <h1 class="sr-only lj-doc-title">{references_full}</h1>
             <DecisionHeader detail=detail_header />
             <DecisionMeta detail=detail_meta section_id="synthese" />
+            {parties_view}
             <DecisionBody detail=detail_body sections=body_sections />
+            <DecisionCommentaires commentaires=detail.commentaires.clone() />
             <DecisionProvenance detail=detail_provenance />
         </article>
     }
@@ -186,6 +224,7 @@ fn DecisionLoaded(
         <Meta property="og:image:width" content="1200" />
         <Meta property="og:image:height" content="630" />
         <Meta name="twitter:card" content="summary_large_image" />
+        {(!has_text).then(|| view! { <Meta name="robots" content="noindex" /> })}
         <Link rel="canonical" href=url />
         <Script type_="application/ld+json">{jsonld}</Script>
         <DecisionLayout toc=toc_view main=main_view similar=similar_view />

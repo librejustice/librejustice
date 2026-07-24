@@ -13,9 +13,16 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+mod adde;
+mod ariane;
 mod cnda;
 mod dila;
 mod european;
+pub use adde::{build_adde_source_fields, parse_adde_title, AddeCitation};
+pub use ariane::{
+    analyse_body, build_ariane_source_fields, parse_ajce_html, parse_dce_html, AjceAnalysis,
+    AjceEntry, AjceRubrique, DceParsed,
+};
 use cnda::source_uid_is_cnda;
 pub use cnda::{clean_ocr_markdown, parse_cnda, reflow_cnda_pdf_text, CndaParsed};
 use dila::source_fields_is_dila;
@@ -493,10 +500,13 @@ pub fn parse_xml(raw: &[u8], member_name: &str, archive_name: Option<&str>) -> D
         member_name: member_name.to_string(),
         // L'XML opendata ne porte pas d'ECLI (ADR 0080).
         ecli: None,
-        juridiction_code: dossier.and_then(|d| node_text(d.find_first(&["Code_Juridiction"]))),
-        juridiction_nom: dossier.and_then(|d| node_text(d.find_first(&["Nom_Juridiction"]))),
-        juridiction_type: jur_type,
-        juridiction_location: None,
+        jurisdiction_source_code: dossier
+            .and_then(|d| node_text(d.find_first(&["Code_Juridiction"]))),
+        chamber: None,
+        nac: None,
+        jurisdiction_name: dossier.and_then(|d| node_text(d.find_first(&["Nom_Juridiction"]))),
+        jurisdiction_type: jur_type,
+        jurisdiction_location: None,
         numero_dossier: dossier.and_then(|d| node_text(d.find_first(&["Numero_Dossier"]))),
         numero_dossiers: None,
         numero_role: audience.and_then(|a| node_text(a.find_first(&["Numero_Role"]))),
@@ -675,6 +685,9 @@ pub(crate) mod vocab {
         ("cedh", "Cour européenne des droits de l'homme"),
         ("cjue", "Cour de justice de l'Union européenne"),
         ("cnda", "Cour nationale du droit d'asile"),
+        // Hors nomenclature Judilibre : porté par les payloads reconstruits du
+        // backfill ArianeWeb DCE (ADR 0219).
+        ("ce", "Conseil d'État"),
     ];
 
     const JURISDICTION_TYPES: &[(&str, &str)] = &[
@@ -688,6 +701,8 @@ pub(crate) mod vocab {
         ("cedh", "CEDH"),
         ("cjue", "CJUE"),
         ("cnda", "CNDA"),
+        // Hors nomenclature Judilibre (backfill ArianeWeb DCE, ADR 0219).
+        ("ce", "CE"),
     ];
 
     const CHAMBER_LABELS: &[(&str, &str)] = &[
@@ -1097,10 +1112,14 @@ pub fn parse_judilibre(payload: &Value, member_name: Option<&str>) -> Decision {
         ecli: get_str(payload, "ecli")
             .filter(|s| !s.is_empty())
             .map(str::to_string),
-        juridiction_code: get_str(payload, "chamber").map(str::to_string),
-        juridiction_nom: vocab::jurisdiction_label(get_str(payload, "jurisdiction")),
-        juridiction_type: vocab::jurisdiction_type(get_str(payload, "jurisdiction")),
-        juridiction_location: get_str(payload, "location").map(str::to_string),
+        jurisdiction_source_code: None,
+        chamber: get_str(payload, "chamber").map(str::to_string),
+        nac: get_str(payload, "nac")
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
+        jurisdiction_name: vocab::jurisdiction_label(get_str(payload, "jurisdiction")),
+        jurisdiction_type: vocab::jurisdiction_type(get_str(payload, "jurisdiction")),
+        jurisdiction_location: get_str(payload, "location").map(str::to_string),
         numero_dossier,
         numero_dossiers,
         numero_role: None,
@@ -1248,10 +1267,12 @@ impl Decision {
             member_name: source_uid.to_string(),
             // L'XML opendata ne porte pas d'ECLI (ADR 0080).
             ecli: None,
-            juridiction_code: get("Dossier", "Code_Juridiction"),
-            juridiction_nom: get("Dossier", "Nom_Juridiction"),
-            juridiction_type: classify_uid(source_uid),
-            juridiction_location: None,
+            jurisdiction_source_code: get("Dossier", "Code_Juridiction"),
+            chamber: None,
+            nac: None,
+            jurisdiction_name: get("Dossier", "Nom_Juridiction"),
+            jurisdiction_type: classify_uid(source_uid),
+            jurisdiction_location: None,
             numero_dossier: get("Dossier", "Numero_Dossier"),
             numero_dossiers: None,
             numero_role: get("Audience", "Numero_Role"),
@@ -1321,10 +1342,14 @@ impl Decision {
             ecli: get_str(&payload, "ecli")
                 .filter(|s| !s.is_empty())
                 .map(str::to_string),
-            juridiction_code: get_str(&payload, "chamber").map(str::to_string),
-            juridiction_nom: vocab::jurisdiction_label(get_str(&payload, "jurisdiction")),
-            juridiction_type: vocab::jurisdiction_type(get_str(&payload, "jurisdiction")),
-            juridiction_location: get_str(&payload, "location").map(str::to_string),
+            jurisdiction_source_code: None,
+            chamber: get_str(&payload, "chamber").map(str::to_string),
+            nac: get_str(&payload, "nac")
+                .filter(|s| !s.is_empty())
+                .map(str::to_string),
+            jurisdiction_name: vocab::jurisdiction_label(get_str(&payload, "jurisdiction")),
+            jurisdiction_type: vocab::jurisdiction_type(get_str(&payload, "jurisdiction")),
+            jurisdiction_location: get_str(&payload, "location").map(str::to_string),
             numero_dossier,
             numero_dossiers,
             numero_role: None,

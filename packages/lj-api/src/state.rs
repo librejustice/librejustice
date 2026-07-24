@@ -29,6 +29,11 @@ const ENTRY_OVERHEAD: usize = 128;
 /// devant les 150 Mio du `search_cache`. L'éviction primaire reste le TTL 1 h.
 const RERANK_CACHE_MAX_ENTRIES: u64 = 50_000;
 
+/// Plafond du cache registre en nombre d'entrées : ~187 k entités à
+/// contentieux, mais seules les fiches visitées dans la fenêtre de 24 h
+/// comptent — 20 000 entrées × quelques Ko ≈ dizaines de Mio au pire.
+const REGISTRE_CACHE_MAX_ENTRIES: u64 = 20_000;
+
 /// Pic de connexions DB qu'une recherche tient simultanément :
 /// `retrieve_hybrid` garde 3 conns (bm25 + ann + title, en `try_join` parallèle)
 /// puis les relâche AVANT `compute_adaptive_weights`, qui en reprend 2 en
@@ -43,8 +48,9 @@ const PEAK_CONNS_PER_SEARCH: usize = 3;
 /// Champs portés depuis `app.state` (Python) :
 /// - `settings` / `pool` : configuration + pool DB partagés ;
 /// - `embedder` : embedder de requête construit **une fois** au démarrage et
-///   partagé (parité lifespan Python). Crucial pour le mode `auto`, dont l'état
-///   `BackendHealth` (EMA vLLM↔Cloudflare) doit persister entre requêtes ;
+///   partagé (parité lifespan Python). Crucial pour le mode `auto`, dont le
+///   disjoncteur `degraded` (vLLM↔Cloudflare, ADR 0221) doit persister entre
+///   requêtes ;
 /// - `embedding_cache` : cache in-process des vecteurs de requête (`moka`, TTL
 ///   7 j), parité du cache embeddings Redis Python ;
 /// - `search_cache` : cache in-process du bundle retrieval par recherche (`moka`,
@@ -80,6 +86,17 @@ pub struct AppState {
     /// en gardant le `try_join` parallèle intra-recherche. Au-delà, les recherches
     /// excédentaires attendent un permit (backpressure) au lieu de figer le pool.
     pub search_permits: Arc<tokio::sync::Semaphore>,
+    /// Cache in-process du volet registre des fiches entité (`moka`, TTL 24 h,
+    /// donnée quasi statique) : une entrée par uid, remplie par les APIs
+    /// publiques (ADR 0199). Accès via `registre::entity_registre`.
+    pub registre_cache: Cache<String, Arc<lj_dtos::EntityRegistreResponse>>,
+    /// Cache mono-entrée du FST d'autocomplétion (blob `suggest_index`,
+    /// ADR 0216), TTL 24 h — l'index est reconstruit hors ligne, au mieux
+    /// quotidiennement. Accès via `routes::suggest_index`.
+    pub suggest_cache: Cache<(), Arc<crate::search::suggest::SuggestIndex>>,
+    /// Client HTTP partagé des appels registre (recherche-entreprises,
+    /// Opendatasoft DILA) — timeout court, la fiche dégrade sans bloquer.
+    pub registre_http: reqwest::Client,
 }
 
 impl AppState {
@@ -127,6 +144,24 @@ impl AppState {
         let search_permits = Arc::new(tokio::sync::Semaphore::new(
             (settings.pool_max / PEAK_CONNS_PER_SEARCH).max(1),
         ));
+        // Volet registre : payloads de quelques Ko, plafond par nombre
+        // d'entrées. TTL 24 h — chronologies et dirigeants bougent au rythme
+        // des parutions, pas des requêtes.
+        let registre_cache = Cache::builder()
+            .max_capacity(REGISTRE_CACHE_MAX_ENTRIES)
+            .time_to_live(Duration::from_secs(24 * 3600))
+            .build();
+        // FST d'autocomplétion : une seule entrée (clé `()`), ~dizaines de Mo,
+        // rechargé de la DB à l'expiration (rebuild offline au plus quotidien).
+        let suggest_cache = Cache::builder()
+            .max_capacity(1)
+            .time_to_live(Duration::from_secs(24 * 3600))
+            .build();
+        let registre_http = reqwest::Client::builder()
+            .timeout(crate::registre::UPSTREAM_TIMEOUT)
+            .user_agent("librejustice.fr")
+            .build()
+            .expect("client HTTP registre");
         Self {
             settings,
             pool,
@@ -137,6 +172,9 @@ impl AppState {
             referential_cache,
             corpus_stats_cache,
             search_permits,
+            registre_cache,
+            registre_http,
+            suggest_cache,
         }
     }
 }

@@ -13,7 +13,7 @@ use leptos::prelude::*;
 
 /// Origine « recherche » d'une consultation : permet au bouton retour de revenir
 /// à la liste exacte (query string) et de restaurer le scroll. Port de
-/// `fromSearch` (`{pathname:"/recherche", search, scrollY}` ; pathname implicite).
+/// `fromSearch` (`{pathname:"/decisions", search, scrollY}` ; pathname implicite).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FromSearch {
     /// Query string complète (`?q=…&page=…`), telle quelle.

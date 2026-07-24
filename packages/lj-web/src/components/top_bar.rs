@@ -27,7 +27,9 @@ pub fn TopBar() -> impl IntoView {
     }
 }
 
-/// Barre par defaut (toutes les pages hors decision). Port de la branche `!bar`.
+/// Barre par defaut (toutes les pages hors decision). Comme la barre décision :
+/// nav inline à `lg+`, hamburger sous `lg` (même breakpoint partout → comportement
+/// et hauteur `h-14` cohérents sur toutes les pages).
 #[component]
 fn DefaultTopBar() -> impl IntoView {
     view! {
@@ -39,7 +41,12 @@ fn DefaultTopBar() -> impl IntoView {
                 >
                     <Wordmark />
                 </A>
-                <SiteNav />
+                <div class="hidden lg:block">
+                    <SiteNav />
+                </div>
+                <div class="lg:hidden">
+                    <BurgerMenu />
+                </div>
             </div>
         </header>
     }
@@ -51,8 +58,9 @@ fn DefaultTopBar() -> impl IntoView {
 fn SiteNav() -> impl IntoView {
     view! {
         <nav class="flex shrink-0 items-center gap-0.5 sm:gap-1">
-            <NavItem href="/recherche">"Décisions"</NavItem>
+            <NavItem href="/decisions">"Décisions"</NavItem>
             <NavItem href="/textes">"Textes"</NavItem>
+            <NavItem href="/annuaire">"Annuaire"</NavItem>
             <NavItem href="/mcp-guide">"MCP"</NavItem>
             <AuthButton />
         </nav>
@@ -72,8 +80,8 @@ fn BackButton(from_search: Option<crate::components::decision_bar::FromSearch>) 
     };
     let on_back = move |_| {
         let target = match &from_search {
-            Some(fs) => format!("/recherche{}", fs.search),
-            None => "/recherche".to_string(),
+            Some(fs) => format!("/decisions{}", fs.search),
+            None => "/decisions".to_string(),
         };
         // Pose la position à restaurer AVANT de naviguer : `ResultsBody` la
         // consomme à son montage et scrolle dès que la liste est peinte (pas de
@@ -363,7 +371,7 @@ fn AccountItems(email: String, open: RwSignal<bool>) -> impl IntoView {
         </div>
         <div class="py-1">
             <DropdownItem href="/profil">"Profil"</DropdownItem>
-            <DropdownItem href="/recherches">"Mon activité"</DropdownItem>
+            <DropdownItem href="/activite/recherches">"Mon activité"</DropdownItem>
         </div>
         <div class="border-t border-[var(--color-rule)] py-1">
             <button
@@ -436,8 +444,9 @@ fn BurgerMenu() -> impl IntoView {
                 <div class="absolute right-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] shadow-lg">
                     <div class="py-1">
                         <DropdownItem href="/">"Accueil"</DropdownItem>
-                        <DropdownItem href="/recherche">"Décisions"</DropdownItem>
+                        <DropdownItem href="/decisions">"Décisions"</DropdownItem>
                         <DropdownItem href="/textes">"Textes"</DropdownItem>
+                        <DropdownItem href="/annuaire">"Annuaire"</DropdownItem>
                         <DropdownItem href="/mcp-guide">"MCP"</DropdownItem>
                     </div>
                     {move || match auth.email.get() {

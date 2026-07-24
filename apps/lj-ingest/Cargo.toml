@@ -27,8 +27,10 @@ reqwest = { workspace = true }
 reqwest-middleware = { workspace = true }
 reqwest-tracing = { workspace = true }
 rayon = { workspace = true }
+fst = { workspace = true }
 futures = { workspace = true }
 flate2 = { workspace = true }
+csv = { workspace = true }
 xxhash-rust = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }

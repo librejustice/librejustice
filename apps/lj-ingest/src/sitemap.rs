@@ -50,16 +50,59 @@ pub trait SitemapSource {
     fn iter_decisions_for_sitemap(&self) -> Result<Vec<(String, NaiveDate)>>;
 
     /// Itère `(slug, num, lastmod)` pour les articles de référentiel à publier
-    /// (pages `/loi/{slug}/{num}`, ADR 0097).
+    /// (pages `/texte/{slug}/{num}`, ADR 0097).
     fn iter_referential_for_sitemap(&self) -> Result<Vec<(String, String, NaiveDate)>>;
+
+    /// Itère `(ns, id, lastmod)` pour les entités de l'annuaire à publier
+    /// (pages `/entite/{ns}/{id}`, ADR 0237). Les avocats (personnes physiques)
+    /// sont exclus côté SQL (RGPD).
+    fn iter_entities_for_sitemap(&self) -> Result<Vec<(String, String, NaiveDate)>>;
+
+    /// Itère `(slug, lastmod)` pour les codes navigables (pages TDM
+    /// `/texte/{slug}`, ADR 0237).
+    fn iter_codes_for_sitemap(&self) -> Result<Vec<(String, NaiveDate)>>;
 }
+
+/// Pages statiques indexables, servies en SSR mais absentes des tables (donc
+/// non énumérables en base) — landing, recherche, hubs d'annuaire, mentions
+/// légales… (ADR 0237). Chemins relatifs à [`BASE_URL`] ; leur `lastmod` est la
+/// date du run (pas de signal de fraîcheur par page). Le hub `/annuaire/avocats`
+/// est **volontairement absent** : il pagine les avocats (personnes physiques),
+/// même exclusion SEO que leurs fiches.
+const STATIC_PATHS: &[&str] = &[
+    "/",
+    "/decisions",
+    "/textes",
+    "/sources",
+    "/codes",
+    "/annuaire",
+    "/annuaire/entreprises",
+    "/annuaire/personnes-publiques",
+    "/annuaire/associations",
+    "/annuaire/cabinets",
+    "/mcp-guide",
+    "/mentions-legales",
+    "/confidentialite",
+];
 
 fn decision_url(public_id: &str) -> String {
     format!("{BASE_URL}/decision/{public_id}")
 }
 
 fn law_url(code: &str, num: &str) -> String {
-    format!("{BASE_URL}/loi/{code}/{num}")
+    format!("{BASE_URL}/texte/{code}/{num}")
+}
+
+fn entity_url(ns: &str, id: &str) -> String {
+    format!("{BASE_URL}/entite/{ns}/{id}")
+}
+
+fn code_url(slug: &str) -> String {
+    format!("{BASE_URL}/texte/{slug}")
+}
+
+fn static_url(path: &str) -> String {
+    format!("{BASE_URL}{path}")
 }
 
 fn sitemap_url(filename: &str) -> String {
@@ -100,36 +143,71 @@ fn gzip_bytes(payload: &[u8]) -> Result<Vec<u8>> {
 /// Retourne la liste des fichiers (index en dernier). L'index réfère les
 /// sub-sitemaps via leur URL publique finale (`BASE_URL/sitemaps/sitemap-{n}.xml.gz`),
 /// comme l'exige sitemaps.org § sitemap index (URLs absolues).
-pub fn build_sitemaps<S: SitemapSource>(repo: &S) -> Result<Vec<SitemapFile>> {
+pub fn build_sitemaps<S: SitemapSource>(repo: &S, today: NaiveDate) -> Result<Vec<SitemapFile>> {
     let mut files: Vec<SitemapFile> = Vec::new();
     let mut current_entries: Vec<String> = Vec::new();
     let mut current_max_lastmod: Option<NaiveDate> = None;
 
-    let decisions = repo.iter_decisions_for_sitemap()?;
-    for (public_id, lastmod) in decisions {
-        current_entries.push(format_url_entry(&decision_url(&public_id), lastmod));
-        // `lastmod` côté sitemapindex = max des lastmod du sub-sitemap : permet
-        // à Google de re-crawler uniquement les sub-sitemaps modifiés.
-        if current_max_lastmod.is_none_or(|m| lastmod > m) {
-            current_max_lastmod = Some(lastmod);
-        }
-        if current_entries.len() >= MAX_URLS_PER_SITEMAP {
-            flush(&mut files, &mut current_entries, &mut current_max_lastmod)?;
-        }
+    // Pages statiques indexables (landing, hubs annuaire…), `lastmod` = run.
+    // En tête : elles atterrissent dans `sitemap-1` (lisible par un humain).
+    for path in STATIC_PATHS {
+        push_entry(
+            &mut files,
+            &mut current_entries,
+            &mut current_max_lastmod,
+            &static_url(path),
+            today,
+        )?;
     }
 
-    // Pages /loi/{slug}/{num} : articles de référentiel (ADR 0097). Même
+    // Codes navigables : pages TDM `/texte/{slug}` (ADR 0237).
+    let codes = repo.iter_codes_for_sitemap()?;
+    for (slug, lastmod) in codes {
+        push_entry(
+            &mut files,
+            &mut current_entries,
+            &mut current_max_lastmod,
+            &code_url(&slug),
+            lastmod,
+        )?;
+    }
+
+    // Fiches d'entités de l'annuaire `/entite/{ns}/{id}` (ADR 0237, avocats
+    // exclus côté SQL).
+    let entities = repo.iter_entities_for_sitemap()?;
+    for (ns, id, lastmod) in entities {
+        push_entry(
+            &mut files,
+            &mut current_entries,
+            &mut current_max_lastmod,
+            &entity_url(&ns, &id),
+            lastmod,
+        )?;
+    }
+
+    let decisions = repo.iter_decisions_for_sitemap()?;
+    for (public_id, lastmod) in decisions {
+        push_entry(
+            &mut files,
+            &mut current_entries,
+            &mut current_max_lastmod,
+            &decision_url(&public_id),
+            lastmod,
+        )?;
+    }
+
+    // Pages /texte/{slug}/{num} : articles de référentiel (ADR 0097). Même
     // pagination + max lastmod que les décisions ; la page courante poursuit
     // celle des décisions plutôt que d'en ouvrir une vide.
     let articles = repo.iter_referential_for_sitemap()?;
     for (slug, num, lastmod) in articles {
-        current_entries.push(format_url_entry(&law_url(&slug, &num), lastmod));
-        if current_max_lastmod.is_none_or(|m| lastmod > m) {
-            current_max_lastmod = Some(lastmod);
-        }
-        if current_entries.len() >= MAX_URLS_PER_SITEMAP {
-            flush(&mut files, &mut current_entries, &mut current_max_lastmod)?;
-        }
+        push_entry(
+            &mut files,
+            &mut current_entries,
+            &mut current_max_lastmod,
+            &law_url(&slug, &num),
+            lastmod,
+        )?;
     }
     flush(&mut files, &mut current_entries, &mut current_max_lastmod)?;
 
@@ -159,6 +237,27 @@ pub fn build_sitemaps<S: SitemapSource>(repo: &S) -> Result<Vec<SitemapFile>> {
         lastmod: index_lastmod.unwrap_or_else(|| NaiveDate::from_ymd_opt(1970, 1, 1).unwrap()),
     });
     Ok(files)
+}
+
+/// Pousse un bloc `<url>` dans le sub-sitemap courant, tient à jour son max
+/// `lastmod` (= `lastmod` de la ligne d'index correspondante, permet à Google
+/// de ne re-crawler que les subs modifiés) et flushe dès `MAX_URLS_PER_SITEMAP`
+/// atteint.
+fn push_entry(
+    files: &mut Vec<SitemapFile>,
+    current_entries: &mut Vec<String>,
+    current_max_lastmod: &mut Option<NaiveDate>,
+    loc: &str,
+    lastmod: NaiveDate,
+) -> Result<()> {
+    current_entries.push(format_url_entry(loc, lastmod));
+    if current_max_lastmod.is_none_or(|m| lastmod > m) {
+        *current_max_lastmod = Some(lastmod);
+    }
+    if current_entries.len() >= MAX_URLS_PER_SITEMAP {
+        flush(files, current_entries, current_max_lastmod)?;
+    }
+    Ok(())
 }
 
 /// Construit le sub-sitemap courant et l'ajoute à `files`.
@@ -195,9 +294,12 @@ mod tests {
     use super::*;
     use std::io::Read;
 
+    #[derive(Default)]
     struct FakeSource {
         decisions: Vec<(String, NaiveDate)>,
         referential: Vec<(String, String, NaiveDate)>,
+        entities: Vec<(String, String, NaiveDate)>,
+        codes: Vec<(String, NaiveDate)>,
     }
     impl SitemapSource for FakeSource {
         fn iter_decisions_for_sitemap(&self) -> Result<Vec<(String, NaiveDate)>> {
@@ -205,6 +307,12 @@ mod tests {
         }
         fn iter_referential_for_sitemap(&self) -> Result<Vec<(String, String, NaiveDate)>> {
             Ok(self.referential.clone())
+        }
+        fn iter_entities_for_sitemap(&self) -> Result<Vec<(String, String, NaiveDate)>> {
+            Ok(self.entities.clone())
+        }
+        fn iter_codes_for_sitemap(&self) -> Result<Vec<(String, NaiveDate)>> {
+            Ok(self.codes.clone())
         }
     }
 
@@ -222,12 +330,12 @@ mod tests {
         );
     }
 
-    // Spec : URL page loi = {BASE_URL}/loi/{code}/{num}.
+    // Spec : URL page loi = {BASE_URL}/texte/{code}/{num}.
     #[test]
     fn law_url_format() {
         assert_eq!(
             law_url("code-civil", "1240"),
-            "https://librejustice.fr/loi/code-civil/1240"
+            "https://librejustice.fr/texte/code-civil/1240"
         );
     }
 
@@ -253,9 +361,10 @@ mod tests {
     fn builds_index_and_subs() {
         let source = FakeSource {
             decisions: vec![("a".into(), d("2026-01-01")), ("b".into(), d("2026-03-15"))],
-            referential: vec![],
+            ..Default::default()
         };
-        let files = build_sitemaps(&source).unwrap();
+        // `today` ancien → le max lastmod reste celui des décisions.
+        let files = build_sitemaps(&source, d("2000-01-01")).unwrap();
         // 1 sub + index.
         assert_eq!(files.len(), 2);
         assert_eq!(files[0].filename, "sitemap-1.xml.gz");
@@ -278,17 +387,65 @@ mod tests {
     }
 
     // Spec : un article de référentiel fourni par la source produit une <url>
-    // /loi/{slug}/{num} dans le sub-sitemap.
+    // /texte/{slug}/{num} dans le sub-sitemap.
     #[test]
     fn includes_referential_law_urls() {
         let source = FakeSource {
             decisions: vec![("a".into(), d("2026-01-01"))],
             referential: vec![("code-civil".into(), "1240".into(), d("2026-02-02"))],
+            ..Default::default()
         };
-        let files = build_sitemaps(&source).unwrap();
+        let files = build_sitemaps(&source, d("2026-01-01")).unwrap();
         let mut decoder = flate2::read::GzDecoder::new(&files[0].body[..]);
         let mut body = String::new();
         decoder.read_to_string(&mut body).unwrap();
-        assert!(body.contains("https://librejustice.fr/loi/code-civil/1240"));
+        assert!(body.contains("https://librejustice.fr/texte/code-civil/1240"));
+    }
+
+    /// Décompresse tous les sub-sitemaps `.xml.gz` en une seule chaîne.
+    fn decompress_subs(files: &[SitemapFile]) -> String {
+        let mut all = String::new();
+        for f in files
+            .iter()
+            .filter(|f| f.content_type == "application/gzip")
+        {
+            let mut decoder = flate2::read::GzDecoder::new(&f.body[..]);
+            decoder.read_to_string(&mut all).unwrap();
+        }
+        all
+    }
+
+    // Spec : URL fiche entité = {BASE_URL}/entite/{ns}/{id} ; URL code = /texte/{slug}.
+    #[test]
+    fn entity_and_code_url_format() {
+        assert_eq!(
+            entity_url("siren", "552081317"),
+            "https://librejustice.fr/entite/siren/552081317"
+        );
+        assert_eq!(
+            code_url("code-civil"),
+            "https://librejustice.fr/texte/code-civil"
+        );
+    }
+
+    // Spec : build_sitemaps émet les pages statiques (landing, hubs annuaire),
+    // les codes et les fiches d'entités ; le hub /annuaire/avocats est exclu.
+    #[test]
+    fn includes_static_codes_and_entities() {
+        let source = FakeSource {
+            entities: vec![("siren".into(), "552081317".into(), d("2026-04-01"))],
+            codes: vec![("code-civil".into(), d("2026-02-02"))],
+            ..Default::default()
+        };
+        let files = build_sitemaps(&source, d("2026-05-01")).unwrap();
+        let body = decompress_subs(&files);
+
+        assert!(body.contains("<loc>https://librejustice.fr/</loc>"));
+        assert!(body.contains("https://librejustice.fr/annuaire/entreprises"));
+        assert!(body.contains("https://librejustice.fr/mentions-legales"));
+        assert!(body.contains("https://librejustice.fr/texte/code-civil<"));
+        assert!(body.contains("https://librejustice.fr/entite/siren/552081317"));
+        // Avocats : ni le hub listing, ni une fiche (exclusion RGPD).
+        assert!(!body.contains("/annuaire/avocats"));
     }
 }

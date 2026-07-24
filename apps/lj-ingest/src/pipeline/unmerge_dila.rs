@@ -43,7 +43,7 @@ use super::{generate_public_id, Candidate, IngestCounts, IngestMode};
 use crate::config::Settings;
 
 /// Une perdante planifiée : provenance à détacher + amorce de squelette
-/// (`canonical_ref`/`juridiction_type` de la décision, écrasés par la ré-ingestion).
+/// (`canonical_ref`/`jurisdiction_type` de la décision, écrasés par la ré-ingestion).
 struct Plan {
     decision_id: i64,
     source_uid: String,

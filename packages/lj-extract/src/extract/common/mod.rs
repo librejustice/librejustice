@@ -33,10 +33,13 @@ pub mod key_signals;
 pub(crate) use lj_core::text;
 
 pub use articles::normalize_article;
+pub(crate) use articles::ART_NUM_SUFFIX;
 pub use instruments::{is_unresolvable_instrument, normalize_instrument};
 
 pub(crate) use instruments::FOREIGN_NATIONALITY_STEMS;
 
-pub(crate) use counsel::{dedupe_prefix_variants, unique_nonempty};
+pub(crate) use counsel::{
+    better_cased, dedupe_prefix_variants, is_anonymized_firm, is_anonymized_person, unique_nonempty,
+};
 pub(crate) use dates::{clean_date_iso, clean_docket_numbers, extract_textual_audience_date};
 pub(crate) use text::{fold, normalize_spaces};

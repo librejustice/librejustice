@@ -289,6 +289,18 @@
     font-style: italic;
   }
 
+  /* Chevron des sommaires <details> : pivote à l'ouverture de SA section
+     (enfant direct — seul le niveau ouvert pivote, pas ses descendants). */
+  details[open] > summary > .toc-chevron {
+    transform: rotate(90deg);
+  }
+
+  /* Vue-lecture : masquage des items abrogés (bouton « Masquer les articles
+     abrogés » — la classe est posée sur le conteneur de lecture). */
+  .abroges-masques .item-abroge {
+    display: none;
+  }
+
   /* Numérotation large pour les hits — Geist léger */
   .hit-numeral {
     font-family: var(--font-sans);

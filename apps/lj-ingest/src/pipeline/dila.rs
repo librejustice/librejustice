@@ -1,4 +1,4 @@
-//! DILA bulk (JADE / CONSTIT, ADR 0093) : ingest tarball streamé + sync.
+//! DILA bulk (JADE / CONSTIT / CNIL, ADR 0093/0185) : ingest tarball streamé + sync.
 
 use std::collections::HashSet;
 use std::path::Path;
@@ -27,10 +27,12 @@ use super::{
 pub enum Fond {
     Jade,
     Constit,
+    /// Délibérations/décisions de la CNIL (ADR 0185).
+    Cnil,
 }
 
 impl Fond {
-    /// Préfixe `source_uid` du fond (`dila-jade`/`dila-constit`).
+    /// Préfixe `source_uid` du fond (`dila-jade`/`dila-constit`/`dila-cnil`).
     /// `parse_dila_xml` forme `source_uid = "{member_path}/{ID}"` → on lui passe
     /// ce préfixe comme `member_path` pour obtenir `dila-<fond>/<ID DILA>`
     /// (clé pivot stable, ADR 0093 ; mappée par `source_from_source_uid`).
@@ -38,6 +40,7 @@ impl Fond {
         match self {
             Fond::Jade => "dila-jade",
             Fond::Constit => "dila-constit",
+            Fond::Cnil => "dila-cnil",
         }
     }
 
@@ -46,6 +49,7 @@ impl Fond {
         match self {
             Fond::Jade => DilaFond::Jade,
             Fond::Constit => DilaFond::Constit,
+            Fond::Cnil => DilaFond::Cnil,
         }
     }
 
@@ -54,6 +58,7 @@ impl Fond {
         match self {
             Fond::Jade => lj_sources::dila::DilaFond::Jade,
             Fond::Constit => lj_sources::dila::DilaFond::Constit,
+            Fond::Cnil => lj_sources::dila::DilaFond::Cnil,
         }
     }
 }
@@ -92,16 +97,6 @@ fn collect_publie_ids(path: &Path) -> Result<HashSet<String>> {
     Ok(set)
 }
 
-/// `NATURE` (`META_COMMUN/NATURE`) du document, lue dans les `source_fields` DILA.
-/// Sert au filtre RGPD CONSTIT (skip `AN`/`SEN`, grounding décision #2).
-fn dila_nature(source_fields: &serde_json::Value) -> Option<String> {
-    source_fields
-        .get("META_COMMUN")
-        .and_then(|m| m.get("NATURE"))
-        .and_then(|v| v.as_str())
-        .map(str::to_string)
-}
-
 /// Issue du classement d'un membre DILA : décision à **texte intégral** (chemin
 /// d'ingest normal) ou enregistrement **analyse-seule** (#33, ADR 0105) routé à
 /// part — enrichissement `source_fields` d'une décision existante OU orpheline
@@ -115,10 +110,9 @@ pub(super) enum ClassifiedDila {
 ///
 /// `raw_repaired` = octets déjà passés par `repair_dila` (bord lj-sources) ;
 /// `content_checksum` est calculé sur `raw_brut` (pré-repair, idempotence #7).
-/// `None` ⇒ skip non fatal : juridiction JADE non routée, ou CONSTIT électoral
-/// (`NATURE ∈ {AN, SEN}`) exclu pour RGPD (PII en clair, grounding décision #2).
-/// `Some(Full)` = texte intégral ; `Some(Analysis)` = analyse-seule (CONTENU absent,
-/// SOMMAIRE ANA/SCT comme contenu).
+/// `None` ⇒ skip non fatal : juridiction JADE non routée. `Some(Full)` = texte
+/// intégral ; `Some(Analysis)` = analyse-seule (CONTENU absent, SOMMAIRE ANA/SCT
+/// comme contenu).
 ///
 /// [`classify_xml`]: super::prepare::classify_xml
 pub(super) fn classify_dila(
@@ -129,21 +123,15 @@ pub(super) fn classify_dila(
     let doc = parse_dila_doc(&raw_repaired, fond.source_prefix(), fond.core())
         .map_err(|e| anyhow!("parse_dila_doc ({}): {e}", fond.source_prefix()))?;
 
-    if fond == Fond::Constit {
-        let nature = build_source_fields_dila(&raw_repaired, fond.core());
-        if let Some(n) = dila_nature(&nature) {
-            if n == "AN" || n == "SEN" {
-                return Ok(None);
-            }
-        }
-    }
-
+    // Membre sans corps (ni CONTENU ni SOMMAIRE) → skip non fatal : nominal pour
+    // CNIL (fiches de registre sans texte, ADR 0185), pas une erreur de parsing.
     let (decision, is_analysis) = match doc {
-        DilaDoc::Full(d) => (d, false),
-        DilaDoc::Analysis(d) => (d, true),
+        Some(DilaDoc::Full(d)) => (d, false),
+        Some(DilaDoc::Analysis(d)) => (d, true),
+        None => return Ok(None),
     };
 
-    if decision.juridiction_type.is_none() {
+    if decision.jurisdiction_type.is_none() {
         tracing::warn!(uid = %decision.source_uid, "UID DILA non routé, skip");
         return Ok(None);
     }
@@ -326,12 +314,10 @@ async fn ingest_dila_paths(
     require_embeddings: bool,
 ) -> Result<()> {
     let mut total = IngestCounts::default();
-    let mut electoral_skipped = 0usize;
     let mut deleted_total: u64 = 0;
     for path in paths {
-        let (counts, electoral, deleted) =
+        let (counts, deleted) =
             ingest_dila_tarball(conn, fond, path, embedder, require_embeddings).await?;
-        electoral_skipped += electoral;
         deleted_total += deleted;
         total.merge(&counts);
     }
@@ -344,7 +330,6 @@ async fn ingest_dila_paths(
         skipped = total.skipped,
         errors = total.errors,
         chunks = total.chunks_created,
-        electoral_skipped,
         deleted = deleted_total,
         "ingest_dila_total"
     );
@@ -352,7 +337,7 @@ async fn ingest_dila_paths(
 }
 
 /// Ingère UNE archive DILA (stock ou incrément) en streaming, renvoie
-/// `(counts, electoral_skipped, deleted)`.
+/// `(counts, deleted)`.
 ///
 /// Lecture+repair+parse (gzip+tar+XML = CPU sync) en thread bloquant, BORNÉE par
 /// un canal : RAM ~constante (stocks globaux jade/constit = centaines de k
@@ -366,16 +351,15 @@ async fn ingest_dila_tarball(
     path: &Path,
     embedder: Option<&AnyEmbedder>,
     require_embeddings: bool,
-) -> Result<(IngestCounts, usize, u64)> {
+) -> Result<(IngestCounts, u64)> {
     // Messages remontés par le thread lecteur (membres parsés). `Candidate` boxé
     // (gros : `Decision` + payload). `Delete` = IDs DILA d'un `.dat` de suppression.
     enum DilaMsg {
         Candidate(Box<Candidate>),
         /// Enregistrement analyse-seule (CONTENU absent, #33) — traité à part.
         Analysis(Box<Candidate>),
-        Skip {
-            electoral: bool,
-        },
+        /// Membre écarté non fatal (juridiction JADE non routée).
+        Skip,
         /// Doublon publie/inedit écarté (winner = publie, #36).
         DupSkip,
         Empty,
@@ -431,10 +415,8 @@ async fn ingest_dila_tarball(
                 match classify_dila(repaired, &raw, fond) {
                     Ok(Some(ClassifiedDila::Full(cand))) => DilaMsg::Candidate(Box::new(cand)),
                     Ok(Some(ClassifiedDila::Analysis(cand))) => DilaMsg::Analysis(Box::new(cand)),
-                    // CONSTIT électoral exclu ou JADE non routé : skip non fatal.
-                    Ok(None) => DilaMsg::Skip {
-                        electoral: fond == Fond::Constit,
-                    },
+                    // JADE non routé : skip non fatal.
+                    Ok(None) => DilaMsg::Skip,
                     Err(e) => {
                         tracing::error!(member = %name, error = %e, "parse DILA échec");
                         DilaMsg::ParseErr
@@ -450,7 +432,6 @@ async fn ingest_dila_tarball(
     let mut analysis: Vec<Candidate> = Vec::new();
     let mut counts = IngestCounts::default();
     let mut dat_ids: Vec<String> = Vec::new();
-    let mut electoral_skipped = 0usize;
     let mut dup_skipped = 0usize;
 
     while let Some(msg) = rx.recv().await {
@@ -476,11 +457,8 @@ async fn ingest_dila_tarball(
                     .await?;
                 }
             }
-            DilaMsg::Skip { electoral } => {
+            DilaMsg::Skip => {
                 counts.skipped += 1;
-                if electoral {
-                    electoral_skipped += 1;
-                }
             }
             DilaMsg::DupSkip => {
                 counts.skipped += 1;
@@ -549,7 +527,7 @@ async fn ingest_dila_tarball(
         dup_skipped,
         "ingest_dila"
     );
-    Ok((counts, electoral_skipped, deleted_total))
+    Ok((counts, deleted_total))
 }
 
 /// Sync d'un fond DILA, **auto-switch cold ↔ warm** en un seul point d'entrée
@@ -562,8 +540,16 @@ async fn ingest_dila_tarball(
 /// [`sync_legi`]: super::legi::sync_legi
 pub async fn sync_dila(fond: Fond) -> Result<()> {
     let settings = Settings::from_env()?;
-    let downloaded = lj_sources::dila::sync_dila(&settings.cache_dir(), fond.source())
-        .map_err(|e| anyhow!("sync_dila {:?}: {e}", fond))?;
+    // `lj_sources::dila::sync_dila` s'appuie sur un client reqwest **bloquant** : le
+    // Drop de son runtime interne panique s'il tombe dans le contexte async d'un
+    // worker tokio (« Cannot drop a runtime… »). Il DOIT donc tourner sur un thread
+    // bloquant dédié.
+    let (cache_dir, src) = (settings.cache_dir(), fond.source());
+    let downloaded =
+        tokio::task::spawn_blocking(move || lj_sources::dila::sync_dila(&cache_dir, src))
+            .await
+            .map_err(|e| anyhow!("sync_dila join {:?}: {e}", fond))?
+            .map_err(|e| anyhow!("sync_dila {:?}: {e}", fond))?;
     if downloaded.is_empty() {
         tracing::info!(fond = ?fond, "sync_dila : rien de neuf (≤ watermark)");
         return Ok(());

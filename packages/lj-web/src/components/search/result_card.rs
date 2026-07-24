@@ -74,6 +74,10 @@ pub fn ResultCard(
     hit_ids: Arc<Vec<String>>,
     auto_load_summary: bool,
     animate: bool,
+    /// Badge contextuel optionnel, en tête des badges de facettes (ex. rôle de
+    /// l'entité sur sa fiche : Demandeur / Défendeur / Conseil).
+    #[prop(optional_no_strip)]
+    role_badge: Option<String>,
 ) -> impl IntoView {
     let view_sig = RwSignal::new(if auto_load_summary {
         CardView::Summary
@@ -103,7 +107,7 @@ pub fn ResultCard(
     let title_html = if hit.title_html.is_empty() {
         let parts: Vec<String> = [
             Some(format_decision_jurisdiction(
-                hit.juridiction_type,
+                hit.jurisdiction_type,
                 hit.jurisdiction_name.as_deref(),
             )),
             hit.date_lecture
@@ -120,12 +124,16 @@ pub fn ResultCard(
         hit.title_html.clone()
     };
 
+    // Siège (chambre · formation/office) hors du titre (ADR 0170) — rendu à gauche
+    // de la ligne méta, en regard des badges référentiels alignés à droite.
+    let seat = hit.seat.clone().filter(|s| !s.trim().is_empty());
+
     // Extrait et résumé sont tous deux dans le payload (ADR 0051) : rendu direct.
     let embedded_summary = hit.summary.clone();
     let snippet = hit.best_chunk.snippet.clone();
 
     let hit_solution = hit.solution.clone();
-    let hit_voie = hit.voie.clone();
+    let hit_procedure = hit.procedure.clone();
     let hit_publication_codes = hit.publication_codes.clone();
 
     let style = if animate {
@@ -196,31 +204,44 @@ pub fn ResultCard(
                         <Highlighted text=title_html />
                     </A>
                 </h3>
-                <div class="flex flex-wrap items-center gap-1.5">
-                    <button
-                        type="button"
-                        on:click=move |_| view_sig.set(CardView::Snippet)
-                        class=move || toggle_class(CardView::Snippet)
-                    >
-                        "Extrait"
-                    </button>
-                    <button
-                        type="button"
-                        on:click=move |_| view_sig.set(CardView::Summary)
-                        class=move || toggle_class(CardView::Summary)
-                    >
-                        "Résumé"
-                    </button>
+                <div class="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                    {seat
+                        .map(|s| {
+                            view! {
+                                <p class="text-sm text-[var(--color-ink-subtle)]">{s}</p>
+                            }
+                        })}
                     <div class="ml-auto flex flex-wrap justify-end gap-1.5">
+                        {role_badge
+                            .map(|label| {
+                                use crate::components::ui::{Badge, BadgeTone};
+                                view! { <Badge tone=BadgeTone::Neutral>{label}</Badge> }
+                            })}
                         <ResultMetaBadges
                             solution=hit_solution
-                            voie=hit_voie
+                            procedure=hit_procedure
                             publication_codes=hit_publication_codes
                         />
                     </div>
                 </div>
                 {content}
-                <div class="flex justify-end pt-1">
+                <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-1">
+                    <div class="flex items-center gap-1.5">
+                        <button
+                            type="button"
+                            on:click=move |_| view_sig.set(CardView::Snippet)
+                            class=move || toggle_class(CardView::Snippet)
+                        >
+                            "Extrait"
+                        </button>
+                        <button
+                            type="button"
+                            on:click=move |_| view_sig.set(CardView::Summary)
+                            class=move || toggle_class(CardView::Summary)
+                        >
+                            "Résumé"
+                        </button>
+                    </div>
                     <A
                         href=href_footer
                         on:click=on_navigate_footer
@@ -247,20 +268,20 @@ pub fn ResultCard(
 #[component]
 fn ResultMetaBadges(
     solution: Option<FacetTag>,
-    voie: Option<FacetTag>,
+    procedure: Option<FacetTag>,
     publication_codes: Vec<String>,
 ) -> impl IntoView {
     use crate::components::ui::{Badge, BadgeTone};
-    use crate::pages::decision_page::labels::portee_badge;
+    use crate::pages::decision_page::labels::significance_badge;
 
     let solution_badge = solution.filter(|t| t.key != "AUTRE").map(|t| t.label);
-    let voie_badge = voie.map(|t| t.label);
-    let portee = portee_badge(&publication_codes);
+    let procedure_badge = procedure.map(|t| t.label);
+    let significance = significance_badge(&publication_codes);
 
     view! {
         {solution_badge
             .map(|label| view! { <Badge tone=BadgeTone::Outline>{label}</Badge> })}
-        {voie_badge.map(|label| view! { <Badge tone=BadgeTone::Accent>{label}</Badge> })}
-        {portee.map(|label| view! { <Badge tone=BadgeTone::Neutral>{label}</Badge> })}
+        {procedure_badge.map(|label| view! { <Badge tone=BadgeTone::Accent>{label}</Badge> })}
+        {significance.map(|label| view! { <Badge tone=BadgeTone::Neutral>{label}</Badge> })}
     }
 }

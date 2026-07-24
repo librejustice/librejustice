@@ -1,9 +1,9 @@
 //! Compactage des archives `.jsonl.gz` (port de `compact_archives`, mono-thread).
 
 use super::http::path_with_added_extension;
-use super::judilibre::JUDILIBRE_SOURCE_DIR;
 use super::manifest::Manifest;
 use crate::error::{Result, SourceError};
+use crate::state_paths::JUDILIBRE_DIR;
 use chrono::Utc;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -16,8 +16,8 @@ use std::path::Path;
 /// (port de `compact_archives`). Mono-thread (`max_workers` ignoré ; le Python
 /// parallélise les fichiers). Atomique (tmp + rename).
 pub fn compact_archives(data_dir: &Path, manifest: &Manifest, _max_workers: usize) -> Result<()> {
-    let source_dir = if data_dir.join(JUDILIBRE_SOURCE_DIR).is_dir() {
-        data_dir.join(JUDILIBRE_SOURCE_DIR)
+    let source_dir = if data_dir.join(JUDILIBRE_DIR).is_dir() {
+        data_dir.join(JUDILIBRE_DIR)
     } else {
         data_dir.to_path_buf()
     };

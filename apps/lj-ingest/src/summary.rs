@@ -16,7 +16,9 @@ use std::sync::Arc;
 
 use anyhow::{anyhow, Result};
 use lj_core::summary::{build_summary_input, clean_summary, SUMMARY_PROMPT};
-use lj_llm::mistral::{backoff_delay_s, is_retryable_status, MistralClient, MistralError};
+use lj_llm::mistral::{
+    backoff_delay_s, is_retryable_status, key_fingerprint, MistralClient, MistralError,
+};
 use lj_store::repository::{DecisionRepository, MissingSummaryRow};
 use tokio::sync::Semaphore;
 
@@ -24,17 +26,21 @@ use crate::config::Settings;
 
 const MAX_RETRIES: u32 = 5;
 
-/// Concurrence par défaut **par clé** du pool chat (`concurrency=None`). Calibrée
-/// sur ~5 RPS/clé soutenables × ~1,5 s de latence/requête ≈ 7,5 requêtes en vol/clé
-/// pour saturer le quota sans le franchir. Round-robin par requête ⇒ multiplie par
-/// le nombre de clés. La vraie borne du fournisseur est par minute (RPS×60) et tolère
-/// le burst : ce sémaphore vise le régime *soutenu* (backfill), le burst d'un run cron
-/// (quelques centaines de décisions) passe sous le budget minute sans 429.
+/// Concurrence **par clé** du sémaphore (`concurrency=None`) — simple borne
+/// d'appels en vol ; le débit réel est gouverné par [`MIN_INTERVAL_PER_KEY_MS`].
 const CONCURRENCY_PER_KEY: usize = 7;
 
-/// Libellés humains du `juridiction_type` (port de `juridictionTypeLabels`).
-fn juridiction_label(juridiction_type: &str) -> Option<&'static str> {
-    Some(match juridiction_type {
+/// Throttle du client : intervalle minimum entre deux appels, **par clé** (le
+/// round-robin du pool divise l'intervalle global par le nombre de clés
+/// vivantes — une clé = une org, quotas indépendants). 5 s/clé ≈ 12 appels/min/
+/// org ; à ~4 k tokens le résumé moyen ≈ 48 k TPM, sous les 50 k du modèle le
+/// plus serré (`mistral-small-2603`). Les dépassements ponctuels (payloads
+/// longs) sont absorbés par le retry.
+const MIN_INTERVAL_PER_KEY_MS: u64 = 5_000;
+
+/// Libellés humains du `jurisdiction_type` (port de `juridictionTypeLabels`).
+fn juridiction_label(jurisdiction_type: &str) -> Option<&'static str> {
+    Some(match jurisdiction_type {
         "TA" => "Tribunal administratif",
         "CAA" => "Cour administrative d'appel",
         "CE" => "Conseil d'État",
@@ -83,7 +89,7 @@ fn format_fr_date(date_lecture: &str) -> String {
 
 /// Nom de juridiction affichable : `jurisdiction_name` assaini, sinon libellé.
 /// Port de `decision_jurisdiction`.
-fn decision_jurisdiction(juridiction_type: &str, jurisdiction_name: Option<&str>) -> String {
+fn decision_jurisdiction(jurisdiction_type: &str, jurisdiction_name: Option<&str>) -> String {
     if let Some(name) = jurisdiction_name {
         let cleaned = name.trim().replace(" ,", ",");
         let cleaned = cleaned.trim();
@@ -91,20 +97,20 @@ fn decision_jurisdiction(juridiction_type: &str, jurisdiction_name: Option<&str>
             return cleaned.to_string();
         }
     }
-    juridiction_label(juridiction_type)
-        .unwrap_or(juridiction_type)
+    juridiction_label(jurisdiction_type)
+        .unwrap_or(jurisdiction_type)
         .to_string()
 }
 
 /// Titre lisible « <juridiction>, <date FR>, <numéro> » (port de
 /// `decision_title`). Date/numéro optionnels.
 pub fn decision_title(
-    juridiction_type: &str,
+    jurisdiction_type: &str,
     jurisdiction_name: Option<&str>,
     date_lecture: Option<&str>,
     docket_numbers: Option<&[String]>,
 ) -> String {
-    let mut parts = vec![decision_jurisdiction(juridiction_type, jurisdiction_name)];
+    let mut parts = vec![decision_jurisdiction(jurisdiction_type, jurisdiction_name)];
     if let Some(date) = date_lecture {
         parts.push(format_fr_date(date));
     }
@@ -129,7 +135,7 @@ async fn generate_summary(
     // `prompt_cache_key` stable : SUMMARY_PROMPT (préfixe système) est identique sur
     // toutes les décisions du backfill → tokens du prompt facturés à 10 % (cache Mistral).
     let raw = client
-        .chat(SUMMARY_PROMPT, &user_content, Some(400), Some("sum-v4"))
+        .chat(SUMMARY_PROMPT, &user_content, Some(400), Some("sum-v8"))
         .await?;
     Ok(clean_summary(&raw))
 }
@@ -137,35 +143,47 @@ async fn generate_summary(
 /// Appelle `generate_summary` avec back-off exponentiel + jitter (port de
 /// `_call_with_retry`).
 ///
-/// Retries sur 429/5xx et erreurs de transport. Tout 4xx ≠ 429 remonte
-/// immédiatement.
+/// Retries sur 429/5xx et transport ; 401 = clé morte → clé suivante sans
+/// back-off, au plus une passe du pool. Tout autre 4xx remonte immédiatement.
 pub async fn call_with_retry(
     client: &MistralClient,
     body_text: &str,
     title: &str,
     public_id: &str,
 ) -> Result<String, MistralError> {
-    let mut last_err: Option<MistralError> = None;
-    for attempt in 0..MAX_RETRIES {
+    let mut spent_keys = 0usize;
+    let mut transient = 0u32;
+    loop {
         match generate_summary(client, body_text, title).await {
             Ok(summary) => return Ok(summary),
+            Err(MistralError::Status(401)) => {
+                spent_keys += 1;
+                if spent_keys >= client.key_count() {
+                    return Err(MistralError::Status(401)); // tout le pool mort
+                }
+                tracing::warn!(public_id, spent_keys, "summary_key_spent_rotate");
+            }
             Err(MistralError::Status(code)) if !is_retryable_status(code) => {
                 return Err(MistralError::Status(code));
             }
-            Err(err) => last_err = Some(err),
+            Err(err) => {
+                if transient >= MAX_RETRIES {
+                    return Err(err);
+                }
+                let delay = backoff_delay_s(transient, rand01());
+                transient += 1;
+                tracing::warn!(
+                    public_id,
+                    attempt = transient,
+                    max = MAX_RETRIES,
+                    backoff = delay,
+                    error = %err,
+                    "summary_retry"
+                );
+                tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
+            }
         }
-        let delay = backoff_delay_s(attempt, rand01());
-        tracing::warn!(
-            public_id,
-            attempt = attempt + 1,
-            max = MAX_RETRIES,
-            backoff = delay,
-            error = %last_err.as_ref().map(|e| e.to_string()).unwrap_or_default(),
-            "summary_retry"
-        );
-        tokio::time::sleep(std::time::Duration::from_secs_f64(delay)).await;
     }
-    Err(last_err.expect("au moins une tentative a échoué"))
 }
 
 /// Format ETA « 12h03m04s » (port de `_format_eta`).
@@ -209,16 +227,18 @@ fn rand01() -> f64 {
 /// target_version` pour toutes les décisions ayant un payload source (port de
 /// `backfill_summaries`).
 ///
-/// Lecture et écriture sur deux connexions distinctes du pool. Les appels
-/// Mistral sont concurrents via un sémaphore ; les writes sont sérialisés (une
-/// connexion d'écriture, un UPDATE par décision). `concurrency=None` ⇒ dérivé du
-/// nombre de clés du pool (cf. [`CONCURRENCY_PER_KEY`]).
+/// Lecture et écriture sur deux connexions distinctes du pool. Le débit est
+/// cadencé par le throttle du client ([`MIN_INTERVAL_PER_KEY_MS`] ÷ clés
+/// vivantes) ; un sémaphore borne les appels en vol ; les writes sont
+/// sérialisés (une connexion d'écriture, un UPDATE par décision).
+/// `concurrency=None` ⇒ clés vivantes × [`CONCURRENCY_PER_KEY`].
 pub async fn backfill_summaries(
     target_version: i16,
     concurrency: Option<usize>,
     batch_size: i64,
     limit: Option<i64>,
     shuffle: bool,
+    refresh_stale: bool,
 ) -> Result<()> {
     let settings = Settings::from_env()?;
     if settings.mistral_api_keys.is_empty() {
@@ -226,13 +246,6 @@ pub async fn backfill_summaries(
             "LIBREJUSTICE_MISTRAL_API_KEYS vide — impossible de générer des summaries."
         ));
     }
-    // Les clés tournent en round-robin par requête : le débit soutenable scale
-    // avec le pool. À défaut d'override, on pose ~`CONCURRENCY_PER_KEY` requêtes en
-    // vol par clé (sémaphore + back-off s'auto-throttlent ensuite si on déborde).
-    let keys = settings.mistral_api_keys.len();
-    let concurrency = concurrency.unwrap_or(keys * CONCURRENCY_PER_KEY).max(1);
-    tracing::info!(keys, concurrency, "summary_backfill_concurrency");
-
     let pool =
         lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let fetch_conn = pool
@@ -257,10 +270,37 @@ pub async fn backfill_summaries(
     let fetch_repo = DecisionRepository::new(&fetch_conn);
     let write_repo = DecisionRepository::new(&write_conn);
 
-    let client = Arc::new(MistralClient::new(
-        settings.mistral_api_keys.clone(),
-        settings.mistral_model.clone(),
-    )?);
+    // Écarte les clés désactivées (`mistral_key_status`) puis dimensionne la
+    // concurrence sur le pool vivant : ~`CONCURRENCY_PER_KEY` requêtes en vol
+    // par clé à défaut d'override.
+    let disabled = fetch_repo.disabled_mistral_key_fingerprints().await?;
+    let live_keys: Vec<String> = settings
+        .mistral_api_keys
+        .iter()
+        .filter(|k| !disabled.contains(&key_fingerprint(k)))
+        .cloned()
+        .collect();
+    if live_keys.is_empty() {
+        return Err(anyhow!(
+            "toutes les clés Mistral sont désactivées (mistral_key_status) — \
+             pool inutilisable avant le prochain reset mensuel"
+        ));
+    }
+    let keys = live_keys.len();
+    let concurrency = concurrency.unwrap_or(keys * CONCURRENCY_PER_KEY).max(1);
+    let min_interval = std::time::Duration::from_millis(MIN_INTERVAL_PER_KEY_MS / keys as u64);
+    tracing::info!(
+        keys,
+        disabled = disabled.len(),
+        concurrency,
+        min_interval_ms = min_interval.as_millis() as u64,
+        "summary_backfill_concurrency"
+    );
+
+    let client = Arc::new(
+        MistralClient::new(live_keys, settings.mistral_model.clone())?
+            .with_min_interval(min_interval),
+    );
     let sem = Arc::new(Semaphore::new(concurrency));
 
     // Sampling de review : démarre la pagination keyset à un id aléatoire (avec
@@ -280,11 +320,19 @@ pub async fn backfill_summaries(
     let start = std::time::Instant::now();
     let mut processed: usize = 0;
     let mut persisted: usize = 0;
+    let mut marked: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     // Le repo matérialise les batches (frontières identiques au générateur
     // Python) ; on traite chaque batch en concurrence bornée puis on persiste.
     let batches = fetch_repo
-        .iter_decisions_missing_summary(target_version, batch_size, limit, start_id, shuffle)
+        .iter_decisions_missing_summary(
+            target_version,
+            batch_size,
+            limit,
+            start_id,
+            shuffle,
+            refresh_stale,
+        )
         .await?;
 
     for batch in batches {
@@ -309,7 +357,7 @@ pub async fn backfill_summaries(
             }
         }
 
-        // Appels Mistral concurrents (sémaphore = `concurrency`).
+        // Appels Mistral concurrents (le throttle du client cadence le débit).
         let mut tasks = Vec::with_capacity(jobs.len());
         for (decision_id, body, title) in jobs {
             let client = Arc::clone(&client);
@@ -341,6 +389,15 @@ pub async fn backfill_summaries(
                 }
             }
         }
+        // Persiste les clés mortes découvertes pendant le batch.
+        for fp in client.spent_fingerprints() {
+            if marked.insert(fp.clone()) {
+                write_repo
+                    .mark_mistral_key_disabled(&fp, 401, "ingest")
+                    .await?;
+                tracing::warn!(fingerprint = %fp, "mistral_key_disabled_marked");
+            }
+        }
         let elapsed = start.elapsed().as_secs_f64();
         let rate = processed as f64 / elapsed.max(1e-6);
         tracing::info!(
@@ -365,7 +422,7 @@ pub async fn backfill_summaries(
 /// dans le prompt). `docket_numbers` → premier numéro éventuel.
 fn row_title(row: &MissingSummaryRow) -> String {
     decision_title(
-        &row.juridiction_type,
+        &row.jurisdiction_type,
         row.jurisdiction_name.as_deref(),
         row.date_lecture.as_deref(),
         row.docket_numbers.as_deref(),

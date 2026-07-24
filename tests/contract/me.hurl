@@ -132,7 +132,7 @@ HTTP 401
 # # When items present (most-recent-first by bookmarked_at):
 # # jsonpath "$.items[0].id" isString
 # # jsonpath "$.items[0].title" isString
-# # jsonpath "$.items[0].juridictionType" matches /^(TA|CAA|CE|CC|CA|TJ|TCOM)$/
+# # jsonpath "$.items[0].jurisdictionType" matches /^(TA|CAA|CE|CC|CA|TJ|TCOM)$/
 # # jsonpath "$.items[0].bookmarkedAt" isString
 
 # PUT {{base}}/api/me/bookmarks/{{decision_id}}
@@ -193,4 +193,3 @@ HTTP 401
 # DELETE {{base}}/api/me/decision-views
 # Authorization: Bearer {{token}}
 # HTTP 204               # clear all
-

@@ -28,18 +28,19 @@ pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<Act
     let all = |key: &str| map.get_all(key).unwrap_or_default();
     let mut chips = Vec::new();
 
-    // Juridiction : racines uid-préfixées (`juridiction:*`), enfants (`jcode`)
+    // Juridiction : racines = tokens `jurisdiction_type`, enfants (`jcode`)
     // à plat dans le même arbre.
-    let juridiction = facets.map(|f| f.juridiction.as_slice()).unwrap_or_default();
-    for v in all("jur") {
-        let uid = format!("juridiction:{v}");
-        let label = juridiction
+    let jurisdiction = facets
+        .map(|f| f.jurisdiction.as_slice())
+        .unwrap_or_default();
+    for v in all("jurisdictionType") {
+        let label = jurisdiction
             .iter()
-            .find(|c| c.value == uid)
+            .find(|c| c.value == v && c.parent.is_none())
             .map(|c| c.label.clone())
             .unwrap_or_else(|| v.clone());
         chips.push(ActiveChip {
-            key: "jur",
+            key: "jurisdictionType",
             value: v,
             label,
         });
@@ -58,23 +59,24 @@ pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<Act
             label,
         });
     }
-    for v in all("jcode") {
-        let label = juridiction
+    for v in all("jurisdictionCode") {
+        let label = jurisdiction
             .iter()
             .find(|c| c.value == v)
             .map(|c| c.label.clone())
             .unwrap_or_else(|| v.clone());
         chips.push(ActiveChip {
-            key: "jcode",
+            key: "jurisdictionCode",
             value: v,
             label,
         });
     }
 
     for (key, choices) in [
-        ("domaine", facets.map(|f| f.legal_domain.as_slice())),
+        ("chamber", facets.map(|f| f.chamber.as_slice())),
+        ("legalDomain", facets.map(|f| f.legal_domain.as_slice())),
         ("solution", facets.map(|f| f.solution.as_slice())),
-        ("portee", facets.map(|f| f.portee.as_slice())),
+        ("significance", facets.map(|f| f.significance.as_slice())),
         ("publication", facets.map(|f| f.publication.as_slice())),
     ] {
         let choices = choices.unwrap_or_default();
@@ -105,29 +107,29 @@ pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<Act
             .map(|f| f.label.clone())
             .unwrap_or_else(|| uid.to_string())
     };
-    for v in all("li") {
+    for v in all("legalInstrument") {
         let label = instrument_label(&v);
         chips.push(ActiveChip {
-            key: "li",
+            key: "legalInstrument",
             value: v,
             label,
         });
     }
-    for v in all("la") {
+    for v in all("legalArticle") {
         let label = match v.split_once('|') {
             Some((uid, art)) => format!("{} · art. {art}", instrument_label(uid)),
             None => v.clone(),
         };
         chips.push(ActiveChip {
-            key: "la",
+            key: "legalArticle",
             value: v,
             label,
         });
     }
 
     // Dates : une seule chip pour `from`+`to`.
-    let from = map.get("from").unwrap_or_default();
-    let to = map.get("to").unwrap_or_default();
+    let from = map.get("dateFrom").unwrap_or_default();
+    let to = map.get("dateTo").unwrap_or_default();
     let date_label = match (from.is_empty(), to.is_empty()) {
         (false, false) => Some(format!("Du {from} au {to}")),
         (false, true) => Some(format!("Depuis le {from}")),
@@ -243,9 +245,9 @@ mod tests {
 
     fn facets() -> SearchFacets {
         SearchFacets {
-            juridiction: vec![
+            jurisdiction: vec![
                 FacetChoice {
-                    value: "juridiction:TJ".into(),
+                    value: "TJ".into(),
                     label: "Tribunal judiciaire".into(),
                     count: 10,
                     parent: None,
@@ -254,9 +256,10 @@ mod tests {
                     value: "tj75".into(),
                     label: "TJ de Paris".into(),
                     count: 4,
-                    parent: Some("juridiction:TJ".into()),
+                    parent: Some("TJ".into()),
                 },
             ],
+            chamber: Vec::new(),
             office: vec![FacetChoice {
                 value: "JEX".into(),
                 label: "Juge de l'exécution".into(),
@@ -270,12 +273,13 @@ mod tests {
                 parent: None,
             }],
             solution: Vec::new(),
-            portee: Vec::new(),
+            significance: Vec::new(),
             publication: Vec::new(),
             date_lecture_year: Vec::new(),
             legal_instrument: vec![LegalInstrumentFacet {
                 value: "code-civil".into(),
                 label: "Code civil".into(),
+                slug: None,
                 count: 5,
                 articles: Vec::new(),
             }],
@@ -285,10 +289,10 @@ mod tests {
     #[test]
     fn labels_resolved_from_facets() {
         let m = map_of(&[
-            ("jur", "TJ"),
+            ("jurisdictionType", "TJ"),
             ("office", "JEX"),
-            ("jcode", "tj75"),
-            ("domaine", "civil"),
+            ("jurisdictionCode", "tj75"),
+            ("legalDomain", "civil"),
         ]);
         let chips = decision_chips(&m, Some(&facets()));
         let labels: Vec<&str> = chips.iter().map(|c| c.label.as_str()).collect();
@@ -305,7 +309,10 @@ mod tests {
 
     #[test]
     fn orphan_falls_back_to_raw_value() {
-        let m = map_of(&[("jur", "XX"), ("li", "code-inconnu")]);
+        let m = map_of(&[
+            ("jurisdictionType", "XX"),
+            ("legalInstrument", "code-inconnu"),
+        ]);
         let chips = decision_chips(&m, Some(&facets()));
         assert_eq!(chips[0].label, "XX");
         assert_eq!(chips[1].label, "code-inconnu");
@@ -313,7 +320,7 @@ mod tests {
 
     #[test]
     fn composite_article_labelled_with_instrument() {
-        let m = map_of(&[("la", "code-civil|1240")]);
+        let m = map_of(&[("legalArticle", "code-civil|1240")]);
         let chips = decision_chips(&m, Some(&facets()));
         assert_eq!(chips[0].label, "Code civil · art. 1240");
         assert_eq!(chips[0].value, "code-civil|1240");
@@ -321,13 +328,17 @@ mod tests {
 
     #[test]
     fn dates_merge_into_single_chip() {
-        let m = map_of(&[("from", "2020-01-01"), ("to", "2021-06-30"), ("jur", "TJ")]);
+        let m = map_of(&[
+            ("dateFrom", "2020-01-01"),
+            ("dateTo", "2021-06-30"),
+            ("jurisdictionType", "TJ"),
+        ]);
         let chips = decision_chips(&m, Some(&facets()));
         let dates: Vec<&ActiveChip> = chips.iter().filter(|c| c.key == "dates").collect();
         assert_eq!(dates.len(), 1);
         assert_eq!(dates[0].label, "Du 2020-01-01 au 2021-06-30");
         // Borne seule.
-        let m = map_of(&[("from", "2020-01-01")]);
+        let m = map_of(&[("dateFrom", "2020-01-01")]);
         let chips = decision_chips(&m, None);
         assert_eq!(chips[0].label, "Depuis le 2020-01-01");
     }

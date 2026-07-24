@@ -2,7 +2,7 @@
 //!
 //! Schéma unifié : ordre administratif (CE/CAA/TA/CNDA/Cour des comptes/TC) ET
 //! ordre judiciaire (Cour de cassation/CA/TJ/TCOM). Les enums de facettes
-//! ([`Solution`], [`Voie`], [`Office`], [`Domaine`]) sont le **miroir compilé
+//! ([`Solution`], [`Procedure`], [`Office`], [`Domain`]) sont le **miroir compilé
 //! du seed** de la migration `0100_facet_referentiels.sql` (ADR 0146 §4) :
 //! chaque valeur sérialisée est le suffixe d'un uid `facet_value` — le test
 //! `enums_match_migration_seed` diffe enum ↔ seed, toute dérive est un build
@@ -88,11 +88,12 @@ impl Solution {
     ];
 }
 
-/// Voie procédurale — miroir du seed `voie:*` (migration 0100). `null` =
-/// procédure contentieuse ordinaire ; vocabulaire fermé, pas de `AUTRE`.
+/// Voie procédurale — miroir du seed `voie:*` (migration 0100), namespace
+/// renommé `procedure:*` par la 0145 (ADR 0213). `null` = procédure
+/// contentieuse ordinaire ; vocabulaire fermé, pas de `AUTRE`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Voie {
+pub enum Procedure {
     RefereSuspension,
     RefereLiberte,
     RefereMesuresUtiles,
@@ -109,22 +110,22 @@ pub enum Voie {
     RectificationInterpretation,
 }
 
-impl Voie {
+impl Procedure {
     /// Toutes les variantes, dans l'ordre `sort` du seed 0100.
-    pub const ALL: [Voie; 13] = [
-        Voie::RefereSuspension,
-        Voie::RefereLiberte,
-        Voie::RefereMesuresUtiles,
-        Voie::ReferePrecontractuel,
-        Voie::RefereProvision,
-        Voie::RefereCivil,
-        Voie::FiltrageR2221,
-        Voie::Papc,
-        Voie::Qpc,
-        Voie::QuestionPrejudicielleCjue,
-        Voie::RecoursRevision,
-        Voie::TierceOpposition,
-        Voie::RectificationInterpretation,
+    pub const ALL: [Procedure; 13] = [
+        Procedure::RefereSuspension,
+        Procedure::RefereLiberte,
+        Procedure::RefereMesuresUtiles,
+        Procedure::ReferePrecontractuel,
+        Procedure::RefereProvision,
+        Procedure::RefereCivil,
+        Procedure::FiltrageR2221,
+        Procedure::Papc,
+        Procedure::Qpc,
+        Procedure::QuestionPrejudicielleCjue,
+        Procedure::RecoursRevision,
+        Procedure::TierceOpposition,
+        Procedure::RectificationInterpretation,
     ];
 }
 
@@ -156,35 +157,37 @@ impl Office {
 }
 
 /// Portée jurisprudentielle — miroir du seed `portee:*` (migration 0114,
-/// ADR 0167) : groupes de `publication_codes` au rang le plus fort
-/// (`portee_codes` de lj-core). Mapping total : `INDETERMINEE` sans code
+/// ADR 0167), namespace renommé `significance:*` par la 0145 (ADR 0213) :
+/// groupes de `publication_codes` au rang le plus fort
+/// (`significance_codes` de lj-core). Mapping total : `INDETERMINEE` sans code
 /// classant (gabarit  : majeure · importante · limitée · indéterminée).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Portee {
+pub enum Significance {
     Majeure,
     Importante,
     Limitee,
     Indeterminee,
 }
 
-impl Portee {
+impl Significance {
     /// Toutes les variantes, dans l'ordre `sort` du seed 0114.
-    pub const ALL: [Portee; 4] = [
-        Portee::Majeure,
-        Portee::Importante,
-        Portee::Limitee,
-        Portee::Indeterminee,
+    pub const ALL: [Significance; 4] = [
+        Significance::Majeure,
+        Significance::Importante,
+        Significance::Limitee,
+        Significance::Indeterminee,
     ];
 }
 
-/// Domaine — arbre de référence verbatim, miroir du seed `domaine:*` (migration
-/// 0100) : 9 racines + 36 feuilles. La racine d'une feuille est portée par
+/// Domaine juridique — arbre de référence verbatim, miroir du seed `domaine:*`
+/// (migration 0100), namespace renommé `legal_domain:*` par la 0145
+/// (ADR 0213) : 9 racines + 36 feuilles. La racine d'une feuille est portée par
 /// `parent_uid` en base ; côté requête une racine sélectionnée matche
 /// elle-même + toutes ses feuilles (expansion côté API).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Domaine {
+pub enum Domain {
     // Racines.
     Civil,
     Commercial,
@@ -238,54 +241,54 @@ pub enum Domaine {
     ProprieteIntellectuelleLitteraireArtistique,
 }
 
-impl Domaine {
+impl Domain {
     /// Toutes les variantes (racines puis feuilles, ordre du seed 0100).
-    pub const ALL: [Domaine; 45] = [
-        Domaine::Civil,
-        Domaine::Commercial,
-        Domaine::Public,
-        Domaine::Social,
-        Domaine::Fiscal,
-        Domaine::ProprieteIntellectuelle,
-        Domaine::Europeen,
-        Domaine::Criminel,
-        Domaine::Constitutionnel,
-        Domaine::CivilProceduresCivilesExecution,
-        Domaine::CivilDroitImmobilierConstruction,
-        Domaine::CivilDroitLocatif,
-        Domaine::CivilDroitPersonnesFamille,
-        Domaine::CivilDroitCoproprieteProprieteImmobiliere,
-        Domaine::CivilDroitAssurances,
-        Domaine::CivilDroitResponsabilite,
-        Domaine::CivilDroitBancaireBoursier,
-        Domaine::CivilDroitSuccessions,
-        Domaine::CivilDroitExpropriationPreemption,
-        Domaine::CivilDivorceSeparationCorps,
-        Domaine::CivilDroitRural,
-        Domaine::CivilDroitResponsabiliteContrats,
-        Domaine::CivilDroitSaisieImmobiliere,
-        Domaine::CivilDroitMineurs,
-        Domaine::CommercialDroitEntreprisesDifficulte,
-        Domaine::CommercialDroitBancaireBoursier,
-        Domaine::CommercialDroitContrats,
-        Domaine::CommercialDroitSocietes,
-        Domaine::CommercialDroitNumerique,
-        Domaine::CommercialDroitTransport,
-        Domaine::CommercialDroitAssurances,
-        Domaine::CommercialDroitConcurrence,
-        Domaine::CommercialDroitConsommation,
-        Domaine::CommercialDroitArbitrage,
-        Domaine::PublicDroitEtrangersNationalite,
-        Domaine::PublicDroitUrbanismeImmobilierPublic,
-        Domaine::PublicDroitTravail,
-        Domaine::PublicDroitPenalPublic,
-        Domaine::PublicDroitAideActionSociale,
-        Domaine::PublicDroitEnvironnement,
-        Domaine::SocialDroitTravail,
-        Domaine::SocialDroitAideActionSociale,
-        Domaine::SocialDroitPenalSocial,
-        Domaine::ProprieteIntellectuelleIndustrielle,
-        Domaine::ProprieteIntellectuelleLitteraireArtistique,
+    pub const ALL: [Domain; 45] = [
+        Domain::Civil,
+        Domain::Commercial,
+        Domain::Public,
+        Domain::Social,
+        Domain::Fiscal,
+        Domain::ProprieteIntellectuelle,
+        Domain::Europeen,
+        Domain::Criminel,
+        Domain::Constitutionnel,
+        Domain::CivilProceduresCivilesExecution,
+        Domain::CivilDroitImmobilierConstruction,
+        Domain::CivilDroitLocatif,
+        Domain::CivilDroitPersonnesFamille,
+        Domain::CivilDroitCoproprieteProprieteImmobiliere,
+        Domain::CivilDroitAssurances,
+        Domain::CivilDroitResponsabilite,
+        Domain::CivilDroitBancaireBoursier,
+        Domain::CivilDroitSuccessions,
+        Domain::CivilDroitExpropriationPreemption,
+        Domain::CivilDivorceSeparationCorps,
+        Domain::CivilDroitRural,
+        Domain::CivilDroitResponsabiliteContrats,
+        Domain::CivilDroitSaisieImmobiliere,
+        Domain::CivilDroitMineurs,
+        Domain::CommercialDroitEntreprisesDifficulte,
+        Domain::CommercialDroitBancaireBoursier,
+        Domain::CommercialDroitContrats,
+        Domain::CommercialDroitSocietes,
+        Domain::CommercialDroitNumerique,
+        Domain::CommercialDroitTransport,
+        Domain::CommercialDroitAssurances,
+        Domain::CommercialDroitConcurrence,
+        Domain::CommercialDroitConsommation,
+        Domain::CommercialDroitArbitrage,
+        Domain::PublicDroitEtrangersNationalite,
+        Domain::PublicDroitUrbanismeImmobilierPublic,
+        Domain::PublicDroitTravail,
+        Domain::PublicDroitPenalPublic,
+        Domain::PublicDroitAideActionSociale,
+        Domain::PublicDroitEnvironnement,
+        Domain::SocialDroitTravail,
+        Domain::SocialDroitAideActionSociale,
+        Domain::SocialDroitPenalSocial,
+        Domain::ProprieteIntellectuelleIndustrielle,
+        Domain::ProprieteIntellectuelleLitteraireArtistique,
     ];
 }
 
@@ -320,9 +323,10 @@ pub enum DecisionType {
 /// Ordre de juridiction déduit (préfixe uid opendata / type Judilibre).
 /// Valeurs : `TA` `CAA` `CE` `TC` `CONSTIT` (admin/suprême) ; `CC` `CA` `TJ`
 /// `TCOM` (judiciaire) ; `CEDH` `CJUE` (européen, ADR 0094) ; `CNDA` (Cour
-/// nationale du droit d'asile, source scrapée, ADR 0096).
+/// nationale du droit d'asile, source scrapée, ADR 0096) ; `CNIL` (délibérations
+/// de la CNIL, fond DILA, ADR 0185).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-pub enum JuridictionType {
+pub enum JurisdictionType {
     #[serde(rename = "TA")]
     Ta,
     #[serde(rename = "CAA")]
@@ -347,6 +351,27 @@ pub enum JuridictionType {
     Cjue,
     #[serde(rename = "CNDA")]
     Cnda,
+    #[serde(rename = "CNIL")]
+    Cnil,
+}
+
+impl JurisdictionType {
+    /// Toutes les variantes, dans l'ordre de déclaration.
+    pub const ALL: [JurisdictionType; 13] = [
+        JurisdictionType::Ta,
+        JurisdictionType::Caa,
+        JurisdictionType::Ce,
+        JurisdictionType::Constit,
+        JurisdictionType::Tc,
+        JurisdictionType::Cc,
+        JurisdictionType::Ca,
+        JurisdictionType::Tj,
+        JurisdictionType::Tcom,
+        JurisdictionType::Cedh,
+        JurisdictionType::Cjue,
+        JurisdictionType::Cnda,
+        JurisdictionType::Cnil,
+    ];
 }
 
 #[cfg(test)]
@@ -383,13 +408,16 @@ mod tests {
             ser(&Solution::SatisfactionPartielle),
             "SATISFACTION_PARTIELLE"
         );
-        assert_eq!(ser(&Voie::FiltrageR2221), "FILTRAGE_R222_1");
-        assert_eq!(ser(&Voie::ReferePrecontractuel), "REFERE_PRECONTRACTUEL");
+        assert_eq!(ser(&Procedure::FiltrageR2221), "FILTRAGE_R222_1");
+        assert_eq!(
+            ser(&Procedure::ReferePrecontractuel),
+            "REFERE_PRECONTRACTUEL"
+        );
         assert_eq!(ser(&Office::Jex), "JEX");
-        assert_eq!(ser(&Domaine::CivilDroitLocatif), "CIVIL_DROIT_LOCATIF");
+        assert_eq!(ser(&Domain::CivilDroitLocatif), "CIVIL_DROIT_LOCATIF");
     }
 
-    /// Uids d'une facette dans un seed de migration (lignes `('facet:…`).
+    /// Uids d'une facette dans un seed de migration (lignes `('facet:… — les seeds gardent les préfixes historiques, la 0145 renomme`).
     fn seed_uid_suffixes_in(migration: &str, facet: &str) -> std::collections::BTreeSet<String> {
         let sql = std::fs::read_to_string(format!(
             "{}/../lj-store/migrations/{migration}",
@@ -422,46 +450,46 @@ mod tests {
     #[test]
     fn enums_match_migration_seed() {
         assert_eq!(all_codes(&Solution::ALL), seed_uid_suffixes("solution"));
-        assert_eq!(all_codes(&Voie::ALL), seed_uid_suffixes("voie"));
+        assert_eq!(all_codes(&Procedure::ALL), seed_uid_suffixes("voie"));
         assert_eq!(all_codes(&Office::ALL), seed_uid_suffixes("office"));
-        assert_eq!(all_codes(&Domaine::ALL), seed_uid_suffixes("domaine"));
+        assert_eq!(all_codes(&Domain::ALL), seed_uid_suffixes("domaine"));
         assert_eq!(
-            all_codes(&Portee::ALL),
+            all_codes(&Significance::ALL),
             seed_uid_suffixes_in("0114_portee_facette.sql", "portee")
         );
         assert_eq!(Solution::ALL.len(), 17);
-        assert_eq!(Voie::ALL.len(), 13);
+        assert_eq!(Procedure::ALL.len(), 13);
         assert_eq!(Office::ALL.len(), 7);
-        assert_eq!(Domaine::ALL.len(), 45);
-        assert_eq!(Portee::ALL.len(), 4);
+        assert_eq!(Domain::ALL.len(), 45);
+        assert_eq!(Significance::ALL.len(), 4);
     }
 
     #[test]
-    fn juridiction_type_round_trip() {
+    fn jurisdiction_type_round_trip() {
         for v in [
-            JuridictionType::Ta,
-            JuridictionType::Caa,
-            JuridictionType::Ce,
-            JuridictionType::Constit,
-            JuridictionType::Tc,
-            JuridictionType::Cc,
-            JuridictionType::Ca,
-            JuridictionType::Tj,
-            JuridictionType::Tcom,
-            JuridictionType::Cedh,
-            JuridictionType::Cjue,
-            JuridictionType::Cnda,
+            JurisdictionType::Ta,
+            JurisdictionType::Caa,
+            JurisdictionType::Ce,
+            JurisdictionType::Constit,
+            JurisdictionType::Tc,
+            JurisdictionType::Cc,
+            JurisdictionType::Ca,
+            JurisdictionType::Tj,
+            JurisdictionType::Tcom,
+            JurisdictionType::Cedh,
+            JurisdictionType::Cjue,
+            JurisdictionType::Cnda,
         ] {
             let s = serde_json::to_string(&v).unwrap();
-            let back: JuridictionType = serde_json::from_str(&s).unwrap();
+            let back: JurisdictionType = serde_json::from_str(&s).unwrap();
             assert_eq!(v, back);
         }
-        assert_eq!(ser(&JuridictionType::Tcom), "TCOM");
-        assert_eq!(ser(&JuridictionType::Constit), "CONSTIT");
-        assert_eq!(ser(&JuridictionType::Tc), "TC");
-        assert_eq!(ser(&JuridictionType::Cedh), "CEDH");
-        assert_eq!(ser(&JuridictionType::Cjue), "CJUE");
-        assert_eq!(ser(&JuridictionType::Cnda), "CNDA");
+        assert_eq!(ser(&JurisdictionType::Tcom), "TCOM");
+        assert_eq!(ser(&JurisdictionType::Constit), "CONSTIT");
+        assert_eq!(ser(&JurisdictionType::Tc), "TC");
+        assert_eq!(ser(&JurisdictionType::Cedh), "CEDH");
+        assert_eq!(ser(&JurisdictionType::Cjue), "CJUE");
+        assert_eq!(ser(&JurisdictionType::Cnda), "CNDA");
     }
 
     #[test]
@@ -473,7 +501,7 @@ mod tests {
         assert_eq!(dt, DecisionType::Ordonnance);
         let smt: SubjectMatterTaxonomy = serde_json::from_str("\"CASSATION_THEMES\"").unwrap();
         assert_eq!(smt, SubjectMatterTaxonomy::CassationThemes);
-        let dom: Domaine = serde_json::from_str("\"COMMERCIAL_DROIT_SOCIETES\"").unwrap();
-        assert_eq!(dom, Domaine::CommercialDroitSocietes);
+        let dom: Domain = serde_json::from_str("\"COMMERCIAL_DROIT_SOCIETES\"").unwrap();
+        assert_eq!(dom, Domain::CommercialDroitSocietes);
     }
 }

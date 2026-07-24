@@ -1,7 +1,7 @@
 //! Mutation de l'état URL de recherche (port des règles `URLSearchParams` des
 //! composants React). Toutes les mutations partent du `ParamsMap` courant (lu
 //! via `use_query_map`), appliquent un changement, et renvoient la *query
-//! string sans le `?` initial* prête pour `navigate("/recherche?{qs}")`.
+//! string sans le `?` initial* prête pour `navigate("/decisions?{qs}")`.
 //!
 //! Invariants (parité loaders.ts / filter-rail / sort-select) :
 //! - toute mutation de filtre/tri supprime `page` (retour page 1) ;
@@ -14,13 +14,13 @@
 use leptos_router::params::ParamsMap;
 
 /// Route de la recherche de décisions.
-pub const SEARCH_PATH: &str = "/recherche";
+pub const SEARCH_PATH: &str = "/decisions";
 /// Route de la recherche de textes (page distincte : moteurs et filtres
 /// propres, aucune recherche transverse).
 pub const TEXTES_PATH: &str = "/textes";
 
 /// Chemin de recherche courant : `/textes` si on y est déjà (les mutations et
-/// soumissions y restent), sinon `/recherche`. Lu sur `window.location` — les
+/// soumissions y restent), sinon `/decisions`. Lu sur `window.location` — les
 /// appels ne surviennent que dans des handlers client (clic, submit).
 #[cfg(feature = "hydrate")]
 fn current_search_path() -> &'static str {
@@ -102,13 +102,13 @@ pub fn toggle_multi(map: &ParamsMap, key: &str, value: &str) -> String {
 /// `onChange` du DateRangePicker.
 pub fn with_dates(map: &ParamsMap, from: Option<&str>, to: Option<&str>) -> String {
     mutate(map, true, |next| {
-        next.remove("from");
-        next.remove("to");
+        next.remove("dateFrom");
+        next.remove("dateTo");
         if let Some(f) = from.filter(|s| !s.is_empty()) {
-            next.insert("from".to_string(), f.to_string());
+            next.insert("dateFrom".to_string(), f.to_string());
         }
         if let Some(t) = to.filter(|s| !s.is_empty()) {
-            next.insert("to".to_string(), t.to_string());
+            next.insert("dateTo".to_string(), t.to_string());
         }
     })
 }
@@ -151,19 +151,19 @@ mod tests {
     #[test]
     fn toggle_adds_then_removes() {
         let m = map_of(&[("q", "x")]);
-        let qs = toggle_multi(&m, "jur", "TA");
-        assert!(qs.contains("jur=TA"));
+        let qs = toggle_multi(&m, "jurisdictionType", "TA");
+        assert!(qs.contains("jurisdictionType=TA"));
         assert!(qs.contains("q=x"));
         // Re-toggle retire la valeur.
-        let m2 = map_of(&[("q", "x"), ("jur", "TA")]);
-        let qs2 = toggle_multi(&m2, "jur", "TA");
-        assert!(!qs2.contains("jur=TA"));
+        let m2 = map_of(&[("q", "x"), ("jurisdictionType", "TA")]);
+        let qs2 = toggle_multi(&m2, "jurisdictionType", "TA");
+        assert!(!qs2.contains("jurisdictionType=TA"));
     }
 
     #[test]
     fn toggle_drops_page() {
         let m = map_of(&[("q", "x"), ("page", "3")]);
-        let qs = toggle_multi(&m, "jur", "TA");
+        let qs = toggle_multi(&m, "jurisdictionType", "TA");
         assert!(!qs.contains("page="));
     }
 

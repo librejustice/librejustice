@@ -18,8 +18,8 @@ use crate::cache::{CachePolicy, CACHE_DECISION, CACHE_SEARCH};
 use crate::error::{validation, ApiError, Result};
 use crate::state::AppState;
 use crate::{
-    bookmarks, decision_views, decisions, docx_export, legi, mcp, me, oauth, pdf_export, redirect,
-    search, search_history, sitemap, stats,
+    bookmarks, decision_views, decisions, docx_export, entities, legi, mcp, me, oauth, pdf_export,
+    redirect, registre, search, search_history, sitemap, stats,
 };
 use axum::extract::{Path, Query, RawQuery, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -29,14 +29,14 @@ use axum::routing::{delete, get, post, put};
 use axum::Router;
 use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
 use lj_dtos::{
-    ActivitySource, ActivityTrackingUpdate, ArticleSearchFacets, ArticleSearchResponse,
-    BookmarksResponse, DecisionViewsResponse, Domaine, HealthResponse, JuridictionType, Office,
-    Portee, SearchHistoryResponse, SearchMode, SearchRequest, SimilarDecisionsResponse, Solution,
-    SortOrder, UserProfileUpdate, Voie,
+    ActivitySource, ActivityTrackingUpdate, BookmarksResponse, DecisionViewsResponse, Domain,
+    HealthResponse, JurisdictionType, Office, Procedure, SearchHistoryResponse, SearchMode,
+    SearchRequest, Significance, SimilarDecisionsResponse, Solution, SortOrder, UserProfileUpdate,
 };
 use serde::Deserialize;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 
 /// Assemble les routes (data API `/api`, OAuth, discovery `.well-known`, MCP
 /// optionnel) avec l'état injecté — sans fallback ni middleware. Brique partagée
@@ -50,6 +50,9 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         // Recherche plein-texte d'articles (ADR 0114), corpus distinct des
         // décisions : route séparée, jambe BM25 lexicale sur `legal_article`.
         .route("/search-textes", get(search_textes_endpoint))
+        // Autocomplétion multi-mots (ADR 0216) : FST in-process pour
+        // jurisprudence/textes, délégation annuaire.
+        .route("/suggest", get(suggest_endpoint))
         // Catalogue des codes navigables (page `/codes`) : un texte de
         // référentiel par entrée, avec son nombre d'articles.
         .route("/codes", get(codes_catalogue))
@@ -59,6 +62,19 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         .route("/decision/{decision_id}", get(decision))
         .route("/decision/{decision_id}/similar", get(decision_similar))
         .route("/decision/{decision_id}/preview", get(decision_preview))
+        .route("/decision/{decision_id}/parties", get(decision_parties))
+        // Fiche entité (ADR 0189) : identité registre + agrégats contentieux,
+        // et décisions citantes paginées.
+        .route("/entity/{ns}/{id}", get(entity_page))
+        .route("/entity/{ns}/{id}/decisions", get(entity_decisions))
+        // Volet registre servi par APIs externes (ADR 0199) : identité
+        // enrichie/dirigeants/finances + annonces BODACC/JOAFE, jamais stockés.
+        .route("/entity/{ns}/{id}/registre", get(entity_registre))
+        // Annuaire des entités (ADR 0192) : recherche, listing paginé par
+        // catégorie, compteurs. Périmètre = entités avec contentieux.
+        .route("/entities/search", get(entities_search))
+        .route("/entities/directory", get(entities_directory))
+        .route("/entities/stats", get(entities_stats))
         .route(
             "/decision/{decision_id}/download.docx",
             get(decision_download_docx),
@@ -67,11 +83,11 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
             "/decision/{decision_id}/download.pdf",
             get(decision_download_pdf),
         )
-        // Référentiel LEGI versionné (`/loi`, ADR 0092). Ordre des routes : la
+        // Référentiel LEGI versionné (`/texte`, ADR 0092). Ordre des routes : la
         // version-à-date `{code}/{num}/{date}` et la sous-ressource
         // `{code}/{num}/citing` ne peuvent collisionner — `citing` est un
         // segment littéral, distinct d'une date ISO.
-        .nest("/loi", legi_router())
+        .nest("/texte", legi_router())
         // me / bookmarks / search-history / decision-views (RequiredUser).
         .route("/me", get(get_me).patch(patch_me).delete(delete_me))
         .route("/me/activity-tracking", put(set_activity_tracking))
@@ -89,7 +105,15 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         .route(
             "/me/decision-views/{decision_id}",
             post(record_view).delete(delete_view),
-        );
+        )
+        // L'API (JSON + exports PDF/DOCX) reste servie en 200 mais ne doit
+        // jamais entrer dans l'index des moteurs — le contenu indexable est la
+        // page SSR. `X-Robots-Tag` couvre aussi les binaires, où un `<meta>`
+        // est impossible.
+        .layer(SetResponseHeaderLayer::overriding(
+            header::HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex"),
+        ));
 
     // ── Racine : OAuth + discovery `.well-known` (consommés hors `/api`) ──────
     // Ces sous-routeurs sont `Router<AppState>` ; on injecte l'état avec
@@ -240,20 +264,21 @@ async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
 /// Paramètres de la query `/api/search`, alias camelCase (parité `Query(alias=…)`).
 ///
 /// Construits depuis la query string brute (les listes répétées
-/// `?juridictionType=A&juridictionType=B` ne sont pas gérées par
+/// `?jurisdictionType=A&jurisdictionType=B` ne sont pas gérées par
 /// `serde_urlencoded`), puis convertis en [`SearchRequest`].
 #[derive(Debug)]
 struct SearchParams {
     q: Option<String>,
-    juridiction_type: Vec<JuridictionType>,
+    jurisdiction_type: Vec<JurisdictionType>,
     solution: Vec<Solution>,
-    voie: Vec<Voie>,
+    procedure: Vec<Procedure>,
     office: Vec<Office>,
-    legal_domain: Vec<Domaine>,
+    legal_domain: Vec<Domain>,
     jurisdiction_code: Vec<String>,
+    chamber: Vec<String>,
     legal_instrument: Vec<String>,
     legal_article: Vec<String>,
-    portee: Vec<Portee>,
+    significance: Vec<Significance>,
     publication: Vec<String>,
     date_from: Option<String>,
     date_to: Option<String>,
@@ -269,15 +294,16 @@ impl Default for SearchParams {
         // Défauts Pydantic : mode=auto, sort=relevance, limit=20, offset=0.
         Self {
             q: None,
-            juridiction_type: Vec::new(),
+            jurisdiction_type: Vec::new(),
             solution: Vec::new(),
-            voie: Vec::new(),
+            procedure: Vec::new(),
             office: Vec::new(),
             legal_domain: Vec::new(),
             jurisdiction_code: Vec::new(),
+            chamber: Vec::new(),
             legal_instrument: Vec::new(),
             legal_article: Vec::new(),
-            portee: Vec::new(),
+            significance: Vec::new(),
             publication: Vec::new(),
             date_from: None,
             date_to: None,
@@ -295,18 +321,45 @@ async fn search_endpoint(
     OptionalUser(user_id): OptionalUser,
     RawQuery(raw): RawQuery,
 ) -> Result<Response> {
-    let req = parse_search_query(raw.as_deref().unwrap_or(""))?;
-    let result = search::search(&state, &req).await?;
-    if user_id.is_some() {
-        search_history::record_search(
-            &state.pool,
-            user_id.as_deref().unwrap_or(""),
-            &req,
-            ActivitySource::Web,
-        )
-        .await;
+    let raw = raw.as_deref().unwrap_or("");
+    let req = parse_search_query(raw)?;
+    validate_referential_filters(&state, &req).await?;
+    let context = parse_search_context(raw);
+    let result = search::search(
+        &state,
+        &req,
+        ActivitySource::Web,
+        user_id.is_some(),
+        context,
+    )
+    .await?;
+    // Historique : recherches posées par l'utilisateur seulement — un fetch
+    // `teaser` (pont croisé) n'est pas une intention de recherche (ADR 0251).
+    if context == lj_dtos::SearchContext::User {
+        if let Some(user) = user_id.as_deref() {
+            search_history::record_search(
+                &state.pool,
+                user,
+                &req.query,
+                search_history::filters_from_request(&req),
+                ActivitySource::Web,
+                lj_dtos::SearchEngine::Decisions,
+            )
+            .await;
+        }
     }
     Ok(with_cache(CACHE_SEARCH, result))
+}
+
+/// Contexte d'appel depuis la query string brute : la paire exacte
+/// `context=teaser` marque un fetch machine des ponts croisés ; tout le reste
+/// (absent, autre valeur) est une recherche utilisateur.
+fn parse_search_context(raw: &str) -> lj_dtos::SearchContext {
+    if raw.split('&').any(|pair| pair == "context=teaser") {
+        lj_dtos::SearchContext::Teaser
+    } else {
+        lj_dtos::SearchContext::User
+    }
 }
 
 /// Parse la query string `/api/search` → [`SearchRequest`], avec les bornes
@@ -323,38 +376,31 @@ fn parse_search_query(raw: &str) -> Result<SearchRequest> {
     for (key, value) in parse_qs(raw) {
         match key.as_str() {
             "q" => p.q = Some(value),
-            "juridictionType" => {
-                if let Some(v) = de_enum::<JuridictionType>(&value) {
-                    p.juridiction_type.push(v);
-                }
-            }
-            "solution" => {
-                if let Some(v) = de_enum::<Solution>(&value) {
-                    p.solution.push(v);
-                }
-            }
-            "voie" => {
-                if let Some(v) = de_enum::<Voie>(&value) {
-                    p.voie.push(v);
-                }
-            }
-            "office" => {
-                if let Some(v) = de_enum::<Office>(&value) {
-                    p.office.push(v);
-                }
-            }
+            "jurisdictionType" => p.jurisdiction_type.push(de_enum_strict(
+                "jurisdictionType",
+                &value,
+                &JurisdictionType::ALL,
+            )?),
+            "solution" => p
+                .solution
+                .push(de_enum_strict("solution", &value, &Solution::ALL)?),
+            "procedure" => p
+                .procedure
+                .push(de_enum_strict("procedure", &value, &Procedure::ALL)?),
+            "office" => p
+                .office
+                .push(de_enum_strict("office", &value, &Office::ALL)?),
             "legalDomain" => {
-                if let Some(v) = de_enum::<Domaine>(&value) {
-                    p.legal_domain.push(v);
-                }
+                p.legal_domain
+                    .push(de_enum_strict("legalDomain", &value, &Domain::ALL)?)
             }
             "jurisdictionCode" => p.jurisdiction_code.push(value),
+            "chamber" => p.chamber.push(value),
             "legalInstrument" => p.legal_instrument.push(value),
             "legalArticle" => p.legal_article.push(value),
-            "portee" => {
-                if let Some(v) = de_enum::<Portee>(&value) {
-                    p.portee.push(v);
-                }
+            "significance" => {
+                p.significance
+                    .push(de_enum_strict("significance", &value, &Significance::ALL)?)
             }
             "publication" => p.publication.push(value),
             "dateFrom" => p.date_from = Some(value),
@@ -443,15 +489,16 @@ fn parse_search_query(raw: &str) -> Result<SearchRequest> {
 
     Ok(SearchRequest {
         query,
-        juridiction_type: opt_vec(p.juridiction_type),
+        jurisdiction_type: opt_vec(p.jurisdiction_type),
         solution: opt_vec(p.solution),
-        voie: opt_vec(p.voie),
+        procedure: opt_vec(p.procedure),
         office: opt_vec(p.office),
         legal_domain: opt_vec(p.legal_domain),
         jurisdiction_code: opt_vec(p.jurisdiction_code),
+        chamber: opt_vec(p.chamber),
         legal_instrument: opt_vec(p.legal_instrument),
         legal_article: opt_vec(p.legal_article),
-        portee: opt_vec(p.portee),
+        significance: opt_vec(p.significance),
         publication: opt_vec(p.publication),
         date_from: p.date_from,
         date_to: p.date_to,
@@ -461,6 +508,43 @@ fn parse_search_query(raw: &str) -> Result<SearchRequest> {
         offset: p.offset,
         ai_mode: p.ai_mode,
     })
+}
+
+/// Valide les axes à vocabulaire référentiel (`chamber`, `publication`,
+/// `jurisdictionCode`) — la frontière pure ([`parse_search_query`]) ne connaît
+/// pas le référentiel. Token inconnu → 422, jamais un filtre qui matche
+/// silencieusement zéro (même garantie que le flux MCP).
+async fn validate_referential_filters(state: &AppState, req: &SearchRequest) -> Result<()> {
+    if req.chamber.is_none() && req.publication.is_none() && req.jurisdiction_code.is_none() {
+        return Ok(());
+    }
+    let refs = crate::referential::referential(state).await?;
+    for (field, values) in [("chamber", &req.chamber), ("publication", &req.publication)] {
+        if let Some(bad) = values
+            .as_deref()
+            .and_then(|vs| refs.find_unknown_token(field, vs))
+        {
+            let tokens = refs.facet_tokens(field);
+            return Err(ApiError::Unprocessable(validation::enum_error(
+                &["query", field],
+                bad,
+                &tokens,
+            )));
+        }
+    }
+    if let Some(bad) = req
+        .jurisdiction_code
+        .iter()
+        .flatten()
+        .find(|c| refs.jurisdiction(c).is_none())
+    {
+        return Err(ApiError::Unprocessable(validation::value_error(
+            &["query", "jurisdictionCode"],
+            bad,
+            &crate::referential::unknown_jurisdiction_code_msg(bad, &refs),
+        )));
+    }
+    Ok(())
 }
 
 /// Valide une date `dateFrom`/`dateTo` à la frontière HTTP (parité du champ
@@ -494,6 +578,27 @@ fn opt_vec<T>(v: Vec<T>) -> Option<Vec<T>> {
 /// `rename_all` propre — on passe par `serde_json` pour respecter ce mapping).
 fn de_enum<T: serde::de::DeserializeOwned>(value: &str) -> Option<T> {
     serde_json::from_value(serde_json::Value::String(value.to_string())).ok()
+}
+
+/// Désérialise un token d'axe enum de `/api/search` ; token inconnu → 422
+/// `enum` listant les variantes valides (même frontière que `mode`/`sort` —
+/// un filtre invalide ne s'ignore jamais en silence, règle #12).
+fn de_enum_strict<T: serde::de::DeserializeOwned + serde::Serialize>(
+    field: &str,
+    value: &str,
+    all: &[T],
+) -> Result<T> {
+    de_enum(value).ok_or_else(|| {
+        let variants: Vec<String> = all
+            .iter()
+            .filter_map(|v| match serde_json::to_value(v) {
+                Ok(serde_json::Value::String(s)) => Some(s),
+                _ => None,
+            })
+            .collect();
+        let variants: Vec<&str> = variants.iter().map(String::as_str).collect();
+        ApiError::Unprocessable(validation::enum_error(&["query", field], value, &variants))
+    })
 }
 
 /// Parse une query string `a=1&b=2` en paires décodées (`+`→espace, `%XX`).
@@ -558,6 +663,256 @@ async fn decision_preview(
     Ok(with_cache(CACHE_DECISION, result))
 }
 
+/// Encart « Parties » d'une décision (ADR 0189). Décision inconnue → 404.
+async fn decision_parties(
+    State(state): State<AppState>,
+    Path(decision_id): Path<String>,
+) -> Result<Response> {
+    let body = entities::decision_parties(&state, &decision_id).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+// ── Fiche entité (`/api/entity/*`, ADR 0189) ──────────────────────────────────
+
+async fn entity_page(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+) -> Result<Response> {
+    let body = entities::entity_page(&state, &ns, &id).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Volet registre d'une entité (ADR 0199) — APIs publiques à l'affichage,
+/// sections absentes si l'amont est indisponible (jamais de 5xx).
+async fn entity_registre(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+) -> Result<Response> {
+    let body = registre::entity_registre(&state, &ns, &id).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Pagination des décisions d'une entité : `page` 1-basé (défaut 1),
+/// `page_size` 1–100 (défaut 20). Hors bornes → 422.
+#[derive(Debug, Deserialize)]
+struct EntityDecisionsQuery {
+    #[serde(default = "default_entity_page")]
+    page: i64,
+    #[serde(default = "default_entity_page_size")]
+    page_size: i64,
+}
+fn default_entity_page() -> i64 {
+    1
+}
+fn default_entity_page_size() -> i64 {
+    20
+}
+impl EntityDecisionsQuery {
+    fn validate(&self) -> Result<()> {
+        if self.page < 1 {
+            return Err(ApiError::Unprocessable(validation::greater_than_equal(
+                &["query", "page"],
+                &self.page.to_string(),
+                1,
+            )));
+        }
+        if self.page_size < 1 {
+            return Err(ApiError::Unprocessable(validation::greater_than_equal(
+                &["query", "page_size"],
+                &self.page_size.to_string(),
+                1,
+            )));
+        }
+        if self.page_size > 100 {
+            return Err(ApiError::Unprocessable(validation::less_than_equal(
+                &["query", "page_size"],
+                &self.page_size.to_string(),
+                100,
+            )));
+        }
+        Ok(())
+    }
+}
+
+async fn entity_decisions(
+    State(state): State<AppState>,
+    Path((ns, id)): Path<(String, String)>,
+    Query(p): Query<EntityDecisionsQuery>,
+) -> Result<Response> {
+    p.validate()?;
+    let body = entities::entity_decisions(&state, &ns, &id, p.page, p.page_size).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+// ── Annuaire des entités (`/api/entities/*`, ADR 0192) ─────────────────────────
+
+/// Slugs de catégorie acceptés par `kind` (message d'erreur 422 des params
+/// invalides), alignés sur la route web `/annuaire/{kind}`.
+const ENTITY_KINDS: &[&str] = &[
+    "entreprises",
+    "personnes-publiques",
+    "associations",
+    "avocats",
+    "cabinets",
+];
+
+/// Résout un `kind` optionnel en catégorie stockée. `None` en entrée → `None`
+/// (pas de filtre) ; kind inconnu → 422.
+fn resolve_kind(kind: Option<&str>) -> Result<Option<&'static str>> {
+    match kind {
+        None => Ok(None),
+        Some(k) => Ok(Some(entities::kind_to_category(k).ok_or_else(|| {
+            ApiError::Unprocessable(validation::enum_error(&["query", "kind"], k, ENTITY_KINDS))
+        })?)),
+    }
+}
+
+/// Query `/api/suggest` : `q` (min 2 codepoints), `mode` (`jurisprudence` |
+/// `textes` | `annuaire`, défaut `jurisprudence`).
+#[derive(Debug, Deserialize)]
+struct SuggestQuery {
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
+}
+
+async fn suggest_endpoint(
+    State(state): State<AppState>,
+    Query(p): Query<SuggestQuery>,
+) -> Result<Response> {
+    let q = p.q.unwrap_or_default();
+    if q.chars().count() < entities::ENTITY_SEARCH_MIN_QUERY {
+        return Err(ApiError::Unprocessable(validation::string_too_short(
+            &["query", "q"],
+            &q,
+            entities::ENTITY_SEARCH_MIN_QUERY as u64,
+        )));
+    }
+    let body =
+        search::suggest::suggest(&state, &q, p.mode.as_deref().unwrap_or("jurisprudence")).await?;
+    Ok(with_cache(CACHE_SEARCH, body))
+}
+
+/// Query `/api/entities/search` : `q` (préfixe, min 2 codepoints), `kind`
+/// (catégorie optionnelle), `limit` (1–50, défaut 10).
+#[derive(Debug, Deserialize)]
+struct EntitySearchQuery {
+    #[serde(default)]
+    q: Option<String>,
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default = "default_entity_search_limit")]
+    limit: i64,
+}
+fn default_entity_search_limit() -> i64 {
+    10
+}
+
+async fn entities_search(
+    State(state): State<AppState>,
+    Query(p): Query<EntitySearchQuery>,
+) -> Result<Response> {
+    let q = p.q.unwrap_or_default();
+    let q_len = q.chars().count();
+    if q_len < entities::ENTITY_SEARCH_MIN_QUERY {
+        return Err(ApiError::Unprocessable(validation::string_too_short(
+            &["query", "q"],
+            &q,
+            entities::ENTITY_SEARCH_MIN_QUERY as u64,
+        )));
+    }
+    if p.limit < 1 {
+        return Err(ApiError::Unprocessable(validation::greater_than_equal(
+            &["query", "limit"],
+            &p.limit.to_string(),
+            1,
+        )));
+    }
+    if p.limit > entities::ENTITY_SEARCH_MAX_LIMIT {
+        return Err(ApiError::Unprocessable(validation::less_than_equal(
+            &["query", "limit"],
+            &p.limit.to_string(),
+            entities::ENTITY_SEARCH_MAX_LIMIT,
+        )));
+    }
+    let category = resolve_kind(p.kind.as_deref())?;
+    let body = entities::entity_search(&state, &q, category, p.limit).await?;
+    Ok(with_cache(CACHE_SEARCH, body))
+}
+
+/// Query `/api/entities/directory` : `kind` (catégorie, requise), `barreau`
+/// (filtre optionnel, avocats), `page` (≥ 1, défaut 1), `page_size` (1–100,
+/// défaut 20).
+#[derive(Debug, Deserialize)]
+struct EntityDirectoryQuery {
+    #[serde(default)]
+    kind: Option<String>,
+    #[serde(default)]
+    barreau: Option<String>,
+    #[serde(default = "default_entity_page")]
+    page: i64,
+    #[serde(default = "default_entity_page_size")]
+    page_size: i64,
+}
+
+async fn entities_directory(
+    State(state): State<AppState>,
+    Query(p): Query<EntityDirectoryQuery>,
+) -> Result<Response> {
+    let kind = p
+        .kind
+        .as_deref()
+        .ok_or_else(|| ApiError::Unprocessable(validation::missing(&["query", "kind"])))?;
+    let category = entities::kind_to_category(kind).ok_or_else(|| {
+        ApiError::Unprocessable(validation::enum_error(
+            &["query", "kind"],
+            kind,
+            ENTITY_KINDS,
+        ))
+    })?;
+    if p.page < 1 {
+        return Err(ApiError::Unprocessable(validation::greater_than_equal(
+            &["query", "page"],
+            &p.page.to_string(),
+            1,
+        )));
+    }
+    if p.page_size < 1 {
+        return Err(ApiError::Unprocessable(validation::greater_than_equal(
+            &["query", "page_size"],
+            &p.page_size.to_string(),
+            1,
+        )));
+    }
+    if p.page_size > 100 {
+        return Err(ApiError::Unprocessable(validation::less_than_equal(
+            &["query", "page_size"],
+            &p.page_size.to_string(),
+            100,
+        )));
+    }
+    // Profondeur bornée (ADR 0239) : l'OFFSET profond sur un registre de
+    // millions de lignes ne sert personne — la recherche par préfixe couvre
+    // l'accès à la traîne.
+    if p.page.saturating_mul(p.page_size) > entities::ENTITY_DIRECTORY_MAX_DEPTH {
+        return Err(ApiError::Unprocessable(validation::less_than_equal(
+            &["query", "page"],
+            &p.page.to_string(),
+            entities::ENTITY_DIRECTORY_MAX_DEPTH / p.page_size,
+        )));
+    }
+    let body =
+        entities::entity_directory(&state, category, p.barreau.as_deref(), p.page, p.page_size)
+            .await?;
+    Ok(with_cache(CACHE_SEARCH, body))
+}
+
+async fn entities_stats(State(state): State<AppState>) -> Result<Response> {
+    let body = entities::annuaire_stats(&state).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
 #[derive(Debug, Deserialize)]
 struct SimilarQuery {
     // Capturé en brut : un `limit` non entier (`abc`) doit donner 422 (parité
@@ -597,10 +952,10 @@ async fn decision_similar(
 
 /// Nom de fichier d'export (parité `_decision_filename`).
 fn decision_filename(detail: &lj_dtos::DecisionDetail) -> String {
-    // Parité Python (`result.jurisdiction_name or result.juridiction_type`) :
+    // Parité Python (`result.jurisdiction_name or result.jurisdiction_type`) :
     // le fallback est le code brut du type (« TA », « CE »…), pas un libellé.
     let raw = detail.jurisdiction_name.clone().unwrap_or_else(|| {
-        serde_json::to_value(detail.juridiction_type)
+        serde_json::to_value(detail.jurisdiction_type)
             .ok()
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_default()
@@ -730,21 +1085,28 @@ fn attachment_response(content: Vec<u8>, content_type: &str, disposition: &str) 
     resp
 }
 
-// ── Référentiel LEGI (`/api/loi/*`, ADR 0092) ─────────────────────────────────
+// ── Référentiel LEGI (`/api/texte/*`, ADR 0092) ─────────────────────────────────
 
-/// Sous-routeur LEGI monté sous `/api/loi`. La sous-ressource littérale
-/// `citing` est déclarée avant la capture `{date}` ; matchit (axum 0.8)
-/// privilégie le segment statique sur le paramètre, sans collision.
+/// Sous-routeur LEGI monté sous `/api/texte`. Les sous-ressources littérales
+/// `citing`/`related` sont déclarées avant la capture `{date}` ; matchit
+/// (axum 0.8) privilégie le segment statique sur le paramètre, sans collision.
 fn legi_router() -> Router<AppState> {
     Router::new()
         .route("/{code}", get(legi_code_summary))
-        // Table des matières (`/loi/{code}/sommaire`) : le segment littéral
+        // Table des matières (`/texte/{code}/sommaire`) : le segment littéral
         // `sommaire` est privilégié par matchit (axum 0.8) sur la capture
         // `{num}`, sans collision.
         .route("/{code}/sommaire", get(legi_code_toc))
+        // Vue-lecture d'une section (`/texte/{code}/section/{cid}`, ADR 0207) :
+        // segment littéral `section` privilégié sur la capture `{num}`.
+        .route("/{code}/section/{cid}", get(legi_section_reading))
         .route("/{code}/{num}", get(legi_article_in_force))
         .route("/{code}/{num}/citing", get(legi_article_citing))
+        .route("/{code}/{num}/related", get(legi_article_related))
         .route("/{code}/{num}/{date}", get(legi_article_at_date))
+        // Comparateur de versions (ADR 0193) : bornes = dates ISO de fenêtre de
+        // version (`initiale` = borne ouverte).
+        .route("/{code}/{num}/compare/{de}/{a}", get(legi_article_compare))
 }
 
 async fn legi_code_summary(
@@ -758,8 +1120,20 @@ async fn legi_code_summary(
 async fn legi_code_toc(
     State(state): State<AppState>,
     Path(code): Path<String>,
+    Query(q): Query<LegiDateQuery>,
 ) -> Result<Response> {
-    let body = legi::code_toc(&state, &code).await?;
+    let date = q.date.as_deref().map(parse_legi_date).transpose()?;
+    let body = legi::code_toc(&state, &code, date).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+async fn legi_section_reading(
+    State(state): State<AppState>,
+    Path((code, cid)): Path<(String, String)>,
+    Query(q): Query<LegiDateQuery>,
+) -> Result<Response> {
+    let date = q.date.as_deref().map(parse_legi_date).transpose()?;
+    let body = legi::law_section(&state, &code, &cid, date).await?;
     Ok(with_cache(CACHE_DECISION, body))
 }
 
@@ -780,23 +1154,54 @@ async fn legi_article_at_date(
     Ok(with_cache(CACHE_DECISION, body))
 }
 
+async fn legi_article_compare(
+    State(state): State<AppState>,
+    Path((code, num, de, a)): Path<(String, String, String, String)>,
+) -> Result<Response> {
+    let body = legi::article_compare(&state, &code, &num, &de, &a).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
 async fn legi_article_citing(
     State(state): State<AppState>,
     Path((code, num)): Path<(String, String)>,
     Query(p): Query<LegiCitingQuery>,
 ) -> Result<Response> {
     p.validate()?;
-    let body = legi::article_citing(&state, &code, &num, p.limit, p.offset).await?;
+    let body =
+        legi::article_citing(&state, &code, &num, p.date.as_deref(), p.limit, p.offset).await?;
     Ok(with_cache(CACHE_DECISION, body))
 }
 
-/// Pagination des décisions citantes (`limit` 1–100, `offset` ≥ 0).
+/// Articles co-cités (« souvent cité avec », plan graphe Phase D).
+async fn legi_article_related(
+    State(state): State<AppState>,
+    Path((code, num)): Path<(String, String)>,
+) -> Result<Response> {
+    let body = legi::article_co_cited(&state, &code, &num).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Date de consultation Chronolégi (`?date=YYYY-MM-DD`, ADR 0193 §5) des
+/// sommaires/sections ; absente = en vigueur aujourd'hui.
+#[derive(Debug, Deserialize)]
+struct LegiDateQuery {
+    #[serde(default)]
+    date: Option<String>,
+}
+
+/// Pagination des décisions citantes (`limit` 1–100, `offset` ≥ 0, fenêtre
+/// `offset + limit ≤ 100` — cap dur ADR 0250 : au-delà de 100 citantes on
+/// affine par la recherche, on ne pagine pas) + `date` de la version servie
+/// (ISO `YYYY-MM-DD`, absente = en vigueur) qui borne les citantes.
 #[derive(Debug, Deserialize)]
 struct LegiCitingQuery {
     #[serde(default = "default_citing_limit")]
     limit: i64,
     #[serde(default)]
     offset: i64,
+    #[serde(default)]
+    date: Option<String>,
 }
 fn default_citing_limit() -> i64 {
     20
@@ -824,31 +1229,34 @@ impl LegiCitingQuery {
                 0,
             )));
         }
+        if self.offset + self.limit > 100 {
+            return Err(ApiError::Unprocessable(validation::less_than_equal(
+                &["query", "offset"],
+                &self.offset.to_string(),
+                100 - self.limit,
+            )));
+        }
         Ok(())
     }
 }
 
 /// Recherche plein-texte d'articles (`GET /api/search-textes`, ADR 0114). `q`
-/// vide ⇒ réponse vide (pas d'appel ParadeDB). Mêmes bornes `limit`/`offset` que
-/// les décisions citantes. `code` optionnel borne la recherche à un texte.
+/// vide ⇒ 422 `string_too_short`, même frontière de validation que
+/// `/api/search` (le front gate déjà la requête vide, aucun appel n'arrive
+/// ici avec `q` vide). Mêmes bornes `limit`/`offset` que les décisions
+/// citantes. `code` optionnel borne la recherche à un texte.
 async fn search_textes_endpoint(
     State(state): State<AppState>,
+    OptionalUser(user_id): OptionalUser,
     Query(p): Query<ArticleSearchQuery>,
 ) -> Result<Response> {
     p.validate()?;
     if p.q.trim().is_empty() {
-        return Ok(with_cache(
-            CACHE_SEARCH,
-            ArticleSearchResponse {
-                hits: Vec::new(),
-                total: 0,
-                facets: ArticleSearchFacets {
-                    jurisdiction: Vec::new(),
-                    nature: Vec::new(),
-                    source: Vec::new(),
-                },
-            },
-        ));
+        return Err(ApiError::Unprocessable(validation::string_too_short(
+            &["query", "q"],
+            &p.q,
+            1,
+        )));
     }
     let body = legi::search_textes(
         &state,
@@ -857,17 +1265,58 @@ async fn search_textes_endpoint(
         p.jurisdiction.as_deref(),
         p.nature.as_deref(),
         p.source.as_deref(),
+        p.scope.as_deref(),
         p.limit,
         p.offset,
     )
     .await?;
+    // Historique (ADR 0251, connectés seulement — même règle que /search ;
+    // un fetch `teaser` n'est pas une intention de recherche).
+    // Clés de filtres alignées sur l'URL de la page (`origine`, pas `source`).
+    if let Some(user) = user_id
+        .as_deref()
+        .filter(|_| p.context.as_deref() != Some("teaser"))
+    {
+        let mut filters = serde_json::Map::new();
+        for (key, value) in [
+            ("code", &p.code),
+            ("jurisdiction", &p.jurisdiction),
+            ("nature", &p.nature),
+            ("origine", &p.source),
+            ("scope", &p.scope),
+        ] {
+            if let Some(v) = value {
+                filters.insert(key.to_string(), serde_json::Value::String(v.clone()));
+            }
+        }
+        search_history::record_search(
+            &state.pool,
+            user,
+            p.q.trim(),
+            serde_json::Value::Object(filters),
+            ActivitySource::Web,
+            lj_dtos::SearchEngine::Textes,
+        )
+        .await;
+    }
     Ok(with_cache(CACHE_SEARCH, body))
 }
 
+/// Query `/api/codes` : `scope=head` borne aux familles de tête (codes,
+/// constitutions) pour le SSR de `/codes` — la longue traîne se charge à part.
+#[derive(Deserialize)]
+struct CodesCatalogueQuery {
+    #[serde(default)]
+    scope: Option<String>,
+}
+
 /// Catalogue des codes navigables (`GET /api/codes`). Réponse stable (le corpus
-/// de référentiel bouge à l'ingest), cache décision comme les pages `/loi`.
-async fn codes_catalogue(State(state): State<AppState>) -> Result<Response> {
-    let body = legi::code_catalogue(&state).await?;
+/// de référentiel bouge à l'ingest), cache décision comme les pages `/texte`.
+async fn codes_catalogue(
+    State(state): State<AppState>,
+    Query(p): Query<CodesCatalogueQuery>,
+) -> Result<Response> {
+    let body = legi::code_catalogue(&state, p.scope.as_deref() == Some("head")).await?;
     Ok(with_cache(CACHE_DECISION, body))
 }
 
@@ -893,6 +1342,12 @@ struct ArticleSearchQuery {
     nature: Option<String>,
     #[serde(default)]
     source: Option<String>,
+    #[serde(default)]
+    scope: Option<String>,
+    /// `teaser` = fetch machine des ponts croisés (ADR 0251) — pas
+    /// d'historique. Absent ou autre valeur = recherche utilisateur.
+    #[serde(default)]
+    context: Option<String>,
     #[serde(default = "default_citing_limit")]
     limit: i64,
     #[serde(default)]
@@ -1172,5 +1627,37 @@ mod tests {
         let req = parse_search_query("q=x&dateFrom=2024-01-01&dateTo=2024-12-31").unwrap();
         assert_eq!(req.date_from.as_deref(), Some("2024-01-01"));
         assert_eq!(req.date_to.as_deref(), Some("2024-12-31"));
+    }
+
+    /// Spec : un token inconnu sur un axe enum est rejeté en 422 avec les
+    /// variantes valides — jamais ignoré en silence (le filtre « oublié »
+    /// renverrait des résultats non filtrés que l'appelant croit filtrés).
+    #[test]
+    fn search_query_rejects_unknown_enum_token() {
+        // JAF est un token valide de l'axe `office`, pas de `procedure` : la
+        // confusion d'axe doit être corrigée à la frontière.
+        let err = parse_search_query("q=x&procedure=JAF").unwrap_err();
+        let ApiError::Unprocessable(obj) = err else {
+            panic!("attendu Unprocessable, eu {err:?}");
+        };
+        assert_eq!(obj["type"], json!("enum"));
+        assert_eq!(obj["loc"], json!(["query", "procedure"]));
+        assert!(obj["msg"].as_str().unwrap().contains("'REFERE_SUSPENSION'"));
+
+        let err = parse_search_query("q=x&jurisdictionType=TRIBUNAL").unwrap_err();
+        let ApiError::Unprocessable(obj) = err else {
+            panic!("attendu Unprocessable");
+        };
+        assert_eq!(obj["loc"], json!(["query", "jurisdictionType"]));
+        assert!(obj["msg"].as_str().unwrap().contains("'TA'"));
+    }
+
+    #[test]
+    fn search_query_accepts_valid_enum_tokens() {
+        let req =
+            parse_search_query("q=x&procedure=REFERE_SUSPENSION&jurisdictionType=TA&office=JAF")
+                .unwrap();
+        assert_eq!(req.procedure.as_deref().map(<[_]>::len), Some(1));
+        assert_eq!(req.office.as_deref().map(<[_]>::len), Some(1));
     }
 }

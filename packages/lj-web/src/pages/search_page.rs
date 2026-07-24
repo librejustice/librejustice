@@ -1,4 +1,4 @@
-//! Page de recherche de décisions `/recherche` (gabarit de référence) :
+//! Page de recherche de décisions `/decisions` (gabarit de référence) :
 //! CompactSearch + barre de filtres horizontale + résultats. La recherche de
 //! textes vit sur sa propre page `/textes` (moteurs et filtres distincts,
 //! aucune recherche transverse). État dans les query params ; données via
@@ -10,9 +10,11 @@
 //! (barre, filtres, liste) prend le reste et se borne à `max-w-3xl` ; pas de
 //! colonne droite fantôme qui compresserait le contenu pour rien.
 //!
-//! Hérite du title/description racine (le React n'a pas de `<Title>` propre).
+//! `<Title>` dynamique reflétant la requête `q` de l'URL (l'onglet lit la
+//! recherche en cours) ; hérite de la description racine.
 
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::hooks::use_query_map;
 use lj_dtos::{QueryMode, SearchResponse};
 
@@ -30,7 +32,7 @@ use crate::components::search::{
 };
 use crate::helpers::{format_results_count, total_pages};
 
-/// `/recherche` est **rendue côté client** (ADR 0063) : route non indexée, et la
+/// `/decisions` est **rendue côté client** (ADR 0063) : route non indexée, et la
 /// plus coûteuse en SSR (~20 ms p50 / 48 ms p95 vs ~2 ms pour la landing, car elle
 /// rend CompactSearch + FilterRail + cartes + facettes côté serveur) **et** seule
 /// porteuse des mismatches d'hydratation (toggle IA `localStorage`, date-picker,
@@ -40,7 +42,18 @@ use crate::helpers::{format_results_count, total_pages};
 /// SSR.
 #[component]
 pub fn SearchPage() -> impl IntoView {
+    let query_map = use_query_map();
+    let title = move || {
+        let q = query_map.get().get("q").unwrap_or_default();
+        let q = q.trim();
+        if q.is_empty() {
+            "Décisions - LibreJustice".to_string()
+        } else {
+            format!("{q} - LibreJustice")
+        }
+    };
     view! {
+        <Title text=title />
         <ClientOnly fallback=|| {
             view! { <SearchPageSkeleton /> }
         }>

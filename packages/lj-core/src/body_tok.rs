@@ -48,6 +48,17 @@ pub fn is_stopword(folded: &str) -> bool {
 /// Tokens body (Unicode-first puis ascii-fold + lowercase) — matche le
 /// body-tokenizer ParadeDB (`[\p{L}\p{N}-]+`). On tokenise AVANT de fold.
 pub fn tokenize(query: &str) -> Vec<String> {
+    tokenize_with(query, fold)
+}
+
+/// Mêmes frontières de tokens que [`tokenize`], mais lowercase **sans** fold
+/// des accents : la forme d'affichage des suggestions (ADR 0216). Les deux
+/// sorties sont alignées index à index.
+pub fn tokenize_lower(query: &str) -> Vec<String> {
+    tokenize_with(query, |s| s.to_lowercase())
+}
+
+fn tokenize_with(query: &str, norm: impl Fn(&str) -> String) -> Vec<String> {
     let mut tokens = Vec::new();
     let mut cur = String::new();
     let mut chars = query.chars().peekable();
@@ -60,16 +71,16 @@ pub fn tokenize(query: &str) -> Vec<String> {
             if matches!(chars.peek(), Some(c) if c.is_alphanumeric()) {
                 cur.push('-');
             } else if !cur.is_empty() {
-                tokens.push(fold(&cur));
+                tokens.push(norm(&cur));
                 cur.clear();
             }
         } else if !cur.is_empty() {
-            tokens.push(fold(&cur));
+            tokens.push(norm(&cur));
             cur.clear();
         }
     }
     if !cur.is_empty() {
-        tokens.push(fold(&cur));
+        tokens.push(norm(&cur));
     }
     tokens
 }

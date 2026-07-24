@@ -53,7 +53,7 @@ decisiondate,introductiondate,doctype,typedescription,documentcollectionid2,arti
 nonviolation,conclusion,importance,respondent,originatingbody_name,separateopinion,kpthesaurus,\
 scl,sclappnos,externalsources,languageisocode";
 
-const CEDH_SOURCE_DIR: &str = "cedh";
+use crate::state_paths::CEDH_DIR;
 
 /// Filtre HUDOC bilingue FR-prioritaire (ADR 0120, supersede le FR-only de 0094),
 /// borné à une année par `kpdate:[…]` (grounding #4 : `NOT (doctype=PR OR HFCOMOLD
@@ -112,7 +112,7 @@ impl CedhClient {
     /// `[0-9-]+`, sûrs comme nom de fichier).
     fn body_cache_path(&self, itemid: &str) -> Option<std::path::PathBuf> {
         self.cache_dir.as_ref().map(|d| {
-            d.join(CEDH_SOURCE_DIR)
+            d.join(CEDH_DIR)
                 .join("bodies")
                 .join(format!("{itemid}.html"))
         })
@@ -316,7 +316,7 @@ impl CedhManifest {
 
 /// Chemin du manifeste CEDH sous `data_dir` (`<data_dir>/cedh/manifest.json`).
 pub fn manifest_path(data_dir: &Path) -> std::path::PathBuf {
-    data_dir.join(CEDH_SOURCE_DIR).join("manifest.json")
+    data_dir.join(CEDH_DIR).join("manifest.json")
 }
 
 #[cfg(test)]

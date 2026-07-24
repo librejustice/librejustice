@@ -9,17 +9,16 @@ use tokio_postgres::types::ToSql;
 
 /// Champs ré-extractibles (colonnes `decisions` mises à jour par re-extraction).
 pub const REEXTRACTABLE_FIELDS: &[&str] = &[
-    "jurisdiction_name",
     "date_lecture",
     "date_audience",
     "docket_numbers",
-    "formation_or_chamber",
     "chamber_position",
-    "chambre_uid",
+    "chamber_uid",
     "formation_uid",
+    "search_title",
     "publication_codes",
     "solution_uid",
-    "voie_uid",
+    "procedure_uid",
     "office_uid",
     "legal_domain_uid",
     "publication_uid",
@@ -30,10 +29,12 @@ pub const REEXTRACTABLE_FIELDS: &[&str] = &[
     "defendant_counsel_names",
     "defendant_law_firms",
     "defendant_companies",
+    "intervenors",
     "themes",
     "legal_references",
     "decision_links",
     "case_citations",
+    "parties",
 ];
 
 /// Champ ré-extractible routé vers `replace_citations` (pas une colonne JSONB sur
@@ -48,24 +49,28 @@ pub(super) const DECISION_LINKS_FIELD: &str = "decision_links";
 /// `case_citation`, ADR 0165).
 pub(super) const CASE_CITATIONS_FIELD: &str = "case_citations";
 
+/// Champ ré-extractible routé vers `replace_decision_parties` (table
+/// `decision_party`, ADR 0182).
+pub(super) const PARTIES_FIELD: &str = "parties";
+
 /// Types PG des colonnes ré-extractibles. Sert à caster la première ligne de
 /// `VALUES` dans `update_extracted_fields_bulk` (inférence de type robuste même
 /// quand le batch n'a que des NULL pour une colonne).
 pub(super) fn extracted_column_type(field: &str) -> &'static str {
     match field {
-        "jurisdiction_name" => "text",
         "date_lecture" => "date",
         "date_audience" => "date",
         "docket_numbers" | "publication_codes" => "text[]",
-        "formation_or_chamber" | "chamber_position" => "text",
-        "solution_uid" | "voie_uid" | "office_uid" | "legal_domain_uid" | "publication_uid"
-        | "jurisdiction_code" | "chambre_uid" | "formation_uid" => "text",
+        "chamber_position" | "search_title" => "text",
+        "solution_uid" | "procedure_uid" | "office_uid" | "legal_domain_uid"
+        | "publication_uid" | "jurisdiction_code" | "chamber_uid" | "formation_uid" => "text",
         "applicant_counsel_names"
         | "applicant_law_firms"
         | "applicant_companies"
         | "defendant_counsel_names"
         | "defendant_law_firms"
         | "defendant_companies"
+        | "intervenors"
         | "themes" => "text[]",
         other => panic!("colonne ré-extractible inconnue: {other}"),
     }
@@ -78,27 +83,30 @@ pub(super) fn extracted_field_value(
     field: &str,
 ) -> Box<dyn ToSql + Sync> {
     match field {
-        "jurisdiction_name" => Box::new(extracted.jurisdiction_name.clone()),
         "date_lecture" => Box::new(extracted.date_lecture),
         "date_audience" => Box::new(extracted.date_audience),
         "docket_numbers" => Box::new(extracted.docket_numbers.clone()),
-        "formation_or_chamber" => Box::new(extracted.formation_or_chamber.clone()),
         "chamber_position" => Box::new(extracted.chamber_position.clone()),
-        "chambre_uid" => Box::new(extracted.chambre_uid.clone()),
+        "chamber_uid" => Box::new(extracted.chamber_uid.clone()),
         "formation_uid" => Box::new(extracted.formation_uid.clone()),
+        "search_title" => Box::new(extracted.search_title.clone()),
         "publication_codes" => Box::new(extracted.publication_codes.clone()),
         "solution_uid" => Box::new(extracted.solution_uid.clone()),
-        "voie_uid" => Box::new(extracted.voie_uid.clone()),
+        "procedure_uid" => Box::new(extracted.procedure_uid.clone()),
         "office_uid" => Box::new(extracted.office_uid.clone()),
         "legal_domain_uid" => Box::new(extracted.legal_domain_uid.clone()),
         "publication_uid" => Box::new(extracted.publication_uid.clone()),
-        "jurisdiction_code" => Box::new(extracted.jurisdiction.as_ref().map(|j| j.code.clone())),
+        // Le code canonique exige la résolution `source_code` → `code` via
+        // `ensure_jurisdictions` (ADR 0201) : les appelants spécialisent ce
+        // champ avant d'arriver ici.
+        "jurisdiction_code" => unreachable!("jurisdiction_code se résout via ensure_jurisdictions"),
         "applicant_counsel_names" => Box::new(extracted.applicant_counsel_names.clone()),
         "applicant_law_firms" => Box::new(extracted.applicant_law_firms.clone()),
         "applicant_companies" => Box::new(extracted.applicant_companies.clone()),
         "defendant_counsel_names" => Box::new(extracted.defendant_counsel_names.clone()),
         "defendant_law_firms" => Box::new(extracted.defendant_law_firms.clone()),
         "defendant_companies" => Box::new(extracted.defendant_companies.clone()),
+        "intervenors" => Box::new(extracted.intervenors.clone()),
         "themes" => Box::new(extracted.themes.clone()),
         other => panic!("colonne ré-extractible inconnue: {other}"),
     }
@@ -114,12 +122,18 @@ pub fn source_from_source_uid(source_uid: &str) -> &'static str {
         "dila-jade"
     } else if source_uid.starts_with("dila-constit/") {
         "dila-constit"
+    } else if source_uid.starts_with("dila-cnil/") {
+        "dila-cnil"
     } else if source_uid.starts_with("cedh/") {
         "cedh"
     } else if source_uid.starts_with("cjue/") {
         "cjue"
     } else if source_uid.starts_with("cnda/") {
         "cnda"
+    } else if source_uid.starts_with("ariane-web/") {
+        "ariane-web"
+    } else if source_uid.starts_with("adde/") {
+        "adde"
     } else {
         "opendata"
     }
@@ -177,7 +191,11 @@ mod tests {
     #[test]
     fn extracted_column_type_covers_all_column_fields() {
         for f in REEXTRACTABLE_FIELDS {
-            if *f == LEGAL_REFS_FIELD || *f == DECISION_LINKS_FIELD || *f == CASE_CITATIONS_FIELD {
+            if *f == LEGAL_REFS_FIELD
+                || *f == DECISION_LINKS_FIELD
+                || *f == CASE_CITATIONS_FIELD
+                || *f == PARTIES_FIELD
+            {
                 continue;
             }
             // Ne panique pas → couverture complète.

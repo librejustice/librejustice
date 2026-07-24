@@ -15,7 +15,6 @@
 //!   (détection des traités) et le graphe de liens `LIENS/LIEN` (rattachement
 //!   avenant→accord initial, ADR 0109 §4).
 
-use crate::extract::normalize_article;
 use crate::legi::{clean_contenu, collect_titre_tm, date_or_none, find_anywhere};
 use lj_core::error::CoreError;
 use lj_core::parsing::{build_tree, node_text};
@@ -49,6 +48,12 @@ pub struct JorfLien {
     pub date_signa: Option<String>,
     pub num_texte: Option<String>,
     pub libelle: Option<String>,
+    /// `naturetexte` de la cible (DECRET, LOI, CODE…).
+    pub nature: Option<String>,
+    /// `num` : numéro d'article ciblé (liens CITATION vers un article de code).
+    pub num: Option<String>,
+    /// `id` : uid DILA de l'élément ciblé (texte ou article, ex. `LEGIARTI…`).
+    pub target_id: Option<String>,
 }
 
 /// Un texte/version du fond JORF (`JORFTEXT*.xml`, racine `<TEXTE_VERSION>`). Le
@@ -92,7 +97,7 @@ pub fn parse_jorf_article(raw: &[u8]) -> Result<JorfArticle, CoreError> {
         .to_string();
 
     let num = node_text(find_anywhere(&root, "META_ARTICLE/NUM"));
-    let num_key = num.as_deref().map(normalize_article);
+    let num_key = num.as_deref().map(lj_core::article_key::identity_key);
     let etat = node_text(find_anywhere(&root, "META_ARTICLE/ETAT")).unwrap_or_default();
     let date_debut = date_or_none(node_text(find_anywhere(&root, "META_ARTICLE/DATE_DEBUT")));
     let date_fin = date_or_none(node_text(find_anywhere(&root, "META_ARTICLE/DATE_FIN")));
@@ -171,10 +176,50 @@ fn collect_liens(root: &lj_core::parsing::XmlNode) -> Vec<JorfLien> {
                         .filter(|s| !s.is_empty())
                         .map(str::to_string),
                     libelle: c.text(),
+                    nature: c
+                        .attr("naturetexte")
+                        .filter(|s| !s.is_empty())
+                        .map(str::to_string),
+                    num: c.attr("num").filter(|s| !s.is_empty()).map(str::to_string),
+                    target_id: c.attr("id").filter(|s| !s.is_empty()).map(str::to_string),
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+/// L'ordre de lecture d'un `texte/struct/JORFTEXT*.xml` (racine `<TEXTELR>`) :
+/// le cid chronique et ses `STRUCT/LIEN_ART@id` dans l'ordre du fichier — qui
+/// est l'ordre du document au JO (les ids `JORFARTI`, eux, ne suivent PAS cet
+/// ordre). Tous les liens sont rendus, numérotés ou non : ce parseur sert
+/// l'assemblage du corps (ADR 0223), pas le référentiel citable.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JorfStructOrder {
+    pub jorftext: String,
+    pub article_ids: Vec<String>,
+}
+
+/// Parse un `texte/struct/JORFTEXT*.xml` en [`JorfStructOrder`]. Erreur franche
+/// si le CID chronique manque ; `STRUCT` vide ou absente → liste vide (texte
+/// pré-numérisation, contenu en fac-similé seulement).
+pub fn parse_jorf_struct(raw: &[u8]) -> Result<JorfStructOrder, CoreError> {
+    let root =
+        build_tree(raw).ok_or_else(|| CoreError::Xml("TEXTELR JORF: XML illisible".into()))?;
+    let jorftext = node_text(find_anywhere(&root, "META_TEXTE_CHRONICLE/CID"))
+        .ok_or_else(|| CoreError::Xml("TEXTELR JORF: META_TEXTE_CHRONICLE/CID manquant".into()))?;
+    let article_ids = find_anywhere(&root, "STRUCT")
+        .map(|s| {
+            s.children
+                .iter()
+                .filter(|c| c.tag == "LIEN_ART")
+                .filter_map(|c| c.attr("id").filter(|v| !v.is_empty()).map(str::to_string))
+                .collect()
+        })
+        .unwrap_or_default();
+    Ok(JorfStructOrder {
+        jorftext,
+        article_ids,
+    })
 }
 
 /// `true` si le texte JORF est un décret de **publication d'accord/traité**
@@ -341,10 +386,45 @@ mod tests {
 </ARTICLE>"#;
         let a = parse_jorf_article(xml.as_bytes()).expect("article");
         assert_eq!(a.num.as_deref(), Some("6"));
-        assert_eq!(a.num_key.as_deref(), Some(normalize_article("6").as_str()));
+        assert_eq!(a.num_key.as_deref(), Some("6"));
         assert_eq!(a.etat, "VIGUEUR");
         assert_eq!(a.date_debut.as_deref(), Some("2002-08-09"));
         assert_eq!(a.date_fin, None);
+    }
+
+    #[test]
+    fn parse_struct_keeps_document_order_including_unnumbered() {
+        // Extrait réel (JORFTEXT000000209787) : les LIEN_ART sans num sont
+        // rendus dans l'ordre du fichier — c'est l'ordre du document (ADR 0223).
+        let xml = r#"<TEXTELR>
+<META><META_SPEC><META_TEXTE_CHRONICLE><CID>JORFTEXT000000209787</CID></META_TEXTE_CHRONICLE></META_SPEC></META>
+<STRUCT>
+<LIEN_ART debut="2999-01-01" etat="" fin="2999-01-01" id="JORFARTI000001045162" num="" origine="JORF"/>
+<LIEN_ART debut="2999-01-01" etat="" fin="2999-01-01" id="JORFARTI000002207442" num="" origine="JORF"/>
+<LIEN_ART debut="2999-01-01" etat="" fin="2999-01-01" id="JORFARTI000001817636" num="Annexe" origine="JORF"/>
+</STRUCT>
+</TEXTELR>"#;
+        let s = parse_jorf_struct(xml.as_bytes()).expect("struct");
+        assert_eq!(s.jorftext, "JORFTEXT000000209787");
+        assert_eq!(
+            s.article_ids,
+            vec![
+                "JORFARTI000001045162",
+                "JORFARTI000002207442",
+                "JORFARTI000001817636"
+            ]
+        );
+    }
+
+    #[test]
+    fn parse_struct_empty_is_prenumerisation() {
+        // STRUCT vide (traité pré-numérisation, ex. décret 76-963) → liste vide.
+        let xml = r#"<TEXTELR>
+<META><META_SPEC><META_TEXTE_CHRONICLE><CID>JORFTEXT000000307098</CID></META_TEXTE_CHRONICLE></META_SPEC></META>
+<STRUCT/>
+</TEXTELR>"#;
+        let s = parse_jorf_struct(xml.as_bytes()).expect("struct");
+        assert!(s.article_ids.is_empty());
     }
 
     #[test]

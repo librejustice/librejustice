@@ -25,9 +25,12 @@ pub struct ManualFields {
     pub docket_numbers: Vec<String>,
     pub publication_codes: Vec<String>,
     pub solution_uid: Option<String>,
-    pub voie_uid: Option<String>,
+    pub procedure_uid: Option<String>,
     pub office_uid: Option<String>,
     pub legal_domain_uid: Option<String>,
+    pub chamber_position: Option<String>,
+    pub chamber_uid: Option<String>,
+    pub formation_uid: Option<String>,
     pub jurisdiction_code: Option<String>,
 }
 
@@ -96,6 +99,32 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
+    /// Résumé v4 + titre par `decision_id` : `(id, search_title, summary)`.
+    /// Body-source du reranker listwise (ADR 0050/0051) ; sert au banc
+    /// (`lj-bench rerank-model-eval`) à reconstruire hors-ligne les `RerankItem`
+    /// du top-K sans passer par l'hydratation prod. Décisions sans `summary`
+    /// omises (le rerank prod les écarte aussi, résumé garanti non vide).
+    pub async fn fetch_summaries(&self, ids: &[i64]) -> Result<Vec<(i64, String, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT id, COALESCE(search_title, ''), summary FROM decisions \
+                 WHERE id = ANY($1) AND summary IS NOT NULL AND summary <> ''",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<_, i64>(0),
+                    r.get::<_, String>(1),
+                    r.get::<_, String>(2),
+                )
+            })
+            .collect())
+    }
+
     /// Texte intégral par `decision_id` : `(id, public_id, search_title,
     /// full_text)`. Utilisé par le banc (`lj-bench dump-bodies`) pour
     /// matérialiser les corps des docs à juger d'une campagne de complétion GT.
@@ -151,10 +180,11 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT id, public_id, COALESCE(jurisdiction_name, ''), \
-                 COALESCE(juridiction_type, ''), COALESCE(date_lecture::text, ''), \
-                 COALESCE(search_title, ''), full_text FROM decisions \
-                 WHERE id = ANY($1) AND public_id IS NOT NULL AND full_text IS NOT NULL",
+                "SELECT d.id, d.public_id, COALESCE(j.label, ''), \
+                 COALESCE(d.jurisdiction_type, ''), COALESCE(d.date_lecture::text, ''), \
+                 COALESCE(d.search_title, ''), d.full_text FROM decisions d \
+                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code \
+                 WHERE d.id = ANY($1) AND d.public_id IS NOT NULL AND d.full_text IS NOT NULL",
                 &[&ids],
             )
             .await?;
@@ -164,7 +194,7 @@ impl DecisionRepository<'_> {
                 id: r.get(0),
                 public_id: r.get(1),
                 jurisdiction_name: r.get(2),
-                juridiction_type: r.get(3),
+                jurisdiction_type: r.get(3),
                 date_lecture: r.get(4),
                 search_title: r.get(5),
                 full_text: r.get(6),
@@ -593,13 +623,14 @@ impl DecisionRepository<'_> {
                 "UPDATE decisions d SET
                      date_lecture = $2, date_audience = $3, docket_numbers = $4,
                      publication_codes = $5,
-                     solution_uid = $6, voie_uid = $7, office_uid = $8,
+                     solution_uid = $6, procedure_uid = $7, office_uid = $8,
                      legal_domain_uid = $9,
-                     jurisdiction_code = COALESCE($10, d.jurisdiction_code),
-                     extract_version = $11, updated_at = now()
+                     chamber_position = $10, chamber_uid = $11, formation_uid = $12,
+                     jurisdiction_code = COALESCE($13, d.jurisdiction_code),
+                     extract_version = $14, updated_at = now()
                  FROM decision_sources ds
                  WHERE ds.decision_id = d.id AND ds.source_uid = $1
-                   AND (d.extract_version IS NULL OR d.extract_version <= $11)",
+                   AND (d.extract_version IS NULL OR d.extract_version <= $14)",
                 &[
                     &source_uid,
                     &fields.date_lecture,
@@ -607,9 +638,12 @@ impl DecisionRepository<'_> {
                     &fields.docket_numbers,
                     &fields.publication_codes,
                     &fields.solution_uid,
-                    &fields.voie_uid,
+                    &fields.procedure_uid,
                     &fields.office_uid,
                     &fields.legal_domain_uid,
+                    &fields.chamber_position,
+                    &fields.chamber_uid,
+                    &fields.formation_uid,
                     &fields.jurisdiction_code,
                     &version,
                 ],
@@ -649,7 +683,7 @@ impl DecisionRepository<'_> {
         Ok(Some(rows.len() as u64))
     }
 
-    /// Keyset des décisions à re-parser **ciblées par `juridiction_type`**,
+    /// Keyset des décisions à re-parser **ciblées par `jurisdiction_type`**,
     /// **indépendamment de `extract_version`** (ré-extraction d'un comportement
     /// nouveau sur un sous-ensemble — ex. famille générique CNDA/CEDH/CJUE/CONSTIT/TC
     /// après câblage des citations, ADR 0102 §B) **sans bump global** de
@@ -659,7 +693,7 @@ impl DecisionRepository<'_> {
         &self,
         last_id: i64,
         limit: i64,
-        juridiction_types: &[String],
+        jurisdiction_types: &[String],
     ) -> Result<Vec<i64>> {
         let rows = self
             .conn
@@ -669,12 +703,12 @@ impl DecisionRepository<'_> {
                 FROM decisions d
                 WHERE d.id > $1
                   AND d.full_text IS NOT NULL
-                  AND d.juridiction_type = ANY($3)
+                  AND d.jurisdiction_type = ANY($3)
                   AND (d.extract_version IS NULL OR d.extract_version <= $4)
                 ORDER BY d.id
                 LIMIT $2
                 ",
-                &[&last_id, &limit, &juridiction_types, &EXTRACT_VERSION],
+                &[&last_id, &limit, &jurisdiction_types, &EXTRACT_VERSION],
             )
             .await?;
         Ok(rows.iter().map(|r| r.get(0)).collect())
@@ -683,7 +717,7 @@ impl DecisionRepository<'_> {
     /// Keyset des décisions à re-parser **ciblées par un texte cité**
     /// (`ref_text_uid`, ADR 0145 M4), **indépendamment de `extract_version`**.
     /// Pour rejouer extract+link sur le seul gisement d'un instrument, sans bump
-    /// global ni re-parse de tout un `juridiction_type`. `full_text` présent,
+    /// global ni re-parse de tout un `jurisdiction_type`. `full_text` présent,
     /// révisions manuelles (`extract_version` > courante) exclues. À combiner
     /// avec `--field legal_references` (ne touche que les citations, via
     /// `replace_citations`).
@@ -704,7 +738,8 @@ impl DecisionRepository<'_> {
                   AND (d.extract_version IS NULL OR d.extract_version <= $4)
                   AND EXISTS (
                       SELECT 1 FROM legal_citation lc
-                      WHERE lc.decision_id = d.id AND lc.ref_text_uid = $3
+                      WHERE lc.decision_id = d.id
+                        AND public.lj_cit_terms(lc.spans) @> ARRAY[$3]
                   )
                 ORDER BY d.id
                 LIMIT $2
@@ -859,10 +894,13 @@ impl DecisionRepository<'_> {
     /// Itère les décisions sans summary à jour, par batches.
     ///
     /// Port de `iter_decisions_missing_summary`. Chaque ligne =
-    /// `(decision_id, public_id, juridiction_type, jurisdiction_name,
+    /// `(decision_id, public_id, jurisdiction_type, jurisdiction_name,
     /// date_lecture, docket_numbers)` — les quatre dernières servent à
     /// reconstruire le titre côté appelant. Sélectionne les rows dont `summary
-    /// IS NULL` OU `summary_prompt_version < target_version`, en excluant les
+    /// IS NULL` ; avec `include_stale`, aussi celles dont
+    /// `summary_prompt_version < target_version` (régénération de masse
+    /// explicite — jamais par défaut : un bump de version ne doit pas déclencher
+    /// la réécriture du stock historique). Exclut les
     /// tombstones (`deleted_at IS NOT NULL` — vidés RGPD, jamais résumables) et
     /// les décisions sans corps (`full_text IS NULL`) : sans ce filtre la
     /// requête re-scanne à chaque run ~34 k tombstones que l'aval écarte en
@@ -885,6 +923,7 @@ impl DecisionRepository<'_> {
         limit: Option<i64>,
         start_id: i64,
         wrap: bool,
+        include_stale: bool,
     ) -> Result<Vec<Vec<MissingSummaryRow>>> {
         // Plafond sur l'arc courant : max bigint avant un éventuel wrap, puis
         // `start_id` une fois qu'on a bouclé sur le bas de la plage.
@@ -905,15 +944,18 @@ impl DecisionRepository<'_> {
                 .conn
                 .query(
                     "
-                SELECT d.id, d.public_id, d.juridiction_type, d.jurisdiction_name,
+                SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
                        d.date_lecture::text, d.docket_numbers
                 FROM decisions d
+                LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE d.id > $1
                   AND d.id <= $2
                   AND (
                     d.summary IS NULL
-                    OR d.summary_prompt_version IS NULL
-                    OR d.summary_prompt_version < $3
+                    OR ($5 AND (
+                      d.summary_prompt_version IS NULL
+                      OR d.summary_prompt_version < $3
+                    ))
                   )
                   AND d.public_id IS NOT NULL
                   AND d.deleted_at IS NULL
@@ -921,7 +963,13 @@ impl DecisionRepository<'_> {
                 ORDER BY d.id
                 LIMIT $4
                 ",
-                    &[&last_id, &ceiling, &target_version, &remaining],
+                    &[
+                        &last_id,
+                        &ceiling,
+                        &target_version,
+                        &remaining,
+                        &include_stale,
+                    ],
                 )
                 .await?;
             let n = rows.len();
@@ -932,7 +980,7 @@ impl DecisionRepository<'_> {
                     batch.push(MissingSummaryRow {
                         decision_id: row.get(0),
                         public_id: row.get(1),
-                        juridiction_type: row.get(2),
+                        jurisdiction_type: row.get(2),
                         jurisdiction_name: row.get(3),
                         date_lecture: row.get(4),
                         docket_numbers: docket.filter(|v| !v.is_empty()),

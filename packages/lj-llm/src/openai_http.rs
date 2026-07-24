@@ -9,6 +9,11 @@ use reqwest_tracing::{SpanBackendWithUrl, TracingMiddleware};
 use serde_json::Value;
 
 const DEFAULT_TIMEOUT_S: f64 = 600.0;
+/// Plafond de la phase d'établissement TCP. Sans lui, un backend injoignable
+/// (ex. vLLM sur une machine éteinte : SYN sans réponse, pas de RST) fait pendre
+/// le connect sur le timeout TCP de l'OS (~30 s) avant que `AnyEmbedder::Auto`
+/// ne bascule sur Cloudflare. Le connect vLLM légitime (tailnet) est <100 ms.
+const CONNECT_TIMEOUT_S: f64 = 2.0;
 const DEFAULT_MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
 
 /// Phrases présentes dans les réponses d'erreur des APIs compatibles OpenAI
@@ -50,9 +55,14 @@ impl OpenAIHttpEmbedder {
             model,
             dim: EMBEDDING_DIM,
             timeout_s: DEFAULT_TIMEOUT_S,
-            client: ClientBuilder::new(reqwest::Client::new())
-                .with(TracingMiddleware::<SpanBackendWithUrl>::new())
-                .build(),
+            client: ClientBuilder::new(
+                reqwest::Client::builder()
+                    .connect_timeout(std::time::Duration::from_secs_f64(CONNECT_TIMEOUT_S))
+                    .build()
+                    .expect("reqwest client openai-http"),
+            )
+            .with(TracingMiddleware::<SpanBackendWithUrl>::new())
+            .build(),
         }
     }
 

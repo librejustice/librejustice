@@ -24,7 +24,7 @@ use super::{
 /// UID non reconnu (juridiction inconnue), skip côté appelant.
 pub(super) fn classify_xml(raw: Vec<u8>, member: &str, archive_name: &str) -> Option<Candidate> {
     let decision = parse_xml(&raw, member, Some(archive_name));
-    if decision.juridiction_type.is_none() {
+    if decision.jurisdiction_type.is_none() {
         tracing::warn!(uid = %decision.source_uid, "UID non reconnu, skip");
         return None;
     }
@@ -48,7 +48,7 @@ pub(super) fn classify_judilibre(line: Vec<u8>) -> Result<Option<Candidate>> {
     let payload: serde_json::Value =
         sonic_rs::from_slice(&line).context("ligne Judilibre JSON invalide")?;
     let decision = parse_judilibre(&payload, None);
-    if decision.juridiction_type.is_none() {
+    if decision.jurisdiction_type.is_none() {
         tracing::warn!(uid = %decision.source_uid, "UID Judilibre non reconnu, skip");
         return Ok(None);
     }
@@ -247,8 +247,14 @@ pub(super) fn prepare_write(
     // canonique du chemin linéaire pour opendata/Judilibre).
     let extracted = match candidate.prebuilt_extracted.clone() {
         Some(fields) => fields,
-        None => lj_ingest::extract::extracted_fields(&decision, &ctx.link, &ctx.vocab, &ctx.chrono)
-            .map_err(|e| anyhow!("extract {source_uid}: {e}"))?,
+        None => lj_ingest::extract::extracted_fields(
+            &decision,
+            &ctx.link,
+            &ctx.vocab,
+            &ctx.chrono,
+            &ctx.jur_labels,
+        )
+        .map_err(|e| anyhow!("extract {source_uid}: {e}"))?,
     };
 
     Ok(Some(PreparedDecision {

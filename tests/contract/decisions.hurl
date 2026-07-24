@@ -26,12 +26,15 @@ GET {{base}}/api/decision/{{decision_id}}
 HTTP 200
 [Asserts]
 header "Cache-Control" exists
+# /api ne doit jamais être indexé (JSON + exports PDF/DOCX) : le contenu
+# indexable est la page SSR.
+header "X-Robots-Tag" == "noindex"
 # required scalars
 jsonpath "$.id" isString
 jsonpath "$.id" == "{{decision_id}}"
-jsonpath "$.juridictionType" isString
+jsonpath "$.jurisdictionType" isString
 # JuridictionType enum set (SCREAMING codes; CC/CA/TJ/TCOM judiciaire, TA/CAA/CE admin)
-jsonpath "$.juridictionType" matches /^(TA|CAA|CE|CC|CA|TJ|TCOM)$/
+jsonpath "$.jurisdictionType" matches /^(TA|CAA|CE|CC|CA|TJ|TCOM)$/
 jsonpath "$.title" isString
 # paragraphs: always present (list, possibly empty when no payload)
 jsonpath "$.paragraphs" isCollection

@@ -3,7 +3,7 @@
 //! `search_title`) : une seule fonction, un seul format.
 //!
 //! Format : `<juridiction>[, <siège>], <date FR>, <premier numéro>` — p. ex.
-//! « Cour d'appel de Paris, pôle 5 — 3e chambre (formation à trois),
+//! « Cour d'appel de Paris, pôle 5 — 3e chambre · formation à trois,
 //! 25 février 2026, 21/04532 ». Le siège est recomposé depuis les axes
 //! structurés (`chamber_position` + labels `formation:*` / `office:*`),
 //! jamais depuis une chaîne source.
@@ -76,6 +76,31 @@ pub const OFFICE_LABELS: &[(&str, &str)] = &[
     ("office:JUGE_EXPROPRIATION", "Juge de l'expropriation"),
 ];
 
+/// Labels des types de juridiction — miroir du seed `facet_value`
+/// (migration 0102) ; repli du titre quand la décision ne porte pas de nom de
+/// juridiction extrait (CEDH, CJUE, CONSTIT, TC…).
+pub const JURISDICTION_TYPE_LABELS: &[(&str, &str)] = &[
+    ("CE", "Conseil d'État"),
+    ("CAA", "Cour administrative d'appel"),
+    ("TA", "Tribunal administratif"),
+    ("CC", "Cour de cassation"),
+    ("CA", "Cour d'appel"),
+    ("TJ", "Tribunal judiciaire"),
+    ("TCOM", "Tribunal de commerce"),
+    ("CNDA", "Cour nationale du droit d'asile"),
+    ("CONSTIT", "Conseil constitutionnel"),
+    ("TC", "Tribunal des conflits"),
+    ("CEDH", "Cour européenne des droits de l'homme"),
+    ("CJUE", "Cour de justice de l'Union européenne"),
+];
+
+pub fn jurisdiction_type_label(code: &str) -> Option<&'static str> {
+    JURISDICTION_TYPE_LABELS
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, l)| *l)
+}
+
 pub fn formation_label(uid: &str) -> Option<&'static str> {
     FORMATION_LABELS
         .iter()
@@ -138,9 +163,11 @@ fn formation_redundant(base: &str, formation: &str) -> bool {
 }
 
 /// Siège recomposé depuis les axes structurés (ADR 0170) :
-/// `chamber_position`, qualifié entre parenthèses par le type de formation ou
-/// à défaut l'office (« 7e chambre (juge des libertés et de la détention) ») ;
-/// sans position, formation puis office. Les redondances tombent par
+/// `chamber_position`, qualifié après un point médian par le type de formation
+/// ou à défaut l'office (« 7e chambre · juge des libertés et de la détention »)
+/// — le « · » (et non des parenthèses) évite les parenthèses imbriquées quand le
+/// titre est lui-même cité entre parenthèses ; sans position, formation puis
+/// office. Les redondances tombent par
 /// comparaison pliée — la chambre déjà portée par le label de juridiction
 /// (« Cour de cassation, deuxième chambre civile ») n'est pas répétée, une
 /// position « Sous-sections 2/6 réunies » n'est pas suffixée
@@ -165,7 +192,18 @@ pub fn seat_display(
         .filter(|o| !o.is_empty() && !jur_folded.contains(&fold(o)));
     match base {
         Some(b) => match formation.or(office) {
-            Some(q) => Some(format!("{} ({})", mid_title(b), mid_title(q))),
+            // « 5e chambre » + « Chambre jugeant seule » → « 5e chambre
+            // jugeant seule » (idem « 3e sous-section jugeant seule ») : le
+            // qualificatif en « chambre … » se greffe à une position qui
+            // finit déjà par la chambre / sous-section qu'il qualifie.
+            Some(q)
+                if (fold(b).ends_with("chambre") || fold(b).ends_with("sous-section"))
+                    && q.get(..8)
+                        .is_some_and(|p| p.eq_ignore_ascii_case("chambre ")) =>
+            {
+                Some(format!("{} {}", mid_title(b), &q[8..]))
+            }
+            Some(q) => Some(format!("{} · {}", mid_title(b), mid_title(q))),
             None => Some(mid_title(b)),
         },
         // Sans position, le rôle est plus parlant que le type de formation :
@@ -210,7 +248,7 @@ mod tests {
         );
         assert_eq!(
             seat.as_deref(),
-            Some("pôle 5 — 3e chambre (formation à trois)")
+            Some("pôle 5 — 3e chambre · formation à trois")
         );
     }
 
@@ -238,6 +276,24 @@ mod tests {
     }
 
     #[test]
+    fn seat_chambre_jugeant_seule_greffee() {
+        let seat = seat_display(
+            "Cour administrative d'appel de Lyon",
+            Some("5e chambre"),
+            Some("Chambre jugeant seule"),
+            None,
+        );
+        assert_eq!(seat.as_deref(), Some("5e chambre jugeant seule"));
+        let seat = seat_display(
+            "Conseil d'État",
+            Some("3e sous-section"),
+            Some("Chambre jugeant seule"),
+            None,
+        );
+        assert_eq!(seat.as_deref(), Some("3e sous-section jugeant seule"));
+    }
+
+    #[test]
     fn seat_position_qualifiee_par_office() {
         let seat = seat_display(
             "Tribunal judiciaire de Nanterre",
@@ -247,7 +303,7 @@ mod tests {
         );
         assert_eq!(
             seat.as_deref(),
-            Some("7e chambre (juge des libertés et de la détention)")
+            Some("7e chambre · juge des libertés et de la détention")
         );
     }
 
@@ -290,13 +346,13 @@ mod tests {
     fn titre_complet() {
         let title = decision_title(
             "Cour d'appel de Paris",
-            Some("pôle 5 — 3e chambre (formation à trois)"),
+            Some("pôle 5 — 3e chambre · formation à trois"),
             Some("2026-02-25"),
             Some("21/04532"),
         );
         assert_eq!(
             title,
-            "Cour d'appel de Paris, pôle 5 — 3e chambre (formation à trois), 25 février 2026, 21/04532"
+            "Cour d'appel de Paris, pôle 5 — 3e chambre · formation à trois, 25 février 2026, 21/04532"
         );
     }
 

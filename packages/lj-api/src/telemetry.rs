@@ -16,8 +16,18 @@ pub use lj_telemetry::meter;
 /// Initialise la telemetrie de l'API. Renvoie un guard de flush a garder vivant
 /// pour toute la duree du process (flush des batch processors a l'arret).
 pub fn init_telemetry(settings: &Settings) -> Result<TelemetryGuard> {
-    // Filtre : `RUST_LOG` si present, sinon `info`.
-    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    // Filtre : `RUST_LOG` si present, sinon `info`. Le `trace_extractor`
+    // d'axum-tracing-opentelemetry WARN « can not set parent trace_id »
+    // (SpanDisabled) sur chaque requete au span non echantillonne — health
+    // checks compris, ~21 lignes/min qui noient les logs : on ne garde que
+    // ses erreurs.
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new("info"))
+        .add_directive(
+            "axum_tracing_opentelemetry=error"
+                .parse()
+                .expect("directive de filtre valide"),
+        );
 
     let otlp = match (
         settings.grafana_otlp_endpoint.as_ref(),

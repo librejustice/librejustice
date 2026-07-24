@@ -7,7 +7,7 @@
 
 use leptos_router::params::ParamsMap;
 use lj_dtos::{
-    Domaine, JuridictionType, Office, Portee, SearchMode, SearchRequest, Solution, SortOrder,
+    Domain, JurisdictionType, Office, SearchMode, SearchRequest, Significance, Solution, SortOrder,
 };
 
 /// Cap de pagination (parité `MAX_PAGES`).
@@ -22,24 +22,26 @@ pub const SEARCH_LIMIT: u32 = 10;
 pub struct SearchKey {
     pub query: String,
     pub page: u32,
-    /// Types de juridiction (`TJ`, `CE`, …) — racines `juridiction:*` du rail.
-    pub jur: Vec<String>,
+    /// Types de juridiction (`TJ`, `CE`, …) — racines `jurisdiction_type:*` du rail.
+    pub jurisdiction_type: Vec<String>,
     /// Offices du juge (`JEX`, `JAF`, … — suffixes `office:*`), dropdown dédié.
     pub office: Vec<String>,
     /// Codes du référentiel `jurisdiction` (`tj76351`, `ca_paris`, …).
-    pub jcode: Vec<String>,
-    /// Domaines de référence (suffixes `domaine:*`, racines ou feuilles).
-    pub domaine: Vec<String>,
+    pub jurisdiction_code: Vec<String>,
+    /// Chambres (catégorie contrôlée, suffixes `chamber:*`, ADR 0172).
+    pub chamber: Vec<String>,
+    /// Domaines de référence (suffixes `legal_domain:*`, racines ou feuilles).
+    pub legal_domain: Vec<String>,
     /// Solutions (suffixes `solution:*`).
     pub solution: Vec<String>,
-    pub li: Vec<String>,
-    pub la: Vec<String>,
-    /// Portées jurisprudentielles (suffixes `portee:*`, ADR 0167).
-    pub portee: Vec<String>,
+    pub legal_instrument: Vec<String>,
+    pub legal_article: Vec<String>,
+    /// Portées jurisprudentielles (suffixes `significance:*`, ADR 0167).
+    pub significance: Vec<String>,
     /// Niveaux de publication (suffixes `publication:*`).
     pub publication: Vec<String>,
-    pub from: Option<String>,
-    pub to: Option<String>,
+    pub date_from: Option<String>,
+    pub date_to: Option<String>,
     pub sort: String,
     pub ai_mode: bool,
 }
@@ -81,17 +83,18 @@ pub fn key_from_map(map: &ParamsMap) -> SearchKey {
             .map(|s| s.trim().to_string())
             .unwrap_or_default(),
         page: parse_page(map),
-        jur: get_all(map, "jur"),
+        jurisdiction_type: get_all(map, "jurisdictionType"),
         office: get_all(map, "office"),
-        jcode: get_all(map, "jcode"),
-        domaine: get_all(map, "domaine"),
+        jurisdiction_code: get_all(map, "jurisdictionCode"),
+        chamber: get_all(map, "chamber"),
+        legal_domain: get_all(map, "legalDomain"),
         solution: get_all(map, "solution"),
-        li: get_all(map, "li"),
-        la: get_all(map, "la"),
-        portee: get_all(map, "portee"),
+        legal_instrument: get_all(map, "legalInstrument"),
+        legal_article: get_all(map, "legalArticle"),
+        significance: get_all(map, "significance"),
         publication: get_all(map, "publication"),
-        from: date("from"),
-        to: date("to"),
+        date_from: date("dateFrom"),
+        date_to: date("dateTo"),
         sort: parse_sort(map.get("sort").as_deref()),
         ai_mode: super::ai_mode::is_ai_mode_param(map.get("aiMode").as_deref()),
     }
@@ -137,18 +140,19 @@ pub fn request_from_key(key: &SearchKey) -> SearchRequest {
     };
     SearchRequest {
         query: key.query.clone(),
-        juridiction_type: parse_enum_all::<JuridictionType>(&key.jur),
+        jurisdiction_type: parse_enum_all::<JurisdictionType>(&key.jurisdiction_type),
         solution: parse_enum_all::<Solution>(&key.solution),
-        voie: None,
+        procedure: None,
         office: parse_enum_all::<Office>(&key.office),
-        legal_domain: parse_enum_all::<Domaine>(&key.domaine),
-        jurisdiction_code: non_empty(&key.jcode),
-        legal_instrument: non_empty(&key.li),
-        legal_article: non_empty(&key.la),
-        portee: parse_enum_all::<Portee>(&key.portee),
+        legal_domain: parse_enum_all::<Domain>(&key.legal_domain),
+        jurisdiction_code: non_empty(&key.jurisdiction_code),
+        chamber: non_empty(&key.chamber),
+        legal_instrument: non_empty(&key.legal_instrument),
+        legal_article: non_empty(&key.legal_article),
+        significance: parse_enum_all::<Significance>(&key.significance),
         publication: non_empty(&key.publication),
-        date_from: key.from.clone(),
-        date_to: key.to.clone(),
+        date_from: key.date_from.clone(),
+        date_to: key.date_to.clone(),
         mode: SearchMode::Auto,
         sort,
         limit: SEARCH_LIMIT,

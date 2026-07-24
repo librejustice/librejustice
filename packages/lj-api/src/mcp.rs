@@ -14,13 +14,14 @@
 use axum::{
     extract::{Request, State},
     http::header::{AUTHORIZATION, WWW_AUTHENTICATE},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     middleware::{from_fn_with_state, Next},
     response::{IntoResponse, Response},
     routing::post,
     Extension, Json, Router,
 };
 use serde_json::{json, Value};
+use tracing::Instrument;
 
 use crate::bookmarks::fetch_bookmarks;
 use crate::decision_views::{fetch_views, record_decision_view};
@@ -44,20 +45,19 @@ const SERVER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Instructions serveur (port verbatim de `FastMCP(instructions=...)`).
 const SERVER_INSTRUCTIONS: &str =
-    "Search French case law from administrative courts (TA, CAA, CE) and \
-civil courts (CC, CA, TJ, TCOM). \
-The engine understands meaning, not just keywords: phrase the query \
-as a natural question or a list of descriptive terms — synonyms and \
-reformulations are handled. \
-Typical workflow: call search_decisions to get a shortlist (previews \
-give orientation but are not enough to judge actual relevance), then \
-call get_decision on candidates to read the full text. Iterate by \
-refining the query or filters. \
-Each result carries a public `url` to the full decision on \
-librejustice.fr and an opaque `id` used only to chain into \
-get_decision — the id is internal and not meant for display. \
-When mentioning a decision, hyperlink its `title` (or a \
-conventional citation derived from the metadata) to that `url`.";
+    "Search French and European case law: all French courts plus, among \
+others, the CNDA, the Conseil constitutionnel, CNIL sanctions, the \
+CEDH and the CJUE. The engine understands meaning, not just keywords: \
+phrase the query as a natural question or a list of descriptive terms; \
+synonyms and reformulations are handled. Typical workflow: \
+search_decisions for a shortlist, then get_decision to read candidates \
+in full. Previews only orient: never judge relevance, quote, or state \
+what a decision holds from one, as the matched passage may be a \
+party's argument, not the court's ruling. Iterate by refining the \
+query or filters. Open any `url` with the matching tool: /decision/ \
+links with get_decision, /texte/ links with get_legal_text. When \
+mentioning a decision, hyperlink its `title` (or a conventional \
+citation) to its `url`.";
 
 /// Construit le service MCP adossé à l'état app.
 ///
@@ -179,11 +179,44 @@ async fn mcp_auth(State(state): State<AppState>, mut req: Request, next: Next) -
 
 // ── Couche JSON-RPC ──────────────────────────────────────────────────────────
 
-/// Erreur JSON-RPC remontée comme `error` dans l'enveloppe (codes standard MCP).
+/// Catégorie machine-lisible du contrat d'erreur outil : dit au modèle la
+/// nature de l'échec, donc la conduite à tenir (corriger l'appel, chercher
+/// autrement, se connecter, retenter).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum ErrorCategory {
+    /// Arguments invalides : corriger l'appel, un retry à l'identique échouera.
+    Validation,
+    /// Absent du corpus — ce qui ne prouve jamais que la ressource n'existe pas.
+    NotFound,
+    /// Authentification requise.
+    Auth,
+    /// Panne interne ou transitoire : un retry à l'identique peut réussir.
+    Internal,
+}
+
+impl ErrorCategory {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Validation => "validation",
+            Self::NotFound => "not_found",
+            Self::Auth => "auth",
+            Self::Internal => "internal",
+        }
+    }
+}
+
+/// Erreur JSON-RPC remontée comme `error` dans l'enveloppe (codes standard MCP)
+/// ou, pour un échec d'outil, rendue en contrat d'erreur structuré par
+/// [`tool_error_content`] : `category` + `retryable` + `hint` (prochaine action).
 #[derive(Debug)]
 struct RpcError {
     code: i32,
     message: String,
+    category: ErrorCategory,
+    /// `true` si un retry à l'identique peut réussir (panne transitoire).
+    retryable: bool,
+    /// Prochaine action suggérée au modèle (outil à essayer, correction).
+    hint: Option<String>,
 }
 
 impl RpcError {
@@ -191,21 +224,55 @@ impl RpcError {
         Self {
             code: -32602,
             message: msg.into(),
+            category: ErrorCategory::Validation,
+            retryable: false,
+            hint: None,
         }
     }
     fn method_not_found(method: &str) -> Self {
         Self {
             code: -32601,
             message: format!("method not found: {method}"),
+            category: ErrorCategory::Validation,
+            retryable: false,
+            hint: None,
         }
     }
     /// Erreur applicative outil (équivalent `ToolError` côté Python) : code
-    /// d'erreur interne MCP.
+    /// d'erreur interne MCP, retryable (pool, upstream — transitoire a priori).
     fn tool_error(msg: impl Into<String>) -> Self {
         Self {
             code: -32603,
             message: msg.into(),
+            category: ErrorCategory::Internal,
+            retryable: true,
+            hint: None,
         }
+    }
+    /// Ressource absente du corpus : non-retryable, et le `hint` doit rappeler
+    /// que l'absence du corpus ne prouve pas l'inexistence.
+    fn not_found(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32603,
+            message: msg.into(),
+            category: ErrorCategory::NotFound,
+            retryable: false,
+            hint: None,
+        }
+    }
+    /// Authentification requise (outils personnels).
+    fn auth(msg: impl Into<String>) -> Self {
+        Self {
+            code: -32603,
+            message: msg.into(),
+            category: ErrorCategory::Auth,
+            retryable: false,
+            hint: None,
+        }
+    }
+    fn with_hint(mut self, hint: impl Into<String>) -> Self {
+        self.hint = Some(hint.into());
+        self
     }
 }
 
@@ -213,16 +280,18 @@ impl RpcError {
 async fn handle_rpc(
     State(state): State<AppState>,
     Extension(McpUser(user)): Extension<McpUser>,
+    headers: HeaderMap,
     Json(body): Json<Value>,
 ) -> Response {
     let id = body.get("id").cloned().unwrap_or(Value::Null);
     let method = body.get("method").and_then(Value::as_str).unwrap_or("");
     let params = body.get("params").cloned().unwrap_or(Value::Null);
+    let session = mcp_session_hash(&headers);
 
     // Notifications (pas d'`id`) : on accuse réception sans corps (202).
     let is_notification = body.get("id").is_none();
 
-    match dispatch(&state, method, params, user.as_deref()).await {
+    match dispatch(&state, method, params, user.as_deref(), session.as_deref()).await {
         Ok(result) => {
             if is_notification {
                 return StatusCode::ACCEPTED.into_response();
@@ -243,24 +312,42 @@ async fn handle_rpc(
     }
 }
 
+/// Corrélateur de session MCP (ADR 0252) : hash court, non réversible
+/// (`DefaultHasher`), du header `Mcp-Session-Id` — jeton **par conversation**,
+/// éphémère, jamais l'identité de l'utilisateur (borne ADR 0039). Absent si le
+/// client n'envoie pas de session id → pas de regroupement, aucune PII.
+fn mcp_session_hash(headers: &HeaderMap) -> Option<String> {
+    use std::hash::{Hash, Hasher};
+    let raw = headers.get("mcp-session-id")?.to_str().ok()?;
+    if raw.is_empty() {
+        return None;
+    }
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    raw.hash(&mut hasher);
+    Some(format!("{:016x}", hasher.finish()))
+}
+
 /// Routage des méthodes MCP standard.
 async fn dispatch(
     state: &AppState,
     method: &str,
     params: Value,
     user: Option<&str>,
+    session: Option<&str>,
 ) -> Result<Value, RpcError> {
     match method {
         "initialize" => Ok(initialize_result()),
         "notifications/initialized" => Ok(Value::Null),
         "ping" => Ok(json!({})),
         "tools/list" => Ok(json!({ "tools": tool_definitions() })),
-        "tools/call" => call_tool(state, params, user).await,
-        // FastMCP expose nativement les capacités resources/prompts (vides ici) :
-        // un client qui les liste reçoit une liste vide, pas un method_not_found.
+        "tools/call" => call_tool(state, params, user, session).await,
+        // Resources : liste vide assumée. La primitive est application-controlled
+        // (Claude Desktop exige une sélection manuelle, ChatGPT ne les lit pas) ;
+        // pour exposer des données au modèle, la voie est un tool (cf. ADR 0244).
         "resources/list" => Ok(json!({ "resources": [] })),
         "resources/templates/list" => Ok(json!({ "resourceTemplates": [] })),
-        "prompts/list" => Ok(json!({ "prompts": [] })),
+        "prompts/list" => Ok(json!({ "prompts": prompt_definitions() })),
+        "prompts/get" => get_prompt(&params),
         other => Err(RpcError::method_not_found(other)),
     }
 }
@@ -286,7 +373,12 @@ fn initialize_result() -> Value {
 
 /// Dispatch `tools/call` : décode `name` + `arguments`, exécute l'outil, emballe
 /// le résultat structuré dans `content` (texte JSON) + `structuredContent`.
-async fn call_tool(state: &AppState, params: Value, user: Option<&str>) -> Result<Value, RpcError> {
+async fn call_tool(
+    state: &AppState,
+    params: Value,
+    user: Option<&str>,
+    session: Option<&str>,
+) -> Result<Value, RpcError> {
     let name = params
         .get("name")
         .and_then(Value::as_str)
@@ -296,54 +388,86 @@ async fn call_tool(state: &AppState, params: Value, user: Option<&str>) -> Resul
         .cloned()
         .unwrap_or_else(|| json!({}));
 
-    // Sémantique MCP : un échec d'EXÉCUTION d'outil (outil inconnu ou erreur
-    // pendant l'appel) n'est PAS une erreur JSON-RPC mais un *résultat* avec
-    // `isError: true` et le message dans `content` (parité SDK `mcp`). Seules les
-    // erreurs de PROTOCOLE (name manquant) restent des erreurs JSON-RPC.
-    let result = match name {
-        "search_decisions" => tool_search_decisions(state, arguments, user).await,
-        "get_decision" => tool_get_decision(state, arguments, user).await,
-        "list_my_activity" => tool_list_my_activity(state, arguments, user).await,
-        "get_law_article" => tool_get_law_article(state, arguments).await,
-        "search_law_articles" => tool_search_law_articles(state, arguments).await,
-        other => return Ok(tool_error_content(format!("Unknown tool: {other}"))),
-    };
+    // Span parent d'appel d'outil (ADR 0252) : attributs domaine RGPD-safe —
+    // booléen connecté/anonyme, jamais l'identité (borne ADR 0039). Enveloppe
+    // l'exécution : les spans store fan-out (`article_at_date`,
+    // `similar_decisions`…) deviennent descendants et partagent le `traceID` ;
+    // `mcp.session` regroupe les appels d'une même conversation.
+    let span = tracing::info_span!(
+        "mcp_tool_call",
+        librejustice.mcp.tool = name,
+        librejustice.mcp.authenticated = user.is_some(),
+        librejustice.mcp.session = tracing::field::Empty,
+        librejustice.mcp.arg = tracing::field::Empty,
+    );
+    if let Some(s) = session {
+        span.record("librejustice.mcp.session", s);
+    }
+    // Argument compact, tronqué — non-PII (url de décision, ref d'article + date ;
+    // la query de recherche est déjà exportée par le span `search`).
+    let arg: String = arguments.to_string().chars().take(256).collect();
+    span.record("librejustice.mcp.arg", arg.as_str());
 
-    match result {
-        Ok((text, structured)) => {
-            // `content` lisible = JSON pretty-print du modèle (indent 2, ordre des
-            // champs, `null` inclus — parité byte avec `pydantic_core.to_json`
-            // côté FastMCP) ; `structuredContent` porte l'objet typé.
-            Ok(json!({
+    async move {
+        // Sémantique MCP : un échec d'EXÉCUTION d'outil (outil inconnu ou erreur
+        // pendant l'appel) n'est PAS une erreur JSON-RPC mais un *résultat* avec
+        // `isError: true` et le message dans `content` (parité SDK `mcp`). Seules
+        // les erreurs de PROTOCOLE (name manquant) restent des erreurs JSON-RPC.
+        let result = match name {
+            "search_decisions" => tool_search_decisions(state, arguments, user).await,
+            "get_decision" => tool_get_decision(state, arguments, user).await,
+            "list_my_activity" => tool_list_my_activity(state, arguments, user).await,
+            "get_legal_text" => tool_get_legal_text(state, arguments).await,
+            "search_legal_texts" => tool_search_legal_texts(state, arguments, user).await,
+            other => {
+                return Ok(tool_error_content(
+                    &RpcError::invalid_params(format!("Unknown tool: {other}")).with_hint(
+                        "Valid tools: search_decisions, get_decision, list_my_activity, \
+                         get_legal_text, search_legal_texts.",
+                    ),
+                ))
+            }
+        };
+
+        match result {
+            Ok((text, structured)) => Ok(json!({
                 "content": [{"type": "text", "text": text}],
                 "structuredContent": structured,
                 "isError": false,
-            }))
+            })),
+            Err(e) => Ok(tool_error_content(&e)),
         }
-        // Préfixe verbatim du SDK ; le détail diffère du texte Pydantic (non
-        // reproduit — détail d'implémentation, cf. `serverInfo.version`).
-        Err(e) => Ok(tool_error_content(format!(
-            "Error executing tool {name}: {}",
-            e.message
-        ))),
     }
+    .instrument(span)
+    .await
 }
 
-/// Résultat `tools/call` en erreur applicative : `isError: true` + message en
-/// `content` texte (sémantique MCP, pas une erreur JSON-RPC).
-fn tool_error_content(text: String) -> Value {
+/// Résultat `tools/call` en erreur applicative : `isError: true` + contrat
+/// d'erreur structuré en `content` texte (sémantique MCP, pas une erreur
+/// JSON-RPC). `category` dit la nature de l'échec, `retryable` si un retry à
+/// l'identique a un sens, `hint` la prochaine action — pour qu'un modèle
+/// corrige son appel au lieu de re-tenter à l'aveugle ou de conclure à tort.
+fn tool_error_content(err: &RpcError) -> Value {
+    let mut body = json!({
+        "error": err.message,
+        "category": err.category.as_str(),
+        "retryable": err.retryable,
+    });
+    if let Some(hint) = &err.hint {
+        body["hint"] = json!(hint);
+    }
     json!({
-        "content": [{"type": "text", "text": text}],
+        "content": [{"type": "text", "text": body.to_string()}],
         "isError": true,
     })
 }
 
-/// Sérialise une sortie d'outil en `(content texte, structuredContent)`. Le
-/// texte est pretty-print (indent 2, ordre des champs du modèle, `null` inclus)
-/// pour la parité byte avec FastMCP ; la valeur typée porte le `structuredContent`.
+/// Sérialise une sortie d'outil en `(content texte, structuredContent)` —
+/// même JSON dans les deux canaux (le bloc texte est exigé par la spec pour
+/// les clients sans `structuredContent`), en compact : le bloc texte est ce
+/// que les hôtes injectent au modèle, chaque octet compte.
 fn tool_ok<T: serde::Serialize>(value: &T) -> Result<(String, Value), RpcError> {
-    let text =
-        serde_json::to_string_pretty(value).map_err(|e| RpcError::tool_error(e.to_string()))?;
+    let text = serde_json::to_string(value).map_err(|e| RpcError::tool_error(e.to_string()))?;
     let structured =
         serde_json::to_value(value).map_err(|e| RpcError::tool_error(e.to_string()))?;
     Ok((text, structured))
@@ -354,22 +478,63 @@ async fn tool_search_decisions(
     args: Value,
     user: Option<&str>,
 ) -> Result<(String, Value), RpcError> {
-    let req = build_search_request(&args)?;
-    let response = crate::search::search(state, &req)
-        .await
-        .map_err(|e| RpcError::tool_error(e.to_string()))?;
-    // Persistance d'activité best-effort (parité `record_search` côté Python,
-    // source `mcp`) : enregistrée uniquement si un utilisateur MCP est résolu.
-    if let Some(user_id) = user {
-        record_search(&state.pool, user_id, &req, lj_dtos::ActivitySource::Mcp).await;
-    }
+    let mut req = build_search_request(&args)?;
     let refs = crate::referential::referential(state)
         .await
         .map_err(|e| RpcError::tool_error(e.to_string()))?;
+    // Un code hors référentiel matcherait silencieusement zéro décision, et le
+    // flux MCP n'expose pas la facette juridiction pour le découvrir.
+    if let Some(bad) = req
+        .jurisdiction_code
+        .iter()
+        .flatten()
+        .find(|c| refs.jurisdiction(c).is_none())
+    {
+        return Err(unknown_jurisdiction_code(bad, &refs));
+    }
+    // Même garantie pour les axes à catégorie contrôlée : un token hors
+    // vocabulaire matcherait silencieusement zéro décision.
+    for (field, values) in [("chamber", &req.chamber), ("publication", &req.publication)] {
+        if let Some(bad) = values
+            .as_deref()
+            .and_then(|vs| refs.find_unknown_token(field, vs))
+        {
+            return Err(RpcError::invalid_params(format!(
+                "unknown {field} '{bad}'; valid values: {}",
+                refs.facet_tokens(field).join(", ")
+            )));
+        }
+    }
+    // Filtres instrument/article : les colonnes portent des uids de catalogue
+    // internes, pas des noms — un nom passé tel quel matcherait silencieusement
+    // zéro. Chaque valeur (slug ou nom libre) est résolue via le slug ;
+    // inconnue → erreur corrective avec les slugs les plus proches.
+    resolve_instrument_filters(state, &mut req).await?;
+    let response = crate::search::search(
+        state,
+        &req,
+        lj_dtos::ActivitySource::Mcp,
+        user.is_some(),
+        lj_dtos::SearchContext::User,
+    )
+    .await
+    .map_err(|e| RpcError::tool_error(e.to_string()))?;
+    // Persistance d'activité best-effort (source `mcp`) : enregistrée uniquement
+    // si un utilisateur MCP est résolu.
+    if let Some(user_id) = user {
+        record_search(
+            &state.pool,
+            user_id,
+            &req.query,
+            crate::search_history::filters_from_request(&req),
+            lj_dtos::ActivitySource::Mcp,
+            lj_dtos::SearchEngine::Decisions,
+        )
+        .await;
+    }
     tool_ok(&present_search_response(
         &response,
         &state.settings.web_base_url,
-        &refs,
     ))
 }
 
@@ -378,24 +543,31 @@ async fn tool_get_decision(
     args: Value,
     user: Option<&str>,
 ) -> Result<(String, Value), RpcError> {
-    let id = args
-        .get("id")
+    let url = args
+        .get("url")
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())
-        .ok_or_else(|| RpcError::invalid_params("missing tool argument: id"))?;
+        .ok_or_else(|| RpcError::invalid_params("missing tool argument: url"))?;
+    // La clé est le dernier segment de l'URL publique `/decision/{clé}`.
+    let id = url
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| RpcError::invalid_params(format!("not a decision url: {url}")))?;
     let detail = crate::decisions::get_decision(state, id)
         .await
-        .map_err(|e| {
-            // NotFound côté Python → ToolError "decision not found".
-            match e {
-                ApiError::NotFound => {
-                    RpcError::tool_error(format!("decision not found for id={id}"))
-                }
-                other => RpcError::tool_error(other.to_string()),
-            }
+        .map_err(|e| match e {
+            ApiError::NotFound => RpcError::not_found(format!("no decision at url={url}"))
+                .with_hint(
+                    "Decision urls cannot be composed or guessed: take the url verbatim \
+                     from a search_decisions hit or an inline citation link. If this one \
+                     did come from a hit, the decision may have been unpublished since.",
+                ),
+            other => RpcError::tool_error(other.to_string()),
         })?;
-    // Consultation tracée best-effort (parité `record_decision_view`, source
-    // `mcp`) quand un utilisateur MCP est résolu.
+    // Consultation tracée best-effort (source `mcp`) quand un utilisateur MCP
+    // est résolu.
     if let Some(user_id) = user {
         record_decision_view(&state.pool, user_id, id, lj_dtos::ActivitySource::Mcp).await;
     }
@@ -418,7 +590,7 @@ async fn tool_list_my_activity(
     user: Option<&str>,
 ) -> Result<(String, Value), RpcError> {
     let user_id = user.ok_or_else(|| {
-        RpcError::tool_error(
+        RpcError::auth(
             "authentication required: connect your LibreJustice account to this MCP \
              connector to access your activity.",
         )
@@ -457,14 +629,53 @@ async fn tool_list_my_activity(
 
 // ── Outil law-at-date (ADR 0097) ──────────────────────────────────────────────
 
-/// `get_law_article` : article de référentiel à une date (ou en vigueur si
-/// `date` absente), par `code` (slug ou nom libre, résolu) + `num`. La réponse
-/// inclut la timeline des versions (champ `versions`). 404 (code/article
-/// inconnu) → `isError`.
-async fn tool_get_law_article(state: &AppState, args: Value) -> Result<(String, Value), RpcError> {
-    let code = required_str(&args, "code")?;
-    let num = required_str(&args, "num")?;
+/// `get_legal_text` : article de référentiel à une date (ou en vigueur si
+/// `date` absente), par `url` `/texte/{code}/{article}`. La réponse inclut la
+/// timeline des versions (champ `versions`). 404 (code/article inconnu) →
+/// `isError`.
+async fn tool_get_legal_text(state: &AppState, args: Value) -> Result<(String, Value), RpcError> {
+    let url = required_str(&args, "url")?;
     let date: Option<String> = deser(args.get("date").filter(|v| !v.is_null()).cloned())?;
+
+    // `/loi/` accepté en entrée : des conversations MCP passées portent des
+    // liens à l'ancien schéma (renommage `/loi` → `/texte` 2026-07) — le tool
+    // parse la chaîne, le 308 HTTP ne le couvre pas.
+    let mut segs = url
+        .split("/texte/")
+        .nth(1)
+        .or_else(|| url.split("/loi/").nth(1))
+        .unwrap_or_default()
+        .trim_end_matches('/')
+        .splitn(2, '/');
+    let (code, num) = match (segs.next().filter(|s| !s.is_empty()), segs.next()) {
+        (Some(code), Some(num)) => (code.to_string(), num.to_string()),
+        _ => {
+            return Err(RpcError::invalid_params(format!(
+                "not an article url (expected …/texte/{{code}}/{{article}}): {url}"
+            )))
+        }
+    };
+    let num = lj_core::article_key::article_key(&num);
+
+    // L'alphabet servi par `/texte` est le slug : un nom libre (« Code civil »)
+    // est slugifié ; inconnu → erreur avec les slugs les plus proches.
+    let code = {
+        let conn = state
+            .pool
+            .get()
+            .await
+            .map_err(|e| RpcError::tool_error(format!("checkout connexion: {e}")))?;
+        let repo = lj_store::repository::DecisionRepository::new(&conn);
+        let slug = law_slug(&code);
+        if !repo
+            .law_slug_exists(&slug)
+            .await
+            .map_err(|e| RpcError::tool_error(e.to_string()))?
+        {
+            return Err(unknown_instrument(&repo, "code", &code).await);
+        }
+        slug
+    };
 
     let detail = match date {
         Some(d) => {
@@ -478,13 +689,14 @@ async fn tool_get_law_article(state: &AppState, args: Value) -> Result<(String, 
     tool_ok(&present_law_article(&detail, &state.settings.web_base_url))
 }
 
-/// `search_law_articles` : recherche plein-texte d'articles de référentiel
+/// `search_legal_texts` : recherche plein-texte d'articles de référentiel
 /// (ADR 0114), filtrable par `code`/`jurisdiction`. Renvoie le `total` exact et
 /// une page de hits (extrait surligné + `url` + `num`), à chaîner ensuite vers
-/// `get_law_article` pour le texte complet à date.
-async fn tool_search_law_articles(
+/// `get_legal_text` pour le texte complet à date.
+async fn tool_search_legal_texts(
     state: &AppState,
     args: Value,
+    user: Option<&str>,
 ) -> Result<(String, Value), RpcError> {
     let query = required_str(&args, "query")?;
     if query.chars().count() > 512 {
@@ -505,11 +717,35 @@ async fn tool_search_law_articles(
         ));
     }
 
+    // Même alphabet que `get_legal_text` : nom libre slugifié, inconnu →
+    // erreur corrective avec les slugs les plus proches.
+    let code = match opt("code") {
+        Some(c) => {
+            let conn = state
+                .pool
+                .get()
+                .await
+                .map_err(|e| RpcError::tool_error(format!("checkout connexion: {e}")))?;
+            let repo = lj_store::repository::DecisionRepository::new(&conn);
+            let slug = law_slug(c);
+            if !repo
+                .law_slug_exists(&slug)
+                .await
+                .map_err(|e| RpcError::tool_error(e.to_string()))?
+            {
+                return Err(unknown_instrument(&repo, "code", c).await);
+            }
+            Some(slug)
+        }
+        None => None,
+    };
+
     let response = crate::legi::search_textes(
         state,
         &query,
-        opt("code"),
+        code.as_deref(),
         opt("jurisdiction"),
+        None,
         None,
         None,
         limit,
@@ -518,11 +754,145 @@ async fn tool_search_law_articles(
     .await
     .map_err(map_legi_error)?;
 
+    // Persistance d'activité best-effort (ADR 0251, moteur `textes`) — même
+    // règle que `search_decisions` ; `get_legal_text` (lookup) reste hors
+    // historique.
+    if let Some(user_id) = user {
+        let mut filters = serde_json::Map::new();
+        if let Some(c) = code.as_deref() {
+            filters.insert("code".to_string(), Value::String(c.to_string()));
+        }
+        if let Some(j) = opt("jurisdiction") {
+            filters.insert("jurisdiction".to_string(), Value::String(j.to_string()));
+        }
+        record_search(
+            &state.pool,
+            user_id,
+            &query,
+            Value::Object(filters),
+            lj_dtos::ActivitySource::Mcp,
+            lj_dtos::SearchEngine::Textes,
+        )
+        .await;
+    }
+
     tool_ok(&present_law_search(
         &query,
         &response,
         &state.settings.web_base_url,
     ))
+}
+
+/// Erreur pour un `jurisdiction_code` hors référentiel, avec suggestions
+/// (message construit par [`crate::referential::unknown_jurisdiction_code_msg`]).
+fn unknown_jurisdiction_code(code: &str, refs: &crate::referential::Referential) -> RpcError {
+    RpcError::invalid_params(crate::referential::unknown_jurisdiction_code_msg(
+        code, refs,
+    ))
+}
+
+/// Slug d'un nom de texte légal, dans l'alphabet des `legal_text.slug` :
+/// minuscules, accents pliés, toute séquence non alphanumérique réduite à `-`.
+fn law_slug(name: &str) -> String {
+    let mut out = String::with_capacity(name.len());
+    for c in name.to_lowercase().chars() {
+        let folded = match c {
+            'à' | 'â' | 'ä' | 'á' => 'a',
+            'é' | 'è' | 'ê' | 'ë' => 'e',
+            'í' | 'î' | 'ï' => 'i',
+            'ó' | 'ô' | 'ö' => 'o',
+            'ú' | 'ù' | 'û' | 'ü' => 'u',
+            'ç' => 'c',
+            'œ' => {
+                out.push('o');
+                'e'
+            }
+            c => c,
+        };
+        if folded.is_ascii_alphanumeric() {
+            out.push(folded);
+        } else if !out.is_empty() && !out.ends_with('-') {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
+/// Résout les filtres `legal_instrument` / `legal_article` (slug ou nom libre,
+/// slugifié) vers l'alphabet des colonnes (`text_uid` de catalogue, numéro en
+/// forme composite). Valeur inconnue → erreur corrective avec les slugs les
+/// plus proches — jamais un filtre qui matche silencieusement zéro.
+async fn resolve_instrument_filters(
+    state: &AppState,
+    req: &mut lj_dtos::SearchRequest,
+) -> Result<(), RpcError> {
+    if req.legal_instrument.is_none() && req.legal_article.is_none() {
+        return Ok(());
+    }
+    let conn = state
+        .pool
+        .get()
+        .await
+        .map_err(|e| RpcError::tool_error(format!("checkout connexion: {e}")))?;
+    let repo = lj_store::repository::DecisionRepository::new(&conn);
+    if let Some(values) = req.legal_instrument.as_mut() {
+        for v in values.iter_mut() {
+            match repo
+                .resolve_instrument_uid(&law_slug(v))
+                .await
+                .map_err(|e| RpcError::tool_error(e.to_string()))?
+            {
+                Some(uid) => *v = uid,
+                None => return Err(unknown_instrument(&repo, "legal_instrument", v).await),
+            }
+        }
+    }
+    if let Some(values) = req.legal_article.as_mut() {
+        for v in values.iter_mut() {
+            let Some((instrument, num)) = v.split_once('|') else {
+                return Err(RpcError::invalid_params(format!(
+                    "legal_article '{v}' must be \"<instrument>|<article>\" \
+                     (e.g. \"code-civil|1240\", \"code-de-justice-administrative|L761-1\")"
+                )));
+            };
+            let instrument = instrument.trim();
+            match repo
+                .resolve_instrument_uid(&law_slug(instrument))
+                .await
+                .map_err(|e| RpcError::tool_error(e.to_string()))?
+            {
+                Some(uid) => *v = format!("{uid}|{}", lj_core::article_key::article_key(num)),
+                None => return Err(unknown_instrument(&repo, "legal_article", instrument).await),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Erreur corrective pour un instrument hors catalogue : slugs candidats par
+/// similarité trigramme (titre + slug, tolérante aux fautes).
+async fn unknown_instrument(
+    repo: &lj_store::repository::DecisionRepository<'_>,
+    field: &str,
+    value: &str,
+) -> RpcError {
+    let suggestions = repo.suggest_instruments(value, 5).await.unwrap_or_default();
+    let hint = if suggestions.is_empty() {
+        String::new()
+    } else {
+        format!(
+            "; did you mean: {}",
+            suggestions
+                .iter()
+                .map(|(slug, title)| format!("\"{slug}\" ({title})"))
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    };
+    RpcError::invalid_params(format!("unknown {field} '{value}'{hint}")).with_hint(
+        "Pass a slug (from the legal_instrument facet of a previous search) \
+         or an exact text name.",
+    )
 }
 
 /// Extrait un argument chaîne requis non vide (erreur JSON-RPC sinon).
@@ -537,15 +907,48 @@ fn required_str(args: &Value, key: &str) -> Result<String, RpcError> {
 /// Mappe une erreur des handlers LEGI en `RpcError` (NotFound → message dédié).
 fn map_legi_error(e: ApiError) -> RpcError {
     match e {
-        ApiError::NotFound => RpcError::tool_error("law article or code not found"),
+        ApiError::NotFound => RpcError::not_found("law article or code not found").with_hint(
+            "Find the article with search_legal_texts, or compose the url as \
+             /texte/{code-slug}/{article-key} (lowercase key: \"l761-1\" for L. 761-1).",
+        ),
         other => RpcError::tool_error(other.to_string()),
     }
 }
 
 /// Construit un [`SearchRequest`] à partir des arguments MCP (`ai_rerank` →
 /// `ai_mode`, dates ISO conservées telles quelles ; filtres référentiels
-/// solution/voie/office/legal_domain/jurisdiction_code/publication, ADR 0146).
+/// solution/procedure/office/legal_domain/jurisdiction_code/publication, ADR 0146).
 fn build_search_request(args: &Value) -> Result<lj_dtos::SearchRequest, RpcError> {
+    // Parité serveur du `additionalProperties: false` annoncé par le schéma :
+    // un filtre inconnu ignoré en silence fausserait la recherche sans signal.
+    const FIELDS: [&str; 18] = [
+        "query",
+        "jurisdiction_type",
+        "solution",
+        "procedure",
+        "office",
+        "legal_domain",
+        "jurisdiction_code",
+        "chamber",
+        "legal_instrument",
+        "legal_article",
+        "significance",
+        "publication",
+        "date_from",
+        "date_to",
+        "mode",
+        "sort",
+        "limit",
+        "ai_rerank",
+    ];
+    if let Some(obj) = args.as_object() {
+        if let Some(unknown) = obj.keys().find(|k| !FIELDS.contains(&k.as_str())) {
+            return Err(RpcError::invalid_params(format!(
+                "unknown field '{unknown}'; valid fields: {}",
+                FIELDS.join(", ")
+            )));
+        }
+    }
     let query = args
         .get("query")
         .and_then(Value::as_str)
@@ -581,15 +984,16 @@ fn build_search_request(args: &Value) -> Result<lj_dtos::SearchRequest, RpcError
 
     Ok(lj_dtos::SearchRequest {
         query,
-        juridiction_type: deser(from_field("juridiction_type"))?,
+        jurisdiction_type: deser(from_field("jurisdiction_type"))?,
         solution: deser(from_field("solution"))?,
-        voie: deser(from_field("voie"))?,
+        procedure: deser(from_field("procedure"))?,
         office: deser(from_field("office"))?,
         legal_domain: deser(from_field("legal_domain"))?,
         jurisdiction_code: deser(from_field("jurisdiction_code"))?,
+        chamber: deser(from_field("chamber"))?,
         legal_instrument: deser(from_field("legal_instrument"))?,
         legal_article: deser(from_field("legal_article"))?,
-        portee: deser(from_field("portee"))?,
+        significance: deser(from_field("significance"))?,
         publication: deser(from_field("publication"))?,
         date_from,
         date_to,
@@ -646,7 +1050,7 @@ fn tool_definitions() -> Vec<Value> {
             "description": SEARCH_DECISIONS_DESC,
             "inputSchema": search_decisions_schema(),
             "outputSchema": search_output_schema(),
-            "annotations": activity_logging_annotations(),
+            "annotations": read_only_annotations(),
         }),
         json!({
             "name": "get_decision",
@@ -654,7 +1058,7 @@ fn tool_definitions() -> Vec<Value> {
             "description": GET_DECISION_DESC,
             "inputSchema": get_decision_schema(),
             "outputSchema": get_decision_output_schema(),
-            "annotations": activity_logging_annotations(),
+            "annotations": read_only_annotations(),
         }),
         json!({
             "name": "list_my_activity",
@@ -665,25 +1069,29 @@ fn tool_definitions() -> Vec<Value> {
             "annotations": read_only_annotations(),
         }),
         json!({
-            "name": "get_law_article",
-            "title": "Get Law Article",
-            "description": GET_LAW_ARTICLE_DESC,
-            "inputSchema": get_law_article_schema(),
-            "outputSchema": get_law_article_output_schema(),
+            "name": "get_legal_text",
+            "title": "Get Legal Text",
+            "description": GET_LEGAL_TEXT_DESC,
+            "inputSchema": get_legal_text_schema(),
+            "outputSchema": get_legal_text_output_schema(),
             "annotations": read_only_annotations(),
         }),
         json!({
-            "name": "search_law_articles",
-            "title": "Search Law Articles",
-            "description": SEARCH_LAW_ARTICLES_DESC,
-            "inputSchema": search_law_articles_schema(),
-            "outputSchema": search_law_articles_output_schema(),
+            "name": "search_legal_texts",
+            "title": "Search Legal Texts",
+            "description": SEARCH_LEGAL_TEXTS_DESC,
+            "inputSchema": search_legal_texts_schema(),
+            "outputSchema": search_legal_texts_output_schema(),
             "annotations": read_only_annotations(),
         }),
     ]
 }
 
-/// Annotations communes des outils en lecture seule (port de `_READ_ONLY_TOOL`).
+/// Annotations communes : tous les outils sont en lecture seule. Le log
+/// d'activité de `search_decisions`/`get_decision` (`record_search`,
+/// `record_decision_view`) est une journalisation privée du compte — pas une
+/// modification d'environnement au sens MCP — et un `readOnlyHint: false`
+/// coûte une confirmation par appel dans les clients tiers.
 fn read_only_annotations() -> Value {
     json!({
         "readOnlyHint": true,
@@ -693,19 +1101,137 @@ fn read_only_annotations() -> Value {
     })
 }
 
-/// Annotations des outils qui, au-delà de la lecture, écrivent un log d'activité
-/// privé de l'utilisateur (`record_search` append, `record_decision_view`
-/// upsert, gatés par `track_activity`). Donc : pas strictement `readOnly`, et
-/// non `idempotent` (chaque appel ajoute/rafraîchit une entrée). Aucune écriture
-/// externe ou publique (`openWorld: false`), rien de destructif. La revue
-/// ChatGPT Apps exige que les trois hints reflètent le comportement réel.
-fn activity_logging_annotations() -> Value {
-    json!({
-        "readOnlyHint": false,
-        "destructiveHint": false,
-        "idempotentHint": false,
-        "openWorldHint": false,
-    })
+// ── Prompts MCP ──────────────────────────────────────────────────────────────
+//
+// Workflows invocables par l'utilisateur depuis le client (menu prompts /
+// slash-command), servis à TOUT client connecté au serveur distant — là où les
+// skills du plugin ne servent que ceux qui l'installent. Titres/descriptions et
+// messages en français : c'est du texte face utilisateur, inséré dans SA
+// conversation. Les trois workflows reprennent les cas d'usage de la soumission
+// ChatGPT (`publish/soumissions/chatgpt-app-copy-paste.md`, dernière version) ;
+// les exemples suivent ses « prompts vitrine », calés sur les requêtes réelles
+// des utilisateurs (droit des étrangers en tête, frais irrépétibles verbatim).
+
+/// Liste des prompts (`prompts/list`).
+fn prompt_definitions() -> Vec<Value> {
+    vec![
+        json!({
+            "name": "recherche_jurisprudence",
+            "title": "Recherche de jurisprudence",
+            "description": "Recherche des décisions sur une question juridique, les lit en texte intégral et rend une synthèse sourcée.",
+            "arguments": [{
+                "name": "question",
+                "description": "Question ou sujet juridique, juridiction et période comprises si utiles (ex. « décisions du TA de Paris annulant une OQTF pour atteinte à l'intérêt supérieur de l'enfant »)",
+                "required": true,
+            }],
+        }),
+        json!({
+            "name": "article_a_date",
+            "title": "Article en vigueur à une date",
+            "description": "Retrouve le texte exact d'un article de loi tel qu'il s'appliquait à une date donnée.",
+            "arguments": [
+                {
+                    "name": "article",
+                    "description": "L'article et son texte (ex. « article 1240 du code civil »)",
+                    "required": true,
+                },
+                {
+                    "name": "date",
+                    "description": "Date de consultation YYYY-MM-DD (ex. la date des faits) ; vide = version en vigueur",
+                    "required": false,
+                },
+            ],
+        }),
+        json!({
+            "name": "textes_applicables",
+            "title": "Textes applicables à un sujet",
+            "description": "Identifie les articles de loi qui régissent un sujet et les lit dans leur version pertinente.",
+            "arguments": [{
+                "name": "sujet",
+                "description": "Le sujet ou la situation juridique (ex. « frais irrépétibles en procédure civile »)",
+                "required": true,
+            }],
+        }),
+    ]
+}
+
+/// `prompts/get` : instancie le prompt demandé avec ses arguments. Le message
+/// rendu encode la méthode anti-hallucination (lire le texte intégral avant de
+/// citer, version à date, avouer l'introuvable).
+fn get_prompt(params: &Value) -> Result<Value, RpcError> {
+    let name = params
+        .get("name")
+        .and_then(Value::as_str)
+        .ok_or_else(|| RpcError::invalid_params("missing prompt name"))?;
+    let arg = |key: &str| -> Result<String, RpcError> {
+        params
+            .get("arguments")
+            .and_then(|a| a.get(key))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .ok_or_else(|| RpcError::invalid_params(format!("missing prompt argument: {key}")))
+    };
+    let (description, text) = match name {
+        "recherche_jurisprudence" => {
+            let question = arg("question")?;
+            (
+                "Recherche de jurisprudence avec lecture des décisions en texte intégral.",
+                format!(
+                    "Recherche la jurisprudence pertinente sur : {question}.\n\n\
+                     Méthode : lance search_decisions — juridiction, période et tri \
+                     (récence) dans les filtres structurés, la question réservée au \
+                     problème de droit ; reformule ou filtre si la première salve déçoit. \
+                     Puis ouvre chaque décision candidate avec get_decision \
+                     avant de la citer — un extrait ou un résumé ne suffit jamais pour \
+                     affirmer ce qu'une décision juge. Vérifie appellateFate avant de citer \
+                     une décision comme autorité. Rends une synthèse sourcée : pour chaque \
+                     décision retenue, juridiction, date, numéro, apport, et son url en lien. \
+                     Si rien de probant ne ressort, dis-le : le corpus n'est pas exhaustif."
+                ),
+            )
+        }
+        "article_a_date" => {
+            let article = arg("article")?;
+            let quand = match params
+                .get("arguments")
+                .and_then(|a| a.get("date"))
+                .and_then(Value::as_str)
+                .filter(|s| !s.is_empty())
+            {
+                Some(d) => format!("en vigueur au {d} (passe date={d} à get_legal_text)"),
+                None => "actuellement en vigueur".to_string(),
+            };
+            (
+                "Texte exact d'un article de loi à une date donnée (law-at-date).",
+                format!(
+                    "Donne le texte exact de {article}, dans sa version {quand}.\n\n\
+                     Méthode : get_legal_text par l'url /texte/{{code}}/{{article}} (passe par \
+                     search_legal_texts si le numéro est incertain). Cite le texte intégral \
+                     de la version servie, précise ses dates de validité, et signale les \
+                     versions voisines si la date demandée tombe près d'un changement."
+                ),
+            )
+        }
+        "textes_applicables" => {
+            let sujet = arg("sujet")?;
+            (
+                "Textes et articles applicables à un sujet, lus dans la bonne version.",
+                format!(
+                    "Identifie les textes qui régissent : {sujet}.\n\n\
+                     Méthode : search_legal_texts pour constituer la liste (affine avec la \
+                     facette code), puis ouvre chaque article pertinent avec get_legal_text — \
+                     avec date si le litige relève d'une version antérieure. Cite chaque \
+                     article par numéro et code, avec sa version et son url."
+                ),
+            )
+        }
+        other => return Err(RpcError::invalid_params(format!("unknown prompt: {other}"))),
+    };
+    Ok(json!({
+        "description": description,
+        "messages": [{"role": "user", "content": {"type": "text", "text": text}}],
+    }))
 }
 
 /// Enum brut d'un type sérialisable (codes attendus dans le schéma MCP).
@@ -753,16 +1279,16 @@ fn search_decisions_schema() -> Value {
                 "maxLength": 512,
                 "description": SEARCH_QUERY_DESC,
             },
-            "juridiction_type": nullable(
-                json!({"type": "array", "items": {"type": "string", "enum": enum_values(JURIDICTION_TYPE_CODES)}}),
-                json!({"description": "Restrict to one or more court categories. Code glosses: TA = tribunal administratif, CAA = cour administrative d'appel, CE = Conseil d'État, CC = Cour de cassation, CA = cour d'appel, TJ = tribunal judiciaire, TCOM = tribunal de commerce."}),
+            "jurisdiction_type": nullable(
+                json!({"type": "array", "items": {"type": "string", "enum": enum_values(JURISDICTION_TYPE_CODES)}}),
+                json!({"description": "Restrict to one or more court categories: TJ (tribunal judiciaire), CA (cour d'appel), CC (Cour de cassation), TCOM (tribunal des activités économiques), TA (tribunal administratif), CAA (cour administrative d'appel), CE (Conseil d'État), CNDA (asylum), CONSTIT (Conseil constitutionnel), TC (Tribunal des conflits), CNIL (sanctions), CEDH and CJUE (European courts)."}),
             ),
             "solution": nullable(
                 json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Solution::ALL)}}),
                 json!({"description": "Filter by the ruling of the operative part (référentiel solution, ADR 0146). REJET / IRRECEVABILITE / DESISTEMENT / NON_LIEU_A_STATUER are procedural or negative endings; CONFIRMATION / INFIRMATION* / REFORMATION are appeal outcomes; CASSATION* is cassation-specific; ANNULATION covers administrative annulment; SATISFACTION_TOTALE / SATISFACTION_PARTIELLE cover first-instance civil rulings granting the claim."}),
             ),
-            "voie": nullable(
-                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Voie::ALL)}}),
+            "procedure": nullable(
+                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Procedure::ALL)}}),
                 json!({"description": "Filter by procedural track (référés, QPC, EU referral, révision, tierce opposition…). Absent value = ordinary contentious procedure."}),
             ),
             "office": nullable(
@@ -770,28 +1296,32 @@ fn search_decisions_schema() -> Value {
                 json!({"description": "Filter by specialised judge/office (JLD, JAF, JCP, JEX, juge des enfants, premier président, magistrat désigné). Absent value = ordinary bench."}),
             ),
             "legal_domain": nullable(
-                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Domaine::ALL)}}),
+                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Domain::ALL)}}),
                 json!({"description": "Filter by legal domain (curated domain tree, ADR 0146): 9 roots (CIVIL, COMMERCIAL, PUBLIC, SOCIAL, FISCAL, PROPRIETE_INTELLECTUELLE, EUROPEEN, CRIMINEL, CONSTITUTIONNEL) and their leaves (e.g. CIVIL_DROIT_LOCATIF). Selecting a root also matches all its leaves."}),
             ),
             "publication": nullable(
                 json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes_str(PUBLICATION_CODES)}}),
                 json!({"description": "Filter by publication level (any-of, référentiel publication): PUBLIE_BULLETIN / INEDIT_BULLETIN (Cour de cassation), PUBLIE_LEBON / MENTIONNE_LEBON / INEDIT_LEBON (administrative), AUTRE (no publication statement in the source)."}),
             ),
-            "portee": nullable(
-                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Portee::ALL)}}),
+            "significance": nullable(
+                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Significance::ALL)}}),
                 json!({"description": "Filter by jurisprudential significance (any-of, ADR 0167), derived from publication codes at strongest rank: MAJEURE (rapport annuel / recueil Lebon), IMPORTANTE (bulletin, tables du Lebon, lettres de chambre, communiqués), LIMITEE (unpublished), INDETERMINEE (no publication statement — lower courts, European courts)."}),
             ),
             "jurisdiction_code": nullable(
                 json!({"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 40}}),
-                json!({"description": "Restrict to one or more precise jurisdiction units by referential code (e.g. \"ca_paris\", \"tj76351\", \"cass_soc\", \"ce\"). Use juridiction_type for the broad category; codes come from the juridiction facet of a previous search."}),
+                json!({"description": "Restrict to one or more precise court units by referential code. Code shapes: \"cc\" (Cour de cassation), \"ce\" (Conseil d'État), \"cnda\", \"cedh\", \"cjue\"; \"ca_<city>\", \"caa_<city>\", \"ta_<city>\", \"tj_<city>\", \"tcom_<city>\" (e.g. \"ca_paris\", \"ta_marseille\", \"tj_paris\", \"tcom_lyon\"). An unknown code fails listing the nearest valid codes; when unsure, guess with the city name in the code and let the error correct you. Each code is a court; the chamber is a separate axis (see chamber); use jurisdiction_type for the broad category."}),
+            ),
+            "chamber": nullable(
+                json!({"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 40}}),
+                json!({"description": "Filter by chamber category (any-of, uniform across orders, e.g. \"CIVILE\", \"SOCIALE\", \"COMMERCIALE\", \"CRIMINELLE\", \"ETRANGERS\", \"PRUD_HOMALE\", \"INSTRUCTION\"). Codes come from the chamber facet of a previous search; an unknown code fails listing the valid codes."}),
             ),
             "legal_instrument": nullable(
                 json!({"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 100}}),
-                json!({"description": "Restrict to decisions citing one or more given codes or statutes (e.g. \"Code civil\", \"Code de procédure civile\", \"Code de justice administrative\")."}),
+                json!({"description": "Restrict to decisions citing one or more given codes or statutes. Accepts a slug from facets.legal_instrument (e.g. \"code-civil\") or an exact text name resolved server-side (e.g. \"Code civil\"); an unknown value fails listing the closest slugs with their titles, typos included."}),
             ),
             "legal_article": nullable(
                 json!({"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 140}}),
-                json!({"description": "Restrict to decisions citing a specific article of a specific code, as a composite key \"<instrument>|<article>\" (e.g. \"Code civil|1240\", \"Code de procédure civile|700\", \"Code de justice administrative|L761-1\"). The instrument prefix is required — the same article number exists in several codes."}),
+                json!({"description": "Restrict to decisions citing a specific article of a specific code, as a composite key \"<instrument>|<article>\" where <instrument> is a slug or an exact text name, resolved like legal_instrument (e.g. \"code-civil|1240\", \"code-de-justice-administrative|L761-1\"). The instrument prefix is required — the same article number exists in several codes."}),
             ),
             "date_from": nullable(
                 json!({"type": "string"}),
@@ -833,12 +1363,12 @@ fn get_decision_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["id"],
+        "required": ["url"],
         "properties": {
-            "id": {
+            "url": {
                 "type": "string",
                 "minLength": 1,
-                "description": "Public ID of the decision, as returned in search_decisions.hits[].id.",
+                "description": "Decision URL, from search_decisions hits or an inline citation link.",
             },
         },
     })
@@ -866,22 +1396,16 @@ fn list_activity_schema() -> Value {
     })
 }
 
-/// Schéma d'entrée de `get_law_article` (`{code, num}` + `date` optionnelle).
-fn get_law_article_schema() -> Value {
+/// Schéma d'entrée de `get_legal_text` : `url` requise + `date` optionnelle.
+fn get_legal_text_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["code", "num"],
+        "required": ["url"],
         "properties": {
-            "code": {
+            "url": {
                 "type": "string",
-                "minLength": 1,
-                "description": LAW_CODE_DESC,
-            },
-            "num": {
-                "type": "string",
-                "minLength": 1,
-                "description": LAW_NUM_DESC,
+                "description": LAW_URL_DESC,
             },
             "date": nullable(
                 json!({"type": "string"}),
@@ -891,9 +1415,9 @@ fn get_law_article_schema() -> Value {
     })
 }
 
-/// Schéma d'entrée de `search_law_articles` (`query` requis + filtres
+/// Schéma d'entrée de `search_legal_texts` (`query` requis + filtres
 /// `code`/`jurisdiction`/`nature`/`source` optionnels + `limit`).
-fn search_law_articles_schema() -> Value {
+fn search_legal_texts_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -907,7 +1431,7 @@ fn search_law_articles_schema() -> Value {
             },
             "code": nullable(
                 json!({"type": "string"}),
-                json!({"description": "Restrict to one code/text by its URL slug (e.g. \"code-civil\"). Omit to search the whole navigable referential."}),
+                json!({"description": "Restrict to one code/text by its URL slug (\"code-civil\", as in facets.code) or exact name. An unknown code errors back with the closest slugs. Omit to search the whole navigable referential."}),
             ),
             "jurisdiction": nullable(
                 json!({"type": "string"}),
@@ -931,32 +1455,39 @@ fn search_output_schema() -> Value {
     json!({
         "additionalProperties": false,
         "type": "object",
-        "required": ["query", "total", "hits"],
+        "required": ["query", "hits"],
         "properties": {
             "query": {"type": "string"},
-            "total": {"type": "integer"},
             "hits": {
                 "type": "array",
                 "items": {
                     "additionalProperties": false,
                     "type": "object",
-                    "required": ["id", "title", "url", "preview", "chars", "jurisdiction"],
+                    "description": HIT_METADATA_DESC,
+                    "required": ["title", "url", "chars", "jurisdictionType"],
                     "properties": {
-                        "id": {"type": "string"},
                         "title": {"type": "string"},
                         "url": {"type": "string"},
-                        "preview": {"type": "string"},
+                        "aiSummary": nullable(json!({"type": "string"}), json!({"description": "AI-written summary of what the decision is about (semantic search) — a machine paraphrase, NEVER the court's words: nothing in it is quotable. Exactly one of aiSummary/snippet is served per hit."})),
+                        "snippet": nullable(json!({"type": "string"}), json!({"description": "Verbatim passage of the decision text where the query terms matched (keyword search). Exactly one of aiSummary/snippet is served per hit."})),
                         "chars": {"type": "integer"},
-                        "jurisdiction": {"type": "string"},
                         "dateLecture": nullable(json!({"type": "string"}), json!({"format": "date"})),
                         "docketNumbers": nullable(json!({"items": {"type": "string"}, "type": "array"}), json!({})),
+                        "jurisdictionType": {"type": "string"},
+                        "jurisdictionCode": nullable(json!({"type": "string"}), json!({})),
+                        "chamber": nullable(json!({"type": "string"}), json!({})),
                         "solution": nullable(json!({"type": "string"}), json!({})),
-                        "voie": nullable(json!({"type": "string"}), json!({})),
+                        "procedure": nullable(json!({"type": "string"}), json!({})),
                         "office": nullable(json!({"type": "string"}), json!({})),
                         "legalDomain": nullable(json!({"type": "string"}), json!({})),
                         "publication": nullable(json!({"type": "string"}), json!({})),
                     },
                 },
+            },
+            "facets": {
+                "type": "object",
+                "description": "Per filter name, a map of filter value to decision count under the current query (jurisdiction_type, jurisdiction_code, chamber, office, legal_domain, solution, significance, publication, date_lecture_year, legal_instrument). Reuse keys verbatim as filter values. jurisdiction_code is capped to the top 15 courts (other_courts counts the rest), legal_instrument to the top 10 statutes.",
+                "additionalProperties": true,
             },
         },
     })
@@ -967,11 +1498,66 @@ fn get_decision_output_schema() -> Value {
     json!({
         "additionalProperties": false,
         "type": "object",
-        "required": ["title", "url", "text"],
+        "description": HIT_METADATA_DESC,
+        "required": ["title", "url", "jurisdictionType", "text"],
         "properties": {
             "title": {"type": "string"},
             "url": {"type": "string"},
+            "dateLecture": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "docketNumbers": nullable(json!({"items": {"type": "string"}, "type": "array"}), json!({})),
+            "jurisdictionType": {"type": "string"},
+            "jurisdictionCode": nullable(json!({"type": "string"}), json!({})),
+            "chamber": nullable(json!({"type": "string"}), json!({})),
+            "solution": nullable(json!({"type": "string"}), json!({})),
+            "procedure": nullable(json!({"type": "string"}), json!({})),
+            "office": nullable(json!({"type": "string"}), json!({})),
+            "legalDomain": nullable(json!({"type": "string"}), json!({})),
+            "publication": nullable(json!({"type": "string"}), json!({})),
+            "appellateFate": nullable(json!({"type": "string"}), json!({"description": "Fate of THIS decision before the court that reviewed it, precomputed from caseChronology: 'INFIRMATION — Cour d'appel de Paris, 1 juillet 2025 (url)'. INFIRMATION = this decision was reversed and no longer stands; CONFIRMATION = upheld. Absent = no recourse known to the corpus, which never proves the decision is final."})),
+            "caseChronology": {
+                "type": "array",
+                "description": "Linked prior and subsequent decisions of the same case (appeal, pourvoi, renvoi), most recent first, current decision included. The fate of a judgment reads in the solution of the decision that reviewed it (INFIRMATION = reversed, CONFIRMATION = upheld). Absent chronology never proves no recourse exists.",
+                "items": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": ["title", "url", "current"],
+                    "properties": {
+                        "title": {"type": "string"},
+                        "url": {"type": "string"},
+                        "current": {"type": "boolean"},
+                        "solution": nullable(json!({"type": "string"}), json!({})),
+                        "linkToNext": nullable(json!({"type": "string"}), json!({"description": "Link nature to the step below (the attacked decision): APPEL_DE | POURVOI_CONTRE | RENVOI_APRES_CASSATION."})),
+                    },
+                },
+            },
+            "commentaires": {
+                "type": "array",
+                "description": COMMENTAIRES_DESC,
+                "items": commentaire_schema(),
+            },
             "text": {"type": "string"},
+        },
+    })
+}
+
+/// Schéma d'un commentaire institutionnel (= `lj_dtos::Commentaire`, ADR
+/// 0204/0212), partagé entre `get_decision` et `get_legal_text`.
+fn commentaire_schema() -> Value {
+    json!({
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["kind"],
+        "properties": {
+            "kind": {"type": "string", "description": "analyse = official court-written abstract, full content in `body`. conclusions = the rapporteur public's conclusions, `url` only (copyright-protected, existence + official link). note = linked institutional document (report, avocat général's opinion, press release, doctrine note), `url` + `title` + `publisher`."},
+            "author": nullable(json!({"type": "string"}), json!({})),
+            "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "body": nullable(json!({"type": "string"}), json!({})),
+            "title": nullable(json!({"type": "string"}), json!({})),
+            "publisher": nullable(json!({"type": "string"}), json!({})),
+            "access": nullable(json!({"type": "string"}), json!({"description": "libre | abonnes"})),
+            "rubriques": {"type": "array", "items": {"type": "string"}, "description": "Official classification headings (analyse)."},
+            "renvois": {"type": "array", "items": {"type": "string"}, "description": "Doctrinal cross-references of the analyse (« Cf. CE, … »)."},
+            "url": nullable(json!({"type": "string"}), json!({"description": "External link, to hand to the user — not openable by an MCP tool."})),
         },
     })
 }
@@ -984,13 +1570,11 @@ fn decision_ref_schema() -> Value {
         "additionalProperties": false,
         "type": "object",
         "description": DECISION_REF_DESC,
-        "required": ["id", "title", "url", "jurisdiction"],
+        "required": ["title", "url"],
         "properties": {
-            "id": {"type": "string"},
             "title": {"type": "string"},
             "url": {"type": "string"},
             "summary": nullable(json!({"type": "string"}), json!({})),
-            "jurisdiction": {"type": "string"},
             "dateLecture": nullable(json!({"type": "string"}), json!({"format": "date"})),
             "solution": nullable(json!({"type": "string"}), json!({})),
             "bookmarkedAt": nullable(json!({"type": "string"}), json!({"format": "date-time"})),
@@ -1061,8 +1645,8 @@ fn activity_output_schema() -> Value {
     })
 }
 
-/// Schéma de sortie de `get_law_article` (= `McpLawArticle`).
-fn get_law_article_output_schema() -> Value {
+/// Schéma de sortie de `get_legal_text` (= `McpLawArticle`).
+fn get_legal_text_output_schema() -> Value {
     json!({
         "additionalProperties": false,
         "type": "object",
@@ -1075,9 +1659,14 @@ fn get_law_article_output_schema() -> Value {
             "etat": {"type": "string"},
             "dateDebut": {"type": "string", "format": "date"},
             "dateFin": nullable(json!({"type": "string"}), json!({"format": "date"})),
-            "text": nullable(json!({"type": "string"}), json!({})),
+            "text": nullable(json!({"type": "string"}), json!({"description": "Full text; cross-references to other articles render as inline markdown links (/texte/ urls, open with get_legal_text)."})),
             "sourceUrl": nullable(json!({"type": "string"}), json!({})),
             "nota": nullable(json!({"type": "string"}), json!({})),
+            "commentaires": {
+                "type": "array",
+                "description": COMMENTAIRES_DESC,
+                "items": commentaire_schema(),
+            },
             "versions": {
                 "type": "array",
                 "items": {
@@ -1095,12 +1684,12 @@ fn get_law_article_output_schema() -> Value {
     })
 }
 
-/// Schéma de sortie de `search_law_articles` (= `McpLawSearchResponse`).
-fn search_law_articles_output_schema() -> Value {
+/// Schéma de sortie de `search_legal_texts` (= `McpLawSearchResponse`).
+fn search_legal_texts_output_schema() -> Value {
     json!({
         "additionalProperties": false,
         "type": "object",
-        "required": ["query", "total", "hits"],
+        "required": ["query", "total", "hits", "facets"],
         "properties": {
             "query": {"type": "string"},
             "total": {"type": "integer"},
@@ -1109,18 +1698,20 @@ fn search_law_articles_output_schema() -> Value {
                 "items": {
                     "additionalProperties": false,
                     "type": "object",
-                    "required": ["title", "url", "snippet", "code", "codeTitle", "num", "source"],
+                    "required": ["title", "url", "snippet", "source"],
                     "properties": {
                         "title": {"type": "string"},
                         "url": {"type": "string"},
                         "snippet": {"type": "string"},
-                        "code": {"type": "string"},
-                        "codeTitle": {"type": "string"},
-                        "num": {"type": "string"},
                         "titlePath": nullable(json!({"type": "string"}), json!({})),
                         "source": {"type": "string"},
                     },
                 },
+            },
+            "facets": {
+                "type": "object",
+                "description": "Per filter name, a map of filter value to article count under the current query (code, jurisdiction). Reuse keys verbatim as filter values. Each axis is capped to its top 10.",
+                "additionalProperties": true,
             },
         },
     })
@@ -1128,7 +1719,9 @@ fn search_law_articles_output_schema() -> Value {
 
 // ── Codes d'enum (alignés sur les renames serde lj-core) ─────────────────────
 
-const JURIDICTION_TYPE_CODES: &[&str] = &["TA", "CAA", "CE", "CC", "CA", "TJ", "TCOM"];
+const JURISDICTION_TYPE_CODES: &[&str] = &[
+    "TA", "CAA", "CE", "CONSTIT", "TC", "CC", "CA", "TJ", "TCOM", "CEDH", "CJUE", "CNDA", "CNIL",
+];
 
 /// Suffixes d'uid `publication:*` (facette de référence à 6 valeurs, seed 0100).
 const PUBLICATION_CODES: &[&str] = &[
@@ -1143,49 +1736,86 @@ const PUBLICATION_CODES: &[&str] = &[
 // ── Descriptions verbatim (port des docstrings/Field MCP) ─────────────────────
 
 const SEARCH_DECISIONS_DESC: &str = "Search decisions by meaning and keywords combined. Returns a \
-shortlist with `title`, public `url`, `preview` (in semantic search, \
-a summary of what the decision is about; in keyword search, the \
-matched passage showing where your terms appear), metadata, and \
-an opaque `id` to chain into get_decision — not the full text (use \
-get_decision for that). \
-Prefer the structured filters (jurisdiction, dates, articles, codes) \
-over expressing constraints in the query text. \
-Filter logic: multiple values on the same filter are OR'd; different \
-filters are AND'd together.";
+shortlist: `title`, `url`, an overview (`aiSummary`: AI-written \
+summary of what the decision is about, a machine paraphrase never \
+quotable as the court's words; or `snippet`: the verbatim passage \
+where your keywords matched) and metadata; get_decision reads the \
+full text. Put constraints in the structured filters (jurisdiction, \
+dates, articles, codes), keep the query for the legal issue. Values \
+within one filter are OR'd; different filters are AND'd. The response \
+carries a `facets` block: per filter name, a map of filter value to \
+decision count under the current query. Reuse those keys verbatim to \
+refine (a code from `facets.jurisdiction_code`, a slug from \
+`facets.legal_instrument`). Hit metadata fields carry the same tokens \
+under the same names: a hit's `jurisdictionCode`, `chamber` or \
+`solution` passes back verbatim into the matching filter.";
 
-const GET_DECISION_DESC: &str = "Fetch the full text of a decision by its `id` (from \
-search_decisions.hits[].id), together with `title` and public \
-`url`. Call after search_decisions to read in full any decision \
-whose preview looks promising.";
+const GET_DECISION_DESC: &str = "Fetch the full text and metadata of a decision by its `url`. The \
+text carries inline markdown links to cited articles (/texte/, open with \
+get_legal_text) and cited decisions (/decision/, open with \
+get_decision); a citation spanning several articles (« articles 3 à 6 \
+», « et suivants ») links its first article and appends the others as \
+labelled links right after the span. `appellateFate` states in one line what became of THIS \
+decision on review (INFIRMATION = reversed, it no longer stands; \
+CONFIRMATION = upheld) — read it before citing the decision as \
+authority. `caseChronology` lists the linked prior AND subsequent \
+decisions of the same case (appeal, pourvoi, renvoi) known to the \
+corpus. An absent fate or chronology never proves no recourse exists — \
+only that none is linked in the corpus. `commentaires` carries the \
+institutional commentary (official analyses inline, links to the \
+rapporteur public's conclusions and related court documents).";
 
-const GET_LAW_ARTICLE_DESC: &str = "Fetch a French statutory article as it read on a given date \
-(law-at-date), by code and number. Returns its full text, status, the \
-dates bounding that version, and the version timeline. Omit `date` for \
-the version currently in force. Usually chained from \
-search_law_articles: pass its `code` and `num`.";
+/// Description partagée du bloc `commentaires` (décision ADR 0204, norme
+/// ADR 0212) dans les deux `outputSchema`.
+const COMMENTAIRES_DESC: &str =
+    "Institutional commentary anchored on this document: court-written \
+analyses served inline (`body`), plus outbound links (`url`) to the \
+rapporteur public's conclusions and to related institutional documents \
+(reports, opinions, press releases). Context, never the ruling itself \
+— quote the decision text, not a commentaire, as the court's words.";
 
-const SEARCH_LAW_ARTICLES_DESC: &str =
-    "Search French statutory articles by meaning and keywords; returns a \
-ranked shortlist plus the exact `total`. Prefer the structured filters \
-(`code`, `jurisdiction`) over constraints in the query text. Chain a \
-hit into get_law_article with its `code` and \
-`num` to read the full text at a given date.";
+/// Description partagée des objets décision (hit de recherche et détail) :
+/// la règle « champ = filtre, valeur = token » y est dite une fois.
+const HIT_METADATA_DESC: &str = "Metadata fields carry search_decisions filter tokens: each field \
+matches the filter of the same name (jurisdictionType → \
+jurisdiction_type, legalDomain → legal_domain…) and its value passes \
+back verbatim to filter.";
 
-const LAW_CODE_DESC: &str = "The code or text to look up. Accepts either the URL slug \
-(e.g. \"code-civil\", \"code-de-procedure-civile\") or a free-form name \
-(e.g. \"code civil\", \"Code de procédure civile\") — the server resolves \
-it canonically, falling back to a fuzzy title match.";
+const GET_LEGAL_TEXT_DESC: &str =
+    "Fetch a statutory article as it read on a given date, by its `url` \
+(any /texte/ link). Returns the version in force at `date` (omit for \
+today): full text, status, validity dates, and the timeline of all \
+versions — say which version you quote. The text carries inline \
+markdown links to cross-referenced articles (/texte/, open with \
+get_legal_text; when served at a date, the links point to the same \
+date). `commentaires` carries institutional commentary anchored on the \
+article (analyses inline, links otherwise). Covers French codes and \
+statutes, plus curated foreign codes and treaties.";
 
-const LAW_NUM_DESC: &str = "Article number as cited (e.g. \"1240\", \"L131-4\", \"L. 761-1\"), \
-or the `num` returned by search_law_articles. Canonicalised \
-server-side, so spacing/punctuation variants resolve to the same article.";
+const SEARCH_LEGAL_TEXTS_DESC: &str =
+    "Find statutory articles from their subject or wording when the article \
+number is unknown; returns a ranked shortlist with highlighted \
+snippets and the exact `total`. Query in French, descriptive terms (« \
+délai de recours contentieux refus implicite »); put the code in the \
+`code` filter (slug or exact name), keep the query for the subject. \
+The response carries a `facets` block (`code`, `jurisdiction`): per \
+filter name, a map of filter value to article count — reuse those \
+keys verbatim to refine. Chain a hit into get_legal_text with its \
+`url`, plus `date` when the dispute is governed by an earlier version.";
+
+const LAW_URL_DESC: &str = "Article URL `/texte/{code}/{article}`: take it from a \
+search_legal_texts hit or an inline citation link, or compose it — \
+{code} is the code slug (\"code-civil\", as in facets.legal_instrument), \
+{article} the lowercase article key (\"l761-1\" for L. 761-1, \"1240\" \
+for 1240). An unknown code errors back with the closest slugs.";
 
 /// Description inline de `McpDecisionRef` dans l'outputSchema d'activité (port
 /// verbatim de la docstring, retours à la ligne `\n` inclus — Pydantic les
 /// conserve tels quels dans le schéma émis).
 const DECISION_REF_DESC: &str =
-    "Référence décision pour signets/consultations : assez pour citer ou\n\
-chaîner vers ``get_decision`` via ``id``, sans le texte intégral.";
+    "Référence décision pour signets/consultations : assez pour citer ou
+\
+chaîner vers ``get_decision`` via ``url``, sans le texte intégral.";
 
 /// Description de `McpActivityResponse` (port verbatim de la docstring du modèle,
 /// retours à la ligne inclus).
@@ -1197,28 +1827,30 @@ qu'après inlining des ``$ref`` par ``_clean_schema`` (cf. mcp_server),\n\
 ``McpDecisionRef`` apparaît deux fois dans le schéma émis — une fois sous\n\
 ``bookmarks``, une fois sous ``readingHistory``.";
 
-const LIST_ACTIVITY_DESC: &str = "List the authenticated user's own activity, most recent first. \
-`kind` selects which tab: 'searches' (past queries with their \
-structured `filters` and `source`), 'bookmarks' or 'readingHistory' \
-(decisions, each with `title`, `url`, a `summary` and the opaque \
-`id` to chain into get_decision), or 'all' to get the three at \
-once. Only the requested tab(s) are populated. In readingHistory, \
-`lastSource` == 'web' means the user opened the decision manually \
-at least once (a genuine read); 'mcp' means it was only ever \
-opened through this connector. Requires a connected account.";
+const LIST_ACTIVITY_DESC: &str =
+    "List the authenticated user's own activity, most recent first. `kind` \
+selects which tab: 'searches' (past queries with their structured \
+`filters` and `source`), 'bookmarks' or 'readingHistory' (decisions, \
+each with `title`, a `summary` and the `url` to chain into \
+get_decision), or 'all' to get the three at once. Only the requested \
+tab(s) are populated. In readingHistory, `lastSource` == 'web' means \
+the user opened the decision manually at least once (a genuine read); \
+'mcp' means it was only ever opened through this connector. Requires a \
+connected account.";
 
 const SEARCH_QUERY_DESC: &str = "French query, the primary input. Two regimes — pick the right \
 tool for the job: \
 (a) Natural language or descriptive keywords for legal-issue \
-searches — the engine handles synonyms and reformulations, no \
-need to enumerate variants. Examples: \
+searches; the engine handles synonyms and reformulations. \
+Examples: \
 « responsabilité hôpital infection nosocomiale » ; \
 « étranger malade soins inaccessibles dans son pays d'origine » ; \
 « licenciement discrimination syndicale charge de la preuve ». \
-(b) Quoted exact phrases and ET / OU / SAUF operators when \
-targeting a specific named entity (company, municipality, \
-person) or a precise legal formula — exact matching cuts \
-semantic noise. Examples: \
+(b) Quoted exact phrases and ET / OU / SAUF operators for a \
+named entity (company, municipality, person), a precise legal \
+formula, or the direction of a holding: semantic matching \
+ignores negations (« n'est pas X » ranks like « est X »), and \
+only an exact phrase targets which way the court ruled. Examples: \
 « \"Société Générale\" » ; \
 « \"commune de Saint-Denis\" SAUF Réunion » ; \
 « \"force majeure\" ET épidémie ». \
@@ -1241,6 +1873,23 @@ operator queries (where auto would fall back to keyword-only).";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Alphabet des `legal_text.slug` : le nom libre d'un texte doit tomber
+    /// sur le slug servi par `/texte/{slug}`.
+    #[test]
+    fn law_slug_matches_catalog_alphabet() {
+        assert_eq!(law_slug("Code civil"), "code-civil");
+        assert_eq!(
+            law_slug("Code de procédure civile"),
+            "code-de-procedure-civile"
+        );
+        assert_eq!(
+            law_slug("Code de l'entrée et du séjour des étrangers et du droit d'asile"),
+            "code-de-l-entree-et-du-sejour-des-etrangers-et-du-droit-d-asile"
+        );
+        // Slug déjà canonique : point fixe.
+        assert_eq!(law_slug("code-civil"), "code-civil");
+    }
 
     #[test]
     fn search_schema_is_strict_and_inlined() {
@@ -1268,8 +1917,8 @@ mod tests {
                 "search_decisions",
                 "get_decision",
                 "list_my_activity",
-                "get_law_article",
-                "search_law_articles",
+                "get_legal_text",
+                "search_legal_texts",
             ]
         );
     }
@@ -1279,7 +1928,7 @@ mod tests {
         let args = json!({
             "query": "bail commercial",
             "publication": ["PUBLIE_BULLETIN"],
-            "juridiction_type": ["CC", "CA"],
+            "jurisdiction_type": ["CC", "CA"],
             "solution": ["REJET", "CASSATION"],
             "legal_domain": ["CIVIL_DROIT_LOCATIF"],
             "jurisdiction_code": ["ca_paris"],
@@ -1295,14 +1944,14 @@ mod tests {
         );
         assert_eq!(
             req.legal_domain,
-            Some(vec![lj_dtos::Domaine::CivilDroitLocatif])
+            Some(vec![lj_dtos::Domain::CivilDroitLocatif])
         );
         assert_eq!(req.jurisdiction_code, Some(vec!["ca_paris".to_string()]));
         assert_eq!(
-            req.juridiction_type,
+            req.jurisdiction_type,
             Some(vec![
-                lj_dtos::JuridictionType::Cc,
-                lj_dtos::JuridictionType::Ca
+                lj_dtos::JurisdictionType::Cc,
+                lj_dtos::JurisdictionType::Ca
             ])
         );
         assert!(!req.ai_mode);
@@ -1327,6 +1976,108 @@ mod tests {
     }
 
     #[test]
+    fn unknown_jurisdiction_code_suggests_by_source_label_and_typo() {
+        let refs = crate::referential::Referential::new(
+            vec![],
+            vec![lj_store::repository::JurisdictionRow {
+                code: "tj_paris".into(),
+                source_code: "tj75056".into(),
+                jurisdiction_type: "TJ".into(),
+                city: Some("Paris".into()),
+                label: "Tribunal judiciaire de Paris".into(),
+            }],
+        );
+        // Ancien code (location Judilibre, pré-ADR 0201) → renvoi exact.
+        let err = unknown_jurisdiction_code("tj75056", &refs);
+        assert!(err.message.contains("tj_paris"));
+        assert!(err.message.contains("Tribunal judiciaire de Paris"));
+        // Fragment de libellé (ville).
+        let err = unknown_jurisdiction_code("tribunal_paris", &refs);
+        assert!(err.message.contains("tj_paris"));
+        // Typo sans fragment de libellé → repli distance d'édition sur le code.
+        let err = unknown_jurisdiction_code("tj_parsi", &refs);
+        assert!(err.message.contains("tj_paris"));
+    }
+
+    #[test]
+    fn build_request_rejects_unknown_fields() {
+        // Un filtre mal nommé doit échouer franchement, pas être ignoré.
+        let err = build_search_request(&json!({
+            "query": "bail",
+            "jurisdiction_name": ["ca_paris"],
+        }))
+        .unwrap_err();
+        assert!(err.message.contains("jurisdiction_name"));
+    }
+
+    /// Contrat d'erreur outil : `category` + `retryable` (+ `hint`) en JSON dans
+    /// le bloc texte, pour que le modèle sache corriger / basculer / retenter.
+    #[test]
+    fn tool_error_content_carries_error_contract() {
+        let err = RpcError::not_found("no decision at url=x")
+            .with_hint("Take the url from a search_decisions hit.");
+        let content = tool_error_content(&err);
+        assert_eq!(content["isError"], json!(true));
+        let body: Value =
+            serde_json::from_str(content["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["error"], json!("no decision at url=x"));
+        assert_eq!(body["category"], json!("not_found"));
+        assert_eq!(body["retryable"], json!(false));
+        assert!(body["hint"].as_str().unwrap().contains("search_decisions"));
+
+        let internal = tool_error_content(&RpcError::tool_error("pool: timeout"));
+        let body: Value =
+            serde_json::from_str(internal["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["category"], json!("internal"));
+        assert_eq!(body["retryable"], json!(true));
+        assert!(body.get("hint").is_none());
+
+        let auth = tool_error_content(&RpcError::auth("authentication required"));
+        let body: Value =
+            serde_json::from_str(auth["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["category"], json!("auth"));
+    }
+
+    #[test]
+    fn prompts_list_and_get_render_messages() {
+        let prompts = prompt_definitions();
+        let names: Vec<&str> = prompts
+            .iter()
+            .map(|p| p["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            vec![
+                "recherche_jurisprudence",
+                "article_a_date",
+                "textes_applicables",
+            ]
+        );
+        let got = get_prompt(&json!({
+            "name": "article_a_date",
+            "arguments": {"article": "article 1240 du code civil", "date": "2018-01-01"},
+        }))
+        .unwrap();
+        assert_eq!(got["messages"][0]["role"], json!("user"));
+        let text = got["messages"][0]["content"]["text"].as_str().unwrap();
+        assert!(text.contains("article 1240 du code civil"));
+        assert!(text.contains("2018-01-01"));
+        // `date` optionnelle : le message bascule sur la version en vigueur.
+        let now = get_prompt(&json!({
+            "name": "article_a_date",
+            "arguments": {"article": "article 700 du CPC"},
+        }))
+        .unwrap();
+        assert!(now["messages"][0]["content"]["text"]
+            .as_str()
+            .unwrap()
+            .contains("actuellement en vigueur"));
+        // Argument requis manquant / prompt inconnu → invalid_params.
+        assert!(get_prompt(&json!({"name": "recherche_jurisprudence", "arguments": {}})).is_err());
+        assert!(get_prompt(&json!({"name": "nope"})).is_err());
+    }
+
+    #[test]
     fn initialize_carries_protocol_and_instructions() {
         let res = initialize_result();
         assert_eq!(res["protocolVersion"], json!(PROTOCOL_VERSION));
@@ -1334,6 +2085,6 @@ mod tests {
         assert!(res["instructions"]
             .as_str()
             .unwrap()
-            .contains("French case law"));
+            .contains("French and European case law"));
     }
 }

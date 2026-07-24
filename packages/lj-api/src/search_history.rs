@@ -2,7 +2,7 @@
 //! `search_history.py`). Cf. ADR 0036.
 
 use deadpool_postgres::Pool;
-use lj_dtos::{ActivitySource, SearchHistoryEntry, SearchRequest};
+use lj_dtos::{ActivitySource, SearchEngine, SearchHistoryEntry, SearchRequest};
 
 use crate::error::ApiError;
 use crate::me::ts_to_rfc3339;
@@ -29,6 +29,24 @@ fn parse_source(raw: &str) -> Result<ActivitySource, ApiError> {
     }
 }
 
+/// Représentation chaîne du moteur interrogé (`decisions` | `textes`,
+/// ADR 0251), pour la colonne TEXT.
+pub(crate) fn engine_value(engine: SearchEngine) -> &'static str {
+    match engine {
+        SearchEngine::Decisions => "decisions",
+        SearchEngine::Textes => "textes",
+    }
+}
+
+/// Désérialise un TEXT `decisions`/`textes` lu en base vers l'enum.
+fn parse_engine(raw: &str) -> Result<SearchEngine, ApiError> {
+    match raw {
+        "decisions" => Ok(SearchEngine::Decisions),
+        "textes" => Ok(SearchEngine::Textes),
+        other => Err(ApiError::Internal(format!("engine invalide {other:?}"))),
+    }
+}
+
 /// Sérialise la `SearchRequest` en filtres JSONB, sans la query elle-même
 /// (parité `_filters_from_request` : `exclude={"query","limit","offset"}`,
 /// `exclude_none=True`). Les `Option` à `None` sont déjà omis par les
@@ -44,28 +62,32 @@ pub(crate) fn filters_from_request(req: &SearchRequest) -> serde_json::Value {
 }
 
 /// Insère une entrée d'historique. Échec silencieux (best-effort, parité
-/// `record_search`).
+/// `record_search`). Les appelants décisions sérialisent leurs filtres via
+/// [`filters_from_request`] ; les appelants textes posent leurs filtres
+/// propres (ADR 0251).
 ///
 /// Gaté par `track_activity` directement dans l'INSERT (`WHERE EXISTS`, ADR
 /// 0056) : aucune ligne insérée si l'utilisateur a coupé l'enregistrement.
 pub async fn record_search(
     pool: &Pool,
     user_sub: &str,
-    req: &SearchRequest,
+    query: &str,
+    filters: serde_json::Value,
     source: ActivitySource,
+    engine: SearchEngine,
 ) {
-    let filters = filters_from_request(req);
     let src = source_value(source);
+    let eng = engine_value(engine);
     let res: Result<(), ApiError> = async {
         let conn = pool
             .get()
             .await
             .map_err(|e| ApiError::Internal(format!("pool: {e}")))?;
         conn.execute(
-            "INSERT INTO user_search_history (user_sub, query, filters, source) \
-             SELECT $1, $2, $3, $4 \
-             WHERE EXISTS (SELECT 1 FROM users WHERE sub = $5 AND track_activity)",
-            &[&user_sub, &req.query, &filters, &src, &user_sub],
+            "INSERT INTO user_search_history (user_sub, query, filters, source, engine) \
+             SELECT $1, $2, $3, $4, $5 \
+             WHERE EXISTS (SELECT 1 FROM users WHERE sub = $6 AND track_activity)",
+            &[&user_sub, &query, &filters, &src, &eng, &user_sub],
         )
         .await
         .map_err(|e| ApiError::Internal(format!("record_search: {e}")))?;
@@ -91,7 +113,7 @@ pub async fn fetch_history(
         .map_err(|e| ApiError::Internal(format!("pool: {e}")))?;
     let rows = conn
         .query(
-            "SELECT id, query, filters, source, created_at, COUNT(*) OVER() AS total \
+            "SELECT id, query, filters, source, engine, created_at, COUNT(*) OVER() AS total \
              FROM user_search_history \
              WHERE user_sub = $1 \
              ORDER BY created_at DESC \
@@ -101,7 +123,7 @@ pub async fn fetch_history(
         .await
         .map_err(|e| ApiError::Internal(format!("fetch_history: {e}")))?;
 
-    let total = rows.first().map(|r| r.get::<_, i64>(5)).unwrap_or(0);
+    let total = rows.first().map(|r| r.get::<_, i64>(6)).unwrap_or(0);
     let mut items = Vec::with_capacity(rows.len());
     for row in &rows {
         // `filters` peut être NULL en théorie ? colonne NOT NULL DEFAULT '{}' →
@@ -112,7 +134,8 @@ pub async fn fetch_history(
             query: row.get(1),
             filters: filters.unwrap_or_else(|| serde_json::json!({})),
             source: parse_source(row.get::<_, &str>(3))?,
-            created_at: ts_to_rfc3339(row.get(4)),
+            engine: parse_engine(row.get::<_, &str>(4))?,
+            created_at: ts_to_rfc3339(row.get(5)),
         });
     }
     Ok((items, total))
@@ -174,15 +197,16 @@ mod tests {
     fn base_request() -> SearchRequest {
         SearchRequest {
             query: "expulsion locataire".to_string(),
-            juridiction_type: None,
+            jurisdiction_type: None,
             solution: None,
-            voie: None,
+            procedure: None,
             office: None,
             legal_domain: None,
             jurisdiction_code: None,
+            chamber: None,
             legal_instrument: None,
             legal_article: None,
-            portee: None,
+            significance: None,
             publication: None,
             date_from: None,
             date_to: None,
@@ -212,7 +236,7 @@ mod tests {
         let filters = filters_from_request(&base_request());
         let obj = filters.as_object().unwrap();
         // Les Options None sont omises (skip_serializing_if = exclude_none).
-        assert!(!obj.contains_key("juridictionType"));
+        assert!(!obj.contains_key("jurisdictionType"));
         assert!(!obj.contains_key("dateFrom"));
     }
 

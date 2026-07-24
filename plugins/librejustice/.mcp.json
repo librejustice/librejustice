@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "librejustice": {
+      "type": "http",
+      "url": "https://librejustice.fr/mcp"
+    }
+  }
+}

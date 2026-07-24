@@ -174,7 +174,7 @@ pub fn LoginPage() -> impl IntoView {
     });
 
     view! {
-        <Title text="Connexion — LibreJustice" />
+        <Title text="Connexion - LibreJustice" />
         <Meta name="robots" content="noindex" />
         <Show
             when=move || confirm_sent.get() || reset_sent.get()
@@ -357,22 +357,22 @@ fn LoginForm(
 }
 
 /// Resout la destination de `?next=` : chemin interne relatif (`/` non suivi de
-/// `/`), sinon `/recherche`. Port de la regex `/^\/(?!\/)/`. Lue uniquement dans
+/// `/`), sinon `/decisions`. Port de la regex `/^\/(?!\/)/`. Lue uniquement dans
 /// le chemin de navigation client (hydrate).
 #[cfg(feature = "hydrate")]
 fn next_url(raw: Option<String>) -> String {
-    let raw = raw.unwrap_or_else(|| "/recherche".to_string());
+    let raw = raw.unwrap_or_else(|| "/decisions".to_string());
     let bytes = raw.as_bytes();
     let internal = bytes.first() == Some(&b'/') && bytes.get(1) != Some(&b'/');
     if internal {
         raw
     } else {
-        "/recherche".to_string()
+        "/decisions".to_string()
     }
 }
 
-/// Lien de redirection de confirmation d'inscription (origine + `/recherche`).
+/// Lien de redirection de confirmation d'inscription (origine + `/decisions`).
 #[cfg(feature = "hydrate")]
 fn signup_redirect() -> String {
-    format!("{}/recherche", browser::location_origin())
+    format!("{}/decisions", browser::location_origin())
 }

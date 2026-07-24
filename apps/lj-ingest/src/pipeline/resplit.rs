@@ -42,23 +42,23 @@ use crate::config::Settings;
 
 /// Une provenance d'un cluster faux-merge : son `source_uid` (porte l'ObjectId
 /// Judilibre pour le re-fetch), sa `canonical_ref` recalculée (`None` =
-/// non-routée / discriminants manquants) et son `juridiction_type` (pour
+/// non-routée / discriminants manquants) et son `jurisdiction_type` (pour
 /// l'INSERT de la décision scindée — réécrit ensuite par le re-fetch).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Provenance {
     pub source_uid: String,
     pub canonical_ref: Option<String>,
-    pub juridiction_type: Option<String>,
+    pub jurisdiction_type: Option<String>,
 }
 
 /// Un groupe homogène (même `canonical_ref`) d'un cluster : sa `canonical_ref`, le
-/// `juridiction_type` de sa 1ʳᵉ provenance et ses `source_uid` à re-fetch. Pour un
+/// `jurisdiction_type` de sa 1ʳᵉ provenance et ses `source_uid` à re-fetch. Pour un
 /// groupe divergent, ils sont déplacés vers une nouvelle décision ; pour le groupe
 /// gardé, ils restent sur la ligne canonique (re-fetchée en place).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct SplitGroup {
     pub canonical_ref: String,
-    pub juridiction_type: Option<String>,
+    pub jurisdiction_type: Option<String>,
     pub source_uids: Vec<String>,
 }
 
@@ -110,7 +110,7 @@ pub(crate) fn plan_resplit(provenances: &[Provenance]) -> ResplitPlan {
         let key = p.canonical_ref.clone().expect("none écarté ci-dessus");
         let entry = by_ref
             .entry(key)
-            .or_insert((p.juridiction_type.clone(), vec![]));
+            .or_insert((p.jurisdiction_type.clone(), vec![]));
         entry.1.push(p.source_uid.clone());
     }
     if by_ref.len() == 1 {
@@ -120,9 +120,9 @@ pub(crate) fn plan_resplit(provenances: &[Provenance]) -> ResplitPlan {
     // Clé minimale = groupe gardé (réutilise la ligne canonique) ; le reste scinde.
     let mut groups =
         by_ref.into_iter().map(
-            |(canonical_ref, (juridiction_type, source_uids))| SplitGroup {
+            |(canonical_ref, (jurisdiction_type, source_uids))| SplitGroup {
                 canonical_ref,
-                juridiction_type,
+                jurisdiction_type,
                 source_uids,
             },
         );
@@ -142,12 +142,12 @@ pub(super) fn provenance_canonical_ref(source_fields: &Value, source_uid: &str) 
     lj_extract::identity::decision_canonical_ref(&decision)
 }
 
-/// `juridiction_type` d'une provenance (pour l'INSERT de la décision scindée).
-pub(super) fn provenance_juridiction_type(
+/// `jurisdiction_type` d'une provenance (pour l'INSERT de la décision scindée).
+pub(super) fn provenance_jurisdiction_type(
     source_fields: &Value,
     source_uid: &str,
 ) -> Option<String> {
-    Decision::from_source_fields("", source_fields, source_uid).juridiction_type
+    Decision::from_source_fields("", source_fields, source_uid).jurisdiction_type
 }
 
 /// Agrégats du run.
@@ -219,7 +219,7 @@ pub async fn resplit_false_merges(
             by_decision.entry(*id).or_default().push(Provenance {
                 source_uid: source_uid.clone(),
                 canonical_ref: provenance_canonical_ref(source_fields, source_uid),
-                juridiction_type: provenance_juridiction_type(source_fields, source_uid),
+                jurisdiction_type: provenance_jurisdiction_type(source_fields, source_uid),
             });
         }
 
@@ -372,11 +372,11 @@ async fn execute_resplit(
                 continue;
             }
 
-            // Décision squelette : identité (canonical_ref) + juridiction_type du
+            // Décision squelette : identité (canonical_ref) + jurisdiction_type du
             // groupe posés ici ; le contenu (full_text/chunks/embeddings) et l'ECLI
             // sont écrits par le re-fetch (write_canonical_content, autorité
             // triviale de la nouvelle décision).
-            let jur_type = group.juridiction_type.as_deref().unwrap_or("tj");
+            let jur_type = group.jurisdiction_type.as_deref().unwrap_or("tj");
             let public_id = generate_public_id();
             let new_id = repo
                 .create_split_decision(
@@ -447,7 +447,7 @@ mod tests {
         Provenance {
             source_uid: uid.to_string(),
             canonical_ref: key.map(str::to_string),
-            juridiction_type: Some("tj".to_string()),
+            jurisdiction_type: Some("tj".to_string()),
         }
     }
 
@@ -464,12 +464,12 @@ mod tests {
             ResplitPlan::FalseMerge {
                 keep: SplitGroup {
                     canonical_ref: "tj|tj75011|26/00051|2026-01-20".to_string(),
-                    juridiction_type: Some("tj".to_string()),
+                    jurisdiction_type: Some("tj".to_string()),
                     source_uids: vec!["judilibre/b".to_string()],
                 },
                 splits: vec![SplitGroup {
                     canonical_ref: "tj|tj80021|26/00051|2026-01-20".to_string(),
-                    juridiction_type: Some("tj".to_string()),
+                    jurisdiction_type: Some("tj".to_string()),
                     source_uids: vec!["judilibre/a".to_string()],
                 }],
             }

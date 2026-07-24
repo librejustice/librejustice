@@ -38,8 +38,11 @@ pub(crate) enum Mk {
     BlockApp,
     /// En-tête de bloc défendeur (INTIMÉ, DÉFENDEUR…).
     BlockDef,
-    /// En-tête de bloc tiers (PARTIE INTERVENANTE…) : borne, ne récolte pas.
+    /// En-tête de bloc tiers (PARTIE INTERVENANTE…) : borne les segments ;
+    /// récolté par `intervenors` seulement.
     BlockOther,
+    /// Ouvreur de mémoire en intervention (admin) : l'intervenant suit.
+    IntervIntro,
     /// Fin de zone parties (COMPOSITION DE LA COUR, DÉBATS…).
     Stop,
     /// Pivot CC moderne : « a/ont formé le/un pourvoi ».
@@ -127,6 +130,11 @@ pub(crate) enum Mk {
     /// « n'y a pas/plus lieu de statuer » — l'exception « sur les dépens/
     /// frais » se vérifie sur le petit span suivant.
     OutNonLieu,
+    /// Demande ACCUEILLIE sans verbe de condamnation : ouverture de
+    /// procédure collective, sanction de gestion, mainlevée d'une mesure
+    /// (JLD), ordonnance commune / prorogation en référé. Gold :
+    /// SATISFACTION_*, pas AUTRE.
+    OutGrant,
     /// Issue neutre → AUTRE : renvoi entre juridictions, incompétence,
     /// radiation, caducité/péremption, rectification, interruption,
     /// médiation/conciliation, mesures d'instruction, procédure collective.
@@ -199,6 +207,22 @@ pub(crate) enum Mk {
     /// « magistrat désigné » / « président désigné » (signature ou en-tête) :
     /// juge unique désigné (OQTF TA, ordonnances déléguées).
     ProcMagdes,
+    /// « désigné M./Mme X » : formule ACTIVE de désignation en tête —
+    /// « le président de la cour / du tribunal a désigné … pour statuer »
+    /// (R. 222-1, référés L. 511-2). Contexte lu autour du token
+    /// (`magdes_form_cour` / `magdes_form_trib`).
+    ProcMagdesForm,
+    /// Composition à juge unique dite par le texte (« statuant en juge
+    /// unique », « siégeant seul ») — bloc de composition d'en-tête.
+    ProcJugeUnique,
+    /// « juge des référés » nu (le composé « … de la cour » garde son kind
+    /// propre au leftmost-longest) — le contexte se lit autour du token
+    /// (`jref_demande` / `jref_conseil`).
+    ProcJref,
+    /// Référé judiciaire dit par le texte : assignation en référé, appel /
+    /// réforme / confirmation d'une ordonnance de référé, titre « ordonnance
+    /// de référé » au bandeau (cf. `refere_civil`).
+    ProcRefCivil,
     /// Domaine admin : fonction publique (agent public, fonctionnaire).
     ProcDomFp,
     /// Domaine admin : aide et action sociale (RSA, CASF).
@@ -212,6 +236,48 @@ pub(crate) enum Mk {
     /// Domaine admin : contentieux fiscal (impôts nommés, quand CGI/LPF ne
     /// sont pas cités).
     ProcDomFisc,
+    /// Domaine admin : environnement (ICPE, police de l'eau, forêt) quand le
+    /// code de l'environnement n'est pas cité.
+    ProcDomEnv,
+    /// Domaine admin : répression administrative (pénitentiaire, saisies
+    /// d'armes, amendes administratives).
+    ProcDomPenalPub,
+    /// Domaines judiciaires par vocabulaire du corps — votes de TERMES
+    /// comptés plein texte ([`DocScan::domain_term_votes`]), consommés par
+    /// `domain::refine_with_terms` (raffinement d'un domaine nul ou parent
+    /// nu, jamais d'un sous-domaine posé par les codes cités).
+    ProcDomTravail,
+    /// Vocabulaire travail valable dans les DEUX ordres (licenciement,
+    /// heures supplémentaires…) : vote SOCIAL_DROIT_TRAVAIL en judiciaire,
+    /// PUBLIC_DROIT_TRAVAIL en admin (un agent contractuel licencié plaide
+    /// de la fonction publique) — contrairement à `ProcDomTravail`, dont le
+    /// vocabulaire est propre au privé (salarié, prud'hommes, convention
+    /// collective).
+    ProcDomTravailMixte,
+    /// AT/MP (accident du travail, maladie professionnelle, faute
+    /// inexcusable, taux d'incapacité) : contentieux du travail dans les
+    /// deux ordres (école gold, cf. plage CSS livre 4).
+    ProcDomSecu,
+    /// Cotisations & recouvrement (URSSAF) : SOCIAL nu — l'école gold en
+    /// fait un produit terminal, ni prestation ni travail.
+    ProcDomCotisations,
+    ProcDomFamille,
+    ProcDomDivorce,
+    ProcDomSuccessions,
+    ProcDomLocatif,
+    ProcDomCopro,
+    ProcDomConstruction,
+    ProcDomSaisieImmo,
+    ProcDomExecution,
+    ProcDomAssurances,
+    ProcDomBancaire,
+    ProcDomResp,
+    ProcDomEntDiff,
+    ProcDomSocietes,
+    ProcDomConcurrence,
+    ProcDomConso,
+    ProcDomPiLit,
+    ProcDomPiInd,
 }
 
 #[rustfmt::skip]
@@ -245,6 +311,9 @@ const MARKERS: &[(&str, Mk)] = &[
     ("intervenant", Mk::BlockOther), ("intervenante", Mk::BlockOther),
     ("intervenants", Mk::BlockOther), ("en presence de", Mk::BlockOther),
     ("autres parties", Mk::BlockOther),
+    ("memoire en intervention", Mk::IntervIntro),
+    ("intervention enregistree", Mk::IntervIntro),
+    ("interventions presentees", Mk::IntervIntro),
     // fin de zone parties
     ("composition de la cour", Mk::Stop), ("composition du tribunal", Mk::Stop),
     ("debats", Mk::Stop), ("sur ce", Mk::Stop),
@@ -276,12 +345,25 @@ const MARKERS: &[(&str, Mk)] = &[
     // pivots CC
     ("a forme le pourvoi", Mk::PivotNew), ("ont forme le pourvoi", Mk::PivotNew),
     ("a forme un pourvoi", Mk::PivotNew), ("ont forme un pourvoi", Mk::PivotNew),
+    ("a forme les pourvois", Mk::PivotNew), ("ont forme les pourvois", Mk::PivotNew),
+    ("ont forme respectivement les pourvois", Mk::PivotNew),
     ("pourvoi forme par", Mk::PivotOld), ("pourvois formes par", Mk::PivotOld),
-    ("l'opposant", Mk::Opposant), ("en cassation contre", Mk::Opposant),
+    // jonction : « Statuant sur le pourvoi n° X 00-00.000 formé par : » — le
+    // numéro interposé échappe aux surfaces « pourvoi formé par »
+    ("statuant sur le pourvoi", Mk::PivotOld), ("statuant sur les pourvois", Mk::PivotOld),
+    ("l'opposant", Mk::Opposant), ("les opposant", Mk::Opposant),
+    ("en cassation contre", Mk::Opposant),
+    // gabarit ancien : « en cassation d'un arrêt rendu … au profit de
+    // <défendeur>, défenderesse à la cassation »
+    ("au profit de", Mk::Opposant), ("au profit du", Mk::Opposant),
+    ("au profit des", Mk::Opposant), ("au profit d'", Mk::Opposant),
+    ("en cassation d'un arret", Mk::Contre), ("en cassation d'un jugement", Mk::Contre),
     ("contre l'arret", Mk::Contre), ("contre le jugement", Mk::Contre),
     ("contre l'ordonnance", Mk::Contre), ("contre la decision", Mk::Contre),
     ("contre un arret", Mk::Contre), ("contre un jugement", Mk::Contre),
     ("contre une ordonnance", Mk::Contre), ("contre deux arrets", Mk::Contre),
+    // gabarit ancien : « …, en cassation d'un arrêt rendu …, au profit de … »
+    ("en cassation d'", Mk::Contre),
     ("defendeur a la cassation", Mk::DefEnd), ("defendeurs a la cassation", Mk::DefEnd),
     ("defenderesse a la cassation", Mk::DefEnd), ("defenderesses a la cassation", Mk::DefEnd),
     ("vu la communication", Mk::DefEnd), ("sur le rapport", Mk::DefEnd),
@@ -324,6 +406,7 @@ const MARKERS: &[(&str, Mk)] = &[
     ("centre hospitalier", Mk::InstHead), ("comite", Mk::InstHead),
     ("union des", Mk::InstHead), ("union de", Mk::InstHead), ("union d'", Mk::InstHead),
     ("federation", Mk::InstHead), ("confederation", Mk::InstHead),
+    ("club", Mk::InstHead),
     ("etablissement public", Mk::InstHead), ("etablissement francais", Mk::InstHead),
     ("organisme", Mk::InstHead), ("compagnie", Mk::InstHead),
     ("pole emploi", Mk::InstHead),
@@ -353,6 +436,8 @@ const MARKERS: &[(&str, Mk)] = &[
     ("representants legaux", Mk::CounselIntro),
     ("assiste de", Mk::CounselIntro), ("assistee de", Mk::CounselIntro),
     ("assistes de", Mk::CounselIntro), ("assistees de", Mk::CounselIntro),
+    ("assiste par", Mk::CounselIntro), ("assistee par", Mk::CounselIntro),
+    ("assistes par", Mk::CounselIntro), ("assistees par", Mk::CounselIntro),
     // En-tête de greffe CA : « Rep/assistant : la SCP … » — l'intro de
     // conseil au plus près, la classification ne dépend plus d'un
     // « représentant légal » lointain en bord de fenêtre (60 chars).
@@ -362,6 +447,7 @@ const MARKERS: &[(&str, Mk)] = &[
     ("substitue par", Mk::CounselIntro), ("substituee par", Mk::CounselIntro),
     ("avocat au barreau", Mk::CounselIntro), ("avocats au barreau", Mk::CounselIntro),
     ("avocat aux conseils", Mk::CounselIntro), ("avocats aux conseils", Mk::CounselIntro),
+    ("avocat(s) :", Mk::CounselIntro), ("au cabinet de", Mk::CounselIntro),
     ("les observations de", Mk::CounselIntro), ("toque", Mk::CounselIntro),
     ("vestiaire", Mk::CounselIntro),
     ("memoire en defense", Mk::DefIntro), ("memoires en defense", Mk::DefIntro),
@@ -373,6 +459,12 @@ const MARKERS: &[(&str, Mk)] = &[
     ("conclut au rejet", Mk::DefConclu), ("concluent au rejet", Mk::DefConclu),
     ("moyen produit par", Mk::MoyenPar), ("moyens produits par", Mk::MoyenPar),
     ("moyen annexe produit par", Mk::MoyenPar), ("moyens annexes produits par", Mk::MoyenPar),
+    // en-tetes sans « produit par » (« MOYENS ANNEXES au present arret » puis
+    // « moyens produits AU POURVOI PRINCIPAL par… ») — sans eux, les « en ce
+    // qu'il » des moyens votent la partialite de la cassation
+    ("moyen annexe au present arret", Mk::MoyenPar),
+    ("moyens annexes au present arret", Mk::MoyenPar),
+    ("moyens produits au pourvoi", Mk::MoyenPar),
     ("avocat de", Mk::AvocatDe), ("avocats de", Mk::AvocatDe), ("avocate de", Mk::AvocatDe),
     ("avocat du", Mk::AvocatDe), ("avocats du", Mk::AvocatDe), ("avocate du", Mk::AvocatDe),
     ("avocat des", Mk::AvocatDe), ("avocats des", Mk::AvocatDe),
@@ -398,6 +490,9 @@ const MARKERS: &[(&str, Mk)] = &[
     ("ne le", Mk::TrimAlways), ("nee le", Mk::TrimAlways),
     ("pour une duree", Mk::TrimAlways), ("en qualite", Mk::TrimAlways),
     ("en la personne", Mk::TrimAlways),
+    // quantifieur : jamais dans un nom propre (« la commune de Richelieu
+    // et plusieurs particuliers »)
+    ("et plusieurs", Mk::TrimAlways),
     ("non comparant", Mk::TrimAlways), ("non comparante", Mk::TrimAlways),
     ("ni comparant", Mk::TrimAlways), ("ni comparante", Mk::TrimAlways),
     ("defaillant", Mk::TrimAlways), ("defaillante", Mk::TrimAlways),
@@ -448,11 +543,16 @@ const MARKERS: &[(&str, Mk)] = &[
     // pour ne pas voler les marqueurs Dispositif au leftmost-longest.
     ("desistement", Mk::OutDesist), ("se desiste", Mk::OutDesist),
     ("n'est pas admis", Mk::OutNonAdmis), ("ne sont pas admis", Mk::OutNonAdmis),
+    ("n'est pas admise", Mk::OutNonAdmis), ("ne sont pas admises", Mk::OutNonAdmis),
+    ("pourvois non admis", Mk::OutNonAdmis),
     ("n'admet pas le pourvoi", Mk::OutNonAdmis), ("pourvoi non admis", Mk::OutNonAdmis),
     ("non-admission", Mk::OutNonAdmis), ("non admission", Mk::OutNonAdmis),
     ("n'y a pas lieu de statuer", Mk::OutNonLieu), ("n'y a plus lieu de statuer", Mk::OutNonLieu),
     ("n'y a pas lieu a statuer", Mk::OutNonLieu), ("n'y a plus lieu a statuer", Mk::OutNonLieu),
     ("n'y avoir lieu a statuer", Mk::OutNonLieu), ("n'y avoir lieu de statuer", Mk::OutNonLieu),
+    // QPC non renvoyée (école gold Cc : NON_LIEU)
+    ("n'y avoir lieu de renvoyer", Mk::OutNonLieu),
+    ("n'y a pas lieu de renvoyer", Mk::OutNonLieu),
     ("non-lieu", Mk::OutNonLieu), ("non lieu a statuer", Mk::OutNonLieu),
     ("renvoie la cause", Mk::OutNeutral), ("reglant de juges", Mk::OutNeutral),
     ("renvoie devant", Mk::OutNeutral), ("renvoie les parties", Mk::OutNeutral),
@@ -474,6 +574,18 @@ const MARKERS: &[(&str, Mk)] = &[
     ("cessation des paiements", Mk::OutNeutral),
     ("homologue", Mk::OutNeutral), ("homologation", Mk::OutNeutral),
     ("interpretation", Mk::OutNeutral),
+    // Octrois sans condamnation (« prononce la liquidation » est absent à
+    // dessein : la surface éclipserait « liquidation judiciaire »
+    // (ProcCollective) en leftmost-longest ; « ouvre la/une procédure »
+    // s'arrête AVANT elle)
+    ("ouvre la procedure", Mk::OutGrant), ("ouvre une procedure", Mk::OutGrant),
+    ("interdiction de gerer", Mk::OutGrant), ("faillite personnelle", Mk::OutGrant),
+    ("renouvelle la periode d'observation", Mk::OutGrant),
+    ("proroge la periode d'observation", Mk::OutGrant),
+    ("mainlevee de la mesure", Mk::OutGrant),
+    ("rendons commune", Mk::OutGrant), ("rendons communes", Mk::OutGrant),
+    ("rend commune", Mk::OutGrant),
+    ("proroge le delai", Mk::OutGrant), ("prorogeons le delai", Mk::OutGrant),
     ("la jonction", Mk::OutJonction), ("joint les causes", Mk::OutJonction),
     ("joint les instances", Mk::OutJonction), ("joint les affaires", Mk::OutJonction),
     ("joint les procedures", Mk::OutJonction), ("joint les dossiers", Mk::OutJonction),
@@ -486,6 +598,12 @@ const MARKERS: &[(&str, Mk)] = &[
     ("en ce qu'il", Mk::OutPartial), ("en ce qu'elle", Mk::OutPartial),
     ("en ses seules dispositions", Mk::OutPartial), ("partiellement", Mk::OutPartial),
     ("en partie", Mk::OutPartial), ("statuant a nouveau de ce seul chef", Mk::OutPartial),
+    // annulation bornée (CE : « annulée en tant qu'elle a statué sur… »,
+    // renvoi « dans cette mesure ») et cassation par retranchement
+    ("en tant qu'il", Mk::OutPartial), ("en tant qu'elle", Mk::OutPartial),
+    ("dans cette mesure", Mk::OutPartial),
+    ("dans ses seules dispositions", Mk::OutPartial),
+    ("en ses dispositions", Mk::OutPartial),
     // passif fléchi (« la décision est confirmée/infirmée/annulée ») : le
     // masculin singulier passe par le pliage d'accent (« confirmé » →
     // « confirme »), les formes féminines/plurielles ont leur surface propre
@@ -506,6 +624,7 @@ const MARKERS: &[(&str, Mk)] = &[
     ("rejette", Mk::OutRejette), ("rejetons", Mk::OutRejette), ("rejettent", Mk::OutRejette),
     ("rejet", Mk::OutRejette), ("rejete", Mk::OutRejette), ("rejetee", Mk::OutRejette),
     ("rejetes", Mk::OutRejette), ("rejetees", Mk::OutRejette),
+    ("rejeter", Mk::OutRejette), // infinitif des motifs (« il y a lieu de rejeter »)
     ("deboute", Mk::OutRejette), ("deboutons", Mk::OutRejette), ("deboutent", Mk::OutRejette),
     ("annule", Mk::OutAnnule), ("annulons", Mk::OutAnnule),
     ("annulee", Mk::OutAnnule), ("annulees", Mk::OutAnnule),
@@ -543,6 +662,20 @@ const MARKERS: &[(&str, Mk)] = &[
     ("laisser au juge de l'execution", Mk::ProcJexFalse),
     ("magistrat designe", Mk::ProcMagdes), ("magistrate designee", Mk::ProcMagdes),
     ("president designe", Mk::ProcMagdes), ("presidente designee", Mk::ProcMagdes),
+    ("conseiller d'etat designe", Mk::ProcMagdes),
+    ("conseillere d'etat designee", Mk::ProcMagdes),
+    ("designe mme", Mk::ProcMagdesForm), ("designe m.", Mk::ProcMagdesForm),
+    // magistrat délégué judiciaire : signature en pied des ordonnances de
+    // mise en état / d'instruction CA-TJ (cf. `magdes_tail`)
+    ("juge de la mise en etat", Mk::ProcMagdes),
+    ("magistrat de la mise en etat", Mk::ProcMagdes),
+    ("conseiller de la mise en etat", Mk::ProcMagdes),
+    ("conseillere de la mise en etat", Mk::ProcMagdes),
+    ("magistrat charge d'instruire", Mk::ProcMagdes),
+    ("juge unique", Mk::ProcJugeUnique),
+    ("statuant seul", Mk::ProcJugeUnique), ("statuant seule", Mk::ProcJugeUnique),
+    ("siegeant seul", Mk::ProcJugeUnique), ("siegeant seule", Mk::ProcJugeUnique),
+    ("magistrat unique", Mk::ProcJugeUnique),
     // domaines admin par vocabulaire d'en-tête (les codes substantiels ne
     // sont presque jamais cités dans ces contentieux — le CJA seul vote)
     ("fonction publique", Mk::ProcDomFp), ("fonctionnaire", Mk::ProcDomFp),
@@ -559,8 +692,35 @@ const MARKERS: &[(&str, Mk)] = &[
     ("suspendu de ses fonctions", Mk::ProcDomFp),
     ("suspendue de ses fonctions", Mk::ProcDomFp),
     ("suspension de fonctions", Mk::ProcDomFp),
+    ("echelon", Mk::ProcDomFp), ("reclassement", Mk::ProcDomFp),
+    ("exclusion temporaire de fonctions", Mk::ProcDomFp),
+    ("conge de maladie", Mk::ProcDomFp), ("conge de longue", Mk::ProcDomFp),
+    ("commission administrative paritaire", Mk::ProcDomFp),
+    ("nouvelle bonification indiciaire", Mk::ProcDomFp),
+    ("abandon de poste", Mk::ProcDomFp), ("cadre d'emplois", Mk::ProcDomFp),
+    ("agent contractuel", Mk::ProcDomFp), ("agents contractuels", Mk::ProcDomFp),
+    ("agente contractuelle", Mk::ProcDomFp),
+    ("radiation des cadres", Mk::ProcDomFp),
+    ("temps partiel therapeutique", Mk::ProcDomFp),
+    ("enseignant", Mk::ProcDomFp), ("enseignante", Mk::ProcDomFp),
     ("commission de recours des militaires", Mk::ProcDomFp),
     ("france travail", Mk::ProcDomFp), ("pole emploi", Mk::ProcDomFp),
+    // pensions publiques (CPCMR), concours de recrutement, statuts
+    // hospitaliers, préretraite amiante des agents
+    ("pension de retraite", Mk::ProcDomFp), ("pensions de retraite", Mk::ProcDomFp),
+    // CPCMR seul : « pensions militaires d'invalidité » (CPMIVG, victimes
+    // de guerre) reste PUBLIC nu au gold
+    ("pensions civiles et militaires", Mk::ProcDomFp),
+    ("concours de recrutement", Mk::ProcDomFp),
+    ("concours complementaire", Mk::ProcDomFp),
+    ("praticien hospitalier", Mk::ProcDomFp), ("praticiens hospitaliers", Mk::ProcDomFp),
+    ("exposition professionnelle", Mk::ProcDomFp),
+    ("accident de service", Mk::ProcDomFp),
+    ("sanction de blame", Mk::ProcDomFp),
+    ("deplacement d'office", Mk::ProcDomFp),
+    ("concours professionnel", Mk::ProcDomFp),
+    ("gestion de sa carriere", Mk::ProcDomFp),
+    ("indemnite de logement", Mk::ProcDomFp),
     ("revenu de solidarite active", Mk::ProcDomAide),
     ("code de l'action sociale et des familles", Mk::ProcDomAide),
     ("aide sociale", Mk::ProcDomAide),
@@ -572,11 +732,31 @@ const MARKERS: &[(&str, Mk)] = &[
     ("pension d'invalidite", Mk::ProcDomAide),
     ("allocation aux adultes handicapes", Mk::ProcDomAide),
     ("allocation personnalisee d'autonomie", Mk::ProcDomAide),
+    ("allocation de solidarite", Mk::ProcDomAide),
+    ("allocations familiales", Mk::ProcDomAide),
+    ("aide personnalisee au logement", Mk::ProcDomAide),
+    ("allocation de retour a l'emploi", Mk::ProcDomAide),
+    ("aide sociale a l'enfance", Mk::ProcDomAide),
     ("prestation de compensation du handicap", Mk::ProcDomAide),
+    ("fonds de solidarite pour le logement", Mk::ProcDomAide),
+    ("carte mobilite inclusion", Mk::ProcDomAide),
+    ("bourse sur criteres sociaux", Mk::ProcDomAide),
+    ("attribuer un logement", Mk::ProcDomAide),
+    ("retraite du combattant", Mk::ProcDomAide),
+    ("indemnites journalieres", Mk::ProcDomAide),
     ("permis de construire", Mk::ProcDomUrba),
     ("plan local d'urbanisme", Mk::ProcDomUrba),
     ("code de l'urbanisme", Mk::ProcDomUrba),
     ("expropriation", Mk::ProcDomUrba), ("preemption", Mk::ProcDomUrba),
+    ("declaration prealable", Mk::ProcDomUrba),
+    ("permis d'amenager", Mk::ProcDomUrba), ("permis de demolir", Mk::ProcDomUrba),
+    ("certificat d'urbanisme", Mk::ProcDomUrba),
+    ("taxe d'amenagement", Mk::ProcDomUrba),
+    ("domaine public", Mk::ProcDomUrba),
+    ("travaux publics", Mk::ProcDomUrba), ("ouvrage public", Mk::ProcDomUrba),
+    ("amenagement commercial", Mk::ProcDomUrba),
+    ("amenagement cinematographique", Mk::ProcDomUrba),
+    ("grande voirie", Mk::ProcDomUrba), ("menacant ruine", Mk::ProcDomUrba),
     ("titre de sejour", Mk::ProcDomEtr), ("carte de sejour", Mk::ProcDomEtr),
     ("certificat de residence", Mk::ProcDomEtr),
     ("quitter le territoire", Mk::ProcDomEtr),
@@ -588,15 +768,158 @@ const MARKERS: &[(&str, Mk)] = &[
     ("regroupement familial", Mk::ProcDomEtr),
     ("naturalisation", Mk::ProcDomEtr),
     ("statut de refugie", Mk::ProcDomEtr),
+    ("asile", Mk::ProcDomEtr),
+    ("refugie", Mk::ProcDomEtr), ("refugiee", Mk::ProcDomEtr),
+    ("refugies", Mk::ProcDomEtr), ("refugiees", Mk::ProcDomEtr),
+    ("apatride", Mk::ProcDomEtr), ("apatrides", Mk::ProcDomEtr),
+    ("apatridie", Mk::ProcDomEtr),
+    ("interdiction de retour", Mk::ProcDomEtr),
+    ("nationalite francaise", Mk::ProcDomEtr),
+    ("office francais de protection", Mk::ProcDomEtr),
+    ("office francais de l'immigration", Mk::ProcDomEtr),
+    ("conditions materielles d'accueil", Mk::ProcDomEtr),
+    ("laissez-passer", Mk::ProcDomEtr),
+    ("refus de visa", Mk::ProcDomEtr),
+    ("extradition", Mk::ProcDomEtr),
     ("impot sur le revenu", Mk::ProcDomFisc),
     ("impot sur les societes", Mk::ProcDomFisc),
     ("taxe sur la valeur ajoutee", Mk::ProcDomFisc),
     ("taxe fonciere", Mk::ProcDomFisc), ("taxe d'habitation", Mk::ProcDomFisc),
     ("cotisation fonciere des entreprises", Mk::ProcDomFisc),
+    ("saisie administrative a tiers detenteur", Mk::ProcDomFisc),
+    ("avis a tiers detenteur", Mk::ProcDomFisc),
+    ("credit d'impot", Mk::ProcDomFisc),
+    ("comptable public", Mk::ProcDomFisc),
+    ("fonds de solidarite a destination des entreprises", Mk::ProcDomFisc),
+    ("installation classee", Mk::ProcDomEnv),
+    ("installations classees", Mk::ProcDomEnv),
+    ("autorisation environnementale", Mk::ProcDomEnv),
+    ("affichage environnemental", Mk::ProcDomEnv),
+    ("depollution", Mk::ProcDomEnv), ("zone humide", Mk::ProcDomEnv),
+    ("methanisation", Mk::ProcDomEnv),
+    ("regime forestier", Mk::ProcDomEnv), ("defrichement", Mk::ProcDomEnv),
+    ("espece protegee", Mk::ProcDomEnv), ("especes protegees", Mk::ProcDomEnv),
+    ("natura 2000", Mk::ProcDomEnv),
+    ("prairies permanentes", Mk::ProcDomEnv),
+    ("conditions de detention", Mk::ProcDomPenalPub),
+    ("administration penitentiaire", Mk::ProcDomPenalPub),
+    ("amende administrative", Mk::ProcDomPenalPub),
+    ("amendes administratives", Mk::ProcDomPenalPub),
+    ("saisie definitive d'armes", Mk::ProcDomPenalPub),
+    ("saisie definitive de ses armes", Mk::ProcDomPenalPub),
+    ("saisie definitive des armes", Mk::ProcDomPenalPub),
     ("jugement d'ouverture", Mk::ProcCollective),
     ("redressement judiciaire", Mk::ProcCollective),
     ("liquidation judiciaire", Mk::ProcCollective),
     ("juge des referes de la cour", Mk::ProcRefCour),
+    ("juge des referes", Mk::ProcJref),
+    ("assignation en refere", Mk::ProcRefCivil),
+    ("ordonnance de refere", Mk::ProcRefCivil),
+    // domaines judiciaires par vocabulaire du corps (votes de termes,
+    // domain::refine_with_terms) — termes canoniques de la matière ; pas de
+    // noms de parties institutionnelles (URSSAF, CPAM, syndicat des
+    // copropriétaires…), qui voleraient les entités NER au leftmost-longest
+    ("licenciement", Mk::ProcDomTravailMixte),
+    ("licenciements", Mk::ProcDomTravailMixte),
+    ("contrat de travail", Mk::ProcDomTravail),
+    ("contrats de travail", Mk::ProcDomTravail),
+    ("conseil de prud'hommes", Mk::ProcDomTravail),
+    ("prud'homale", Mk::ProcDomTravail),
+    ("salarie", Mk::ProcDomTravail), ("salariee", Mk::ProcDomTravail),
+    ("salaries", Mk::ProcDomTravail), ("salariees", Mk::ProcDomTravail),
+    ("heures supplementaires", Mk::ProcDomTravailMixte),
+    ("rupture conventionnelle", Mk::ProcDomTravailMixte),
+    ("indemnite de preavis", Mk::ProcDomTravailMixte),
+    ("harcelement moral", Mk::ProcDomTravailMixte),
+    ("temps de travail", Mk::ProcDomTravailMixte),
+    ("convention collective", Mk::ProcDomTravail),
+    ("accident du travail", Mk::ProcDomSecu),
+    ("maladie professionnelle", Mk::ProcDomSecu),
+    ("faute inexcusable", Mk::ProcDomSecu),
+    ("cotisations sociales", Mk::ProcDomCotisations),
+    ("taux d'incapacite", Mk::ProcDomSecu),
+    ("autorite parentale", Mk::ProcDomFamille), ("filiation", Mk::ProcDomFamille),
+    ("tutelle", Mk::ProcDomFamille), ("curatelle", Mk::ProcDomFamille),
+    ("pension alimentaire", Mk::ProcDomFamille),
+    ("residence de l'enfant", Mk::ProcDomFamille),
+    ("droit de visite", Mk::ProcDomFamille),
+    ("juge aux affaires familiales", Mk::ProcDomFamille),
+    ("divorce", Mk::ProcDomDivorce),
+    ("prestation compensatoire", Mk::ProcDomDivorce),
+    ("separation de corps", Mk::ProcDomDivorce),
+    ("succession", Mk::ProcDomSuccessions), ("successions", Mk::ProcDomSuccessions),
+    ("heritier", Mk::ProcDomSuccessions), ("heritiers", Mk::ProcDomSuccessions),
+    ("testament", Mk::ProcDomSuccessions),
+    ("indivision successorale", Mk::ProcDomSuccessions),
+    ("reserve hereditaire", Mk::ProcDomSuccessions),
+    ("bail", Mk::ProcDomLocatif), ("baux", Mk::ProcDomLocatif),
+    ("bailleur", Mk::ProcDomLocatif), ("bailleresse", Mk::ProcDomLocatif),
+    ("bailleurs", Mk::ProcDomLocatif),
+    ("locataire", Mk::ProcDomLocatif), ("locataires", Mk::ProcDomLocatif),
+    ("loyer", Mk::ProcDomLocatif), ("loyers", Mk::ProcDomLocatif),
+    ("clause resolutoire", Mk::ProcDomLocatif), ("preneur", Mk::ProcDomLocatif),
+    ("indemnite d'occupation", Mk::ProcDomLocatif),
+    ("trouble de jouissance", Mk::ProcDomLocatif),
+    ("copropriete", Mk::ProcDomCopro), ("coproprietaire", Mk::ProcDomCopro),
+    ("coproprietaires", Mk::ProcDomCopro), ("parties communes", Mk::ProcDomCopro),
+    ("reglement de copropriete", Mk::ProcDomCopro),
+    ("servitude", Mk::ProcDomCopro), ("mitoyennete", Mk::ProcDomCopro),
+    ("bornage", Mk::ProcDomCopro),
+    ("garantie decennale", Mk::ProcDomConstruction),
+    ("maitre d'ouvrage", Mk::ProcDomConstruction),
+    ("maitre de l'ouvrage", Mk::ProcDomConstruction),
+    ("malfacons", Mk::ProcDomConstruction),
+    ("reception des travaux", Mk::ProcDomConstruction),
+    ("dommages-ouvrage", Mk::ProcDomConstruction),
+    ("adjudication", Mk::ProcDomSaisieImmo),
+    ("audience d'orientation", Mk::ProcDomSaisieImmo),
+    ("commandement de payer valant saisie", Mk::ProcDomSaisieImmo),
+    ("cahier des conditions de vente", Mk::ProcDomSaisieImmo),
+    ("saisie-attribution", Mk::ProcDomExecution),
+    ("saisie attribution", Mk::ProcDomExecution),
+    ("mainlevee", Mk::ProcDomExecution), ("titre executoire", Mk::ProcDomExecution),
+    ("saisie des remunerations", Mk::ProcDomExecution),
+    ("assureur", Mk::ProcDomAssurances), ("assureurs", Mk::ProcDomAssurances),
+    ("police d'assurance", Mk::ProcDomAssurances),
+    ("contrat d'assurance", Mk::ProcDomAssurances),
+    ("sinistre", Mk::ProcDomAssurances),
+    ("decheance du terme", Mk::ProcDomBancaire),
+    ("cautionnement", Mk::ProcDomBancaire),
+    ("pret immobilier", Mk::ProcDomBancaire),
+    ("credit immobilier", Mk::ProcDomBancaire),
+    ("offre de pret", Mk::ProcDomBancaire),
+    ("caution solidaire", Mk::ProcDomBancaire),
+    ("solde debiteur", Mk::ProcDomBancaire),
+    ("tableau d'amortissement", Mk::ProcDomBancaire),
+    ("prejudice corporel", Mk::ProcDomResp),
+    ("perte de chance", Mk::ProcDomResp),
+    ("responsabilite delictuelle", Mk::ProcDomResp),
+    ("deficit fonctionnel", Mk::ProcDomResp),
+    ("procedure collective", Mk::ProcDomEntDiff),
+    ("procedures collectives", Mk::ProcDomEntDiff),
+    ("administrateur judiciaire", Mk::ProcDomEntDiff),
+    ("juge-commissaire", Mk::ProcDomEntDiff), ("juge commissaire", Mk::ProcDomEntDiff),
+    ("plan de cession", Mk::ProcDomEntDiff),
+    ("declaration de creance", Mk::ProcDomEntDiff),
+    ("insuffisance d'actif", Mk::ProcDomEntDiff),
+    ("etat des creances", Mk::ProcDomEntDiff),
+    ("parts sociales", Mk::ProcDomSocietes),
+    ("cession de parts", Mk::ProcDomSocietes),
+    ("assemblee generale des associes", Mk::ProcDomSocietes),
+    ("commissaire aux comptes", Mk::ProcDomSocietes),
+    ("compte courant d'associe", Mk::ProcDomSocietes),
+    ("concurrence deloyale", Mk::ProcDomConcurrence),
+    ("parasitisme", Mk::ProcDomConcurrence),
+    ("pratiques anticoncurrentielles", Mk::ProcDomConcurrence),
+    ("rupture brutale des relations commerciales", Mk::ProcDomConcurrence),
+    ("consommateur", Mk::ProcDomConso), ("consommateurs", Mk::ProcDomConso),
+    ("credit a la consommation", Mk::ProcDomConso),
+    ("clause abusive", Mk::ProcDomConso), ("clauses abusives", Mk::ProcDomConso),
+    ("surendettement", Mk::ProcDomConso),
+    ("droit d'auteur", Mk::ProcDomPiLit),
+    ("oeuvre de l'esprit", Mk::ProcDomPiLit),
+    ("contrefacon", Mk::ProcDomPiInd), ("brevet", Mk::ProcDomPiInd),
+    ("brevets", Mk::ProcDomPiInd), ("marque deposee", Mk::ProcDomPiInd),
 ];
 
 /// Articles procéduraux (CJA) : la lettre + le numéro se déclinent en
@@ -650,6 +973,10 @@ pub(crate) struct PTok {
 pub struct DocScan {
     norm: Norm,
     toks: Vec<PTok>,
+    // mémo : le chemin prod projette 7 champs NER depuis le même scan
+    // (companies ×2, counsel ×4, intervenors) — le registre de parties
+    // (ADR 0175 V0) se construit une fois, les champs en sont des vues.
+    registry_memo: std::cell::OnceCell<crate::registry::PartyRegistry>,
 }
 
 /// Gabarit structurel d'en-tête, partagé par tous les composeurs.
@@ -663,12 +990,13 @@ enum Gabarit {
     Admin,
 }
 
-/// Segments structurels du préambule CC (bornes en chars).
+/// Segments structurels du préambule CC (bornes en chars). Un arrêt de
+/// jonction porte plusieurs pourvois principaux : une zone par pivot.
 struct CcSegs {
-    /// Demandeurs au pourvoi.
-    app: (usize, usize),
-    /// Défendeurs à la cassation.
-    def: (usize, usize),
+    /// Demandeurs au pourvoi — une zone par pivot principal.
+    app: Vec<(usize, usize)>,
+    /// Défendeurs à la cassation — une fenêtre par pivot principal.
+    def: Vec<(usize, usize)>,
 }
 
 /// Signaux procéduraux textuels (voie/office/domaine) — les combinaisons
@@ -680,12 +1008,21 @@ pub struct ProcSignals {
     pub papc: bool,
     pub filtrage: bool,
     pub magdes: bool,
+    pub magdes_tail: bool,
+    pub magdes_form_cour: bool,
+    pub magdes_form_trib: bool,
+    pub jref_demande: bool,
+    pub jref_conseil: bool,
     pub refere_suspension: bool,
     pub refere_liberte: bool,
     pub refere_utiles: bool,
     pub refere_precontractuel: bool,
     pub refere_provision: bool,
     pub refere_cour: bool,
+    pub refere_civil: bool,
+    /// « ARRÊT DE DÉSISTEMENT » en titre : l'instance s'interrompt, aucune
+    /// voie (le label solution métadonnée est souvent « other »).
+    pub desist_bandeau: bool,
     pub retention: bool,
     pub retention_anywhere: bool,
     pub hospi: bool,
@@ -700,6 +1037,8 @@ pub struct ProcSignals {
     pub dom_urba: bool,
     pub dom_etr: bool,
     pub dom_fisc: bool,
+    pub dom_env: bool,
+    pub dom_penal_pub: bool,
     pub immig_anywhere: bool,
 }
 
@@ -751,13 +1090,30 @@ pub fn scan(text: &str) -> DocScan {
 /// `crate::compiled`). Le `DocScan` en prend possession.
 pub fn scan_norm(norm: Norm) -> DocScan {
     let toks = crate::compiled::scan_marks(&norm);
-    DocScan { norm, toks }
+    DocScan {
+        norm,
+        toks,
+        registry_memo: std::cell::OnceCell::new(),
+    }
+}
+
+impl DocScan {
+    /// Texte plié du document (`fold_stable`, 1:1 char-stable) — partagé avec
+    /// la dérivation des spans-évidences de `crate::parties` (ADR 0182), qui
+    /// évite ainsi un second pliage par décision.
+    pub fn folded(&self) -> &str {
+        &self.norm.folded
+    }
 }
 
 /// Assemblage depuis le scan fusionné (`compiled::doc_extract`) — les champs
 /// de [`DocScan`] restent privés au module.
 pub(crate) fn docscan_from_parts(norm: Norm, toks: Vec<PTok>) -> DocScan {
-    DocScan { norm, toks }
+    DocScan {
+        norm,
+        toks,
+        registry_memo: std::cell::OnceCell::new(),
+    }
 }
 
 /// Gate de légitimité d'un match marqueur (frontières de mot, casse, recast
@@ -863,6 +1219,23 @@ fn is_law_structure(name: &str) -> bool {
         || up.contains("AVOCAT")
 }
 
+/// Mêmes mots pliés, ordre libre — le greffe d'un arrêt de jonction re-liste
+/// une partie d'un pourvoi à l'autre en permutant parfois les patronymes
+/// (« J... F..., Y... L... » ↔ « Y... L..., J... F... »).
+fn same_words(a: &str, b: &str) -> bool {
+    let words = |s: &str| {
+        let f = crate::compiled::fold_stable(s);
+        let mut w: Vec<String> = f
+            .split(|c: char| !c.is_alphanumeric())
+            .filter(|x| !x.is_empty())
+            .map(str::to_string)
+            .collect();
+        w.sort_unstable();
+        w
+    };
+    words(a) == words(b)
+}
+
 /// Le nom nettoyé n'est-il qu'une phrase de forme (« d'exercice libéral à
 /// responsabilité limitée ») ? Résidu de qualificatifs, pas une raison sociale.
 fn is_form_phrase(name: &str) -> bool {
@@ -900,9 +1273,44 @@ fn is_form_phrase(name: &str) -> bool {
 }
 
 impl DocScan {
+    /// Jumelle mieux cassée d'une valeur NER : quand `value` porte un mot
+    /// tout-CAPS (l'en-tête parties écrase le patronyme en capitales), cherche
+    /// dans le texte plié une autre occurrence des mêmes chars pliés, en
+    /// frontières de mot, dont la tranche source est mieux cassée
+    /// (cf. [`crate::extract::common::better_cased`]) — la sortie reste une
+    /// tranche VERBATIM du texte, jamais une réécriture.
+    pub(crate) fn best_cased_twin(&self, value: &str) -> Option<String> {
+        let needle = crate::compiled::fold_stable(value);
+        if needle.is_empty() {
+            return None;
+        }
+        let bytes = self.norm.folded.as_bytes();
+        let len = needle.chars().count();
+        for (bs, _) in self.norm.folded.match_indices(&needle) {
+            let be = bs + needle.len();
+            let boundary = (bs == 0 || !bytes[bs - 1].is_ascii_alphanumeric())
+                && (be >= bytes.len() || !bytes[be].is_ascii_alphanumeric());
+            if !boundary {
+                continue;
+            }
+            let cs = self.norm.byte2char[bs];
+            let cand: String = self.norm.chars[cs..cs + len].iter().collect();
+            if crate::extract::common::better_cased(value, &cand) {
+                return Some(cand);
+            }
+        }
+        None
+    }
+
     /// Tranche verbatim ; les runs de blancs (mappés `' '` par [`Norm`]) se
     /// collapsent en un espace — même forme de sortie que la convention GT
     /// (espaces collapsés), les offsets du scan restent ceux du texte.
+    /// Tranche du texte plié aux bornes CHARS (les `PTok` sont en chars, la
+    /// `String` pliée en octets — conversion via `char2byte`).
+    fn folded_slice(&self, s: usize, e: usize) -> &str {
+        &self.norm.folded[self.norm.char2byte[s]..self.norm.char2byte[e]]
+    }
+
     fn text_slice(&self, s: usize, e: usize) -> String {
         let mut out = String::with_capacity(e - s);
         for &c in &self.norm.chars[s..e] {
@@ -1084,20 +1492,39 @@ impl DocScan {
             .or_else(|| name.find(" [Localité").or_else(|| name.find(" [Localite")));
         if let Some(pos) = addr_at {
             let kept = name[..pos].trim_end();
-            if kept
-                .chars()
-                .last()
-                .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
+            // connecteur en capitales devant un placeholder UNIQUE : celui-ci
+            // est le nom même (« OFFICE DES POURSUITES DE [Localité 20] »),
+            // pas un bloc adresse — la règle capitale seule l'amputerait
+            let connector = name[pos..].matches('[').count() == 1
+                && kept
+                    .rsplit(' ')
+                    .next()
+                    .is_some_and(|w| matches!(w, "DE" | "DU" | "DES" | "LA" | "LE" | "LES"));
+            if !connector
+                && kept
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
             {
                 name = kept.to_string();
             }
         }
         if let Some(m) = re_trailing_addr().find(&name) {
             let kept = name[..m.start()].trim_end().to_string();
-            if kept
-                .chars()
-                .last()
-                .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
+            // connecteur en capitales + placeholder UNIQUE : le placeholder
+            // est le nom même (« OFFICE DES POURSUITES DE [Localité 20] ») ;
+            // un RUN de placeholders est un bloc adresse collé au nom
+            // (« CPAM DE CHARENTE DE [Localité 5] [Adresse 2] [Localité 5] »)
+            let connector = m.as_str().matches('[').count() == 1
+                && kept
+                    .rsplit(' ')
+                    .next()
+                    .is_some_and(|w| matches!(w, "DE" | "DU" | "DES" | "LA" | "LE" | "LES"));
+            if !connector
+                && kept
+                    .chars()
+                    .last()
+                    .is_some_and(|c| c.is_uppercase() || c.is_ascii_digit())
             {
                 name = kept;
             }
@@ -1152,6 +1579,40 @@ impl DocScan {
         re.is_match(&fold_stable(&self.text_slice(e, end)))
     }
 
+    /// Fin de la chaîne d'associés « X, Y, Z » après `ne` — les cabinets
+    /// énumèrent leurs associés par virgule avant l'apposition « , avocat » ;
+    /// on prolonge sur un mot Capitalisé qui n'ouvre pas de token.
+    fn chain_end(&self, mut ne: usize, to: usize) -> usize {
+        while self.norm.chars.get(ne).copied() == Some(',') {
+            let j = self.skip_spaces(ne + 1, to);
+            let c = self.norm.chars.get(j).copied().unwrap_or(' ');
+            if !c.is_uppercase() || self.tok_starting_at(j) {
+                break;
+            }
+            let n2 = self.extend_name(j, to);
+            if n2 <= j {
+                break;
+            }
+            ne = n2;
+        }
+        ne
+    }
+
+    /// Une intro de conseil (« représentée par ») colle-t-elle (≤ 12 chars,
+    /// l'article au plus) juste avant `pos` ? Un chiffre dans le gap = ligne
+    /// de greffe (« toque 343 », « vestiaire : D0289 ») qui clôt le conseil
+    /// de la partie PRÉCÉDENTE, pas une intro.
+    fn counsel_intro_just_before(&self, pos: usize) -> bool {
+        self.toks.iter().any(|c| {
+            c.kind == Mk::CounselIntro
+                && c.e <= pos
+                && c.e + 12 > pos
+                && !self.norm.chars[c.e..pos]
+                    .iter()
+                    .any(|ch| ch.is_ascii_digit())
+        })
+    }
+
     /// La position `start` ouvre-t-elle sur un terminateur (« la société dont
     /// le siège… ») ? Alors ce n'est pas un nom, c'est de la prose.
     fn opens_on_terminator(&self, start: usize) -> bool {
@@ -1162,6 +1623,36 @@ impl DocScan {
                     Mk::TrimAlways | Mk::TrimLower | Mk::CounselIntro | Mk::AvocatDe | Mk::Me
                 )
         })
+    }
+
+    /// Génitif immédiat (« de la », « du », « des », « de l' ») devant `pos` :
+    /// position du « de » s'il y en a un. Toute ponctuation coupe la chaîne
+    /// (« En présence de : la société X » n'est pas un génitif).
+    fn genitive_before(&self, pos: usize) -> Option<usize> {
+        let chars = &self.norm.chars;
+        let word_before = |mut i: usize| -> Option<(usize, String)> {
+            while i > 0 && chars[i - 1] == ' ' {
+                i -= 1;
+            }
+            let e = i;
+            while i > 0 && (chars[i - 1].is_alphabetic() || chars[i - 1] == '\'') {
+                i -= 1;
+            }
+            (i < e).then(|| (i, chars[i..e].iter().collect::<String>().to_lowercase()))
+        };
+        let (s1, w1) = word_before(pos)?;
+        // « au/aux » : même valeur de complément que le génitif
+        // (« hospitalisée au CENTRE HOSPITALIER DE X »)
+        if matches!(w1.as_str(), "de" | "du" | "des" | "d'" | "au" | "aux") {
+            return Some(s1);
+        }
+        if matches!(w1.as_str(), "la" | "le" | "les" | "l'") {
+            let (s2, w2) = word_before(s1)?;
+            if matches!(w2.as_str(), "de" | "d'") {
+                return Some(s2);
+            }
+        }
+        None
     }
 
     /// Un rôle indirect (« aux droits de », « assureur de ») s'ouvre-t-il
@@ -1175,6 +1666,19 @@ impl DocScan {
     /// Récolte les personnes morales d'un segment `[from..to)`, en ordre.
     /// `inst_to` borne les têtes institutionnelles (admin : avant « demande »).
     pub fn harvest(&self, from: usize, to: usize, inst_to: usize) -> Vec<String> {
+        self.harvest_in(from, to, inst_to, false)
+    }
+
+    /// Variante à skip génitif : une entité introduite par « de la » / « du » /
+    /// « des » à l'intérieur du segment est un complément (« administrateur de
+    /// la société X »), pas une entrée de bloc.
+    fn harvest_in(
+        &self,
+        from: usize,
+        to: usize,
+        inst_to: usize,
+        skip_genitive: bool,
+    ) -> Vec<String> {
         let to = to.min(self.len());
         let mut out: Vec<String> = Vec::new();
         let mut consumed_until = from;
@@ -1203,12 +1707,18 @@ impl DocScan {
             if matches!(
                 t.kind,
                 Mk::Form | Mk::Societe | Mk::InstHead | Mk::InstSigle | Mk::LawStruct
-            ) && self.indirect_role_before(t.s)
+            ) && (self.indirect_role_before(t.s)
+                || (skip_genitive && self.genitive_before(t.s).is_some_and(|s| s >= from)))
             {
                 continue;
             }
             match t.kind {
                 Mk::Form => {
+                    // « représentée par la SARL Cabinet Briard » : la forme
+                    // sociale collée à une intro de conseil est un cabinet
+                    if self.counsel_intro_just_before(t.s) {
+                        continue;
+                    }
                     let form = self.text_slice(t.s, t.e);
                     let ns = self.skip_spaces(t.e, to);
                     let first = self.norm.chars.get(ns).copied().unwrap_or(' ');
@@ -1218,8 +1728,9 @@ impl DocScan {
                         continue;
                     }
                     let ne = self.extend_name(ns, to);
-                    if self.followed_by_counsel(ne) {
-                        consumed_until = ne;
+                    let chain = self.chain_end(ne, to);
+                    if self.followed_by_counsel(chain) {
+                        consumed_until = chain;
                         continue;
                     }
                     if let Some(name) = self.clean(ns, ne) {
@@ -1229,6 +1740,7 @@ impl DocScan {
                 }
                 Mk::Societe => {
                     let mut ns = self.skip_spaces(t.e, to);
+                    let head_end = ns;
                     // consomme les qualificatifs (« anonyme », « de droit X »…)
                     loop {
                         let q = self
@@ -1280,7 +1792,19 @@ impl DocScan {
                         if lower_start && !name.contains(' ') {
                             continue;
                         }
-                        push(name, &mut out);
+                        // Tête « société » NUE (aucun qualificatif, attaque
+                        // majuscule/chiffre/[) = descripteur de greffe, rognée
+                        // (spec 2026-07-09 : « la société Gondrand » ⇒
+                        // « Gondrand »). Qualifiée (« société civile… »,
+                        // attaque bas-de-casse) ou nom dont la tête fait
+                        // partie (« Société Générale ») : tranche entière.
+                        let bare = ns == head_end && !lower_start;
+                        if bare && fold_stable(&name) != "generale" {
+                            push(name, &mut out);
+                        } else {
+                            let head = self.text_slice(t.s, ns);
+                            push(format!("{} {name}", head.trim_end()), &mut out);
+                        }
                         consumed_until = ne;
                     }
                 }
@@ -1327,7 +1851,28 @@ impl DocScan {
                         continue;
                     }
                     let ne = self.extend_name(ns, to);
-                    if self.followed_by_counsel(ne) {
+                    let chain = self.chain_end(ne, to);
+                    if self.followed_by_counsel(chain) {
+                        consumed_until = chain;
+                        continue;
+                    }
+                    // apposition ès qualités en aval (« SELARL X, mandataire
+                    // judiciaire », « prise en la personne de Me Y, ès
+                    // qualités de liquidateur de… ») : le mandataire de
+                    // justice n'est jamais une partie, étiqueté par le
+                    // greffe ou en prose — seul le débiteur représenté
+                    // l'est (spec 2026-07-09).
+                    let win = fold_stable(&self.text_slice(ne, (ne + 120).min(to)));
+                    if [
+                        "mandataire",
+                        "liquidateur",
+                        "administrateur judiciaire",
+                        "es qualite",
+                        "es-qualite",
+                    ]
+                    .iter()
+                    .any(|k| win.contains(k))
+                    {
                         consumed_until = ne;
                         continue;
                     }
@@ -1372,10 +1917,38 @@ impl DocScan {
     }
 
     /// Début du dispositif (« PAR CES MOTIFS », « DÉCIDE : »…).
+    /// Début du dispositif : le premier « par ces motifs » quand il existe —
+    /// les autres surfaces (« en conséquence », « décide », « arrête »)
+    /// abondent dans les MOTIFS (« en conséquence, il y a lieu de… ») et
+    /// ouvriraient la zone sur la narration, où les demandes des parties
+    /// (« infirmer le jugement ») polluent la lecture d'outcome. Repli :
+    /// premier token Dispositif (gabarit admin sans « par ces motifs »).
     pub fn dispositif_start(&self) -> usize {
+        // Ouvreur FORT d'abord : « par ces motifs », les formes espacées de
+        // greffe (« D É C I D E ») ou un verbe d'ouverture suivi de « : » —
+        // la surface faible « en conséquence » traîne dans les motifs
+        // (« annulée par voie de conséquence ») et ne sert que de fallback.
+        let strong = |t: &&PTok| {
+            t.kind == Mk::Dispositif && {
+                let surf = fold_stable(&self.text_slice(t.s, t.e));
+                // les formes verbe exigent la casse d'en-tête de greffe
+                // (« DÉCIDE : », « D É C I D E ») : « Sur la légalité de
+                // l'arrêté : » (l'acte attaqué en intertitre) n'ouvre pas
+                // un dispositif
+                let upper = is_upper_span(&self.norm.chars, t.s, t.e);
+                surf.starts_with("par ces motifs")
+                    || (upper
+                        && (matches!(
+                            surf.as_str(),
+                            "d e c i d e" | "o r d o n n e" | "a r r e t e"
+                        ) || (matches!(surf.as_str(), "decide" | "ordonne" | "arrete")
+                            && self.span_after(t, 4).trim_start().starts_with(':'))))
+            }
+        };
         self.toks
             .iter()
-            .find(|t| t.kind == Mk::Dispositif)
+            .find(strong)
+            .or_else(|| self.toks.iter().find(|t| t.kind == Mk::Dispositif))
             .map(|t| t.s)
             .unwrap_or(self.len())
     }
@@ -1453,6 +2026,101 @@ impl DocScan {
         })
     }
 
+    /// Composition à juge unique dite par le texte, en zone d'en-tête
+    /// (« statuant en juge unique », « siégeant seul »).
+    pub fn juge_unique_header(&self) -> bool {
+        self.find_tok(&[Mk::ProcJugeUnique], 0, self.motifs_start())
+            .is_some()
+    }
+
+    /// Votes de TERMES par domaine, comptés plein texte : familles `ProcDom*`
+    /// (admin + judiciaire) et familles procédurales porteuses de matière
+    /// (JEX, procédures collectives). Consommés par
+    /// `domain::refine_with_terms` — clés du référentiel `legal_domain:*`.
+    /// `admin` = ordre administratif : le vocabulaire travail des deux ordres
+    /// (`ProcDomTravailMixte`) y vote fonction publique.
+    pub fn domain_term_votes(&self, admin: bool) -> Vec<(&'static str, u32)> {
+        let mut counts: std::collections::HashMap<&'static str, u32> =
+            std::collections::HashMap::new();
+        for t in &self.toks {
+            let d = match t.kind {
+                Mk::ProcDomTravail => "SOCIAL_DROIT_TRAVAIL",
+                // vocabulaire travail des deux ordres : un licenciement
+                // devant le juge administratif est de la fonction publique
+                Mk::ProcDomTravailMixte => {
+                    if admin {
+                        "PUBLIC_DROIT_TRAVAIL"
+                    } else {
+                        "SOCIAL_DROIT_TRAVAIL"
+                    }
+                }
+                // AT/MP = contentieux du travail (école gold, comme la
+                // plage CSS livre 4) ; cotisations = SOCIAL nu terminal
+                Mk::ProcDomSecu => {
+                    if admin {
+                        "PUBLIC_DROIT_TRAVAIL"
+                    } else {
+                        "SOCIAL_DROIT_TRAVAIL"
+                    }
+                }
+                Mk::ProcDomCotisations => "SOCIAL",
+                Mk::ProcDomFamille => "CIVIL_DROIT_PERSONNES_FAMILLE",
+                Mk::ProcDomDivorce => "CIVIL_DIVORCE_SEPARATION_CORPS",
+                Mk::ProcDomSuccessions => "CIVIL_DROIT_SUCCESSIONS",
+                Mk::ProcDomLocatif => "CIVIL_DROIT_LOCATIF",
+                Mk::ProcDomCopro => "CIVIL_DROIT_COPROPRIETE_PROPRIETE_IMMOBILIERE",
+                Mk::ProcDomConstruction => "CIVIL_DROIT_IMMOBILIER_CONSTRUCTION",
+                Mk::ProcDomSaisieImmo => "CIVIL_DROIT_SAISIE_IMMOBILIERE",
+                Mk::ProcDomExecution => "CIVIL_PROCEDURES_CIVILES_EXECUTION",
+                Mk::ProcDomAssurances => "CIVIL_DROIT_ASSURANCES",
+                Mk::ProcDomBancaire => "CIVIL_DROIT_BANCAIRE_BOURSIER",
+                Mk::ProcDomResp => "CIVIL_DROIT_RESPONSABILITE",
+                Mk::ProcDomEntDiff | Mk::ProcCollective => {
+                    "COMMERCIAL_DROIT_ENTREPRISES_DIFFICULTE"
+                }
+                Mk::ProcDomSocietes => "COMMERCIAL_DROIT_SOCIETES",
+                Mk::ProcDomConcurrence => "COMMERCIAL_DROIT_CONCURRENCE",
+                Mk::ProcDomConso => "COMMERCIAL_DROIT_CONSOMMATION",
+                Mk::ProcDomPiLit => "PROPRIETE_INTELLECTUELLE_LITTERAIRE_ARTISTIQUE",
+                Mk::ProcDomPiInd => "PROPRIETE_INTELLECTUELLE_INDUSTRIELLE",
+                Mk::ProcDomFp => "PUBLIC_DROIT_TRAVAIL",
+                Mk::ProcDomAide => "PUBLIC_DROIT_AIDE_ACTION_SOCIALE",
+                Mk::ProcDomUrba => "PUBLIC_DROIT_URBANISME_IMMOBILIER_PUBLIC",
+                Mk::ProcDomEtr => "PUBLIC_DROIT_ETRANGERS_NATIONALITE",
+                Mk::ProcDomFisc => "FISCAL",
+                Mk::ProcDomEnv => "PUBLIC_DROIT_ENVIRONNEMENT",
+                Mk::ProcDomPenalPub => "PUBLIC_DROIT_PENAL_PUBLIC",
+                // « saisie immobilière » partage le token JEX : la surface
+                // départage la matière.
+                Mk::ProcJex => {
+                    if fold_stable(&self.text_slice(t.s, t.e)).starts_with("saisie") {
+                        "CIVIL_DROIT_SAISIE_IMMOBILIERE"
+                    } else {
+                        "CIVIL_PROCEDURES_CIVILES_EXECUTION"
+                    }
+                }
+                _ => continue,
+            };
+            *counts.entry(d).or_default() += 1;
+        }
+        let mut votes: Vec<_> = counts.into_iter().collect();
+        votes.sort();
+        votes
+    }
+
+    /// Un article de référé CJA ancré en zone d'en-tête ? Le juge des référés
+    /// statue seul (L. 511-2 CJA). Garde CESEDA sur L. 551-* : la même
+    /// surface d'article y désigne la rétention, pas le précontractuel.
+    pub fn refere_article_header(&self) -> bool {
+        let h = self.motifs_start();
+        let has = |k: Mk| self.find_tok(&[k], 0, h).is_some();
+        has(Mk::ProcRefSusp)
+            || has(Mk::ProcRefLib)
+            || has(Mk::ProcRefUtile)
+            || has(Mk::ProcRefProv)
+            || (has(Mk::ProcRefPrecontr) && !has(Mk::ProcImmig))
+    }
+
     /// Fenêtres après « joint les pourvois » : la clause des numéros joints.
     pub fn joint_pourvois_windows(&self) -> Vec<String> {
         self.windows(0, 400, |t| t.kind == Mk::JointPourvois)
@@ -1518,8 +2186,123 @@ impl DocScan {
                         let a = a.trim_start();
                         !(a.starts_with("partiellement") || a.starts_with("en partie"))
                     }
+                    Mk::OutRejette => {
+                        // le NOM « rejet » en énumération (« propositions
+                        // d'admission ou de rejet ») n'est pas un prononcé
+                        !(fold_stable(&self.text_slice(t.s, t.e)) == "rejet"
+                            && self.span_before(t, 6).ends_with("ou de "))
+                    }
+                    Mk::OutNeutral => {
+                        // l'OBJET d'une demande rejetée n'est pas le sort :
+                        // « rejetons la demande de radiation », « exception
+                        // d'incompétence, n'y fait pas droit », « avant dire
+                        // droit, rejette la mesure d'expertise »
+                        let b = self.span_before(t, 14);
+                        let objet = b.ends_with("demande de ")
+                            || b.ends_with("demande d'")
+                            || b.ends_with("mesure de ")
+                            || b.ends_with("mesure d'")
+                            || b.ends_with("exception de ")
+                            || b.ends_with("exception d'");
+                        let intro_rejet = {
+                            let a = self.span_after(t, 12);
+                            let a = a.trim_start_matches([',', ' ']);
+                            a.starts_with("rejette")
+                                || a.starts_with("rejetons")
+                                || a.starts_with("deboute")
+                        };
+                        !(objet || intro_rejet)
+                    }
                     _ => true,
                 }
+        })
+    }
+
+    /// Un rejet/débouté SUBSTANTIEL dans la zone dispositif : sa clause ne
+    /// vise ni l'accessoire (art. 700, dépens, frais) ni le reliquat
+    /// (« surplus », « plus amples », « toute autre »). Sert à l'école
+    /// « mixte irrecevable + mal fondée → REJET » (le fond absorbe) : seul
+    /// un rejet de tête de demande absorbe l'irrecevabilité.
+    fn substantive_rejet(&self, from: usize) -> bool {
+        let end = self.dispositif_end(from);
+        let accessoire = |s: &str| {
+            s.contains("article 700")
+                || s.contains("depens")
+                || s.contains("frais irrep")
+                || s.contains("surplus")
+                || s.contains("plus ample")
+                || s.contains("toute autre")
+                || s.contains("761-1")
+        };
+        self.toks.iter().any(|t| {
+            t.s >= from && t.s < end && t.kind == Mk::OutRejette && {
+                // « M. [X] » : le point d'abréviation ne clôt pas la clause
+                let a = self.span_after(t, 120).replace(" m. ", " m  ");
+                let clause = a.split(['.', ';']).next().unwrap_or("");
+                // au PASSIF (« le surplus des conclusions est rejeté »),
+                // l'objet précède le verbe : mêmes exclusions sur le
+                // segment avant
+                let b = self.span_before(t, 140).replace(" m. ", " m  ");
+                let avant = b.rsplit(['.', ';']).next().unwrap_or("");
+                let passif = avant.ends_with("est ")
+                    || avant.ends_with("sont ")
+                    || avant.ends_with("seront ")
+                    || avant.ends_with("etre ");
+                !(self.span_before(t, 6).ends_with("ou de ")
+                    || accessoire(clause)
+                    || (passif && accessoire(avant)))
+            }
+        })
+    }
+
+    /// Marque de partialité dans la CLAUSE (même phrase) d'un
+    /// confirme/infirme. Après un CONFIRME, « en ce qu'il a… / en ses
+    /// dispositions soumises à la cour » ÉNUMÈRE les chefs confirmés sans
+    /// les restreindre — seuls « sauf en ce qu », « mais seulement »,
+    /// « en ses seules dispositions »… rendent la confirmation partielle ;
+    /// après un INFIRME, « en ce qu'il » désigne les chefs infirmés et
+    /// reste une partialité. « sauf À + infinitif » (rectifier une erreur
+    /// matérielle, moduler l'astreinte) ajuste sans infirmer : exclu.
+    fn restrictif_apres(&self, c: &PTok, apres_confirme: bool) -> bool {
+        self.toks.iter().any(|s| {
+            matches!(s.kind, Mk::OutSauf | Mk::OutPartial)
+                && s.s > c.e
+                && s.s < c.e + 200
+                && !self.text_slice(c.e, s.s).contains('.')
+                && !(s.kind == Mk::OutSauf && self.span_after(s, 3).trim_start().starts_with("a "))
+                && !(apres_confirme && {
+                    let surf = fold_stable(&self.text_slice(s.s, s.e));
+                    matches!(
+                        surf.as_str(),
+                        "en ce qu'il"
+                            | "en ce qu'elle"
+                            | "en tant qu'il"
+                            | "en tant qu'elle"
+                            | "en ses dispositions"
+                    )
+                })
+        })
+    }
+
+    /// Un rejet de DEMANDE dans la zone dispositif : le rejet d'une DÉFENSE
+    /// (délais de paiement, suspension des effets de la clause résolutoire,
+    /// exception de procédure, note écartée des débats) ne rend pas la
+    /// satisfaction du demandeur partielle — il a tout obtenu.
+    fn rejet_de_demande(&self, from: usize) -> bool {
+        let end = self.dispositif_end(from);
+        self.toks.iter().any(|t| {
+            t.s >= from && t.s < end && t.kind == Mk::OutRejette && {
+                let a = self.span_after(t, 120).replace(" m. ", " m  ");
+                let clause = a.split(['.', ';']).next().unwrap_or("");
+                let b = self.span_before(t, 100);
+                let avant = b.rsplit(['.', ';']).next().unwrap_or("");
+                !(avant.ends_with("ou de ")
+                    || avant.contains("exception")
+                    || clause.contains("delais de paiement")
+                    || clause.contains("delai de paiement")
+                    || clause.contains("suspension des effets")
+                    || clause.contains("des debats"))
+            }
         })
     }
 
@@ -1535,10 +2318,15 @@ impl DocScan {
         let non_admis = self.toks.iter().any(|t| {
             t.kind == Mk::OutNonAdmis && {
                 let surf = fold_stable(&self.text_slice(t.s, t.e));
-                if surf.contains("admission") {
+                if surf.contains("admission")
+                    || self
+                        .span_after(t, 16)
+                        .trim_start()
+                        .starts_with("au benefice")
+                {
                     false
                 } else {
-                    surf.contains("pourvoi") || self.span_before(t, 80).contains("pourvoi")
+                    surf.contains("pourvoi") || self.span_before(t, 160).contains("pourvoi")
                 }
             }
         });
@@ -1571,7 +2359,11 @@ impl DocScan {
                 if self.disp_has(from, Mk::OutNeutral) || self.disp_has(from, Mk::OutJonction) {
                     return Some(("AUTRE", false));
                 }
-                if self.disp_has(from, Mk::OutIrrec) {
+                // mixte irrecevable + rejet au fond : le fond absorbe (école
+                // gold) — « déclare irrecevable le pourvoi de X, rejette le
+                // pourvoi de Y » = REJET ; le rejet ACCESSOIRE (art. 700,
+                // dépens, surplus) n'absorbe pas.
+                if self.disp_has(from, Mk::OutIrrec) && !self.substantive_rejet(from) {
                     return Some(("IRRECEVABILITE", false));
                 }
                 if self.disp_has(from, Mk::OutRejette) {
@@ -1580,10 +2372,29 @@ impl DocScan {
                 None
             }
             Gabarit::Blocs => {
-                if self.disp_has(from, Mk::OutNonLieu) {
-                    return Some(("NON_LIEU_A_STATUER", false));
-                }
                 let end = self.dispositif_end(from);
+                // condamnation substantielle (« à payer/verser…/somme de/
+                // dommages » dans la clause) vs procédurale (art. 700/dépens)
+                let cond = self.toks.iter().any(|t| {
+                    t.s >= from && t.s < end && t.kind == Mk::OutCondamne && {
+                        // « M. [X] » : le point d'abréviation ne clôt pas la clause
+                        let a = self.span_after(t, 220).replace(" m. ", " m  ");
+                        let clause = a.split(['.', ';']).next().unwrap_or("");
+                        (clause.contains("a payer")
+                            || clause.contains("a verser")
+                            || clause.contains("a porter")
+                            || clause.contains("somme de")
+                            || clause.contains("dommages"))
+                            && !clause.contains("article 700")
+                            && !clause.contains("depens")
+                            && !clause.contains("frais irrep")
+                    }
+                });
+                // faire droit à la demande sans condamner : ouverture de
+                // procédure collective, sanction de gestion, mainlevée JLD,
+                // ordonnance commune / prorogation en référé (gold : la
+                // demande accueillie = SATISFACTION, pas AUTRE)
+                let grant = self.disp_has(from, Mk::OutGrant);
                 let conf = self.disp_find(from, Mk::OutConfirme).cloned();
                 // « confirme partiellement » = infirmation partielle en soi
                 let conf_partial = self.toks.iter().any(|t| {
@@ -1594,24 +2405,13 @@ impl DocScan {
                     }
                 });
                 let inf = self.disp_find(from, Mk::OutInfirme).cloned();
-                // « sauf / à l'exception de / mais seulement » dans la CLAUSE
-                // (même phrase) d'un confirme/infirme = partialité — OutPartial
-                // inclus : « sauf en ce qu » lui revient (leftmost-longest)
-                let sauf_near = |c: &PTok| {
-                    self.toks.iter().any(|s| {
-                        matches!(s.kind, Mk::OutSauf | Mk::OutPartial)
-                            && s.s > c.e
-                            && s.s < c.e + 200
-                            && !self.text_slice(c.e, s.s).contains('.')
-                    })
-                };
                 match (&conf, &inf) {
                     (Some(_), Some(_)) => return Some(("INFIRMATION_PARTIELLE", false)),
                     _ if conf_partial => return Some(("INFIRMATION_PARTIELLE", false)),
-                    (Some(c), None) if sauf_near(c) => {
+                    (Some(c), None) if self.restrictif_apres(c, true) => {
                         return Some(("INFIRMATION_PARTIELLE", false))
                     }
-                    (None, Some(i)) if sauf_near(i) => {
+                    (None, Some(i)) if self.restrictif_apres(i, false) => {
                         return Some(("INFIRMATION_PARTIELLE", false))
                     }
                     (None, Some(_)) => return Some(("INFIRMATION", false)),
@@ -1629,34 +2429,47 @@ impl DocScan {
                         false,
                     ));
                 }
-                if self.disp_has(from, Mk::OutNeutral) {
-                    return Some(("AUTRE", false));
+                // non-lieu décisif seulement quand le dispositif n'infirme
+                // ni ne confirme (catégorie la plus spécifique), ne condamne,
+                // n'accueille ni ne rejette rien de substantiel par ailleurs
+                // (« dit n'y avoir lieu à statuer sur X, condamne Y…,
+                // déboute Z… » est un sort mixte, pas un non-lieu)
+                if self.disp_has(from, Mk::OutNonLieu)
+                    && !cond
+                    && !grant
+                    && !self.substantive_rejet(from)
+                {
+                    return Some(("NON_LIEU_A_STATUER", false));
                 }
-                if self.disp_has(from, Mk::OutIrrec) {
-                    return Some(("IRRECEVABILITE", false));
-                }
-                // condamnation substantielle (« à payer/verser…/somme de/
-                // dommages » dans la clause) vs procédurale (art. 700/dépens)
-                let cond = self.toks.iter().any(|t| {
-                    t.s >= from && t.s < end && t.kind == Mk::OutCondamne && {
-                        let a = self.span_after(t, 220);
-                        let clause = a.split(['.', ';']).next().unwrap_or("");
-                        (clause.contains("a payer")
-                            || clause.contains("a verser")
-                            || clause.contains("a porter")
-                            || clause.contains("somme de")
-                            || clause.contains("dommages"))
-                            && !clause.contains("article 700")
-                            && !clause.contains("depens")
-                            && !clause.contains("frais irrep")
+                // Irrecevabilité PRONONCÉE seulement : « recevable et non
+                // prescrite » (action déclarée recevable) ne compte pas.
+                let irrec = self.toks.iter().any(|t| {
+                    t.s >= from && t.s < end && t.kind == Mk::OutIrrec && {
+                        let b = self.span_before(t, 6);
+                        !(b.ends_with("non ") || b.ends_with("pas "))
                     }
                 });
+                // mixte irrecevable + rejet au fond : le fond absorbe (école
+                // gold) — « déclare irrecevable l'intervention…, déboute X de
+                // l'ensemble de ses demandes » = REJET, pas IRRECEVABILITE ;
+                // le rejet ACCESSOIRE (art. 700, dépens, surplus) n'absorbe pas.
+                if irrec && !self.substantive_rejet(from) {
+                    return Some(("IRRECEVABILITE", false));
+                }
                 let rej = self.disp_has(from, Mk::OutRejette);
-                if cond && rej {
+                // cond/grant priment le neutre (un dispositif qui condamne à
+                // payer ou accueille la demande n'est pas AUTRE parce qu'il
+                // renvoie aussi à une mise en état) ; le rejet NU reste
+                // derrière lui (« sursoit à statuer… rejette le surplus »
+                // demeure AUTRE)
+                if (cond || grant) && rej && self.rejet_de_demande(from) {
                     return Some(("SATISFACTION_PARTIELLE", false));
                 }
-                if cond {
+                if cond || grant {
                     return Some(("SATISFACTION_TOTALE", false));
+                }
+                if self.disp_has(from, Mk::OutNeutral) {
+                    return Some(("AUTRE", false));
                 }
                 if rej {
                     return Some(("REJET", false));
@@ -1669,12 +2482,36 @@ impl DocScan {
             Gabarit::Admin => {
                 // École gold : le dispositif se lit VERBATIM. Jugement ou acte
                 // annulé, en tout ou partie → ANNULATION (« réformé » →
-                // REFORMATION) ; requête rejetée → REJET, même motivée par
-                // l'irrecevabilité (filtrage R. 222-1) ; SATISFACTION_* =
-                // plein contentieux gagné SANS annulation (condamnation à
-                // payer, décharge).
+                // REFORMATION) ; requête rejetée → REJET, SAUF irrecevabilité
+                // PRONONCÉE (école 2026-07-09 : « rejetée comme
+                // (manifestement) irrecevable », motifs de clôture R. 222-1
+                // — cf. `irrec_pronounced` ; le mixte fond + irrecevabilité
+                // reste REJET) ; SATISFACTION_* = plein contentieux gagné
+                // SANS annulation (condamnation à payer, décharge).
                 if self.disp_has(from, Mk::OutAnnule) {
                     return Some(("ANNULATION", false));
+                }
+                // Ordonnances JUDICIAIRES sans étiquettes de bloc de greffe
+                // (JLD rétention/hospitalisation, référés) routées ici faute
+                // de pivot : « confirme/confirmons » n'existe pas dans un
+                // dispositif administratif (gold : 166 CONFIRMATION
+                // judiciaires, 0 admin) — lecture appel judiciaire, mêmes
+                // règles de partialité que le gabarit Blocs.
+                if let Some(c) = self.disp_find(from, Mk::OutConfirme).cloned() {
+                    let a = self.span_after(&c, 18);
+                    let a = a.trim_start();
+                    let partial = a.starts_with("partiellement")
+                        || a.starts_with("en partie")
+                        || self.disp_has(from, Mk::OutInfirme)
+                        || self.restrictif_apres(&c, true);
+                    return Some((
+                        if partial {
+                            "INFIRMATION_PARTIELLE"
+                        } else {
+                            "CONFIRMATION"
+                        },
+                        false,
+                    ));
                 }
                 if let Some(t) = self.disp_find(from, Mk::OutInfirme) {
                     let surf = fold_stable(&self.text_slice(t.s, t.e));
@@ -1685,9 +2522,11 @@ impl DocScan {
                     };
                     return Some((key, false));
                 }
-                // non-lieu partiel + rejet du surplus = rejet
+                // non-lieu partiel + rejet SUBSTANTIEL = rejet ; le rejet
+                // du seul accessoire (« le surplus des conclusions est
+                // rejeté », art. 700/761-1) laisse le non-lieu principal
                 if self.disp_has(from, Mk::OutNonLieu) {
-                    if self.disp_has(from, Mk::OutRejette) {
+                    if self.substantive_rejet(from) {
                         return Some(("REJET", false));
                     }
                     return Some(("NON_LIEU_A_STATUER", false));
@@ -1695,7 +2534,8 @@ impl DocScan {
                 let end = self.dispositif_end(from);
                 let cond = self.toks.iter().any(|t| {
                     t.s >= from && t.s < end && t.kind == Mk::OutCondamne && {
-                        let a = self.span_after(t, 220);
+                        // « M. [X] » : le point d'abréviation ne clôt pas la clause
+                        let a = self.span_after(t, 220).replace(" m. ", " m  ");
                         let clause = a.split(['.', ';']).next().unwrap_or("");
                         (clause.contains("a payer")
                             || clause.contains("a verser")
@@ -1708,6 +2548,7 @@ impl DocScan {
                             && !clause.contains("frais irrep")
                     }
                 });
+                let cond = cond || self.disp_has(from, Mk::OutGrant);
                 let rej = self.disp_has(from, Mk::OutRejette);
                 if cond && rej {
                     return Some(("SATISFACTION_PARTIELLE", false));
@@ -1716,6 +2557,9 @@ impl DocScan {
                     return Some(("SATISFACTION_TOTALE", false));
                 }
                 if rej {
+                    if self.irrec_pronounced(from) || self.closing_irrec(from) {
+                        return Some(("IRRECEVABILITE", false));
+                    }
                     return Some(("REJET", false));
                 }
                 if self.disp_has(from, Mk::OutIrrec) {
@@ -1729,11 +2573,196 @@ impl DocScan {
         }
     }
 
+    /// Irrecevabilité PRONONCÉE (école gold 2026-07-09) : un token
+    /// d'irrecevabilité et un token de rejet dans la MÊME phrase, entre la
+    /// clause de clôture des motifs (≤ 300 chars avant le dispositif) et la
+    /// fin du dispositif — « manifestement irrecevable et doit être
+    /// rejetée » (R. 222-1 motivé ou non), « rejette la requête comme
+    /// irrecevable ». Les fins de non-recevoir discutées plus haut ne
+    /// s'apparient pas : le mixte reste REJET, le fond absorbe. Frontière de
+    /// phrase = « . » précédé d'autre chose qu'une majuscule (« R. 222-1 »,
+    /// « M. » ne coupent pas).
+    fn irrec_pronounced(&self, from: usize) -> bool {
+        let end = self.dispositif_end(from);
+        let zone = from.saturating_sub(300);
+        // Même chaîne de prononcé : pas de frontière de phrase entre les
+        // deux tokens — « . » ne coupe pas après une majuscule ou un point
+        // (« R. 222-1 », « M. », ellipse « Mme A... »), ni quand la phrase
+        // suivante enchaîne la conséquence (« irrecevable. Par suite, il y a
+        // lieu de rejeter… »).
+        let same_reasoning = |a: usize, b: usize| {
+            let slice = self.text_slice(a, b);
+            let chars: Vec<char> = slice.chars().collect();
+            for i in 0..chars.len() {
+                let prev = if i == 0 { ' ' } else { chars[i - 1] };
+                if chars[i] != '.' || prev.is_ascii_uppercase() || prev == '.' {
+                    continue;
+                }
+                let rest: String = chars[i + 1..].iter().collect();
+                let rest = fold_stable(rest.trim_start());
+                const CHAINE: &[&str] = &[
+                    "par suite",
+                    "des lors",
+                    "il suit de la",
+                    "il resulte",
+                    "par consequent",
+                    "il y a lieu",
+                ];
+                if !CHAINE.iter().any(|p| rest.starts_with(p)) {
+                    return false;
+                }
+            }
+            true
+        };
+        let irr: Vec<&PTok> = self
+            .toks
+            .iter()
+            .filter(|t| {
+                t.kind == Mk::OutIrrec && t.s >= zone && t.s < end && {
+                    let b = self.span_before(t, 6);
+                    // « créance prescrite » (prescription quadriennale) est un
+                    // moyen de FOND : la surface prescrit* ne prononce pas
+                    // d'irrecevabilité (arbitrage école 2026-07-09).
+                    !(b.ends_with("non ")
+                        || b.ends_with("pas ")
+                        || fold_stable(&self.text_slice(t.s, t.e)).starts_with("prescrit"))
+                }
+            })
+            .collect();
+        if irr.is_empty() {
+            return false;
+        }
+        self.toks
+            .iter()
+            .filter(|t| t.kind == Mk::OutRejette && t.s >= zone && t.s < end)
+            .any(|r| {
+                irr.iter().any(|i| {
+                    let (a, b) = if i.e <= r.s { (i.e, r.s) } else { (r.e, i.s) };
+                    a <= b && b - a <= 260 && same_reasoning(a, b)
+                })
+            })
+    }
+
+    /// Irrecevabilité prononcée dans les MOTIFS DE CLÔTURE (≤ 800 chars
+    /// avant le dispositif, chaque phrase étendue à sa vraie frontière) —
+    /// complète `irrec_pronounced` pour les ordonnances dont le prononcé
+    /// (« la requête est manifestement irrecevable », « n'est pas
+    /// recevable », « tardive », rejet au 4° de l'article R. 222-1) précède
+    /// des paragraphes de conséquence/frais avant un dispositif « rejette »
+    /// nu. La phrase doit viser l'objet contentieux (requête / conclusions /
+    /// recours / pourvoi) ; sont exclus : l'irrecevabilité d'un MOYEN
+    /// (mixte, le fond absorbe), la citation de la règle (« aux termes »),
+    /// l'attribution au premier juge (« c'est à bon droit que… a rejeté » —
+    /// l'appel confirmant une irrecevabilité de première instance est une
+    /// école gold non tranchée, codée tantôt IRRECEVABILITE tantôt REJET),
+    /// et tout marqueur de fond (« dépourvue de fondement », « mal fondée »)
+    /// entre le prononcé et le dispositif.
+    fn closing_irrec(&self, from: usize) -> bool {
+        let chars = &self.norm.chars;
+        let win = from.saturating_sub(800);
+        let lo = from.saturating_sub(1200);
+        // Frontière de phrase : « . » précédé d'un mot alphanumérique d'au
+        // moins 2 chars — « R. 222-1 », « M. », « 2. » (numéro de point) et
+        // « () ". » ne coupent pas.
+        let is_boundary = |i: usize| {
+            if chars[i] != '.' {
+                return false;
+            }
+            let mut j = i;
+            while j > lo && chars[j - 1].is_alphanumeric() {
+                j -= 1;
+            }
+            i - j > 1
+        };
+        let mut starts = vec![lo];
+        for i in lo..from {
+            if is_boundary(i) && i + 1 < from {
+                starts.push(i + 1);
+            }
+        }
+        for (k, &sa) in starts.iter().enumerate() {
+            let sb = starts.get(k + 1).map_or(from, |n| n - 1);
+            if sb <= win {
+                continue;
+            }
+            let sent = fold_stable(&self.text_slice(sa, sb));
+            let vocab = ["irrecevab", "pas recevable", "non recevable", "tardiv"]
+                .iter()
+                .filter_map(|v| sent.find(v))
+                .find(|&m| {
+                    let pre = &sent[..m];
+                    !(pre.ends_with("non ") || pre.ends_with("pas ") || pre.ends_with("nullement "))
+                })
+                .or_else(|| {
+                    // renvoi explicite au 4° (requêtes manifestement
+                    // irrecevables) dans la phrase qui rejette
+                    (sent.contains("4° de l'article r. 222-1") && sent.contains("rejet"))
+                        .then(|| sent.find("4°").unwrap())
+                });
+            let Some(_) = vocab else { continue };
+            if !(sent.contains("requete")
+                || sent.contains("conclusions")
+                || sent.contains("recours")
+                || sent.contains("pourvoi"))
+            {
+                continue;
+            }
+            const BLOCK: &[&str] = &[
+                "moyen",
+                "bon droit",
+                "a tort",
+                "premiers juges",
+                "a rejete",
+                "ont rejete",
+                "a pu ",
+                "ecarte",
+                "aux termes",
+                "peuvent, par ordonnance",
+                "peuvent par ordonnance",
+                "permettent de rejeter",
+                "permet de rejeter",
+            ];
+            if BLOCK.iter().any(|b| sent.contains(b)) {
+                continue;
+            }
+            let to_disp = fold_stable(&self.text_slice(sb, from));
+            if to_disp.contains("sur les conclusions") {
+                continue;
+            }
+            let span = fold_stable(&self.text_slice(sa, from));
+            if span.contains("depourvue de fondement")
+                || span.contains("depourvues de fondement")
+                || span.contains("mal fonde")
+                || span.contains("pas fonde")
+            {
+                continue;
+            }
+            return true;
+        }
+        false
+    }
+
     /// La cassation est-elle PARTIELLE ? (indice dans le dispositif, ou
     /// « casse … <partiel> » dans les 300 chars du verbe, n'importe où.)
+    /// « casse et annule, dans/en toutes ses dispositions » force la
+    /// TOTALITÉ : la formule de transcription du greffe (« en marge … de
+    /// l'arrêt partiellement cassé ») et le « en tant qu'il » d'une clause
+    /// de rejet voisine ne la contredisent pas.
     pub fn cassation_partial(&self) -> bool {
         let from = self.dispositif_start();
         let end = self.dispositif_end(from);
+        let toutes = self.toks.iter().any(|t| {
+            t.s >= from && t.s < end && t.kind == Mk::OutCasse && {
+                let a = fold_stable(self.span_after(t, 40).trim_start());
+                a.starts_with(", dans toutes ses dispositions")
+                    || a.starts_with(", en toutes ses dispositions")
+                    || a.starts_with("dans toutes ses dispositions")
+                    || a.starts_with("en toutes ses dispositions")
+            }
+        });
+        if toutes {
+            return false;
+        }
         if self
             .toks
             .iter()
@@ -1783,22 +2812,49 @@ impl DocScan {
                 let a = self.span_after(t, 180);
                 b.contains("dernier alinea")
                     || b.contains("alinea 4")
+                    // désignation « pour statuer par ordonnance en
+                    // application de l'article R. 222-1 »
+                    || b.contains("par ordonnance en application")
                     || a.contains("manifestement")
                     || a.contains("irrecevab")
                     || a.contains("tardivet")
                     || a.contains("hors delai")
                     || a.contains("sans le ministere d'avocat")
                     || a.contains("sans ministere d'avocat")
+                    // citations élidées de l'article : « peuvent () par
+                    // ordonnance, rejeter », 6° séries, 7° délégation
+                    || a.contains("par ordonnance, rejeter")
+                    || a.contains("relevant d'une serie")
+                    || a.contains("\" 7°")
             })
                 // « manifestement irrecevable » / « irrecevabilité manifeste »
                 // sans citation R. 222-1 : la moitié des ordonnances de
                 // filtrage motivent sans viser l'article (le gate ordonnance
-                // ORTA_/ORCA_ vit dans `voie_key`). Lu sur le token OutIrrec —
+                // ORTA_/ORCA_ vit dans `procedure_key`). Lu sur le token OutIrrec —
                 // une surface composée volerait le token au leftmost-longest.
                 || (t.kind == Mk::OutIrrec
                     && (self.span_before(t, 20).trim_end().ends_with("manifestement")
                         || self.span_after(t, 12).trim_start().starts_with("manifeste")))
         });
+        // formule ACTIVE de désignation en tête : « le président de la cour /
+        // du tribunal a désigné M./Mme X » suivie de l'objet de la délégation
+        // (référés, R. 222-1, « pour statuer ») — c'est le juge unique qui
+        // rend LA présente décision (le passif « désigné par » raconte le
+        // jugement attaqué et ne produit pas ce token)
+        let magdes_form = |who: &str| {
+            self.toks.iter().any(|t| {
+                t.s < header && t.kind == Mk::ProcMagdesForm && {
+                    let b = self.span_before(t, 140);
+                    let a = self.span_after(t, 220);
+                    b.contains("president")
+                        && b.contains(who)
+                        && (a.contains("refere")
+                            || a.contains("r. 222-1")
+                            || a.contains("pour statuer")
+                            || a.contains("pouvoirs prevus"))
+                }
+            })
+        };
         ProcSignals {
             // bandeau seulement : cité plus bas, QPC/non-admission décrivent
             // la procédure antérieure (« demande la transmission d'une QPC »)
@@ -1822,6 +2878,37 @@ impl DocScan {
             refere_precontractuel: has_h(Mk::ProcRefPrecontr) && !has_h(Mk::ProcImmig),
             refere_provision: has_h(Mk::ProcRefProv),
             refere_cour: has_h(Mk::ProcRefCour),
+            desist_bandeau: has_b(Mk::OutDesist),
+            // référé judiciaire dit par le texte. « Vu l'assignation en
+            // référé » en tête (visa des ordonnances de premier président —
+            // l'assignation narrative désigne souvent un référé antérieur,
+            // expertise…) ; « ordonnance de référé » nue au bandeau (titre de
+            // la décision ou de la décision déférée) ou précédée de
+            // appel d'une / confirme l' / réforme l' (l'instance EST la ligne
+            // de référé, dispositif inclus)
+            refere_civil: self.toks.iter().any(|t| {
+                (t.kind == Mk::ProcRefCivil && {
+                    let surf = fold_stable(&self.text_slice(t.s, t.e));
+                    if surf == "assignation en refere" {
+                        t.s < header && self.span_before(t, 6).ends_with("vu l'")
+                    } else {
+                        // « Par ordonnance de référé du …, X a été désigné » :
+                        // récit d'un référé antérieur, même sous le bandeau
+                        (t.s < bandeau && !self.span_before(t, 4).ends_with("par "))
+                            || {
+                            let b = self.span_before(t, 14);
+                            b.ends_with("appel d'une ")
+                                || b.ends_with("confirme l'")
+                                || b.ends_with("reforme l'")
+                        }
+                    }
+                })
+                    // « a fait assigner X devant le juge des référés » en tête
+                    || (t.kind == Mk::ProcJref
+                        && t.s < header
+                        && self.span_before(t, 70).contains("assigner")
+                        && self.span_before(t, 11).ends_with("devant le "))
+            }),
             retention: has_h(Mk::ProcRetention) || has_h(Mk::ProcImmig),
             retention_anywhere: has_any(Mk::ProcRetention),
             hospi: has_h(Mk::ProcHospi),
@@ -1848,6 +2935,37 @@ impl DocScan {
                             .trim_start()
                             .starts_with([',', '.', ';', ')'])
                 }
+            }),
+            // « …désigné » en pied de décision = signature du magistrat qui a
+            // RENDU l'ordonnance ; les occurrences d'en-tête désignent le juge
+            // du jugement attaqué
+            magdes_tail: self
+                .toks
+                .iter()
+                .any(|t| t.kind == Mk::ProcMagdes && t.s + 700 >= self.len()),
+            magdes_form_cour: magdes_form("de la cour"),
+            magdes_form_trib: magdes_form("du tribunal"),
+            // « demande(nt) au juge des référés » en tête : la requête est
+            // adressée AU juge des référés de la juridiction saisie — il
+            // statue seul (L. 511-2 CJA). Le récit d'appel désigne l'autre
+            // juridiction : gabarit première instance seulement, côté
+            // `extract`.
+            jref_demande: self.toks.iter().any(|t| {
+                t.s < header && t.kind == Mk::ProcJref && {
+                    let b = self.span_before(t, 14);
+                    b.ends_with("demande au ") || b.ends_with("demandent au ")
+                }
+            }),
+            // « au juge des référés du Conseil d'État » : premier ressort ou
+            // appel L. 521-2 — le juge des référés du CE statue seul ; le
+            // récit d'un pourvoi ne porte pas cette adresse.
+            jref_conseil: self.toks.iter().any(|t| {
+                t.s < header
+                    && t.kind == Mk::ProcJref
+                    && self
+                        .span_after(t, 12)
+                        .trim_start()
+                        .starts_with("du conseil")
             }),
             // JEX opérationnel seulement : précédé de « jugement du / rendu
             // par le / décision du… », c'est la décision ATTAQUÉE ou
@@ -1885,6 +3003,8 @@ impl DocScan {
             dom_urba: has_h(Mk::ProcDomUrba),
             dom_etr: has_h(Mk::ProcDomEtr),
             dom_fisc: has_h(Mk::ProcDomFisc),
+            dom_env: has_h(Mk::ProcDomEnv),
+            dom_penal_pub: has_h(Mk::ProcDomPenalPub),
             immig_anywhere: has_any(Mk::ProcImmig),
         }
     }
@@ -1902,6 +3022,13 @@ impl DocScan {
             .map(|t| t.e)
             .collect();
         if reqs.is_empty() {
+            // corps de moyens CC sans préambule (« LA COUR DE CASSATION…
+            // a rendu l'arrêt suivant : Sur le moyen unique : Attendu
+            // que… ») : le texte ouvre sur la prose des motifs, il n'y a
+            // pas d'en-tête de parties à moissonner.
+            if self.toks.iter().any(|t| t.kind == Mk::DefEnd && t.s < 300) {
+                return Vec::new();
+            }
             let b = self.demande_boundary(0, end);
             return self.harvest(0, b, b);
         }
@@ -1923,7 +3050,9 @@ impl DocScan {
     /// fond ne doit pas router vers CC.
     fn gabarit(&self) -> Gabarit {
         let header_end = self.motifs_start();
-        let pivot = self.find_tok(&[Mk::PivotNew, Mk::PivotOld], 0, header_end);
+        let pivot = self
+            .find_tok(&[Mk::PivotNew, Mk::PivotOld], 0, header_end)
+            .or_else(|| self.joint_pivot(header_end));
         let first_block = self
             .toks
             .iter()
@@ -1943,16 +3072,70 @@ impl DocScan {
     /// fond ; ouvertures de requête → admin (défendeur = administration,
     /// jamais une société).
     pub fn companies(&self) -> (Vec<String>, Vec<String>) {
-        match self.gabarit() {
+        use crate::registry::{Quality, Side};
+        let r = self.party_registry();
+        (
+            r.view(Some(Side::Applicant), Quality::Party),
+            r.view(Some(Side::Defendant), Quality::Party),
+        )
+    }
+
+    /// Registre de parties mémoïsé (ADR 0175 V0) : construit UNE fois depuis
+    /// les moissons par gabarit ; `companies`/`counsel`/`intervenors` en sont
+    /// des projections.
+    pub fn party_registry(&self) -> &crate::registry::PartyRegistry {
+        self.registry_memo.get_or_init(|| {
+            use crate::registry::{PartyRegistry, Quality, Side};
+            let mut r = PartyRegistry::default();
+            let (apps, defs) = self.companies_uncached();
+            r.push(apps, Some(Side::Applicant), Quality::Party);
+            r.push(defs, Some(Side::Defendant), Quality::Party);
+            let c = self.counsel_uncached();
+            r.push(
+                c.applicant_names,
+                Some(Side::Applicant),
+                Quality::CounselName,
+            );
+            r.push(c.applicant_firms, Some(Side::Applicant), Quality::LawFirm);
+            r.push(
+                c.defendant_names,
+                Some(Side::Defendant),
+                Quality::CounselName,
+            );
+            r.push(c.defendant_firms, Some(Side::Defendant), Quality::LawFirm);
+            r.push(self.intervenors_uncached(), None, Quality::Intervenor);
+            r
+        })
+    }
+
+    fn companies_uncached(&self) -> (Vec<String>, Vec<String>) {
+        let (mut apps, mut defs) = match self.gabarit() {
             Gabarit::Cc => self.cc_companies(),
             Gabarit::Blocs => self.block_companies(),
             Gabarit::Admin => (self.admin_companies(), Vec::new()),
-        }
+        };
+        // arbitrage de qualité par force du signal PAR MENTION : une entité
+        // dont toutes les mentions fortes sont côté cabinet n'est pas une
+        // partie (les ambigus restent en place)
+        apps.retain(|n| !self.drop_from_companies(n));
+        defs.retain(|n| !self.drop_from_companies(n));
+        (apps, defs)
     }
 
     /// Conseils (avocats + cabinets) par côté — mêmes gabarits structurels que
     /// [`Self::companies`], tranches verbatim.
     pub fn counsel(&self) -> CounselOut {
+        use crate::registry::{Quality, Side};
+        let r = self.party_registry();
+        CounselOut {
+            applicant_names: r.view(Some(Side::Applicant), Quality::CounselName),
+            applicant_firms: r.view(Some(Side::Applicant), Quality::LawFirm),
+            defendant_names: r.view(Some(Side::Defendant), Quality::CounselName),
+            defendant_firms: r.view(Some(Side::Defendant), Quality::LawFirm),
+        }
+    }
+
+    fn counsel_uncached(&self) -> CounselOut {
         let mut out = CounselOut::default();
         match self.gabarit() {
             Gabarit::Cc => self.cc_counsel(&mut out),
@@ -1964,6 +3147,11 @@ impl DocScan {
         if out.applicant_firms.is_empty() {
             out.applicant_firms = self.moyen_par_firms();
         }
+        // arbitrage de qualité par force du signal PAR MENTION : une entité
+        // dont toutes les mentions fortes sont côté partie n'est pas un
+        // cabinet (les ambigus restent en place)
+        out.applicant_firms.retain(|f| !self.drop_from_firms(f));
+        out.defendant_firms.retain(|f| !self.drop_from_firms(f));
         out
     }
 
@@ -1979,43 +3167,123 @@ impl DocScan {
         i
     }
 
-    /// Segments demandeurs/défendeurs du préambule CC — `None` = pas de pivot.
+    /// Ancre de jonction ancienne « Joint les pourvois n° U formé par… » —
+    /// pivot CC seulement quand la clause énumère ses demandeurs (« joint
+    /// les pourvois n° T au n° W » nu ne nomme personne).
+    fn joint_pivot(&self, end: usize) -> Option<&PTok> {
+        let j = self.find_tok(&[Mk::JointPourvois], 0, end)?;
+        let w = fold_stable(&self.text_slice(j.e, (j.e + 60).min(end)));
+        (w.contains("forme par") || w.contains("formes par")).then_some(j)
+    }
+
+    /// Le pivot ouvre-t-il un pourvoi incident/provoqué ? (« a formé un
+    /// pourvoi incident contre le même arrêt ») — ces pivots n'ouvrent pas
+    /// de zone : les rôles restent ceux des pourvois principaux (convention
+    /// gold).
+    fn pivot_incident(&self, p: &PTok) -> bool {
+        let tail: String = self.norm.chars[p.e..(p.e + 20).min(self.len())]
+            .iter()
+            .collect();
+        let tail = tail.to_lowercase();
+        tail.contains("incident") || tail.contains("provoqu")
+    }
+
+    /// Segments demandeurs/défendeurs du préambule CC — `None` = pas de
+    /// pivot. Un arrêt de jonction porte plusieurs pourvois principaux
+    /// (« I - Statuant sur le pourvoi n° X formé par… II - … ») : une zone
+    /// demandeurs et une fenêtre défendeurs PAR pivot.
     fn cc_segments(&self) -> Option<CcSegs> {
         let end = self.motifs_start();
-        let pivot_new = self.find_tok(&[Mk::PivotNew], 0, end).cloned();
-        let pivot_old = self.find_tok(&[Mk::PivotOld], 0, end).cloned();
-        // le pivot le plus PRÉCOCE gagne (un pourvoi incident en aval ne doit
-        // pas voler le rôle du gabarit ancien qui ouvre le préambule)
-        let pivot_new = match (&pivot_new, &pivot_old) {
-            (Some(n), Some(o)) if o.s < n.s => None,
-            _ => pivot_new,
-        };
-        let (app, opp_from) = match (&pivot_new, &pivot_old) {
-            (Some(p), _) => ((0, p.s), p.e),
-            (None, Some(p)) => {
-                // sans « contre l'arrêt » : la frontière structurelle
-                // suivante (début des défendeurs ou fin du préambule)
-                let seg_end = self
-                    .find_tok(&[Mk::Contre], p.e, end)
-                    .or_else(|| self.find_tok(&[Mk::Opposant, Mk::DefEnd], p.e, end))
-                    .map(|t| t.s)
-                    .unwrap_or(end);
-                ((p.e, seg_end), seg_end)
-            }
-            (None, None) => return None,
-        };
-        let def_from = self
-            .find_tok(&[Mk::Opposant], opp_from, end)
-            .map(|t| t.e)
-            .unwrap_or(opp_from);
-        let def_to = self
-            .find_tok(&[Mk::DefEnd], def_from, end)
+        let pivots: Vec<PTok> = self
+            .toks
+            .iter()
+            .filter(|t| {
+                t.s < end
+                    && matches!(t.kind, Mk::PivotNew | Mk::PivotOld)
+                    && !self.pivot_incident(t)
+            })
+            .cloned()
+            .collect();
+        if pivots.is_empty() {
+            // jonction ancienne sans pivot : « Joint les pourvois n° U
+            // formé par X, n° A formé par Y… ; » — l'ancre de jonction
+            // ouvre la zone demandeurs, bornée à la PREMIÈRE frontière
+            // structurelle (un « contre » de prose en aval ne la porte pas)
+            let joint = self.joint_pivot(end)?.clone();
+            let seg_end = [
+                self.find_tok(&[Mk::Contre], joint.e, end),
+                self.find_tok(&[Mk::Opposant, Mk::DefEnd], joint.e, end),
+            ]
+            .into_iter()
+            .flatten()
             .map(|t| t.s)
+            .min()
             .unwrap_or(end);
-        Some(CcSegs {
-            app,
-            def: (def_from, def_to),
-        })
+            let def_from = self
+                .find_tok(&[Mk::Opposant], seg_end, end)
+                .map(|t| t.e)
+                .unwrap_or(seg_end);
+            let def_to = self
+                .find_tok(&[Mk::DefEnd], def_from, end)
+                .map(|t| t.s)
+                .unwrap_or(end);
+            return Some(CcSegs {
+                app: vec![(joint.e, seg_end)],
+                def: vec![(def_from, def_to)],
+            });
+        }
+        let mut app: Vec<(usize, usize)> = Vec::new();
+        let mut def: Vec<(usize, usize)> = Vec::new();
+        for (k, p) in pivots.iter().enumerate() {
+            if let Some(&(_, prev_to)) = def.last() {
+                // le préambule des pourvois joints s'arrête à la première
+                // frontière d'observations (« Sur le rapport », « invoque »,
+                // « Vu la communication »…) : un pivot au-delà est de la
+                // prose (désistement rappelé…), pas un pourvoi joint —
+                // « défendeurs à la cassation » entre deux pourvois joints
+                // n'en est pas une
+                let blocked = self.toks.iter().any(|t| {
+                    t.kind == Mk::DefEnd && t.s >= prev_to && t.s < p.s && {
+                        let surf = self.text_slice(t.s, t.e).to_lowercase();
+                        !surf.starts_with("défende") && !surf.starts_with("defende")
+                    }
+                });
+                if blocked {
+                    break;
+                }
+            }
+            let limit = pivots.get(k + 1).map(|n| n.s).unwrap_or(end);
+            let (zone, opp_from) = if p.kind == Mk::PivotNew {
+                // demandeurs AVANT le pivot : depuis la fin du segment
+                // défendeurs du pourvoi précédent
+                let start = if k == 0 {
+                    0
+                } else {
+                    def.last().map(|&(_, to)| to).unwrap_or(0)
+                };
+                ((start, p.s), p.e)
+            } else {
+                // gabarit ancien : demandeurs APRÈS le pivot, jusqu'à la
+                // frontière structurelle suivante
+                let seg_end = self
+                    .find_tok(&[Mk::Contre], p.e, limit)
+                    .or_else(|| self.find_tok(&[Mk::Opposant, Mk::DefEnd], p.e, limit))
+                    .map(|t| t.s)
+                    .unwrap_or(limit);
+                ((p.e, seg_end), seg_end)
+            };
+            let def_from = self
+                .find_tok(&[Mk::Opposant], opp_from, limit)
+                .map(|t| t.e)
+                .unwrap_or(opp_from);
+            let def_to = self
+                .find_tok(&[Mk::DefEnd], def_from, limit)
+                .map(|t| t.s)
+                .unwrap_or(limit);
+            app.push(zone);
+            def.push((def_from, def_to));
+        }
+        Some(CcSegs { app, def })
     }
 
     /// Gabarits CC : (demandeurs, défendeurs) depuis le préambule du pourvoi.
@@ -2024,22 +3292,41 @@ impl DocScan {
             return (Vec::new(), Vec::new());
         };
         let end = self.motifs_start();
-        let applicants = self.harvest(segs.app.0, segs.app.1, segs.app.1);
-        let mut defendants = self.harvest(segs.def.0, segs.def.1, segs.def.1);
+        let mut applicants: Vec<String> = Vec::new();
+        for &(from, to) in &segs.app {
+            for name in self.harvest(from, to, to) {
+                if !applicants.iter().any(|o| same_words(o, &name)) {
+                    applicants.push(name);
+                }
+            }
+        }
+        let mut defendants: Vec<String> = Vec::new();
+        for &(from, to) in &segs.def {
+            for name in self.harvest(from, to, to) {
+                if !defendants.iter().any(|o| same_words(o, &name)) {
+                    defendants.push(name);
+                }
+            }
+        }
+        // demandeur nommé des deux côtés : le pivot (signal explicite) prime
+        // la fenêtre défendeurs — jonction où le greffe re-liste les parties,
+        // ou re-mention du demandeur dans la désignation du défendeur
+        defendants.retain(|d| !applicants.iter().any(|a| same_words(a, d)));
         if defendants.is_empty() {
             // filet : « avocat de <partie> » des observations, moins les
-            // demandeurs déjà connus
-            let apps_up: Vec<String> = applicants.iter().map(|a| a.to_uppercase()).collect();
+            // demandeurs déjà connus (comparaison pliée + variantes de
+            // graphie — le greffe accentue une occurrence et pas l'autre,
+            // et abrège les raisons sociales)
+            let apps_f: Vec<String> = applicants.iter().map(|a| fold_stable(a)).collect();
             for t in self.toks.iter().filter(|t| t.kind == Mk::AvocatDe) {
                 if t.s >= end {
                     break;
                 }
                 let w_end = (t.e + 140).min(end);
                 for c in self.harvest(t.e, w_end, w_end) {
-                    let cu = c.to_uppercase();
-                    if apps_up
-                        .iter()
-                        .any(|a| a.contains(cu.as_str()) || cu.contains(a.as_str()))
+                    let cf = fold_stable(&c);
+                    if apps_f.iter().any(|a| a.contains(cf.as_str()))
+                        || side_match(&cf, &apps_f, &[])
                     {
                         continue;
                     }
@@ -2082,14 +3369,25 @@ impl DocScan {
         let first_label = blocks
             .iter()
             .find(|b| matches!(b.kind, Mk::BlockApp | Mk::BlockDef | Mk::BlockOther));
+        // Layout suffixe (« Monsieur X … représenté par Me A ⏎ APPELANT ») :
+        // l'intro de conseil COLLE à l'étiquette qu'elle précède. Fenêtre en
+        // FIN de token — l'en-tête de notification de greffe (« Grosse
+        // délivrée le : à : Me A, avocat au barreau… ») porte des intros de
+        // conseil à 300+ chars de la première étiquette d'un layout préfixe.
+        // « Assistée de Marion COBOS, Greffier. ⏎ DEMANDERESSE » : l'intro
+        // qui présente le personnel judiciaire (juge assisté du greffier)
+        // n'est pas un conseil de partie — elle ne vote pas pour le suffixe.
         let suffix_layout = first_label.is_some_and(|f| {
-            self.toks
-                .iter()
-                .any(|t| t.kind == Mk::CounselIntro && t.s < f.s && t.s + 400 > f.s)
+            self.toks.iter().any(|t| {
+                t.kind == Mk::CounselIntro && t.e <= f.s && t.e + 150 > f.s && {
+                    let we = (t.e + 80).min(f.s);
+                    !self.folded_slice(t.e, we).contains("greffier")
+                }
+            })
         });
         let mut segs: Vec<(Mk, usize, usize)> = Vec::new();
         for (i, b) in blocks.iter().enumerate() {
-            if !matches!(b.kind, Mk::BlockApp | Mk::BlockDef) {
+            if !matches!(b.kind, Mk::BlockApp | Mk::BlockDef | Mk::BlockOther) {
                 continue;
             }
             let (seg_start, seg_end) = if suffix_layout {
@@ -2113,10 +3411,10 @@ impl DocScan {
         let mut applicants: Vec<String> = Vec::new();
         let mut defendants: Vec<String> = Vec::new();
         for (kind, from, to) in self.block_segments() {
-            let side = if kind == Mk::BlockApp {
-                &mut applicants
-            } else {
-                &mut defendants
+            let side = match kind {
+                Mk::BlockApp => &mut applicants,
+                Mk::BlockDef => &mut defendants,
+                _ => continue,
             };
             for name in self.harvest(from, to, to) {
                 if !side.contains(&name) {
@@ -2127,14 +3425,291 @@ impl DocScan {
         (applicants, defendants)
     }
 
+    /// Intervenants (ontologie 0180, rôle intervenant — clé gold
+    /// `intervenors`) : segments étiquetés du greffe (« PARTIE
+    /// INTERVENANTE : », « INTERVENANT(E)(S) »), apposition parenthésée
+    /// (« (Intervenant forcé) »), mémoires en intervention (admin).
+    pub fn intervenors(&self) -> Vec<String> {
+        self.party_registry()
+            .view(None, crate::registry::Quality::Intervenor)
+    }
+
+    fn intervenors_uncached(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        // Queue de récolte : connecteurs traînants (« CPAM DE CHARENTE DE »)
+        // et placeholders d'adresse empilés (« X [Adresse 5] [Adresse 5] » —
+        // un placeholder APRÈS un autre groupe fermé est du bloc adresse ; un
+        // placeholder seul peut être le nom même : « RÉSIDENCE [Adresse 11] »).
+        fn trim_tail(mut v: &str) -> &str {
+            loop {
+                let t = v.trim_end();
+                if let Some(last) = t.rsplit(' ').next() {
+                    if matches!(
+                        last.to_lowercase().as_str(),
+                        "de" | "du" | "des" | "et" | "la" | "le" | "les"
+                    ) {
+                        v = &t[..t.len() - last.len()];
+                        continue;
+                    }
+                    if t.ends_with(']') {
+                        if let Some(i) = t.rfind('[') {
+                            let prev = t[..i].trim_end();
+                            if prev.ends_with(']') {
+                                v = prev;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                return t;
+            }
+        }
+        // dédup par contenance pliée (« Organisme [3] » ↔ « organisme [3] »)
+        fn push(v: String, out: &mut Vec<String>) {
+            let v = trim_tail(&v).to_string();
+            if v.is_empty() {
+                return;
+            }
+            let vu = v.to_uppercase();
+            if !out.iter().any(|o| {
+                let ou = o.to_uppercase();
+                ou.starts_with(&vu) || ou.ends_with(&vu)
+            }) {
+                out.push(v);
+            }
+        }
+        let hdr = self.motifs_start();
+        for (kind, from, to) in self.block_segments() {
+            if kind != Mk::BlockOther {
+                continue;
+            }
+            let Some(label) = self
+                .toks
+                .iter()
+                .find(|t| t.kind == Mk::BlockOther && (t.e == from || t.s == to))
+            else {
+                continue;
+            };
+            let lf = self.folded_slice(label.s, label.e);
+            // Étiquette-mot : casse de greffe stricte (tout en capitales) — un
+            // titre de section des motifs (« …des différents intervenants : »)
+            // passe la règle du deux-points mais pas celle-ci. « autres
+            // parties » borne les segments voisins sans être récoltée.
+            let wordy = lf.starts_with("intervenant") || lf.starts_with("partie");
+            if (wordy && !is_upper_span(&self.norm.chars, label.s, label.e))
+                || lf == "autres parties"
+                || label.s >= hdr
+            {
+                continue;
+            }
+            // Bloc de greffe compact : bornage aux motifs, à l'audience
+            // (« Débats à l'audience… » clôt la zone parties) + garde-fou de
+            // taille (sans Stop aval, le segment filerait dans la prose).
+            let (from, to) = if label.s == to {
+                (from.max(to.saturating_sub(900)), to)
+            } else {
+                let audience = self
+                    .toks
+                    .iter()
+                    .find(|a| a.kind == Mk::Audience && a.s >= from)
+                    .map(|a| a.s)
+                    .unwrap_or(usize::MAX);
+                (from, to.min(from + 900).min(hdr.max(from)).min(audience))
+            };
+            // Entrée TOUT-CAPS sans tête de forme collée à l'étiquette
+            // (« INTERVENANT VOLONTAIRE ⏎ ALLIANZ IARD, [Adresse 1] ») : la
+            // récolte ne voit que les têtes (Form/Societe/Inst*) — on prend le
+            // nom de tête du bloc quand son premier mot est en capitales,
+            // après les qualificatifs d'étiquette, puces et articles.
+            if label.e == from {
+                let mut ns = self.skip_spaces(from, to);
+                loop {
+                    while ns < to && !self.norm.chars[ns].is_alphanumeric() {
+                        ns += 1;
+                    }
+                    let we = (ns..to)
+                        .find(|&i| !self.norm.chars[i].is_alphabetic())
+                        .unwrap_or(to);
+                    // reste de pluriel de greffe « INTERVENANTE(S) » : la
+                    // lettre seule entre parenthèses n'est pas une tête
+                    if we == ns + 1
+                        && ns > 0
+                        && self.norm.chars[ns - 1] == '('
+                        && self.norm.chars.get(we).copied() == Some(')')
+                    {
+                        ns = we + 1;
+                        continue;
+                    }
+                    let w: String = self.norm.chars[ns..we]
+                        .iter()
+                        .collect::<String>()
+                        .to_lowercase();
+                    if matches!(
+                        w.as_str(),
+                        "volontaire"
+                            | "volontaires"
+                            | "forcé"
+                            | "forcée"
+                            | "forcés"
+                            | "forcées"
+                            | "la"
+                            | "le"
+                            | "les"
+                            | "l"
+                            | "société"
+                            | "societe"
+                    ) && we > ns
+                    {
+                        ns = we;
+                        continue;
+                    }
+                    break;
+                }
+                let we = (ns..to)
+                    .find(|&i| !self.norm.chars[i].is_alphanumeric())
+                    .unwrap_or(to);
+                if we > ns + 1
+                    && is_upper_span(&self.norm.chars, ns, we)
+                    && self.norm.chars[ns..we].iter().any(|c| c.is_alphabetic())
+                {
+                    let ne = self.extend_name(ns, to);
+                    let after = self.skip_spaces(ne, self.len());
+                    let colon = self.norm.chars.get(after).copied() == Some(':');
+                    if !colon {
+                        if let Some(name) = self.clean(ns, ne) {
+                            push(name, &mut out);
+                        }
+                    }
+                }
+                // Entrées empilées du greffe (« FIVA, demeurant [Adresse 6]
+                // ⏎ non comparant ⏎ DRJSCS, demeurant [Adresse 1] ») : un nom
+                // TOUT-CAPS sans tête de forme par entrée, signé par
+                // « , demeurant » — invisible de la récolte par têtes.
+                let (bs, be) = (self.norm.char2byte[from], self.norm.char2byte[to]);
+                for (off, _) in self.norm.folded[bs..be].match_indices(", demeurant") {
+                    let comma = self.norm.byte2char[bs + off];
+                    let mut e = comma;
+                    while e > from && self.norm.chars[e - 1] == ' ' {
+                        e -= 1;
+                    }
+                    // marche arrière mot-à-mot : seuls des mots TOUT-CAPS
+                    // s'agrègent (« non comparant  DRJSCS » s'arrête à DRJSCS
+                    // — les sauts de ligne sont des espaces dans norm)
+                    let mut s = e;
+                    loop {
+                        let mut ws = s;
+                        while ws > from && self.norm.chars[ws - 1] == ' ' {
+                            ws -= 1;
+                        }
+                        let wend = ws;
+                        while ws > from
+                            && (self.norm.chars[ws - 1].is_alphanumeric()
+                                || matches!(self.norm.chars[ws - 1], '-' | '&' | '\''))
+                        {
+                            ws -= 1;
+                        }
+                        if wend == ws || !is_upper_span(&self.norm.chars, ws, wend) {
+                            break;
+                        }
+                        s = ws;
+                    }
+                    let mut s = self.skip_spaces(s, e);
+                    // article de tête (« LA VILLE DE PARIS ») : même rognage
+                    // que la tête de bloc
+                    loop {
+                        let we = (s..e)
+                            .find(|&i| !self.norm.chars[i].is_alphabetic())
+                            .unwrap_or(e);
+                        let w: String = self.norm.chars[s..we]
+                            .iter()
+                            .collect::<String>()
+                            .to_lowercase();
+                        if matches!(w.as_str(), "la" | "le" | "les" | "l") && we < e {
+                            s = self.skip_spaces(we, e);
+                        } else {
+                            break;
+                        }
+                    }
+                    if e > s + 1
+                        && is_upper_span(&self.norm.chars, s, e)
+                        && self.norm.chars[s..e].iter().any(|c| c.is_alphabetic())
+                    {
+                        if let Some(name) = self.clean(s, e) {
+                            push(name, &mut out);
+                        }
+                    }
+                }
+            }
+            for name in self.harvest_in(from, to, to, true) {
+                push(name, &mut out);
+            }
+        }
+        // apposition : l'entité précède la parenthèse
+        for t in self.toks.iter().filter(|t| t.kind == Mk::BlockOther) {
+            let before = (0..t.s)
+                .rev()
+                .map(|i| self.norm.chars[i])
+                .find(|c| *c != ' ');
+            if before != Some('(') {
+                continue;
+            }
+            let from = t.s.saturating_sub(160);
+            if let Some(name) = self.harvest_in(from, t.s, t.s, true).pop() {
+                push(name, &mut out);
+            }
+        }
+        // mémoire en intervention : les entités de la fenêtre aval (« présenté
+        // pour la fédération X et pour le club Y »)
+        for t in self.toks.iter().filter(|t| t.kind == Mk::IntervIntro) {
+            // ancre entre guillemets (« requête intitulée " mémoire en
+            // intervention volontaire " ») : un intitulé cité — souvent
+            // requalifié par le juge —, pas une intervention reçue
+            let before = (0..t.s)
+                .rev()
+                .map(|i| self.norm.chars[i])
+                .find(|c| *c != ' ');
+            if matches!(before, Some('"' | '«' | '“')) {
+                continue;
+            }
+            let to = (t.e + 220).min(self.len());
+            for name in self.harvest_in(t.e, to, to, true) {
+                push(name, &mut out);
+            }
+        }
+        // Re-casse d'élision : « L'organisme [3] » livre « organisme [3] »,
+        // la majuscule mangée par l'article. Si TOUTES les occurrences
+        // minuscules du document sont élidées (précédées d'une apostrophe)
+        // et que la chaîne existe avec initiale majuscule (liste de
+        // notification du greffe), c'est elle le nom — verbatim ancré,
+        // jamais de casse fabriquée.
+        let mut text: Option<String> = None;
+        for v in &mut out {
+            let Some(first) = v.chars().next().filter(|c| c.is_lowercase()) else {
+                continue;
+            };
+            let cap: String = first.to_uppercase().chain(v.chars().skip(1)).collect();
+            let text = text.get_or_insert_with(|| self.norm.chars.iter().collect());
+            let all_elided = text.match_indices(v.as_str()).all(|(i, _)| {
+                text[..i]
+                    .chars()
+                    .next_back()
+                    .is_some_and(|c| c == '\'' || c == '\u{2019}')
+            });
+            if all_elided && text.contains(&cap) {
+                *v = cap;
+            }
+        }
+        out
+    }
+
     /// Gabarit blocs : les conseils de chaque segment vont au côté de son
     /// étiquette (le conseil d'une partie est nommé dans son bloc).
     fn block_counsel(&self, out: &mut CounselOut) {
         for (kind, from, to) in self.block_segments() {
-            let (names, firms) = if kind == Mk::BlockApp {
-                (&mut out.applicant_names, &mut out.applicant_firms)
-            } else {
-                (&mut out.defendant_names, &mut out.defendant_firms)
+            let (names, firms) = match kind {
+                Mk::BlockApp => (&mut out.applicant_names, &mut out.applicant_firms),
+                Mk::BlockDef => (&mut out.defendant_names, &mut out.defendant_firms),
+                _ => continue,
             };
             self.counsel_in(from, to, names, firms);
         }
@@ -2212,7 +3787,7 @@ impl DocScan {
                 Some(a) => {
                     // petit span positionné par le token
                     let party = fold_stable(&self.text_slice(a.e, win_end.min(a.e + 120)));
-                    let d = if apps_f.iter().any(|x| party.contains(x.as_str())) {
+                    let d = if side_match(&party, &apps_f, &[]) {
                         false
                     } else if apps_f.is_empty() {
                         first_avde_seen
@@ -2246,26 +3821,27 @@ impl DocScan {
             return;
         };
         let end = self.motifs_start();
-        self.counsel_in(
-            segs.app.0,
-            segs.app.1,
-            &mut out.applicant_names,
-            &mut out.applicant_firms,
-        );
-        self.counsel_in(
-            segs.def.0,
-            segs.def.1,
-            &mut out.defendant_names,
-            &mut out.defendant_firms,
-        );
-        // région observations : après la fin des défendeurs, avant les motifs
+        for &(from, to) in &segs.app {
+            self.counsel_in(from, to, &mut out.applicant_names, &mut out.applicant_firms);
+        }
+        for &(from, to) in &segs.def {
+            self.counsel_in(from, to, &mut out.defendant_names, &mut out.defendant_firms);
+        }
+        // région observations : après le dernier segment du préambule
+        let obs_from = segs
+            .app
+            .iter()
+            .chain(segs.def.iter())
+            .map(|&(_, to)| to)
+            .max()
+            .unwrap_or(0);
         let (apps, defs) = self.cc_companies();
         let apps_f: Vec<String> = apps.iter().map(|a| fold_stable(a)).collect();
         let defs_f: Vec<String> = defs.iter().map(|d| fold_stable(d)).collect();
         let mut starts: Vec<usize> = Vec::new();
         let mut entries: Vec<(usize, bool, String)> = Vec::new(); // (fin, cabinet?, valeur)
         for t in &self.toks {
-            if t.s < segs.def.1 || t.s >= end {
+            if t.s < obs_from || t.s >= end {
                 continue;
             }
             let entry = match t.kind {
@@ -2289,9 +3865,9 @@ impl DocScan {
                     // petit span positionné par le token : la partie se nomme
                     // juste après « avocat de », pas en fin de préambule
                     let party = fold_stable(&self.text_slice(a.e, win_end.min(a.e + 120)));
-                    if apps_f.iter().any(|x| party.contains(x.as_str())) {
+                    if side_match(&party, &apps_f, &defs_f) {
                         Some(false)
-                    } else if defs_f.iter().any(|x| party.contains(x.as_str())) {
+                    } else if side_match(&party, &defs_f, &apps_f) {
                         Some(true)
                     } else {
                         None
@@ -2459,19 +4035,7 @@ impl DocScan {
         {
             return None;
         }
-        let mut ne = self.extend_name(ns, to);
-        while self.norm.chars.get(ne).copied() == Some(',') {
-            let j = self.skip_spaces(ne + 1, to);
-            let c = self.norm.chars.get(j).copied().unwrap_or(' ');
-            if !c.is_uppercase() || self.tok_starting_at(j) {
-                break;
-            }
-            let n2 = self.extend_name(j, to);
-            if n2 <= j {
-                break;
-            }
-            ne = n2;
-        }
+        let ne = self.chain_end(self.extend_name(ns, to), to);
         let name = self.clean_inner(ns, ne)?;
         Some((format!("{} {}", self.text_slice(t.s, t.e), name), ne))
     }
@@ -2490,6 +4054,425 @@ impl DocScan {
                 && c.e + 60 > pos
         })
     }
+
+    // ── arbitrage de qualité (cabinet vs partie) par force du signal PAR
+    // MENTION : post-pass des sorties publiques companies()/counsel() ────────
+
+    /// Occurrences pliées de `value` dans le document (frontières de mot),
+    /// blancs élastiques : la valeur sort de [`Self::text_slice`] (runs de
+    /// blancs collapsés), le texte plié garde ses runs. Bornes en CHARS.
+    fn folded_mentions(&self, value: &str) -> Vec<(usize, usize)> {
+        let needle = fold_stable(value);
+        let words: Vec<&str> = needle.split_whitespace().collect();
+        let Some((first, rest)) = words.split_first() else {
+            return Vec::new();
+        };
+        let bytes = self.norm.folded.as_bytes();
+        let mut out = Vec::new();
+        for (bs, _) in self.norm.folded.match_indices(first) {
+            if bs > 0 && bytes[bs - 1].is_ascii_alphanumeric() {
+                continue;
+            }
+            let mut be = bs + first.len();
+            let mut ok = true;
+            for w in rest {
+                let mut k = be;
+                while k < bytes.len() && bytes[k] == b' ' {
+                    k += 1;
+                }
+                if k == be || !self.norm.folded[k..].starts_with(w) {
+                    ok = false;
+                    break;
+                }
+                be = k + w.len();
+            }
+            if !ok || (be < bytes.len() && bytes[be].is_ascii_alphanumeric()) {
+                continue;
+            }
+            out.push((self.norm.byte2char[bs], self.norm.byte2char[be]));
+        }
+        out
+    }
+
+    /// L'intro de conseil (pliée) introduit-elle le CONSEIL après elle ?
+    /// « représentée par X » : X est le conseil. « représentant X » (participe
+    /// présent, « représentant légal » compris) : X est la PARTIE représentée.
+    fn intro_precedes_counsel(f: &str) -> bool {
+        !f.starts_with("representant")
+            && (f.starts_with("represente")
+                || f.starts_with("assiste")
+                || f.starts_with("substitue")
+                || f.starts_with("ayant pour avocat")
+                || f.starts_with("comparant par")
+                || f.starts_with("au cabinet de")
+                || f.starts_with("les observations de")
+                || f.starts_with("avocat(s)")
+                || f.starts_with("rep/"))
+    }
+
+    /// Signal CABINET fort sur la mention `[s..e)` : apposition « , avocat »
+    /// ou « , représentant <partie> » immédiate, intro de conseil collée
+    /// (≤ 12 chars sans chiffre — « toque 343 » clôt le conseil précédent),
+    /// « Me X de la <structure> » (≤ 40 chars sans virgule ni chiffre),
+    /// « Moyen produit par <structure> ».
+    fn mention_cabinet_strong(&self, s: usize, e: usize) -> bool {
+        if self.followed_by_counsel(e) {
+            return true;
+        }
+        let before = self.toks.iter().any(|t| {
+            let win = match t.kind {
+                Mk::CounselIntro | Mk::MoyenPar => 12,
+                Mk::Me => 40,
+                _ => return false,
+            };
+            if !(t.e <= s && t.e + win > s) {
+                return false;
+            }
+            if t.kind == Mk::CounselIntro {
+                let f = fold_stable(&self.text_slice(t.s, t.e));
+                // « Représentant : la SCP X » (label de greffe, colonisé)
+                // introduit le conseil ; « représentant X » de prose
+                // introduit la partie ; « avocat au barreau de X (cabinet
+                // Y) » n'introduit que la parenthèse cabinet.
+                let ok_dir = Self::intro_precedes_counsel(&f)
+                    || (f.starts_with("representant")
+                        && (f.contains(':') || self.norm.chars[t.e..s].contains(&':')))
+                    || (f.starts_with("avocat") && self.norm.chars[t.e..s].contains(&'('));
+                if !ok_dir {
+                    return false;
+                }
+            }
+            !self.norm.chars[t.e..s]
+                .iter()
+                .any(|c| c.is_ascii_digit() || *c == ',' || *c == ';')
+        });
+        if before {
+            return true;
+        }
+        // « <cabinet>, représentant la société X » : la mention représente —
+        // sans colonisation (« REPRESENTANT(S) : Me X » = la mention est la
+        // partie représentée).
+        self.apposition_after(e).is_some_and(|g| {
+            self.toks.iter().any(|t| {
+                t.s == g && t.kind == Mk::CounselIntro && {
+                    let f = fold_stable(&self.text_slice(t.s, t.e));
+                    (f == "representant" || f == "representants") && !self.colon_after(t.e)
+                }
+            })
+        })
+    }
+
+    /// Un « : » suit-il la position `e` (espaces et « (s) » enjambés) ?
+    fn colon_after(&self, e: usize) -> bool {
+        self.norm.chars[e..(e + 6).min(self.len())]
+            .iter()
+            .find(|c| !matches!(c, ' ' | '(' | ')' | 's' | 'S'))
+            == Some(&':')
+    }
+
+    /// Premier contenu après la mention `[s..e)`, au-delà des espaces,
+    /// virgules, astérisques et placeholders « [Adresse 11] » — position du
+    /// token d'apposition, ou `None` si rien d'appariable dans les 100 chars.
+    fn apposition_after(&self, e: usize) -> Option<usize> {
+        let mut g = e;
+        let to = (e + 100).min(self.len());
+        while g < to {
+            match self.norm.chars[g] {
+                ' ' | ',' | '*' => g += 1,
+                '[' => match self.norm.chars[g..to].iter().position(|&c| c == ']') {
+                    Some(off) => g += off + 1,
+                    None => return None,
+                },
+                _ => break,
+            }
+        }
+        (g < to).then_some(g)
+    }
+
+    /// Signal PARTIE fort sur la mention `[s..e)` : étiquette de bloc de
+    /// greffe collée avant, cible d'un « l'opposant à » / « avocat de » /
+    /// « pourvoi formé par » / « représentant <partie> », sujet d'un pivot de
+    /// pourvoi en aval, ou apposition de greffe après la mention (au-delà des
+    /// placeholders d'adresse) : descripteur de partie (« défaillante »,
+    /// « immatriculée », RCS, ès qualités en gabarit blocs…). Quand
+    /// `weak_repr` : « , représentée par Me X » après la mention compte aussi
+    /// (une structure d'avocats porte la même formule pour ELLE-MÊME — le
+    /// signal ne vaut que pour les formes commerciales).
+    fn mention_party_strong(&self, s: usize, e: usize, weak_repr: bool) -> bool {
+        let label_before = self.toks.iter().any(|t| {
+            matches!(t.kind, Mk::BlockApp | Mk::BlockDef)
+                && t.e <= s
+                && t.e + 20 > s
+                // gap de ponctuation de greffe (« DEMANDEUR (S) : », « 1° »)
+                && !self.norm.chars[t.e..s]
+                    .iter()
+                    .any(|c| c.is_alphabetic() && !matches!(c, 's' | 'S'))
+        });
+        if label_before {
+            return true;
+        }
+        let target_before = self.toks.iter().any(|t| {
+            if !(t.e <= s && t.e + 12 > s) {
+                return false;
+            }
+            matches!(t.kind, Mk::Opposant | Mk::AvocatDe | Mk::PivotOld)
+                || (t.kind == Mk::CounselIntro && {
+                    let f = fold_stable(&self.text_slice(t.s, t.e));
+                    // « représentant <partie> » de prose, jamais colonisé
+                    f.starts_with("representant")
+                        && !f.contains(':')
+                        && !self.norm.chars[t.e..s].contains(&':')
+                })
+        });
+        if target_before {
+            return true;
+        }
+        let pivot_after = self.toks.iter().any(|t| {
+            t.kind == Mk::PivotNew
+                && t.s >= e
+                && t.s < e + 60
+                && !self.norm.chars[e..t.s]
+                    .iter()
+                    .any(|c| *c == '.' || *c == ';')
+        });
+        if pivot_after {
+            return true;
+        }
+        let Some(g) = self.apposition_after(e) else {
+            return false;
+        };
+        self.toks.iter().filter(|t| t.s == g).any(|t| {
+            let f = fold_stable(&self.text_slice(t.s, t.e));
+            match t.kind {
+                Mk::TrimAlways => {
+                    f.starts_with("defaillant")
+                        || f.starts_with("non comparant")
+                        || f.starts_with("ni comparant")
+                        || f.starts_with("immatricul")
+                        || f.starts_with("inscrit")
+                        || f == "rcs"
+                        || f.ends_with("siret")
+                        || f.starts_with("prise en la personne")
+                        || f.starts_with("pris en la personne")
+                        || f.starts_with("domicili")
+                        || f == "demeurant"
+                        || (f.starts_with("es qualite") || f.starts_with("es-qualite"))
+                            && self.gabarit() == Gabarit::Blocs
+                }
+                Mk::CounselIntro => {
+                    weak_repr
+                        && (Self::intro_precedes_counsel(&f)
+                            || (f.starts_with("representant")
+                                && (f.contains(':') || self.colon_after(t.e))))
+                }
+                _ => false,
+            }
+        })
+    }
+
+    /// Force du signal de qualité de `value` : (mentions cabinet-fort,
+    /// mentions partie-fort) sur tout le document. `weak_repr` étend le
+    /// signal partie à « représentée par » en aval de la mention.
+    fn quality_evidence(&self, value: &str, weak_repr: bool) -> (u32, u32) {
+        let mut cab = 0u32;
+        let mut par = 0u32;
+        for (s, e) in self.folded_mentions(value) {
+            if self.mention_cabinet_strong(s, e) {
+                cab += 1;
+            }
+            if self.mention_party_strong(s, e, weak_repr) {
+                par += 1;
+            }
+        }
+        (cab, par)
+    }
+
+    /// L'entité émise comme PARTIE est en réalité un cabinet : au moins une
+    /// mention cabinet-fort et aucune mention partie-fort.
+    fn drop_from_companies(&self, name: &str) -> bool {
+        let (cab, par) = self.quality_evidence(name, true);
+        cab > 0 && par == 0
+    }
+
+    /// L'entité émise comme CABINET est en réalité une partie : au moins une
+    /// mention partie-fort et aucune mention cabinet-fort. « représentée
+    /// par » en aval ne compte partie que hors structures d'avocats (une
+    /// SELARL de conseil porte la même formule pour elle-même).
+    fn drop_from_firms(&self, name: &str) -> bool {
+        let law = is_law_structure(name);
+        let (cab, par) = self.quality_evidence(name, !law);
+        if par > 0 && cab == 0 {
+            return true;
+        }
+        // prior de forme : une forme commerciale (SAS, SARL…) émise cabinet
+        // sans AUCUNE mention cabinet-forte est une partie
+        !law && cab == 0
+    }
+}
+
+// ── appariement tolérant des noms de parties (côté des conseils) ────────────
+
+/// Mots génériques du nommage des parties (pliés) : formes sociales,
+/// épithètes juridiques et institutionnelles — jamais distinctifs entre deux
+/// graphies d'une même entité.
+const PARTY_GENERIC: &[&str] = &[
+    "societe",
+    "societes",
+    "anonyme",
+    "sarl",
+    "sas",
+    "sasu",
+    "sci",
+    "scm",
+    "scp",
+    "snc",
+    "sccv",
+    "scea",
+    "gaec",
+    "earl",
+    "eurl",
+    "gie",
+    "sel",
+    "selarl",
+    "selas",
+    "seleurl",
+    "selafa",
+    "selca",
+    "responsabilite",
+    "limitee",
+    "simplifiee",
+    "unipersonnelle",
+    "actions",
+    "capital",
+    "variable",
+    "exercice",
+    "liberal",
+    "liberale",
+    "cooperative",
+    "civile",
+    "civiles",
+    "commerciale",
+    "commercial",
+    "professionnelle",
+    "professionnel",
+    "professionnels",
+    "agricole",
+    "immobiliere",
+    "immobilier",
+    "immobilieres",
+    "compagnie",
+    "groupe",
+    "groupement",
+    "cabinet",
+    "office",
+    "etablissement",
+    "etablissements",
+    "entreprise",
+    "entreprises",
+    "exploitation",
+    "agence",
+    "association",
+    "syndicat",
+    "syndicale",
+    "federation",
+    "union",
+    "fondation",
+    "institut",
+    "centre",
+    "comite",
+    "caisse",
+    "caisses",
+    "primaire",
+    "regionale",
+    "departementale",
+    "nationale",
+    "national",
+    "generale",
+    "general",
+    "mutuelle",
+    "mutuelles",
+    "mutualite",
+    "assurance",
+    "assurances",
+    "banque",
+    "credit",
+    "garantie",
+    "france",
+    "francais",
+    "francaise",
+    "francaises",
+    "europeenne",
+    "europeen",
+    "internationale",
+    "international",
+    "commune",
+    "ville",
+    "departement",
+    "region",
+    "etat",
+    "ministre",
+    "ministere",
+    "prefet",
+    "prefecture",
+    "directeur",
+    "direction",
+    "monsieur",
+    "madame",
+    "mademoiselle",
+    "epoux",
+    "epouse",
+    "consorts",
+    "veuve",
+    "heritiers",
+    "indivision",
+    "les",
+    "des",
+    "aux",
+    "representee",
+    "represente",
+    "adresse",
+    "localite",
+    "dont",
+    "siege",
+    "social",
+    "qualite",
+    "personne",
+    "droit",
+    "prive",
+    "publique",
+    "public",
+];
+
+fn is_generic(w: &str) -> bool {
+    PARTY_GENERIC.contains(&w)
+}
+
+/// Mots d'appariement d'un nom plié : runs alphanumériques d'au moins 3
+/// chars portant au moins une lettre (les nombres nus — années, numéros —
+/// collisionnent avec la prose).
+fn match_words(folded: &str) -> impl Iterator<Item = &str> {
+    folded
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| w.len() >= 3 && w.chars().any(|c| c.is_alphabetic()))
+}
+
+fn word_in(list: &[String], w: &str) -> bool {
+    list.iter().any(|n| match_words(n).any(|x| x == w))
+}
+
+/// Le texte plié `party` (fenêtre après « avocat de », ou candidat du filet
+/// défendeurs) désigne-t-il l'un des noms pliés de `side`, en tolérant les
+/// variantes de graphie (« la société FIDAL » ↔ « société anonyme Fiduciaire
+/// juridique et fiscale de France (FIDAL) ») ? Match : containment du nom
+/// entier, ou partage d'un mot distinctif — hors génériques et hors mots
+/// présents aussi dans les noms de `other` (l'autre côté, ambigus).
+fn side_match(party: &str, side: &[String], other: &[String]) -> bool {
+    if side.iter().any(|x| party.contains(x.as_str())) {
+        return true;
+    }
+    let pw: Vec<&str> = match_words(party).collect();
+    side.iter()
+        .any(|n| match_words(n).any(|w| !is_generic(w) && pw.contains(&w) && !word_in(other, w)))
 }
 
 #[cfg(test)]
@@ -2544,6 +4527,7 @@ mod tests {
     fn zones_cc_modern_preamble() {
         let text = "La société Gamma, société anonyme, a formé le pourvoi n° X 21-12.345 contre l'arrêt rendu le 5 mai 2021 par la cour d'appel de Lyon, dans le litige l'opposant à la société Delta, défenderesse à la cassation. Faits et procédure 1. Selon l'arrêt attaqué, la société Epsilon a conclu un contrat.";
         let (apps, defs) = scan(text).companies();
+        // Convention gold (ADR 0180 §3) : le descripteur nu est rogné.
         assert_eq!(apps, vec!["Gamma".to_string()]);
         assert_eq!(defs, vec!["Delta".to_string()]);
     }
@@ -2557,6 +4541,33 @@ mod tests {
             defs,
             vec!["caisse primaire d'assurance maladie de Lille".to_string()]
         );
+    }
+
+    #[test]
+    fn zones_cc_jonction_multi_pourvois() {
+        // deux pourvois principaux joints : demandeur de l'un re-listé
+        // défendeur de l'autre = demandeur du dossier ; le vrai défendeur
+        // est celui qui n'a formé aucun pourvoi
+        let text = "I - Statuant sur le pourvoi n° P 18-21.405 formé par : 1°/ la société Alpha, société anonyme, 2°/ la société MMA IARD, société anonyme, contre l'arrêt rendu le 15 juin 2018 par la cour d'appel de Versailles, dans le litige les opposant : 1°/ à la société Cincinnatus assurance, 2°/ à la société BRC Investissement, défendeurs à la cassation ; II - Statuant sur le pourvoi n° E 18-23.168 formé par la société Cincinnatus assurance, contre le même arrêt rendu, dans le litige l'opposant : 1°/ à la société BRC Investissement, 2°/ à la société Alpha, 3°/ à la société MMA IARD, défendeurs à la cassation ; Faits et procédure 1. Selon l'arrêt attaqué.";
+        let (apps, defs) = scan(text).companies();
+        assert_eq!(
+            apps,
+            vec![
+                "Alpha".to_string(),
+                "MMA IARD".to_string(),
+                "Cincinnatus assurance".to_string(),
+            ]
+        );
+        assert_eq!(defs, vec!["BRC Investissement".to_string()]);
+    }
+
+    #[test]
+    fn zones_cc_pourvoi_incident_ne_bascule_pas() {
+        // le pourvoi incident ne fait pas du défendeur un demandeur
+        let text = "La société Magna, société par actions simplifiée, a formé le pourvoi n° F 14-29.616 contre l'arrêt rendu le 5 novembre 2014 par la cour d'appel de Nancy, dans le litige l'opposant à la société Factum finance, défenderesse à la cassation ; La société Factum finance, défenderesse au pourvoi principal a formé un pourvoi incident contre le même arrêt ; Faits et procédure 1. Selon l'arrêt attaqué.";
+        let (apps, defs) = scan(text).companies();
+        assert_eq!(apps, vec!["Magna".to_string()]);
+        assert_eq!(defs, vec!["Factum finance".to_string()]);
     }
 
     #[test]
@@ -2617,6 +4628,35 @@ mod tests {
     }
 
     #[test]
+    fn quality_arbitrage_form_after_counsel_line_is_party_not_firm() {
+        // Deux parties dans le même bloc de greffe : la seconde (« SA Grdf »)
+        // suit la ligne de conseil de la première (« avocat au barreau de
+        // PARIS » à ≤ 60 chars) et serait récoltée comme cabinet — l'arbitrage
+        // par mention la rejette (forme commerciale sans aucune mention
+        // cabinet-forte, « défaillante » en apposition). La vraie structure
+        // (« Représentant : la SCP ») reste un cabinet.
+        let text = "COUR D'APPEL DE PARIS ARRET DU 3 MAI 2022 APPELANT : M. X Représentant : Me A, avocat au barreau de LYON INTIMEES : SA Enedis [Adresse 4] Représentant : la SCP Vrai Conseil, avocat au barreau de PARIS SA Grdf [Adresse 3] défaillante COMPOSITION DE LA COUR : M. B, président EXPOSE DU LITIGE La cour statue.";
+        let s = scan(text);
+        let out = s.counsel();
+        assert_eq!(out.defendant_firms, vec!["SCP Vrai Conseil".to_string()]);
+        let (_, defs) = s.companies();
+        assert!(defs.iter().any(|d| d.starts_with("SA Enedis")));
+    }
+
+    #[test]
+    fn quality_arbitrage_representant_precedes_party() {
+        // « représentant l'<entité> » (participe présent) désigne la PARTIE
+        // représentée — pas une intro de conseil vers l'entité : la caisse
+        // reste une partie malgré l'intro à ≤ 12 chars.
+        let text = "Vu la procédure suivante : Par une requête enregistrée le 3 mars 2023, la caisse locale des assurances mutuelles agricoles de Paris demande à la cour d'annuler l'arrêté. Ont été entendues les observations de Me Estene, représentant la caisse locale des assurances mutuelles agricoles de Paris. Considérant ce qui suit : 1. La requête est rejetée.";
+        let (apps, _) = scan(text).companies();
+        assert_eq!(
+            apps,
+            vec!["caisse locale des assurances mutuelles agricoles de Paris".to_string()]
+        );
+    }
+
+    #[test]
     fn admin_multi_request_blocks() {
         let text = "Vu les procédures suivantes : 1° Sous le n°438686, par une requête, un mémoire complémentaire et deux mémoires en réplique, enregistrés les 14 février 2020 et 7 octobre 2021 au secrétariat du contentieux du Conseil d'Etat, la ville de Genève et la ville de Carouge demandent au Conseil d'Etat : 1°) d'annuler pour excès de pouvoir le décret du 24 décembre 2019 ; 2° Sous le n°439020, par une requête et quatre mémoires en réplique, enregistrés les 24 février 2020 et 12 décembre 2021, l'association Vivre à Machilly et la commune de Machilly demandent au Conseil d'Etat : 1°) d'annuler ce décret ;";
         let (apps, _) = scan(text).companies();
@@ -2629,5 +4669,50 @@ mod tests {
                 "commune de Machilly".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn intervenors_prose_admin_et_recase_elision() {
+        // IntervIntro multi-entités : « club » tête institutionnelle, la
+        // fenêtre aval livre les deux intervenants (spec campagne 2026-07-09).
+        let sc = scan("Par une intervention enregistrée le 25 août 2025, la fédération des chasseurs et le club international des chasseurs de bécassines, représentés par Me Bonzy, concluent au rejet.");
+        assert_eq!(
+            sc.intervenors(),
+            vec![
+                "fédération des chasseurs".to_string(),
+                "club international des chasseurs de bécassines".to_string(),
+            ]
+        );
+        // Ancre entre guillemets : intitulé cité, pas une intervention reçue.
+        let sc = scan("Par une requête intitulée \" mémoire en intervention volontaire \" enregistrée le 17 juin, la société Veolia Eau a fait valoir son intérêt.");
+        assert!(sc.intervenors().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod ecole_solution_formation {
+    use super::scan;
+
+    /// École 2026-07-09 : l'irrecevabilité PRONONCÉE prime le « rejetée » nu
+    /// du dispositif — même phrase de clôture (R. 222-1) ou enchaînement de
+    /// conséquence ; la prescription de créance (fond) ne s'apparie pas.
+    #[test]
+    fn solution_irrecevabilite_prononcee() {
+        let sc = scan("Dès lors, la requête de M. A est manifestement irrecevable et doit être rejetée, en application de l'article R. 222-1 du code de justice administrative.\nO R D O N N E :\nArticle 1er : La requête de M. A est rejetée.");
+        assert_eq!(sc.outcome(), Some(("IRRECEVABILITE", false)));
+        let sc = scan("Sa requête est manifestement irrecevable. Par suite, il y a lieu de rejeter ses conclusions.\nO R D O N N E :\nArticle 1er : La requête est rejetée.");
+        assert_eq!(sc.outcome(), Some(("IRRECEVABILITE", false)));
+        let sc = scan("La créance dont se prévaut le requérant étant prescrite, ses conclusions indemnitaires ne peuvent donc qu'être rejetées.\nO R D O N N E :\nArticle 1er : La requête est rejetée.");
+        assert_eq!(sc.outcome(), Some(("REJET", false)));
+    }
+
+    /// Requête adressée au juge des référés (self) : signaux d'en-tête pour
+    /// la formation JUGE_UNIQUE (première instance / Conseil d'État).
+    #[test]
+    fn jref_demande_et_conseil_header() {
+        let sc = scan("Par une requête, enregistrée le 4 mai 2022, Mme A demande au juge des référés, statuant en application de l'article L. 521-3 du code de justice administrative, la suspension de la décision.\nConsidérant ce qui suit : 1. La requête est rejetée.");
+        assert!(sc.procedure_signals().jref_demande);
+        let sc = scan("M. B demande au juge des référés du Conseil d'Etat, statuant sur le fondement de l'article L. 521-2 du code de justice administrative, l'annulation de l'ordonnance.\nConsidérant ce qui suit : 1. La requête est rejetée.");
+        assert!(sc.procedure_signals().jref_conseil);
     }
 }

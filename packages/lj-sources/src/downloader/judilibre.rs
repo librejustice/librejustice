@@ -19,7 +19,7 @@ use std::path::Path;
 // Constantes Judilibre (port de judilibre/downloader.py)
 // ----------------------------------------------------------------------------
 
-pub(super) const JUDILIBRE_SOURCE_DIR: &str = "judilibre";
+use crate::state_paths::JUDILIBRE_DIR;
 pub(super) const UNDATED_BUCKET: &str = "undated";
 const ARCHIVE_KEY: &str = "archive";
 const DEFAULT_BATCH_SIZE: i64 = 1000;
@@ -76,7 +76,7 @@ pub async fn sync_judilibre(
     data_dir: &Path,
     date_start_iso: &str,
 ) -> Result<Manifest> {
-    let source_dir = data_dir.join(JUDILIBRE_SOURCE_DIR);
+    let source_dir = data_dir.join(JUDILIBRE_DIR);
     fs::create_dir_all(&source_dir)?;
     let manifest_path = source_dir.join("manifest.json");
     let today = Utc::now().date_naive();

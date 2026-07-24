@@ -1,14 +1,16 @@
 //! Page `/sources` — Données & sources (ADR 0114). Décrit chaque source du
 //! corpus (décisions + référentiel de droit), avec lien officiel et descriptif.
 //! Chaque section porte une ancre (`id`) ciblée par les pages d'article
-//! (`/sources#dila`…) et par la homepage. Page statique SSR (SEO), hérite du
-//! title/description racine.
+//! (`/sources#dila`…) et par la homepage. Page statique SSR (SEO), `<Title>`
+//! propre, hérite de la description racine.
 
 use leptos::prelude::*;
+use leptos_meta::Title;
 
 #[component]
 pub fn SourcesPage() -> impl IntoView {
     view! {
+        <Title text="Données & sources - LibreJustice" />
         <div class="mx-auto flex w-full max-w-2xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <h1 class="font-sans text-3xl text-[var(--color-ink)]">"Données & sources"</h1>
             <p class="mt-3 max-w-prose text-[var(--color-ink-muted)]">
@@ -67,7 +69,7 @@ pub fn SourcesPage() -> impl IntoView {
                 "La Direction de l'information légale et administrative diffuse en bulk "
                 "les bases ouvertes du droit français. LibreJustice en ingère : "
                 "LEGI (codes & lois consolidés, versionnés par article — chaque article "
-                "servi en vigueur ou à une date passée ; source des pages /loi et de la "
+                "servi en vigueur ou à une date passée ; source des pages /texte et de la "
                 "recherche dans les textes), JORF (Journal officiel, dont les traités "
                 "publiés par décret), et la jurisprudence JADE (Conseil d'État, avec "
                 "analyses) ainsi que les décisions du Conseil constitutionnel (CONSTIT). "

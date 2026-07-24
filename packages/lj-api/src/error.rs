@@ -272,6 +272,18 @@ pub mod validation {
         })
     }
 
+    /// `value_error` — valeur rejetée par une validation métier (message
+    /// libre, ex. code juridiction hors référentiel avec suggestions).
+    pub fn value_error(loc: &[&str], input: &str, error: &str) -> Value {
+        json!({
+            "type": "value_error",
+            "loc": loc,
+            "msg": format!("Value error, {error}"),
+            "input": input,
+            "ctx": { "error": error },
+        })
+    }
+
     /// `too_short` — liste sous `min_length` (après validation des items).
     pub fn too_short(loc: &[&str], input: Value, field_type: &str, min_length: u64) -> Value {
         let actual = input.as_array().map(|a| a.len() as u64).unwrap_or(0);

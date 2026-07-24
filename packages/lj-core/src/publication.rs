@@ -44,7 +44,7 @@ pub fn labels_by_code() -> &'static [(&'static str, &'static str)] {
 }
 
 /// Groupes de portée (IN-list dérivées des codes) : `majeure` / `importante` / `limitee`.
-pub fn portee_codes(group: &str) -> &'static [&'static str] {
+pub fn significance_codes(group: &str) -> &'static [&'static str] {
     match group {
         "majeure" => &["r", "A"],
         "importante" => &["b", "l", "c", "B", "C+", "R"],
@@ -53,10 +53,10 @@ pub fn portee_codes(group: &str) -> &'static [&'static str] {
     }
 }
 
-/// Clé `portee:*` d'une décision : groupe du code au rang le plus fort
+/// Clé `significance:*` d'une décision : groupe du code au rang le plus fort
 /// (`{b,r}` → `MAJEURE`), `INDETERMINEE` sans code classant. Mapping total —
 /// toute décision est facettable (ADR 0167).
-pub fn portee_key(codes: &[String]) -> &'static str {
+pub fn significance_key(codes: &[String]) -> &'static str {
     for (group, key) in [
         ("majeure", "MAJEURE"),
         ("importante", "IMPORTANTE"),
@@ -64,7 +64,7 @@ pub fn portee_key(codes: &[String]) -> &'static str {
     ] {
         if codes
             .iter()
-            .any(|c| portee_codes(group).contains(&c.as_str()))
+            .any(|c| significance_codes(group).contains(&c.as_str()))
         {
             return key;
         }
@@ -118,26 +118,29 @@ mod tests {
     }
 
     #[test]
-    fn portee_groups() {
-        assert_eq!(portee_codes("majeure"), &["r", "A"]);
-        assert_eq!(portee_codes("importante"), &["b", "l", "c", "B", "C+", "R"]);
-        assert_eq!(portee_codes("limitee"), &["n", "C", "D", "Z"]);
-        assert_eq!(portee_codes("inconnu"), &[] as &[&str]);
+    fn significance_groups() {
+        assert_eq!(significance_codes("majeure"), &["r", "A"]);
+        assert_eq!(
+            significance_codes("importante"),
+            &["b", "l", "c", "B", "C+", "R"]
+        );
+        assert_eq!(significance_codes("limitee"), &["n", "C", "D", "Z"]);
+        assert_eq!(significance_codes("inconnu"), &[] as &[&str]);
     }
 
     #[test]
-    fn portee_key_takes_strongest_rank() {
+    fn significance_key_takes_strongest_rank() {
         // `r` (rapport) l'emporte sur `b` (bulletin).
-        assert_eq!(portee_key(&codes(&["b", "r", "c"])), "MAJEURE");
-        assert_eq!(portee_key(&codes(&["A"])), "MAJEURE");
-        assert_eq!(portee_key(&codes(&["b", "l"])), "IMPORTANTE");
+        assert_eq!(significance_key(&codes(&["b", "r", "c"])), "MAJEURE");
+        assert_eq!(significance_key(&codes(&["A"])), "MAJEURE");
+        assert_eq!(significance_key(&codes(&["b", "l"])), "IMPORTANTE");
         // `l` seul (lettre de chambre) classe importante même sans `b`.
-        assert_eq!(portee_key(&codes(&["l"])), "IMPORTANTE");
-        assert_eq!(portee_key(&codes(&["c", "n"])), "IMPORTANTE");
-        assert_eq!(portee_key(&codes(&["n"])), "LIMITEE");
-        assert_eq!(portee_key(&codes(&["C", "D"])), "LIMITEE");
+        assert_eq!(significance_key(&codes(&["l"])), "IMPORTANTE");
+        assert_eq!(significance_key(&codes(&["c", "n"])), "IMPORTANTE");
+        assert_eq!(significance_key(&codes(&["n"])), "LIMITEE");
+        assert_eq!(significance_key(&codes(&["C", "D"])), "LIMITEE");
         // Sans code classant (vide ou inconnu) : indéterminée.
-        assert_eq!(portee_key(&[]), "INDETERMINEE");
-        assert_eq!(portee_key(&codes(&["xyz"])), "INDETERMINEE");
+        assert_eq!(significance_key(&[]), "INDETERMINEE");
+        assert_eq!(significance_key(&codes(&["xyz"])), "INDETERMINEE");
     }
 }

@@ -41,7 +41,7 @@ pub const THROTTLE: Duration = Duration::from_millis(500);
 /// Chemin de la liste jurisprudentielle paginée.
 pub const LIST_PATH: &str = "/decisions-de-justice/jurisprudence/decisions-jurisprudentielles";
 
-const CNDA_SOURCE_DIR: &str = "cnda";
+use crate::state_paths::CNDA_DIR;
 
 // ----------------------------------------------------------------------------
 // Client CNDA (async reqwest-middleware, comme cedh.rs / judilibre.rs)
@@ -546,7 +546,7 @@ impl CndaManifest {
 
 /// Chemin du manifeste CNDA sous `data_dir` (`<data_dir>/cnda/manifest.json`).
 pub fn manifest_path(data_dir: &Path) -> std::path::PathBuf {
-    data_dir.join(CNDA_SOURCE_DIR).join("manifest.json")
+    data_dir.join(CNDA_DIR).join("manifest.json")
 }
 
 // ----------------------------------------------------------------------------
@@ -560,7 +560,7 @@ pub fn manifest_path(data_dir: &Path) -> std::path::PathBuf {
 /// localement au lieu de re-crawler cnda.fr (lent, throttlé, liens qui meurent).
 pub fn payload_path(data_dir: &Path, numero: &str) -> std::path::PathBuf {
     data_dir
-        .join(CNDA_SOURCE_DIR)
+        .join(CNDA_DIR)
         .join("payloads")
         .join(format!("{numero}.pdf"))
 }
@@ -595,7 +595,7 @@ pub fn save_cached_payload(data_dir: &Path, numero: &str, bytes: &[u8]) -> Resul
 /// source change (ADR 0108, même principe que jafbase).
 pub fn ocr_path(data_dir: &Path, numero: &str) -> std::path::PathBuf {
     data_dir
-        .join(CNDA_SOURCE_DIR)
+        .join(CNDA_DIR)
         .join("ocr")
         .join(format!("{numero}.md"))
 }

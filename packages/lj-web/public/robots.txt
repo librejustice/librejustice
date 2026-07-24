@@ -1,6 +1,6 @@
 # LibreJustice — politique d'accès des crawlers
 #
-# Moteur de recherche libre sur la jurisprudence française (administrative et judiciaire).
+# Moteur de recherche libre sur le droit français (jurisprudence et textes).
 #
 # Enforcement technique : règles WAF Cloudflare (cf. zone librejustice.fr).
 # Ce fichier expose le signal d'intention conformément à l'article 4 de la
@@ -17,6 +17,8 @@
 # Signal Content-Signals (https://contentsignals.org) — directive EU 2019/790
 User-agent: *
 Content-Signal: search=yes, ai-input=yes, ai-train=no
+Disallow: /api/
+Disallow: /decisions?
 Allow: /
 
 # ===========================================================================

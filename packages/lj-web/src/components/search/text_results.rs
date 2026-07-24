@@ -13,13 +13,17 @@ use leptos_router::params::ParamsMap;
 use lj_dtos::{ArticleSearchFacets, ArticleSearchHit, ArticleSearchResponse, FacetChoice};
 
 use crate::api::{ApiClient, PageParams, TextesFilters};
-use crate::helpers::{format_article_num, format_results_count, group_thousands, total_pages};
+use crate::helpers::{
+    format_article_num, format_results_count_exact, group_thousands, total_pages,
+};
 use crate::pages::decision_page::data::sendable;
 
 use super::compact_search::highlight::Highlighted;
 use super::compact_search::query_state;
+use super::cross_teaser::DecisionsTeaser;
 use super::facet_widgets::Nav;
 use super::filter_dropdown::{FilterDropdown, OpenDropdown};
+use super::syntax_hint::{HelpCorpus, SyntaxHint};
 use super::CompactSearch;
 
 /// Articles ramenés par page.
@@ -29,16 +33,19 @@ const TEXTES_LIMIT: u32 = 20;
 /// borne déjà le total à 400).
 const MAX_PAGES_DISPLAY: i64 = 40;
 
-/// Clés de filtre portées par l'URL (corpus articles).
-const FILTER_KEYS: [&str; 3] = ["jurisdiction", "nature", "origine"];
+/// Clés de filtre portées par l'URL (corpus articles). `code` borne le moteur à
+/// un texte (posé par le formulaire « Rechercher dans ce code » de `/texte/{code}`).
+const FILTER_KEYS: [&str; 5] = ["jurisdiction", "nature", "origine", "scope", "code"];
 
 /// État de recherche lu depuis l'URL.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 struct TextesQuery {
     q: String,
+    code: Option<String>,
     jurisdiction: Option<String>,
     nature: Option<String>,
     origine: Option<String>,
+    scope: Option<String>,
     page: u32,
 }
 
@@ -54,9 +61,11 @@ impl TextesQuery {
                 .get("q")
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default(),
+            code: single("code"),
             jurisdiction: single("jurisdiction"),
             nature: single("nature"),
             origine: single("origine"),
+            scope: single("scope"),
             page: map
                 .get("page")
                 .and_then(|p| p.parse::<u32>().ok())
@@ -73,10 +82,11 @@ async fn fetch_textes(state: TextesQuery) -> Result<Option<ArticleSearchResponse
         return Ok(None);
     }
     let filters = TextesFilters {
-        code: None,
+        code: state.code.as_deref(),
         jurisdiction: state.jurisdiction.as_deref(),
         nature: state.nature.as_deref(),
         source: state.origine.as_deref(),
+        scope: state.scope.as_deref(),
     };
     let offset = (state.page - 1) * TEXTES_LIMIT;
     ApiClient::from_context()
@@ -87,13 +97,14 @@ async fn fetch_textes(state: TextesQuery) -> Result<Option<ArticleSearchResponse
                 limit: TEXTES_LIMIT,
                 offset,
             },
+            lj_dtos::SearchContext::User,
         )
         .await
         .map(Some)
         .map_err(|e| e.message)
 }
 
-/// Corps « Lois et règlements », anatomie `/recherche` : rail de synthèse à
+/// Corps « Lois et règlements », anatomie `/decisions` : rail de synthèse à
 /// gauche (volumétrie + facettes cliquables), colonne contenu à droite (barre,
 /// filtres, chips, liste). Les facettes et la volumétrie alimentent rail et
 /// barre par `Effect` (mises à jour sur réponse seulement — pendant un refetch
@@ -123,7 +134,19 @@ pub fn TextesView() -> impl IntoView {
                 <TextesRail query=query volume=volume facets=facets state=state />
             </aside>
             <div class="flex w-full min-w-0 max-w-3xl flex-col gap-6">
-                <CompactSearch />
+                <div class="flex flex-col gap-2">
+                    <CompactSearch />
+                    // Intro didactique : dire le périmètre du moteur (l'h1 est
+                    // sr-only, rien d'autre ne le dit) — les conventions
+                    // collectives notamment, que les utilisateurs cherchent à
+                    // tort côté décisions.
+                    <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+                        <p class="text-xs leading-snug text-[var(--color-ink-subtle)]">
+                            "Codes, lois et règlements, conventions collectives, doctrine administrative (BOFiP, circulaires)."
+                        </p>
+                        <SyntaxHint corpus=HelpCorpus::Textes />
+                    </div>
+                </div>
                 <Show
                     when=move || !query.get().is_empty()
                     fallback=move || view! { <TextSearchPrompt /> }
@@ -140,7 +163,7 @@ pub fn TextesView() -> impl IntoView {
                                     view! {
                                         <p class="text-sm text-[var(--color-ink-subtle)] lg:hidden">
                                             <span class="font-medium text-[var(--color-ink)]">
-                                                {format_results_count(total)}
+                                                {format_results_count_exact(total)}
                                             </span>
                                         </p>
                                     }
@@ -201,7 +224,7 @@ fn TextResultsLayout(resp: ArticleSearchResponse, state: TextesQuery) -> impl In
 /// Lignes par bloc de facettes du rail.
 const RAIL_ROWS: usize = 5;
 
-/// Rail gauche de `/textes` (même gabarit que le rail `/recherche`) :
+/// Rail gauche de `/textes` (même gabarit que le rail `/decisions`) :
 /// volumétrie + blocs de facettes cliquables (Nature, Juridictions, Sources) +
 /// lien vers le catalogue des codes. Chaque clic passe par la MÊME mutation
 /// d'URL mono-sélection que les dropdowns de la barre (valeur active ⇒
@@ -227,18 +250,26 @@ fn TextesRail(
         view! {
             <div class="flex flex-col gap-1">
                 <h2 class="font-sans text-xl text-[var(--color-ink)]">
-                    {format_results_count(total)}
+                    {format_results_count_exact(total)}
                 </h2>
                 <p class="text-sm leading-snug text-[var(--color-ink-subtle)]">
                     "pour "
                     <em class="text-[var(--color-ink)]">"«\u{00A0}"{move || query.get()}"\u{00A0}»"</em>
                 </p>
-                <p class="text-xs text-[var(--color-ink-subtle)]">"Articles en vigueur"</p>
+                <p class="text-xs text-[var(--color-ink-subtle)]">"Articles et textes en vigueur"</p>
             </div>
         }
         .into_any()
     };
 
+    let scopes = move || {
+        rail_facet_block(
+            "Portée",
+            "scope",
+            facets.get().map(|f| f.scope).unwrap_or_default(),
+            state.get().scope,
+        )
+    };
     let natures = move || {
         rail_facet_block(
             "Nature",
@@ -268,9 +299,12 @@ fn TextesRail(
         <Show when=move || !query.get().is_empty()>
             <div class="flex flex-col gap-4">
                 {header}
+                {scopes}
                 {natures}
                 {jurisdictions}
                 {sources}
+                // Pont croisé : la même requête posée au moteur décisions.
+                <DecisionsTeaser query=query />
                 <div class="border-t border-[var(--color-rule)] pt-4">
                     <A
                         href="/codes"
@@ -390,6 +424,19 @@ fn TextesFilterBar(
                         facets.get().map(|f| f.nature).unwrap_or_default()
                     })
                     active=Signal::derive(move || state.get().nature)
+                />
+            </FilterDropdown>
+            <FilterDropdown
+                id="scope"
+                label="Portée"
+                active_count=Signal::derive(move || usize::from(state.get().scope.is_some()))
+            >
+                <MonoFacetList
+                    url_key="scope"
+                    choices=Signal::derive(move || {
+                        facets.get().map(|f| f.scope).unwrap_or_default()
+                    })
+                    active=Signal::derive(move || state.get().scope)
                 />
             </FilterDropdown>
             <FilterDropdown
@@ -521,6 +568,12 @@ fn TextesActiveChips(
                 .unwrap_or_else(|| v.to_string())
         };
         let mut out: Vec<(&'static str, String, String)> = Vec::new();
+        if let Some(v) = state.code {
+            // Le slug est lisible une fois humanisé (« code-de-justice-… » →
+            // « Code de justice… ») — pas de facette pour porter le titre.
+            let label = format!("Dans\u{00A0}: {}", humanize_slug(&v));
+            out.push(("code", v, label));
+        }
         if let Some(v) = state.jurisdiction {
             let label = resolve(facets.as_ref().map(|f| f.jurisdiction.as_slice()), &v);
             out.push(("jurisdiction", v, label));
@@ -532,6 +585,10 @@ fn TextesActiveChips(
         if let Some(v) = state.origine {
             let label = resolve(facets.as_ref().map(|f| f.source.as_slice()), &v);
             out.push(("origine", v, label));
+        }
+        if let Some(v) = state.scope {
+            let label = resolve(facets.as_ref().map(|f| f.scope.as_slice()), &v);
+            out.push(("scope", v, label));
         }
         out
     });
@@ -621,7 +678,13 @@ fn TextResults(hits: Vec<ArticleSearchHit>, query: String, page: u32) -> impl In
 fn TextHit(hit: ArticleSearchHit, index: usize, page: u32) -> impl IntoView {
     // Lien sur la clé canonique (`numKey`) — le serve résout en lookup exact, plus
     // de normalisation au runtime (ADR 0123 §2). `num` reste l'affichage.
-    let href = format!("/loi/{}/{}", hit.code, hit.num_key);
+    // `num` vide = hit « texte entier » (texte à corps, ADR 0196) → page du texte.
+    let is_whole_text = hit.num_key.is_empty();
+    let href = if is_whole_text {
+        format!("/texte/{}", hit.code)
+    } else {
+        format!("/texte/{}/{}", hit.code, hit.num_key)
+    };
     let position = (page as usize - 1) * TEXTES_LIMIT as usize + index + 1;
     let numeral = format!("{position:02}");
     // Fil d'ariane LEGI compacté aux deux derniers échelons : ils situent
@@ -641,10 +704,17 @@ fn TextHit(hit: ArticleSearchHit, index: usize, page: u32) -> impl IntoView {
             </span>
             <A href=href attr:class="flex min-w-0 flex-col gap-2 no-underline">
                 <h3 class="font-sans text-lg leading-snug tracking-tight text-[var(--color-ink)] transition-colors group-hover:text-[var(--color-accent)]">
-                    {format!("Article {}", format_article_num(&hit.num))}
-                    <span class="text-[var(--color-ink-subtle)]">
-                        {format!("\u{00A0}· {}", hit.code_title)}
-                    </span>
+                    {if is_whole_text {
+                        view! { {hit.code_title.clone()} }.into_any()
+                    } else {
+                        view! {
+                            {format!("Article {}", format_article_num(&hit.num))}
+                            <span class="text-[var(--color-ink-subtle)]">
+                                {format!("\u{00A0}· {}", hit.code_title)}
+                            </span>
+                        }
+                        .into_any()
+                    }}
                 </h3>
                 {crumb
                     .map(|c| {
@@ -807,6 +877,17 @@ fn PageButton(
     }
 }
 
+/// Libellé approximatif d'un slug de code (tirets → espaces, initiale en
+/// capitale) : « code-de-justice-administrative » → « Code de justice
+/// administrative » (accents perdus, assumé — chip de portée, pas un titre).
+fn humanize_slug(slug: &str) -> String {
+    let mut s = slug.replace('-', " ");
+    if let Some(first) = s.get_mut(0..1) {
+        first.make_ascii_uppercase();
+    }
+    s
+}
+
 /// Invite initiale (requête vide).
 #[component]
 fn TextSearchPrompt() -> impl IntoView {
@@ -816,12 +897,14 @@ fn TextSearchPrompt() -> impl IntoView {
                 "Textes & codes"
             </p>
             <h2 class="font-sans text-2xl text-[var(--color-ink)]">
-                "Cherchez dans le texte des codes et lois."
+                "Cherchez dans le texte des normes."
             </h2>
             <p class="max-w-prose text-[var(--color-ink-muted)]">
-                "Saisissez une notion (« responsabilité du fait des choses ») ou des "
-                "mots du texte ; les articles en vigueur les plus pertinents "
-                "s'affichent, avec un lien vers leur page versionnée. "
+                "Codes, lois et règlements, conventions collectives, doctrine "
+                "administrative (BOFiP, circulaires). Saisissez une notion "
+                "(« responsabilité du fait des choses », « congés trimestriels "
+                "convention collective de 1966 ») ; les articles en vigueur les "
+                "plus pertinents s'affichent, avec un lien vers leur page versionnée."
             </p>
             <A
                 href="/codes"

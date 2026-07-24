@@ -19,6 +19,7 @@ serde_json = { workspace = true }
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
 zip = { workspace = true }
+csv = { workspace = true }
 # gzip pour les archives Judilibre `.jsonl.gz` (port du module `gzip` Python).
 flate2 = { workspace = true }
 # Lecteur tar streaming pour les bulk DILA `.tar.gz` (ADR 0093, tar_reader.rs).

@@ -25,13 +25,13 @@ const DATE_SENTINELS: &[&str] = &["2999-01-01", "2222-02-22"];
 /// l'avenant) et `KALISCTA` (`section_ta/`, l'arbre des sections) sont hors
 /// périmètre : le `text_uid` s'ancre sur le conteneur et le fil d'Ariane vient du
 /// `TM` porté par chaque ARTICLE (comme LEGI).
-enum KaliMember {
+pub(crate) enum KaliMember {
     Article,
     Conteneur,
     Ignore,
 }
 
-fn classify_kali_member(name: &str) -> KaliMember {
+pub(crate) fn classify_kali_member(name: &str) -> KaliMember {
     let lower = name.to_lowercase();
     let stem = name.rsplit('/').next().unwrap_or(name);
     if lower.contains("/article/") && stem.starts_with("KALIARTI") {
@@ -115,6 +115,8 @@ fn kali_conteneur_row(
         eli: None,
         nor: None,
         instrument_key: None,
+        body: None,
+        status: None,
     })
 }
 
@@ -155,7 +157,12 @@ async fn ingest_kali_tarball(
     path: &Path,
 ) -> Result<(usize, usize, usize)> {
     enum KaliMsg {
-        Article(Box<lj_store::repository::LegalArticleRow>),
+        Article(
+            Box<(
+                lj_store::repository::LegalArticleRow,
+                Vec<lj_store::repository::LegalLinkRow>,
+            )>,
+        ),
         Conteneur(Box<lj_store::repository::LegalTextRow>),
         Dat(Vec<String>),
         ParseErr,
@@ -182,12 +189,22 @@ async fn ingest_kali_tarball(
             }
             let msg = match classify_kali_member(&name) {
                 KaliMember::Article => match lj_extract::kali::parse_kali_article(&raw) {
-                    // Article sans numéro (non citable) → skip silencieux.
-                    Ok(None) => return Ok(()),
-                    Ok(Some(art)) => {
+                    // Article sans numéro (non citable) → hors référentiel ;
+                    // le corps des TI les consomme à part (ADR 0223).
+                    Ok(art) if art.num_key.is_empty() => return Ok(()),
+                    Ok(mut art) => {
                         let checksum = xxhash_rust::xxh3::xxh3_64(&raw);
-                        match kali_article_row(art, checksum) {
-                            Ok(row) => KaliMsg::Article(Box::new(row)),
+                        let liens = std::mem::take(&mut art.liens);
+                        let built = kali_article_row(art, checksum).and_then(|row| {
+                            let owner = lj_store::repository::LegalLinkOwner {
+                                text_uid: row.text_uid.clone(),
+                                num_key: row.num_key.clone(),
+                                date_debut: row.date_debut,
+                            };
+                            Ok((row, super::legi::legal_link_rows(&owner, liens)?))
+                        });
+                        match built {
+                            Ok(pair) => KaliMsg::Article(Box::new(pair)),
                             Err(e) => {
                                 tracing::error!(member = %name, error = %e, "kali article: row invalide");
                                 KaliMsg::ParseErr
@@ -219,7 +236,10 @@ async fn ingest_kali_tarball(
         })
     });
 
-    let mut articles: Vec<lj_store::repository::LegalArticleRow> = Vec::new();
+    let mut articles: Vec<(
+        lj_store::repository::LegalArticleRow,
+        Vec<lj_store::repository::LegalLinkRow>,
+    )> = Vec::new();
     let mut conteneurs: Vec<lj_store::repository::LegalTextRow> = Vec::new();
     let mut dat_paths: Vec<Vec<String>> = Vec::new();
     let (mut upserted, mut skipped, mut errors) = (0usize, 0usize, 0usize);
@@ -280,23 +300,43 @@ async fn ingest_kali_tarball(
 }
 
 /// Upsert d'un batch d'articles KALI (idempotent #7) ; cumule modifiés/skippés.
+/// Les arêtes `legal_link` des articles réellement écrits sont remplacées dans
+/// la foulée (ADR 0174, même règle que LEGI).
 async fn flush_kali_articles(
     repo: &DecisionRepository<'_>,
-    articles: Vec<lj_store::repository::LegalArticleRow>,
+    articles: Vec<(
+        lj_store::repository::LegalArticleRow,
+        Vec<lj_store::repository::LegalLinkRow>,
+    )>,
     upserted: &mut usize,
     skipped: &mut usize,
 ) -> Result<()> {
-    for art in articles {
+    let mut link_items: Vec<(
+        lj_store::repository::LegalLinkOwner,
+        Vec<lj_store::repository::LegalLinkRow>,
+    )> = Vec::new();
+    for (art, links) in articles {
         if repo
             .upsert_legal_article(&art)
             .await
             .map_err(|e| anyhow!("upsert_legal_article {}: {e}", art.source_uid))?
         {
             *upserted += 1;
+            link_items.push((
+                lj_store::repository::LegalLinkOwner {
+                    text_uid: art.text_uid,
+                    num_key: art.num_key,
+                    date_debut: art.date_debut,
+                },
+                links,
+            ));
         } else {
             *skipped += 1;
         }
     }
+    repo.replace_legal_links(&link_items)
+        .await
+        .map_err(|e| anyhow!("replace_legal_links (kali): {e}"))?;
     Ok(())
 }
 

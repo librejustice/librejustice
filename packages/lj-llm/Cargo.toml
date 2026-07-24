@@ -21,3 +21,5 @@ moka = { workspace = true }
 ndarray = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
+# Empreinte xxh3-64 des clés Mistral (table `mistral_key_status`, ADR 0247).
+xxhash-rust = { workspace = true }

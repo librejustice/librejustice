@@ -98,6 +98,83 @@ pub(crate) fn parse_french_date(day: &str, month: &str, year: &str) -> Option<St
         .map(|d| d.to_string())
 }
 
+/// Nombre français épelé (0..=99) : jours et suffixes d'année. Additif
+/// (« soixante dix » = 70, « dix sept » = 17) ; « quatre vingt(s) » est
+/// multiplicatif et se compacte en un token avant la somme.
+fn spelled_small(s: &str) -> Option<i16> {
+    let s = s.to_lowercase().replace('-', " ");
+    let s = s
+        .replace("quatre vingts", "qv")
+        .replace("quatre vingt", "qv");
+    let mut total = 0i16;
+    for w in s.split_whitespace().filter(|w| *w != "et") {
+        total += match w {
+            "premier" | "un" => 1,
+            "deux" => 2,
+            "trois" => 3,
+            "quatre" => 4,
+            "cinq" => 5,
+            "six" => 6,
+            "sept" => 7,
+            "huit" => 8,
+            "neuf" => 9,
+            "dix" => 10,
+            "onze" => 11,
+            "douze" => 12,
+            "treize" => 13,
+            "quatorze" => 14,
+            "quinze" => 15,
+            "seize" => 16,
+            "vingt" => 20,
+            "trente" => 30,
+            "quarante" => 40,
+            "cinquante" => 50,
+            "soixante" => 60,
+            "qv" => 80,
+            _ => return None,
+        };
+    }
+    Some(total)
+}
+
+/// Année épelée : « deux mille (trois) », « mil(le) neuf cent
+/// (quatre-vingt-dix-sept) ».
+fn spelled_year(s: &str) -> Option<i16> {
+    let s = s.to_lowercase().replace('-', " ");
+    let s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    if let Some(rest) = s
+        .strip_prefix("deux mille")
+        .or_else(|| s.strip_prefix("deux mil"))
+    {
+        return Some(2000 + spelled_small(rest)?);
+    }
+    for prefix in [
+        "mil neuf cents",
+        "mille neuf cents",
+        "mil neuf cent",
+        "mille neuf cent",
+    ] {
+        if let Some(rest) = s.strip_prefix(prefix) {
+            return Some(1900 + spelled_small(rest)?);
+        }
+    }
+    None
+}
+
+/// Date épelée en toutes lettres (« treize novembre deux mille trois ») ;
+/// jour numérique toléré (« 1er décembre mil neuf cent quatre vingt douze »).
+fn parse_spelled_french_date(day: &str, month: &str, year: &str) -> Option<String> {
+    let month_num = french_month(&month.to_lowercase())?;
+    let day_num = spelled_small(day).or_else(|| day.trim_end_matches("er").parse().ok())?;
+    if !(1..=31).contains(&day_num) {
+        return None;
+    }
+    let year_num = spelled_year(year)?;
+    Date::new(year_num, month_num, day_num as i8)
+        .ok()
+        .map(|d| d.to_string())
+}
+
 /// `_parse_numeric_date`.
 fn parse_numeric_date(day: &str, month: &str, year: &str) -> Option<String> {
     let d: i8 = day.parse().ok()?;
@@ -130,7 +207,30 @@ static RE_AUDIENCE_DEBATS: LazyLock<Regex> = LazyLock::new(|| {
 });
 static RE_AUDIENCE_BARE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)audience\s+publique(?:,?\s+qui\s+s['\x{2019}]est\s+tenue)?\s+du\s+(\d{1,2}|1er)\s+([a-zéûîôàèùç]+)\s+(\d{4})",
+        r"(?i)audience\s+(?:publique(?:,?\s+qui\s+s['\x{2019}]est\s+tenue)?|de\s+plaidoiries|tenue\s+en\s+chambre\s+du\s+conseil)\s+du\s+(\d{1,2}|1er)\s+([a-zéûîôàèùç]+)\s+(\d{4})",
+    )
+    .unwrap()
+});
+// « audience publique du 14/05/2001 » — date numérique nue après l'ancre.
+static RE_AUDIENCE_BARE_NUM: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)audience\s+(?:publique|de\s+plaidoiries)\s+du\s+(\d{1,2})[/.](\d{1,2})[/.](\d{4})",
+    )
+    .unwrap()
+});
+// Formules des référés TA : « audience publique qui a eu lieu le … »,
+// « qui s'est tenue le … », « (,) tenue le … ».
+static RE_AUDIENCE_TENUE_LE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)audience(?:\s+publique)?\s*,?\s+(?:qui\s+(?:a\s+eu\s+lieu|s['\x{2019}]est\s+tenue)|tenue)\s+le\s+(\d{1,2}|1er)\s+([a-zéûîôàèùç]+)\s+(\d{4})",
+    )
+    .unwrap()
+});
+// « les parties ont été averties du jour de l'audience du … » : l'avis
+// d'audience désigne l'audience effective.
+static RE_AUDIENCE_AVERTIES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)averti(?:es?|s)?\s+du\s+jour\s+de\s+l['\x{2019}]audience(?:\s+publique)?\s+(?:du|le)\s+(\d{1,2}|1er)\s+([a-zéûîôàèùç]+)\s+(\d{4})",
     )
     .unwrap()
 });
@@ -149,6 +249,15 @@ static RE_AUDIENCE_COMPOSITION_NUM: LazyLock<Regex> = LazyLock::new(|| {
 static RE_AUDIENCE_DEBATS_CHAMBRE_NUM: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"(?i)d[ée]bats?\s+(?:à\s+)?l['\x{2019}]audience(?:\s+(?:de\s+|en\s+)?chambre\s+du\s+conseil|\s+publique)?\s+du\s*(\d{1,2})[/.](\d{1,2})[/.](\d{4})",
+    )
+    .unwrap()
+});
+// Formule de prononcé en toutes lettres (« prononcé … en son audience
+// publique du treize novembre deux mille trois ») — jour et année épelés
+// en mots-nombres stricts, convertis par `parse_spelled_french_date`.
+static RE_AUDIENCE_LETTRES: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)audience\s+publique(?:\s+du|,?[^.;:]{0,60}?\s+le)\s+(1er|\d{1,2}|(?:premier|un|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|trente)(?:[\s-]+(?:et|un|deux|trois|quatre|cinq|six|sept|huit|neuf))*)\s+(janvier|février|fevrier|mars|avril|mai|juin|juillet|août|aout|septembre|octobre|novembre|décembre|decembre)\s+((?:deux\s+mil(?:le)?|mil(?:le)?\s+neuf\s+cents?)(?:[\s-]+(?:et|un|deux|trois|quatre|cinq|six|sept|huit|neuf|dix|onze|douze|treize|quatorze|quinze|seize|vingt|vingts|trente|quarante|cinquante|soixante))*)",
     )
     .unwrap()
 });
@@ -204,14 +313,25 @@ pub(crate) fn extract_textual_audience_date(
         return None;
     }
     type Producer<'a> = &'a dyn Fn(&str) -> Vec<String>;
-    let producers: [Producer; 7] = [
+    let producers: [Producer; 11] = [
         &|w| audience_candidates(w, &RE_AUDIENCE_COMPOSITION),
         &|w| audience_candidates(w, &RE_AUDIENCE_LABELED),
         &audience_candidates_debats,
         &|w| audience_candidates(w, &RE_AUDIENCE_BARE),
+        &|w| audience_candidates(w, &RE_AUDIENCE_TENUE_LE),
+        &|w| audience_candidates(w, &RE_AUDIENCE_AVERTIES),
         &|w| audience_candidates_num(w, &RE_AUDIENCE_DEBATS_NUM),
         &|w| audience_candidates_num(w, &RE_AUDIENCE_COMPOSITION_NUM),
         &|w| audience_candidates_num(w, &RE_AUDIENCE_DEBATS_CHAMBRE_NUM),
+        &|w| audience_candidates_num(w, &RE_AUDIENCE_BARE_NUM),
+        // dernier recours : la formule de prononcé épelée (l'audience des
+        // débats chiffrée, quand elle existe, dit mieux l'audience)
+        &|w| {
+            RE_AUDIENCE_LETTRES
+                .captures_iter(w)
+                .filter_map(|c| parse_spelled_french_date(&c[1], &c[2], &c[3]))
+                .collect()
+        },
     ];
     let candidates: Vec<String> = producers
         .iter()
@@ -246,19 +366,6 @@ pub(crate) fn extract_textual_audience_date(
         return Some(max.to_string());
     }
 
-    let repaired: Vec<Date> = parsed
-        .iter()
-        .filter(|c| {
-            c.year() == lecture.year() - 1
-                && c.month() == lecture.month()
-                && (i64::from(c.day()) - i64::from(lecture.day())).abs() <= 7
-        })
-        .filter_map(|c| Date::new(lecture.year(), c.month(), c.day()).ok())
-        .collect();
-    if let Some(max) = repaired.iter().max() {
-        return Some(max.to_string());
-    }
-
     let past: Vec<Date> = parsed.iter().copied().filter(|c| *c <= lecture).collect();
     if let Some(max) = past.iter().max() {
         return Some(max.to_string());
@@ -269,6 +376,41 @@ pub(crate) fn extract_textual_audience_date(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn date_epelee_formule_de_prononce() {
+        let cas = [
+            (
+                "et prononcé par le président en son audience publique du treize novembre deux mille trois.",
+                "2003-11-13",
+            ),
+            (
+                "en son audience publique du vingt-trois janvier deux mille quatorze.",
+                "2014-01-23",
+            ),
+            (
+                "en son audience publique du premier avril mil neuf cent quatre-vingt-dix-sept.",
+                "1997-04-01",
+            ),
+            (
+                "audience publique du trente et un décembre deux mille vingt,",
+                "2020-12-31",
+            ),
+            ("audience publique du deux août deux mille.", "2000-08-02"),
+        ];
+        for (texte, attendu) in cas {
+            let c = RE_AUDIENCE_LETTRES.captures(texte).expect(texte);
+            assert_eq!(
+                parse_spelled_french_date(&c[1], &c[2], &c[3]).as_deref(),
+                Some(attendu),
+                "{texte}"
+            );
+        }
+        // fragment non numéral entre le jour et le mois : pas de match
+        assert!(RE_AUDIENCE_LETTRES
+            .captures("audience publique du même jour de novembre deux mille trois")
+            .is_none());
+    }
 
     #[test]
     fn clean_date_iso_validates_range_and_shape() {
@@ -302,10 +444,12 @@ mod tests {
             source_uid: "t".into(),
             member_name: "t".into(),
             ecli: None,
-            juridiction_code: None,
-            juridiction_nom: None,
-            juridiction_type: Some("CC".into()),
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: None,
+            jurisdiction_type: Some("CC".into()),
+            jurisdiction_location: None,
             numero_dossier: None,
             numero_dossiers: None,
             numero_role: None,

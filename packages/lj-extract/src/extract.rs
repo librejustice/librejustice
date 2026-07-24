@@ -11,8 +11,7 @@
 //! explicite, soit par un post-filtrage manuel sur les positions de match.
 
 /// Helpers partagés (normalisation articles/instruments/dates/avocats),
-/// port de `extract/common.py`. `pub(crate)` — consommés par les
-/// implémentations par famille (`opendata` / `judilibre`), transitoires.
+/// port de `extract/common.py`.
 pub(crate) mod common;
 
 /// Normaliseurs canoniques d'instrument / article (`_normalize_instrument`,
@@ -52,16 +51,20 @@ use lj_core::error::Result;
 ///      `visa` voient ses refs fusionnées aux refs texte (sur-ensemble).
 pub use lj_core::EXTRACT_VERSION;
 
-mod judilibre;
-mod opendata;
+mod dockets;
+mod formation_label;
+mod jurisdiction_names;
 
-/// Uids `voie:*` / `office:*` / `domaine:*` détectés par la décomposition
+#[cfg(test)]
+mod tests;
+
+/// Uids `procedure:*` / `office:*` / `legal_domain:*` détectés par la décomposition
 /// procédurale AU scanner (ADR 0148 : l'ex-`special_procedure` n'existe plus,
 /// chaque détection route directement vers son axe référentiel). Chaque champ
 /// est un uid complet de `facet_value` (FK) ou `None`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProcedureUids {
-    pub voie_uid: Option<String>,
+    pub procedure_uid: Option<String>,
     pub office_uid: Option<String>,
     pub legal_domain_uid: Option<String>,
     /// Raffinement domaine lu dans le TEXTE (vocabulaire d'en-tête admin),
@@ -72,172 +75,239 @@ pub struct ProcedureUids {
 }
 
 /// Extraction unifiée (ADR 0157) : fonctions plates par champ, plus de trait
-/// ni de dispatch par source. `None` = champ absent/inconnu ; les champs de
-/// facettes sortent en **uids complets des référentiels** (ADR 0148, v12) :
-/// [`extract_solution`] → `solution:*`-17, [`extract_procedure`] →
-/// voie/office/domaine. Aucun vocabulaire intermédiaire.
+/// ni de dispatch par source — la MÉTADONNÉE de juridiction gate seulement
+/// les conventions d'école qui diffèrent par ordre (dispositif admin verbatim,
+/// sentinelle formation INCONNU, vocabulaire cassation). `None` = champ
+/// absent/inconnu ; les champs de facettes sortent en **uids complets des
+/// référentiels** (ADR 0148, v12) : [`extract_solution`] → `solution:*`-17,
+/// [`extract_procedure`] → voie/office/domaine. Aucun vocabulaire
+/// intermédiaire.
 ///
-/// Le routage `Family` ci-dessous est TRANSITOIRE (étapes 4-5/8 du plan ADR
-/// 0157) : les champs pas encore migrés au scan compilé (`crate::scan`)
-/// appellent leur fallback texte legacy par famille de source ; il meurt
-/// champ par champ. Les champs déjà unifiés (companies) n'y passent plus.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Family {
-    /// Ordre administratif opendata (TA/CAA/CE).
-    Admin,
-    /// Ordre judiciaire Judilibre (CC/CA/TJ/TCOM).
-    Judiciaire,
-    /// Familles sans pipeline texte dédié (CONSTIT/TC/CEDH/CJUE/CNDA) :
-    /// champs métadonnées + citations texte.
-    Generic,
+/// Ordre administratif opendata (TA/CAA/CE) ?
+fn is_admin(d: &Decision) -> bool {
+    matches!(
+        d.jurisdiction_type.as_deref(),
+        Some("TA") | Some("CAA") | Some("CE")
+    )
 }
 
-fn family(d: &Decision) -> Option<Family> {
-    match d.juridiction_type.as_deref() {
-        Some("TA") | Some("CAA") | Some("CE") => Some(Family::Admin),
-        Some("CC") | Some("CA") | Some("TJ") | Some("TCOM") => Some(Family::Judiciaire),
-        Some("CONSTIT") | Some("TC") | Some("CEDH") | Some("CJUE") | Some("CNDA") => {
-            Some(Family::Generic)
-        }
-        _ => None,
-    }
-}
-
-/// Hors nomenclature = extraction générique (métadonnées) : un fond scrapé
-/// inconnu dégrade en champs `Decision`, jamais en erreur dure.
-fn fam(d: &Decision) -> Family {
-    family(d).unwrap_or(Family::Generic)
-}
-
-/// Ordre judiciaire (fonds Judilibre) ? Consommé par le vote domaine
-/// ([`crate::domain::DomainContext::admin`] = tout le reste).
+/// Ordre judiciaire (fonds Judilibre CC/CA/TJ/TCOM) ? Consommé par le vote
+/// domaine ([`crate::domain::DomainContext::admin`] = tout le reste).
 pub fn is_judiciaire(d: &Decision) -> bool {
-    fam(d) == Family::Judiciaire
+    matches!(
+        d.jurisdiction_type.as_deref(),
+        Some("CC") | Some("CA") | Some("TJ") | Some("TCOM")
+    )
 }
 
 /// Garde de routage (ex-`get_extractors`) : erreur `UnknownJuridiction` si la
 /// juridiction n'est pas l'un des ordres FR connus. Consommée par les
 /// call-sites qui SKIPPENT les fonds hors nomenclature (canonical_ref,
 /// backfill/resplit, banc) ; les fonctions d'extraction elles-mêmes traitent
-/// l'inconnu comme [`Family::Generic`].
+/// l'inconnu en générique (champs métadonnées + citations texte), jamais en
+/// erreur dure.
 pub fn routed(decision: &Decision) -> Result<()> {
-    family(decision).map(|_| ()).ok_or_else(|| {
-        lj_core::error::CoreError::UnknownJuridiction(decision.juridiction_type.clone())
-    })
+    match decision.jurisdiction_type.as_deref() {
+        Some(
+            "TA" | "CAA" | "CE" | "CC" | "CA" | "TJ" | "TCOM" | "CONSTIT" | "TC" | "CEDH" | "CJUE"
+            | "CNDA" | "CNIL",
+        ) => Ok(()),
+        _ => Err(lj_core::error::CoreError::UnknownJuridiction(
+            decision.jurisdiction_type.clone(),
+        )),
+    }
 }
 
 pub fn extract_docket_numbers(d: &Decision) -> Option<Vec<String>> {
     docket_numbers_scanned(d, scan_doc(d).as_ref())
 }
 
+/// Numéros de dossier : métadonnée d'abord (liste source, sinon numéro unique
+/// éclaté sur les séparateurs de greffe), complétée par les jonctions lues
+/// dans le texte via les GABARITS auto-détectés du scan (ADR 0157 §3) — pivot
+/// « joint les pourvois » et clause « sous le(s) n° » de requête, chacun ne
+/// s'exprimant que si son token est présent, quelle que soit la source.
 pub fn docket_numbers_scanned(
     d: &Decision,
     scan: Option<&crate::scan::DocScan>,
 ) -> Option<Vec<String>> {
-    match fam(d) {
-        Family::Admin => opendata::extract_docket_numbers(d, scan),
-        Family::Judiciaire => judilibre::extract_docket_numbers(d, scan),
-        Family::Generic => d.numero_dossiers.clone(),
+    // La métadonnée greffe (liste ou numéro unique) peut coller plusieurs
+    // numéros dans une même valeur : chaque entrée s'éclate sur les
+    // séparateurs.
+    static RE_SEP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_sep = RE_SEP.get_or_init(|| regex::Regex::new(r"[,;\s]+").unwrap());
+    let raw: Vec<&str> = match &d.numero_dossiers {
+        Some(v) if !v.is_empty() => v.iter().map(String::as_str).collect(),
+        _ => d
+            .numero_dossier
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .into_iter()
+            .collect(),
+    };
+    let mut base: Vec<Option<String>> = raw
+        .iter()
+        .flat_map(|nd| re_sep.split(nd.trim()).map(|s| Some(s.to_string())))
+        .collect();
+    base.extend(dockets::joined_pourvois(scan).into_iter().map(Some));
+    if let Some(joined) = dockets::joined_docket_numbers(d, scan) {
+        base.extend(joined.into_iter().map(Some));
     }
+    common::clean_docket_numbers(Some(&base))
 }
 
+/// Date de lecture : métadonnée source, validée au format ISO — même
+/// frontière pour toutes les sources.
 pub fn extract_date_lecture(d: &Decision) -> Option<String> {
-    match fam(d) {
-        Family::Admin => opendata::extract_date_lecture(d),
-        Family::Judiciaire => judilibre::extract_date_lecture(d),
-        // Verbatim : pas de re-parse FR fragile (#12).
-        Family::Generic => d.date_lecture.clone(),
-    }
+    common::clean_date_iso(d.date_lecture.as_deref())
 }
 
 pub fn extract_date_audience(d: &Decision) -> Option<String> {
     date_audience_scanned(d, scan_doc(d).as_ref())
 }
 
+/// Date d'audience : métadonnée d'abord, sinon la date textuelle lue dans les
+/// fenêtres positionnées du scan — même chemin pour toutes les sources.
 pub fn date_audience_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Option<String> {
-    match fam(d) {
-        Family::Admin => opendata::extract_date_audience(d, scan),
-        Family::Judiciaire => judilibre::extract_date_audience(d, scan),
-        Family::Generic => None,
-    }
+    let v = d
+        .date_audience
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| common::extract_textual_audience_date(d, scan));
+    common::clean_date_iso(v.as_deref())
 }
 
-pub fn extract_formation_or_chamber(d: &Decision) -> Option<String> {
-    formation_or_chamber_scanned(d, scan_doc(d).as_ref())
+/// Variante plate de [`formation_axes_scanned`] (banc/sonde) : re-scanne et
+/// renvoie les axes structurés.
+pub fn extract_formation_axes(d: &Decision) -> crate::formation::FormationAxes {
+    formation_axes_scanned(d, scan_doc(d).as_ref())
 }
 
-pub fn formation_or_chamber_scanned(
-    d: &Decision,
-    scan: Option<&crate::scan::DocScan>,
-) -> Option<String> {
-    match fam(d) {
-        Family::Admin => opendata::extract_formation_or_chamber(d),
-        Family::Judiciaire => {
-            let bandeau = scan.map(|s| s.bandeau_text());
-            judilibre::extract_formation_or_chamber(d, bandeau.as_deref())
-        }
-        Family::Generic => None,
-    }
-}
-
-/// Formation structurée (ADR 0170) : mêmes entrées source que
-/// [`formation_or_chamber_scanned`] — code chambre CC, chambre de bandeau
-/// Judilibre, formation greffe — décomposées en axes au lieu d'être aplaties.
+/// Formation structurée (ADR 0170) : code chambre CC, chambre de bandeau
+/// Judilibre, formation greffe — décomposés en axes.
 pub fn formation_axes_scanned(
     d: &Decision,
     scan: Option<&crate::scan::DocScan>,
 ) -> crate::formation::FormationAxes {
-    let jt = d.juridiction_type.as_deref();
-    match fam(d) {
-        Family::Admin => {
-            crate::formation::parse_formation(jt, None, None, None, d.formation.as_deref())
-        }
-        Family::Judiciaire => {
-            if jt == Some("CC") {
-                return crate::formation::parse_formation(
-                    jt,
-                    d.juridiction_code.as_deref(),
-                    None,
-                    None,
-                    d.formation.as_deref(),
-                );
+    let jt = d.jurisdiction_type.as_deref();
+    let mut axes = if is_admin(d) {
+        crate::formation::parse_formation(jt, None, None, None, d.formation.as_deref())
+    } else if !is_judiciaire(d) {
+        return crate::formation::FormationAxes::default();
+    } else if jt == Some("CC") {
+        crate::formation::parse_formation(
+            jt,
+            d.chamber.as_deref(),
+            None,
+            None,
+            d.formation.as_deref(),
+        )
+    } else {
+        // Le champ source `chamber` prime ; le bandeau scanné complète les
+        // axes (spécialisation quand le greffe ne donne que la position).
+        let chamber = d.chamber.as_deref().filter(|c| !c.is_empty());
+        let bandeau = scan
+            .map(|s| s.bandeau_text())
+            .as_deref()
+            .and_then(formation_label::chamber_from_body);
+        crate::formation::parse_formation(
+            jt,
+            None,
+            chamber,
+            bandeau.as_deref(),
+            d.formation.as_deref(),
+        )
+    };
+    // Composition lue au TEXTE quand ni greffe ni chambre ne l'ont posée
+    // (zones par tokens, ADR 0157). En PREMIÈRE instance la mention est
+    // auto-référentielle (« Vice-présidente, statuant en juge unique » au
+    // bloc de composition ; « demande au juge des référés » = requête
+    // adressée au juge de CE document, présent ou passé — le juge des
+    // référés statue seul, L. 511-2 CJA ; « magistrat désigné » signé en
+    // pied), quand en appel et en cassation le récit d'en-tête décrit la
+    // juridiction ATTAQUÉE. En appel/cassation, seule l'adresse à SON juge
+    // des référés compte : « au juge des référés du Conseil d'État »
+    // (premier ressort ou appel L. 521-2), « juge des référés de la cour »
+    // (école gold 2026-07-09 : référé → JUGE_UNIQUE).
+    let first_instance = matches!(jt, Some("TA") | Some("TJ") | Some("TCOM"));
+    if axes.formation_uid.is_none() {
+        if let Some(s) = scan {
+            let sig = s.procedure_signals();
+            let member = d.source_uid.rsplit('/').next().unwrap_or("").to_uppercase();
+            let ordo_refere_ta =
+                jt == Some("TA") && member.starts_with("ORTA_") && s.refere_article_header();
+            let ju = if first_instance {
+                s.juge_unique_header()
+                    || ordo_refere_ta
+                    || sig.jref_demande
+                    || (jt == Some("TA") && sig.magdes_tail)
+            } else {
+                match jt {
+                    Some("CE") => sig.jref_conseil,
+                    Some("CAA") => sig.refere_cour,
+                    _ => false,
+                }
+            };
+            if ju {
+                axes.formation_uid = Some("formation:JUGE_UNIQUE");
             }
-            // Le champ source `chamber` (texte libre CA/TJ/TCOM, porté par
-            // juridiction_code) prime ; le bandeau scanné complète les axes
-            // (spécialisation quand le greffe ne donne que la position).
-            let chamber = d.juridiction_code.as_deref().filter(|c| !c.is_empty());
-            let bandeau = scan
-                .map(|s| s.bandeau_text())
-                .as_deref()
-                .and_then(judilibre::chamber_from_body);
-            crate::formation::parse_formation(
-                jt,
-                None,
-                chamber,
-                bandeau.as_deref(),
-                d.formation.as_deref(),
-            )
         }
-        Family::Generic => crate::formation::FormationAxes::default(),
     }
+    axes
 }
 
 pub fn extract_jurisdiction_name(d: &Decision) -> Option<String> {
     jurisdiction_name_scanned(d, scan_doc(d).as_ref())
 }
 
+/// Variante plate de [`jurisdiction_scanned`] (banc) : re-scanne et renvoie le
+/// code référentiel seul.
+pub fn extract_jurisdiction_code(d: &Decision) -> Option<String> {
+    let scan = scan_doc(d);
+    let dockets = docket_numbers_scanned(d, scan.as_ref()).unwrap_or_default();
+    jurisdiction_scanned(d, scan.as_ref(), &dockets).map(|j| j.code)
+}
+
+/// Juridiction **catégorielle** (ADR 0146/0170 ét.7) : la ligne référentielle
+/// directe (code + label canonique + ville), seule sortie d'extraction — le
+/// nom scanné n'est qu'un détail interne de la composition. Entrées : type et
+/// localisation source, nom scanné ; une CAA sans ville dans
+/// le nom est identifiée par le code cour du numéro de requête
+/// (« 12BX02667 » → Bordeaux). `None` = pas de code fiable (règle #12).
+pub fn jurisdiction_scanned(
+    d: &Decision,
+    scan: Option<&crate::scan::DocScan>,
+    docket_numbers: &[String],
+) -> Option<crate::facets::JurisdictionRef> {
+    let jt = d.jurisdiction_type.as_deref()?;
+    let name = jurisdiction_name_scanned(d, scan);
+    let location = d.jurisdiction_location.as_deref();
+    crate::facets::jurisdiction_ref(jt, location, name.as_deref()).or_else(|| {
+        if jt != "CAA" {
+            return None;
+        }
+        let label = docket_numbers
+            .first()
+            .and_then(|n| crate::facets::caa_label_from_docket(n))?;
+        crate::facets::jurisdiction_ref(jt, location, Some(label))
+    })
+}
+
+/// Nom de juridiction : réécriture canonique du nom de greffe admin, table
+/// `location` Judilibre (+ renommage TAE lu dans l'en-tête scanné) côté
+/// judiciaire, `None` hors de ces deux nomenclatures.
 pub fn jurisdiction_name_scanned(
     d: &Decision,
     scan: Option<&crate::scan::DocScan>,
 ) -> Option<String> {
-    match fam(d) {
-        Family::Admin => opendata::extract_jurisdiction_name(d),
-        Family::Judiciaire => {
-            let header = scan.map(|s| s.header_text());
-            judilibre::extract_jurisdiction_name(d, header.as_deref())
-        }
-        Family::Generic => None,
+    if is_admin(d) {
+        return jurisdiction_names::admin_name(d);
     }
+    if !is_judiciaire(d) {
+        return None;
+    }
+    let header = scan.map(|s| s.header_text());
+    jurisdiction_names::from_location(d, header.as_deref())
 }
 
 /// Label solution du greffe → clé solution-17. Vocabulaire FERMÉ (codes
@@ -272,8 +342,18 @@ fn solution_from_label(low: &str) -> Option<&'static str> {
             "SATISFACTION_PARTIELLE",
         ),
         ("déboute le ou les demandeurs de l'ensemble", "REJET"),
+        // expulsion conditionnelle / en référé : délais ou provisoire — école
+        // gold PARTIELLE (5/5) ; « ferme au fond » reste TOTALE
+        ("expulsion \"conditionnelle\"", "SATISFACTION_PARTIELLE"),
+        (
+            "expulsion \"ferme\" ordonnée en référé",
+            "SATISFACTION_PARTIELLE",
+        ),
         ("expulsion", "SATISFACTION_TOTALE"),
-        ("prononce le divorce", "SATISFACTION_TOTALE"),
+        // divorce prononcé : les demandes accessoires (prestation
+        // compensatoire, jouissance…) ne sont jamais toutes accordées —
+        // école gold PARTIELLE (15/17)
+        ("prononce le divorce", "SATISFACTION_PARTIELLE"),
         ("renvoi avec ordonnance de clôture", "AUTRE"),
         ("renvoi à la mise en état", "AUTRE"),
         ("statue sur un incident", "AUTRE"),
@@ -390,11 +470,11 @@ pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Op
     // gabarit texte rattrape les fonds sans métadonnée ; le pourvoi CE
     // (gabarit Admin sans pivot judiciaire) se signale par « pourvoi »
     // en en-tête
-    let cc = d.juridiction_type.as_deref() == Some("CC")
+    let cc = d.jurisdiction_type.as_deref() == Some("CC")
         || scan.is_some_and(|s| s.gabarit_cc())
-        || (d.juridiction_type.as_deref() == Some("CE")
+        || (d.jurisdiction_type.as_deref() == Some("CE")
             && scan.is_some_and(|s| s.header_has_pourvoi()));
-    let admin = !cc && fam(d) == Family::Admin;
+    let admin = !cc && is_admin(d);
     let raw = d.solution.as_deref().unwrap_or("").trim().to_lowercase();
     // détection texte qui prime le label — sauf label de satisfaction
     if let Some((k, true)) = text {
@@ -426,7 +506,26 @@ pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Op
                             "CASSATION"
                         }
                     }
-                    "SATISFACTION_PARTIELLE" => "CASSATION_PARTIELLE",
+                    // Un label opendata « satisfaction partielle » décrit le
+                    // FOND (suspension bornée, décharge partielle), pas la
+                    // cassation : la partialité de la cassation se lit au
+                    // dispositif. Le label greffe « cassation partielle »
+                    // reste souverain.
+                    "SATISFACTION_PARTIELLE" => {
+                        if raw.contains("cassation")
+                            || scan.as_ref().is_some_and(|s| s.cassation_partial())
+                        {
+                            "CASSATION_PARTIELLE"
+                        } else {
+                            "CASSATION"
+                        }
+                    }
+                    // label de routage (« qpc »…) : le dispositif « dit n'y
+                    // avoir lieu de renvoyer » lit un non-lieu réel
+                    "AUTRE" => match text {
+                        Some(("NON_LIEU_A_STATUER", _)) => "NON_LIEU_A_STATUER",
+                        _ => "AUTRE",
+                    },
                     other => other,
                 }
             } else if admin {
@@ -455,10 +554,43 @@ pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Op
                         Some(("REJET", _)) => "REJET",
                         _ => key,
                     },
+                    // Label « Rejet » = littéral du dispositif ; l'école
+                    // 2026-07-09 code la catégorie la plus spécifique :
+                    // irrecevabilité PRONONCÉE au texte (« rejetée comme
+                    // manifestement irrecevable », R. 222-1) → IRRECEVABILITE.
+                    // Évocation en appel : « le jugement est annulé ; la
+                    // demande de première instance est rejetée » — le greffe
+                    // clique « Rejet » (sort de la demande initiale), l'école
+                    // lit le dispositif VERBATIM : jugement renversé →
+                    // ANNULATION (« réformé » → REFORMATION).
+                    "REJET" => match text {
+                        Some(("IRRECEVABILITE", _)) => "IRRECEVABILITE",
+                        Some(("ANNULATION", _)) => "ANNULATION",
+                        Some(("REFORMATION", _)) => "REFORMATION",
+                        _ => key,
+                    },
                     other => other,
                 }
             } else {
-                key
+                // École gold judiciaire : le dispositif VERBATIM prime le
+                // label cliqué du greffe — « Fait droit à l'ensemble des
+                // demandes » avec des têtes rejetées/déboutées au dispositif
+                // = PARTIELLE ; label « irrecevabilité » sur un dispositif
+                // qui rejette au fond = REJET (le fond absorbe, cf. gabarits).
+                match (key, &text) {
+                    ("SATISFACTION_TOTALE", Some(("SATISFACTION_PARTIELLE", _))) => {
+                        "SATISFACTION_PARTIELLE"
+                    }
+                    ("IRRECEVABILITE", Some(("REJET", _))) => "REJET",
+                    // Labels de routage (« renvoi à la mise en état », « ne
+                    // dessaisissant pas », « statue sur un incident », qpc…) :
+                    // le gold code le sort RÉEL de l'incident quand le
+                    // dispositif en lit un (gold Judilibre : IRREC,
+                    // SATISFACTION, CONF/INF sous ces labels) — AUTRE n'est
+                    // que le silence du dispositif.
+                    ("AUTRE", Some((t, _))) if *t != "AUTRE" => t,
+                    _ => key,
+                }
             };
             return Some(solution_uid(key));
         }
@@ -493,7 +625,7 @@ fn office_uid(key: &str) -> ProcedureUids {
 
 fn domaine_uid(key: &str) -> ProcedureUids {
     ProcedureUids {
-        legal_domain_uid: Some(format!("domaine:{key}")),
+        legal_domain_uid: Some(format!("legal_domain:{key}")),
         ..Default::default()
     }
 }
@@ -508,7 +640,7 @@ fn blob_word(blob: &str, w: &str) -> bool {
 fn procedure_from_chamber(d: &Decision, sig: &crate::scan::ProcSignals) -> Option<ProcedureUids> {
     let blob = crate::compiled::fold_stable(&format!(
         "{} {}",
-        d.juridiction_code.as_deref().unwrap_or(""),
+        d.chamber.as_deref().unwrap_or(""),
         d.formation.as_deref().unwrap_or("")
     ));
     if blob.trim().is_empty() {
@@ -574,11 +706,15 @@ fn procedure_from_chamber(d: &Decision, sig: &crate::scan::ProcSignals) -> Optio
     None
 }
 
-/// La voie de recours (`voie:*`) — cascade métadonnées puis signaux texte.
-fn voie_key(d: &Decision, sig: &crate::scan::ProcSignals, chamber: &str) -> Option<&'static str> {
+/// La voie de recours (`procedure:*`) — cascade métadonnées puis signaux texte.
+fn procedure_key(
+    d: &Decision,
+    sig: &crate::scan::ProcSignals,
+    chamber: &str,
+) -> Option<&'static str> {
     let sol = crate::compiled::fold_stable(d.solution.as_deref().unwrap_or(""));
     let tr = crate::compiled::fold_stable(d.type_recours.as_deref().unwrap_or(""));
-    let jt = d.juridiction_type.as_deref();
+    let jt = d.jurisdiction_type.as_deref();
     if sol.contains("qpc") || tr.trim() == "qpc" {
         return Some("QPC");
     }
@@ -657,8 +793,20 @@ fn voie_key(d: &Decision, sig: &crate::scan::ProcSignals, chamber: &str) -> Opti
     if sig.refere_suspension {
         return Some("REFERE_SUSPENSION");
     }
-    // formation de référé judiciaire (jamais pour l'ordre administratif)
+    // référé judiciaire : formation de référé en métadonnée (fonds
+    // judiciaires), ou dit par le texte pour les juridictions du fond —
+    // pas en cassation (le récit CC « ordonnance de référé » raconte
+    // l'instance d'origine, et les vieux arrêts CC sans bandeau ouvrent
+    // directement sur les motifs)
     if chamber.contains("refere") && !matches!(jt, Some("TA") | Some("CAA") | Some("CE")) {
+        return Some("REFERE_CIVIL");
+    }
+    // pas sur un désistement (l'instance s'interrompt, comme pour la PAPC)
+    if sig.refere_civil
+        && matches!(jt, Some("CA") | Some("TJ") | Some("TCOM"))
+        && !sol.contains("desist")
+        && !sig.desist_bandeau
+    {
         return Some("REFERE_CIVIL");
     }
     None
@@ -666,7 +814,7 @@ fn voie_key(d: &Decision, sig: &crate::scan::ProcSignals, chamber: &str) -> Opti
 
 /// Décomposition procédurale voie/office/domaine — UNIFIÉ (ADR 0157) : les
 /// trois axes se composent INDÉPENDAMMENT (une ordonnance de référé OQTF
-/// porte à la fois `voie:REFERE_SUSPENSION` et `domaine:…_ETRANGERS_…`).
+/// porte à la fois `procedure:REFERE_SUSPENSION` et `legal_domain:…_ETRANGERS_…`).
 /// Métadonnées d'abord (label solution, type de recours, formation), puis
 /// signaux textuels du scan ([`crate::scan::DocScan::procedure_signals`] —
 /// articles CJA compilés en marqueurs, zones par tokens).
@@ -679,13 +827,13 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
     let sig = scan.map(|s| s.procedure_signals()).unwrap_or_default();
     let chamber = crate::compiled::fold_stable(&format!(
         "{} {}",
-        d.juridiction_code.as_deref().unwrap_or(""),
+        d.chamber.as_deref().unwrap_or(""),
         d.formation.as_deref().unwrap_or("")
     ));
     // office/domaine : formation d'abord, texte ensuite — les offices
     // texte (premier président, JEX) sont judiciaires par construction
     let judiciaire = matches!(
-        d.juridiction_type.as_deref(),
+        d.jurisdiction_type.as_deref(),
         Some("CC") | Some("CA") | Some("TJ") | Some("TCOM")
     );
     let mut out = procedure_from_chamber(d, &sig).unwrap_or_default();
@@ -695,13 +843,13 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
         } else if sig.retention {
             out.legal_domain_uid =
                 domaine_uid("PUBLIC_DROIT_ETRANGERS_NATIONALITE").legal_domain_uid;
-        } else if d.juridiction_type.as_deref() == Some("TCOM") && sig.proc_collective {
+        } else if d.jurisdiction_type.as_deref() == Some("TCOM") && sig.proc_collective {
             out.legal_domain_uid =
                 domaine_uid("COMMERCIAL_DROIT_ENTREPRISES_DIFFICULTE").legal_domain_uid;
         } else if sig.premier_president && judiciaire {
             out.office_uid = office_uid("PREMIER_PRESIDENT").office_uid;
         } else if sig.jex
-            && d.juridiction_type.as_deref() == Some("TJ")
+            && d.jurisdiction_type.as_deref() == Some("TJ")
             && (sig.jex_saisie_immo || !chamber.contains("refere"))
         {
             // TJ seulement : en appel comme en cassation, « juge de
@@ -710,7 +858,7 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
             out.office_uid = office_uid("JEX").office_uid;
         }
     }
-    let voie = voie_key(d, &sig, &chamber);
+    let voie = procedure_key(d, &sig, &chamber);
     // Axe office INDÉPENDANT du domaine (ADR 0157) : un OQTF juge unique
     // porte domaine étrangers ET office magistrat désigné — hors de la
     // chaîne ci-dessus, qui s'arrête au premier axe posé.
@@ -721,8 +869,30 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
     // cassation la surface désigne le juge du jugement ATTAQUÉ (CAA 43
     // spurious / 9 gold), et gold laisse l'office vide.
     if out.office_uid.is_none()
-        && d.juridiction_type.as_deref() == Some("TA")
-        && (sig.magdes || voie.is_some_and(|k| k.starts_with("REFERE_")))
+        && d.jurisdiction_type.as_deref() == Some("TA")
+        && (sig.magdes || sig.magdes_form_trib || voie.is_some_and(|k| k.starts_with("REFERE_")))
+    {
+        out.office_uid = office_uid("MAGISTRAT_DESIGNE").office_uid;
+    }
+    // CAA/CE : l'ordonnance signée « Le président désigné » / « Le conseiller
+    // d'État désigné » est rendue par un juge unique désigné — gold pose
+    // MAGISTRAT_DESIGNE (signature en pied : 41/4 sur corpus gold). Compte la
+    // signature (`magdes_tail`), et pour la CAA la formule d'en-tête « le
+    // président de la cour a désigné Mme X … » (R. 222-1 / juge des référés).
+    if out.office_uid.is_none()
+        && matches!(d.jurisdiction_type.as_deref(), Some("CAA") | Some("CE"))
+        && (sig.magdes_tail
+            || (d.jurisdiction_type.as_deref() == Some("CAA") && sig.magdes_form_cour))
+    {
+        out.office_uid = office_uid("MAGISTRAT_DESIGNE").office_uid;
+    }
+    // CA/TJ : l'ordonnance signée « le juge/conseiller de la mise en état »,
+    // « le magistrat chargé d'instruire l'affaire » est l'œuvre d'un
+    // magistrat délégué — gold MAGISTRAT_DESIGNE (signature en pied : 25/6
+    // sur corpus gold).
+    if out.office_uid.is_none()
+        && matches!(d.jurisdiction_type.as_deref(), Some("CA") | Some("TJ"))
+        && sig.magdes_tail
     {
         out.office_uid = office_uid("MAGISTRAT_DESIGNE").office_uid;
     }
@@ -740,6 +910,10 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
             Some("PUBLIC_DROIT_AIDE_ACTION_SOCIALE")
         } else if sig.dom_urba {
             Some("PUBLIC_DROIT_URBANISME_IMMOBILIER_PUBLIC")
+        } else if sig.dom_env {
+            Some("PUBLIC_DROIT_ENVIRONNEMENT")
+        } else if sig.dom_penal_pub {
+            Some("PUBLIC_DROIT_PENAL_PUBLIC")
         } else if sig.dom_etr {
             Some("PUBLIC_DROIT_ETRANGERS_NATIONALITE")
         } else if sig.dom_fp {
@@ -748,7 +922,7 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
             None
         };
     }
-    out.voie_uid = voie.map(|k| format!("voie:{k}"));
+    out.procedure_uid = voie.map(|k| format!("procedure:{k}"));
     out
 }
 
@@ -783,31 +957,83 @@ fn avocat_requerant_meta(d: &Decision) -> Option<(String, bool)> {
         return None;
     }
     let f = crate::compiled::fold_stable(&compact);
-    let first = f.split_whitespace().next().unwrap_or("");
-    let is_firm = matches!(
-        first,
-        "scp"
-            | "selarl"
-            | "selarlu"
-            | "seleurl"
-            | "selas"
-            | "selafa"
-            | "selca"
-            | "scm"
-            | "aarpi"
-            | "sarl"
-            | "sas"
-            | "sasu"
-            | "sa"
-            | "societe"
-    ) || f.contains("avocat")
-        || f.contains("cabinet");
+    // Structure en tête (« SCP X ») OU en queue (« DHALLUIN SCP ») : la
+    // métadonnée écrit les deux ordres.
+    let structural = |t: &str| {
+        matches!(
+            t,
+            "scp"
+                | "selarl"
+                | "selarlu"
+                | "seleurl"
+                | "selas"
+                | "selasu"
+                | "selafa"
+                | "selca"
+                | "scm"
+                | "aarpi"
+                | "sarl"
+                | "sas"
+                | "sasu"
+                | "sa"
+                | "societe"
+        )
+    };
+    let mut toks = f.split_whitespace();
+    let first = toks.next().unwrap_or("");
+    let last = toks.next_back().unwrap_or(first);
+    let is_firm =
+        structural(first) || structural(last) || f.contains("avocat") || f.contains("cabinet");
     Some((compact, is_firm))
+}
+
+/// Ébarbe une valeur counsel de sa queue d'apposition cabinet (« Jean-Claude
+/// NEBOT de la SELASU NEBOT AVOCAT » → « Jean-Claude NEBOT ») et du titre nu
+/// final (« Julie GALLAND … Avocat »). La structure reste captée par les
+/// champs `*_law_firms` ; la valeur counsel est la personne seule.
+fn trim_counsel_tail(v: String) -> String {
+    static RE_FIRM_TAIL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    static RE_TITLE_TAIL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re_firm = RE_FIRM_TAIL.get_or_init(|| {
+        regex::Regex::new(
+            r"(?i)\s(?:de la|de l'|du|de|-|–)\s.*?\b(?:scp|selarl|selasu|selas|selafa|seleurl|selarlu|selca|scm|aarpi|sas|sasu|sarl|avocats?|cabinet)\b",
+        )
+        .unwrap()
+    });
+    let re_title = RE_TITLE_TAIL.get_or_init(|| regex::Regex::new(r"(?i)\s+avocats?\s*$").unwrap());
+    let folded = crate::compiled::fold_stable(&v);
+    let cut = re_firm.find(&folded).map(|m| m.start());
+    // `fold_stable` est 1:1 en chars : l'offset plié se reporte tel quel.
+    let v = match cut {
+        Some(at) => {
+            let keep: String = v.chars().take(folded[..at].chars().count()).collect();
+            keep
+        }
+        None => v,
+    };
+    let mut v = re_title.replace(&v, "").into_owned();
+    // Ponctuation de bord — sans jamais mordre l'ellipse d'anonymisation
+    // ancienne (« Me F... »).
+    loop {
+        let t = v.trim_end_matches([' ', ',', ';']);
+        let t = match t.strip_suffix('.') {
+            Some(rest) if !rest.ends_with('.') => rest,
+            _ => t,
+        };
+        if t.len() == v.len() {
+            break;
+        }
+        v.truncate(t.len());
+    }
+    v
 }
 
 /// Fusion métadonnée-d'abord : la valeur structurée ouvre la liste ; une
 /// tranche texte dont tous les mots pliés figurent déjà dans la métadonnée
 /// (« Tachon » face à « SCP WABLE TRUNECEK TACHON AUBRON ») est redondante.
+/// Quand la tranche texte recouvre le MÊME nom entier (mêmes mots pliés) et
+/// que la métadonnée est tout-CAPS, la tranche du corps en casse mixte prend
+/// la place — les capitales ont détruit casse et accents.
 fn merge_meta_first(meta: Option<String>, text: Vec<String>) -> Vec<String> {
     let Some(meta) = meta else { return text };
     let mw: Vec<String> = crate::compiled::fold_stable(&meta)
@@ -816,14 +1042,29 @@ fn merge_meta_first(meta: Option<String>, text: Vec<String>) -> Vec<String> {
         .collect();
     let mut out = vec![meta];
     for n in text {
-        let redundant = crate::compiled::fold_stable(&n)
+        let nw: Vec<String> = crate::compiled::fold_stable(&n)
             .split_whitespace()
-            .all(|w| mw.iter().any(|m| m == w));
-        if !redundant {
+            .map(str::to_string)
+            .collect();
+        if !nw.iter().all(|w| mw.contains(w)) {
             out.push(n);
+        } else if nw.len() == mw.len() && common::better_cased(&out[0], &n) {
+            out[0] = n;
         }
     }
     out
+}
+
+/// Ré-ancre chaque valeur counsel/firm à sa jumelle mieux cassée dans le
+/// texte — champs PERSONNES uniquement : les companies gardent leur tranche
+/// d'origine (la doctrine gold conserve « SA SOCIÉTÉ DES AUTOROUTES » tel
+/// quel ; c'est le patronyme que l'en-tête écrase en capitales).
+fn recase_by_text(scan: Option<&crate::scan::DocScan>, values: Vec<String>) -> Vec<String> {
+    let Some(s) = scan else { return values };
+    values
+        .into_iter()
+        .map(|v| s.best_cased_twin(&v).unwrap_or(v))
+        .collect()
 }
 
 pub fn extract_applicant_counsel_names(d: &Decision) -> Option<Vec<String>> {
@@ -837,7 +1078,12 @@ pub fn applicant_counsel_names_scanned(
     let meta = avocat_requerant_meta(d)
         .filter(|(_, firm)| !firm)
         .map(|(v, _)| v);
-    common::unique_nonempty(&merge_meta_first(meta, counsel(scan).applicant_names))
+    let names = merge_meta_first(meta, counsel(scan).applicant_names)
+        .into_iter()
+        .map(trim_counsel_tail)
+        .filter(|v| !common::is_anonymized_person(v))
+        .collect();
+    common::unique_nonempty(&recase_by_text(scan, names))
 }
 
 pub fn extract_applicant_law_firms(d: &Decision) -> Option<Vec<String>> {
@@ -851,7 +1097,11 @@ pub fn applicant_law_firms_scanned(
     let meta = avocat_requerant_meta(d)
         .filter(|(_, firm)| *firm)
         .map(|(v, _)| v);
-    common::unique_nonempty(&merge_meta_first(meta, counsel(scan).applicant_firms))
+    let firms = merge_meta_first(meta, counsel(scan).applicant_firms)
+        .into_iter()
+        .filter(|v| !common::is_anonymized_firm(v))
+        .collect();
+    common::unique_nonempty(&recase_by_text(scan, firms))
 }
 
 pub fn extract_defendant_counsel_names(d: &Decision) -> Option<Vec<String>> {
@@ -859,7 +1109,13 @@ pub fn extract_defendant_counsel_names(d: &Decision) -> Option<Vec<String>> {
 }
 
 pub fn defendant_counsel_names_scanned(scan: Option<&crate::scan::DocScan>) -> Option<Vec<String>> {
-    common::unique_nonempty(&counsel(scan).defendant_names)
+    let names = counsel(scan)
+        .defendant_names
+        .into_iter()
+        .map(trim_counsel_tail)
+        .filter(|v| !common::is_anonymized_person(v))
+        .collect();
+    common::unique_nonempty(&recase_by_text(scan, names))
 }
 
 pub fn extract_defendant_law_firms(d: &Decision) -> Option<Vec<String>> {
@@ -867,7 +1123,12 @@ pub fn extract_defendant_law_firms(d: &Decision) -> Option<Vec<String>> {
 }
 
 pub fn defendant_law_firms_scanned(scan: Option<&crate::scan::DocScan>) -> Option<Vec<String>> {
-    common::unique_nonempty(&counsel(scan).defendant_firms)
+    let firms = counsel(scan)
+        .defendant_firms
+        .into_iter()
+        .filter(|v| !common::is_anonymized_firm(v))
+        .collect();
+    common::unique_nonempty(&recase_by_text(scan, firms))
 }
 
 /// Personnes morales parties — UNIFIÉ : gabarit (pivot CC / blocs / requête
@@ -884,6 +1145,10 @@ pub fn applicant_companies_scanned(scan: Option<&crate::scan::DocScan>) -> Optio
     common::unique_nonempty(&common::dedupe_prefix_variants(companies(scan).0))
 }
 
+pub fn intervenors_scanned(scan: Option<&crate::scan::DocScan>) -> Option<Vec<String>> {
+    common::unique_nonempty(&scan.map(|s| s.intervenors()).unwrap_or_default())
+}
+
 pub fn extract_defendant_companies(d: &Decision) -> Option<Vec<String>> {
     defendant_companies_scanned(scan_doc(d).as_ref())
 }
@@ -892,11 +1157,13 @@ pub fn defendant_companies_scanned(scan: Option<&crate::scan::DocScan>) -> Optio
     common::unique_nonempty(&common::dedupe_prefix_variants(companies(scan).1))
 }
 
+/// Codes de publication : métadonnée source jointe — même sortie pour toutes
+/// les sources (un seul code = le code nu).
 pub fn extract_publication_code(d: &Decision) -> Option<String> {
-    match fam(d) {
-        Family::Admin => opendata::extract_publication_code(d),
-        Family::Judiciaire => judilibre::extract_publication_code(d),
-        Family::Generic => d.publication_codes.first().cloned(),
+    if d.publication_codes.is_empty() {
+        None
+    } else {
+        Some(d.publication_codes.join(","))
     }
 }
 
@@ -910,10 +1177,12 @@ mod generic_tests {
             source_uid: "test".into(),
             member_name: "test".into(),
             ecli: None,
-            juridiction_code: None,
-            juridiction_nom: None,
-            juridiction_type: jt.map(str::to_string),
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: None,
+            jurisdiction_type: jt.map(str::to_string),
+            jurisdiction_location: None,
             numero_dossier: None,
             numero_dossiers: None,
             numero_role: None,
@@ -959,9 +1228,10 @@ mod generic_tests {
             extract_docket_numbers(&d),
             Some(vec!["12345/06".into(), "678/07".into()])
         );
-        // Verbatim : pas de re-parse de la date.
+        // ISO déjà : la validation de format passe la valeur telle quelle.
         assert_eq!(extract_date_lecture(&d).as_deref(), Some("2020-01-15"));
-        assert_eq!(extract_publication_code(&d).as_deref(), Some("B"));
+        // Codes de publication joints — même sortie pour toutes les sources.
+        assert_eq!(extract_publication_code(&d).as_deref(), Some("B,P"));
         // Champs non portés → None (pas de crash, extraction minimale).
         assert_eq!(extract_solution(&d), None);
         assert_eq!(extract_jurisdiction_name(&d), None);

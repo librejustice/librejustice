@@ -66,13 +66,22 @@ fn jorf_date(iso: &str) -> Result<chrono::NaiveDate> {
         .map_err(|e| anyhow!("date JORF invalide {iso:?}: {e}"))
 }
 
-/// Convertit un [`lj_extract::jorf::JorfTexte`] en [`LegalTextRow`] (ADR 0112 §1).
+/// Message de la passe textes : la ligne, son statut traité, et ses liens
+/// texte-niveau (graphe ADR 0246 — écrits pour les fiches nouvelles).
+struct JorfTexteMsg {
+    row: lj_store::repository::LegalTextRow,
+    treaty: bool,
+    liens: Vec<lj_extract::jorf::JorfLien>,
+}
+
+/// Convertit un [`lj_extract::jorf::JorfTexte`] en [`JorfTexteMsg`] (ADR 0112 §1).
 /// Traité détecté ⇒ `jurisdiction='INTL'`/`nature='TRAITE'` ; sinon
 /// `jurisdiction='FR'`/`nature` du JO (`source` ayant quitté l'identité, c'est la
 /// juridiction qui porte le clivage traité ↔ JO — `treaty_text_uids`). `title` = le
 /// libellé descriptif `TITREFULL` si présent (pour que `title_key` matche les
 /// citations), à défaut `TITRE` court. `date_texte`/`date_publi` natifs du JO.
-fn jorf_texte_row(t: lj_extract::jorf::JorfTexte) -> lj_store::repository::LegalTextRow {
+fn jorf_texte_msg(mut t: lj_extract::jorf::JorfTexte) -> JorfTexteMsg {
+    let liens = std::mem::take(&mut t.liens);
     let treaty = lj_extract::jorf::is_treaty(&t);
     // Cascade d'identité ADR 0115 (capturée avant les moves de `t`). `instrument_key`
     // sur la nature d'origine (pas "TRAITE"), filet pour les actes numérotés sans ELI/NOR.
@@ -93,7 +102,7 @@ fn jorf_texte_row(t: lj_extract::jorf::JorfTexte) -> lj_store::repository::Legal
         .date_publi
         .as_deref()
         .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
-    lj_store::repository::LegalTextRow {
+    let row = lj_store::repository::LegalTextRow {
         text_uid: t.jorftext,
         jurisdiction: if treaty { "INTL" } else { "FR" }.to_string(),
         title,
@@ -110,7 +119,59 @@ fn jorf_texte_row(t: lj_extract::jorf::JorfTexte) -> lj_store::repository::Legal
         eli,
         nor,
         instrument_key,
-    }
+        body: None,
+        status: None,
+    };
+    JorfTexteMsg { row, treaty, liens }
+}
+
+/// Convertit les [`lj_extract::jorf::JorfLien`] d'un texte en lignes
+/// [`LegalLinkRow`] (ADR 0174, même modèle que LEGI/KALI) : `verb` par le
+/// mapping `typelien` partagé, direction lue du `sens` DILA (`source` = la
+/// cible agit sur l'owner), cible en clé pendante résolue au read-time.
+fn jorf_link_rows(
+    liens: Vec<lj_extract::jorf::JorfLien>,
+) -> Result<Vec<lj_store::repository::LegalLinkRow>> {
+    liens
+        .into_iter()
+        .map(|l| {
+            let target_date = match l.date_signa {
+                Some(d) => Some(jorf_date(&d)?),
+                None => None,
+            };
+            let target_kind = match l.target_id.as_deref() {
+                Some(id) if id.contains("ARTI") => "article",
+                Some(id) if id.contains("SCTA") => "section",
+                _ => "texte",
+            };
+            let target_num_key = l
+                .num
+                .as_deref()
+                .map(|n| {
+                    lj_core::article_key::article_key(&lj_extract::extract::normalize_article(n))
+                })
+                .filter(|k| !k.is_empty());
+            Ok(lj_store::repository::LegalLinkRow {
+                verb: lj_extract::legi::lien_verb(&l.typelien),
+                typelien: l.typelien,
+                direction: if l.sens == "source" {
+                    "incoming"
+                } else {
+                    "outgoing"
+                }
+                .to_string(),
+                target_kind: target_kind.to_string(),
+                target_uid: l.target_id,
+                target_text_uid: (!l.cid.is_empty()).then_some(l.cid),
+                target_num: l.num,
+                target_num_key,
+                target_nature: l.nature,
+                target_label: l.libelle.unwrap_or_default(),
+                target_date,
+                target_nor: None,
+            })
+        })
+        .collect()
 }
 
 /// Convertit un [`lj_extract::jorf::JorfArticle`] en [`LegalArticleRow`].
@@ -182,10 +243,23 @@ pub async fn ingest_jorf(path: &Path) -> Result<()> {
     lj_store::migrator::apply_migrations(&conn)
         .await
         .map_err(|e| anyhow!("migrations: {e}"))?;
+    // Finisseurs pleine-table (1,4 M de titres) : au-delà du statement_timeout
+    // de 30 s du pool.
+    conn.batch_execute("SET statement_timeout = 0")
+        .await
+        .map_err(|e| anyhow!("set statement_timeout: {e}"))?;
     let repo = DecisionRepository::new(&conn);
+    ingest_jorf_archive(&repo, path).await?;
+    finish_jorf(&repo).await
+}
 
+/// Les deux passes d'une archive (textes puis articles traités). Les finisseurs
+/// globaux ([`finish_jorf`]) sont à la charge de l'appelant : une fois par
+/// archive en manuel, une fois par run en sync (un rattrapage applique des
+/// centaines d'incréments).
+async fn ingest_jorf_archive(repo: &DecisionRepository<'_>, path: &Path) -> Result<()> {
     // Passe 1 : textes (révèle les cid de traités).
-    let texts = ingest_jorf_texts(&repo, path).await?;
+    let texts = ingest_jorf_texts(repo, path).await?;
 
     // Set complet des cid de traités en base (ce stock + antérieurs).
     let treaty_cids: HashSet<String> = repo
@@ -197,8 +271,26 @@ pub async fn ingest_jorf(path: &Path) -> Result<()> {
 
     // Passe 2 : articles (taggés treaty/jorf selon le cid parent).
     let (upserted, skipped, no_num, errors) =
-        ingest_jorf_articles(&repo, path, Arc::new(treaty_cids.clone())).await?;
+        ingest_jorf_articles(repo, path, Arc::new(treaty_cids.clone())).await?;
 
+    tracing::info!(
+        source = %path.display(),
+        treaties_upserted = texts.treaties,
+        texts_created = texts.created,
+        texts_existing = texts.existing,
+        text_links = texts.links,
+        treaties = treaty_cids.len(),
+        articles_upserted = upserted,
+        articles_skipped = skipped,
+        articles_no_num = no_num,
+        errors,
+        "ingest_jorf_archive"
+    );
+    Ok(())
+}
+
+/// Finisseurs globaux post-archives : titres formés, slugs, rôles.
+async fn finish_jorf(repo: &DecisionRepository<'_>) -> Result<()> {
     // Titre du code dénormalisé → titre formé `search_title` (ADR 0114).
     let retitled = repo
         .refresh_article_code_titles()
@@ -206,27 +298,86 @@ pub async fn ingest_jorf(path: &Path) -> Result<()> {
         .map_err(|e| anyhow!("refresh_article_code_titles: {e}"))?;
 
     // Slugs des textes nouveaux (ADR 0162, unique écrivain de la colonne).
-    let slugged = super::slugs::assign_text_slugs(&repo).await?;
+    let slugged = super::slugs::assign_text_slugs(repo).await?;
+
+    // Rôles recalculés sur tout le référentiel (ADR 0246, dérivés/rejouables) :
+    // les fiches fraîches du JO (nominations, habilitations, véhicules) sortent
+    // de la recherche par défaut dès leur entrée.
+    let (individuel, habilitation, vehicule) = repo
+        .backfill_text_roles()
+        .await
+        .map_err(|e| anyhow!("backfill_text_roles: {e}"))?;
 
     tracing::info!(
-        source = %path.display(),
-        texts,
-        slugged,
-        treaties = treaty_cids.len(),
-        articles_upserted = upserted,
-        articles_skipped = skipped,
-        articles_no_num = no_num,
         retitled,
-        errors,
-        "ingest_jorf"
+        slugged,
+        individuel,
+        habilitation,
+        vehicule,
+        "finish_jorf"
     );
     Ok(())
 }
 
-/// Passe 1 — textes JORF → `referential_texts`. Renvoie le nombre upserté.
-async fn ingest_jorf_texts(repo: &DecisionRepository<'_>, path: &Path) -> Result<usize> {
-    let (tx, mut rx) =
-        tokio::sync::mpsc::channel::<lj_store::repository::LegalTextRow>(JORF_BATCH_SIZE * 4);
+/// Sync du fond JORF complet, auto-switch cold ↔ warm (même mécanique que les
+/// autres fonds DILA) : télécharge le stock global au 1er run puis les
+/// incréments postérieurs au watermark, ingère les archives fraîchement
+/// téléchargées, puis passe les finisseurs globaux **une fois**.
+pub async fn sync_jorf() -> Result<()> {
+    let settings = Settings::from_env()?;
+    let cache_dir = settings.cache_dir();
+    let downloaded = tokio::task::spawn_blocking(move || {
+        lj_sources::dila::sync_dila(&cache_dir, lj_sources::dila::DilaFond::Jorf)
+    })
+    .await
+    .map_err(|e| anyhow!("sync_dila join (jorf): {e}"))?
+    .map_err(|e| anyhow!("sync_dila (jorf): {e}"))?;
+    if downloaded.is_empty() {
+        tracing::info!("sync_jorf : rien de neuf (≤ watermark)");
+        return Ok(());
+    }
+    tracing::info!(
+        downloaded = downloaded.len(),
+        "sync_jorf : ingestion des archives fraîches"
+    );
+    let pool =
+        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    lj_store::migrator::apply_migrations(&conn)
+        .await
+        .map_err(|e| anyhow!("migrations: {e}"))?;
+    // Finisseurs pleine-table (1,4 M de titres) : au-delà du statement_timeout
+    // de 30 s du pool.
+    conn.batch_execute("SET statement_timeout = 0")
+        .await
+        .map_err(|e| anyhow!("set statement_timeout: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    for path in &downloaded {
+        ingest_jorf_archive(&repo, path).await?;
+    }
+    finish_jorf(&repo).await
+}
+
+/// Compteurs de la passe textes : traités upsertés, fiches JO créées, fiches JO
+/// déjà portées (LEGI/TNC ou run antérieur — jamais réécrites), liens écrits.
+#[derive(Default)]
+struct JorfTextCounts {
+    treaties: usize,
+    created: usize,
+    existing: usize,
+    links: u64,
+}
+
+/// Passe 1 — textes JORF → `legal_text`, **fond complet** (ADR 0246, plan
+/// phase 4) : les traités gardent l'upsert intégral (ADR 0109) ; tout le reste
+/// du JO entre en fiche métadonnées (sans corps ni articles — le résidu
+/// articles JO reste purgé, ADR 0115 §5) via [`insert_legal_text_if_absent`]
+/// — un JORFTEXT déjà porté par LEGI n'est jamais écrasé. Les fiches créées
+/// écrivent leurs liens texte-niveau (`legal_link`, graphe de généalogie).
+///
+/// [`insert_legal_text_if_absent`]: DecisionRepository::insert_legal_text_if_absent
+async fn ingest_jorf_texts(repo: &DecisionRepository<'_>, path: &Path) -> Result<JorfTextCounts> {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<JorfTexteMsg>(JORF_BATCH_SIZE * 4);
     let tar_path = path.to_path_buf();
     let reader = tokio::task::spawn_blocking(move || -> Result<()> {
         lj_sources::tar_reader::for_each_member(&tar_path, |name, raw| {
@@ -234,17 +385,9 @@ async fn ingest_jorf_texts(repo: &DecisionRepository<'_>, path: &Path) -> Result
                 return Ok(());
             }
             match lj_extract::jorf::parse_jorf_texte(&raw) {
-                Ok(t) => {
-                    // ADR 0115 §5 : `ingest_jorf` ne persiste QUE les traités (sa raison
-                    // d'être, ADR 0109). Le reste du JO (longue traîne arrêtés/avis/
-                    // nominations) est un résidu non-linkant que LEGI TNC couvre déjà —
-                    // on ne l'écrit plus (l'existant est purgé par ailleurs).
-                    if !lj_extract::jorf::is_treaty(&t) {
-                        return Ok(());
-                    }
-                    tx.blocking_send(jorf_texte_row(t))
-                        .map_err(|_| anyhow!("canal JORF textes fermé"))
-                }
+                Ok(t) => tx
+                    .blocking_send(jorf_texte_msg(t))
+                    .map_err(|_| anyhow!("canal JORF textes fermé")),
                 Err(e) => {
                     tracing::error!(member = %name, error = %e, "jorf texte: parse échec");
                     Ok(())
@@ -253,21 +396,21 @@ async fn ingest_jorf_texts(repo: &DecisionRepository<'_>, path: &Path) -> Result
         })
     });
 
-    let mut batch: Vec<lj_store::repository::LegalTextRow> = Vec::new();
-    let mut upserted = 0usize;
-    while let Some(row) = rx.recv().await {
-        batch.push(row);
+    let mut batch: Vec<JorfTexteMsg> = Vec::new();
+    let mut counts = JorfTextCounts::default();
+    while let Some(msg) = rx.recv().await {
+        batch.push(msg);
         if batch.len() >= JORF_BATCH_SIZE {
-            upserted += flush_jorf_texts(repo, std::mem::take(&mut batch)).await?;
+            flush_jorf_texts(repo, std::mem::take(&mut batch), &mut counts).await?;
         }
     }
     reader
         .await
         .map_err(|e| anyhow!("tâche lecture JORF textes {}: {e}", path.display()))??;
     if !batch.is_empty() {
-        upserted += flush_jorf_texts(repo, batch).await?;
+        flush_jorf_texts(repo, batch, &mut counts).await?;
     }
-    Ok(upserted)
+    Ok(counts)
 }
 
 /// Passe 2 — articles JORF → `referential_articles`. Renvoie
@@ -345,18 +488,50 @@ async fn ingest_jorf_articles(
     Ok((upserted, skipped, no_num, errors))
 }
 
-/// Upsert d'un batch de textes JORF (`ON CONFLICT text_uid`).
+/// Écrit un batch de textes JORF : traité → upsert intégral ; sinon insertion
+/// si absent (règle d'autorité LEGI) + liens texte-niveau des fiches créées
+/// (batchés par [`DecisionRepository::replace_legal_links`], rejouables —
+/// remplacement par propriétaire).
 async fn flush_jorf_texts(
     repo: &DecisionRepository<'_>,
-    texts: Vec<lj_store::repository::LegalTextRow>,
-) -> Result<usize> {
-    let n = texts.len();
-    for text in texts {
-        repo.upsert_legal_text(&text)
+    texts: Vec<JorfTexteMsg>,
+    counts: &mut JorfTextCounts,
+) -> Result<()> {
+    let mut links: Vec<(
+        lj_store::repository::LegalLinkOwner,
+        Vec<lj_store::repository::LegalLinkRow>,
+    )> = Vec::new();
+    for msg in texts {
+        if msg.treaty {
+            repo.upsert_legal_text(&msg.row)
+                .await
+                .map_err(|e| anyhow!("upsert_legal_text {}: {e}", msg.row.text_uid))?;
+            counts.treaties += 1;
+        } else if repo
+            .insert_legal_text_if_absent(&msg.row)
             .await
-            .map_err(|e| anyhow!("upsert_legal_text {}: {e}", text.text_uid))?;
+            .map_err(|e| anyhow!("insert_legal_text_if_absent {}: {e}", msg.row.text_uid))?
+        {
+            counts.created += 1;
+            if !msg.liens.is_empty() {
+                let owner = lj_store::repository::LegalLinkOwner {
+                    text_uid: msg.row.text_uid.clone(),
+                    num_key: String::new(),
+                    date_debut: msg.row.date_texte,
+                };
+                links.push((owner, jorf_link_rows(msg.liens)?));
+            }
+        } else {
+            counts.existing += 1;
+        }
     }
-    Ok(n)
+    if !links.is_empty() {
+        counts.links += repo
+            .replace_legal_links(&links)
+            .await
+            .map_err(|e| anyhow!("replace_legal_links (jorf): {e}"))?;
+    }
+    Ok(())
 }
 
 /// Upsert d'un batch d'articles JORF (idempotent #7) ; cumule modifiés/skippés.

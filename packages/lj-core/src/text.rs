@@ -21,6 +21,43 @@ pub fn fold(text: &str) -> String {
     RE_WS.replace_all(&stripped, " ").trim().to_string()
 }
 
+// ── pliage longueur-stable ──────────────────────────────────────────────────
+//
+// 1 char → 1 char, offsets préservés — le pliage général (`fold` ci-dessus)
+// normalise l'espace et casse les positions. Couvre le français des titres et
+// décisions ; tout char inconnu passe en minuscule simple. C'est LE fold
+// canonique des dénominations : recognizer `lj-extract`, chargeur de
+// registres (`denomination_folded`), recherche annuaire (ADR 0192).
+
+/// Pliage 1:1 d'un char (voie ASCII rapide — l'écrasante majorité des chars
+/// d'une décision : la casse ASCII évite la table Unicode de `to_lowercase`).
+pub fn fold_char(c: char) -> char {
+    if c.is_ascii() {
+        return match c {
+            '\n' | '\r' | '\t' => ' ',
+            _ => c.to_ascii_lowercase(),
+        };
+    }
+    match c {
+        'À' | 'Â' | 'Ä' | 'à' | 'â' | 'ä' => 'a',
+        'É' | 'È' | 'Ê' | 'Ë' | 'é' | 'è' | 'ê' | 'ë' => 'e',
+        'Î' | 'Ï' | 'î' | 'ï' => 'i',
+        'Ô' | 'Ö' | 'ô' | 'ö' => 'o',
+        'Ù' | 'Û' | 'Ü' | 'ù' | 'û' | 'ü' => 'u',
+        'Ç' | 'ç' => 'c',
+        'Œ' | 'œ' => 'o', // « œ » 1:1 (≠ NFKD « oe ») : la stabilité prime
+        '’' => '\'',
+        // Blancs → espace simple : les motifs portent des espaces, le texte
+        // des sauts de ligne (« accord franco-tunisien du\n17 mars 1988 »).
+        '\n' | '\r' | '\t' | '\u{a0}' | '\u{2007}' | '\u{2009}' | '\u{202f}' => ' ',
+        _ => c.to_lowercase().next().unwrap_or(c),
+    }
+}
+
+pub fn fold_stable(s: &str) -> String {
+    s.chars().map(fold_char).collect()
+}
+
 pub fn uppercase_first(s: &str) -> String {
     let mut chars = s.chars();
     match chars.next() {

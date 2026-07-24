@@ -25,9 +25,12 @@ pub struct FacetValueEntry {
 }
 
 /// Une unité juridictionnelle (`jurisdiction`), indexée par code.
+/// `source_code` = code de la source (location Judilibre, ADR 0201) — sert aux
+/// suggestions MCP quand un client envoie un ancien code.
 #[derive(Debug, Clone)]
 pub struct JurisdictionEntry {
-    pub juridiction_type: String,
+    pub jurisdiction_type: String,
+    pub source_code: String,
     pub label: String,
 }
 
@@ -63,7 +66,8 @@ impl Referential {
                     (
                         r.code,
                         JurisdictionEntry {
-                            juridiction_type: r.juridiction_type,
+                            jurisdiction_type: r.jurisdiction_type,
+                            source_code: r.source_code,
                             label: r.label,
                         },
                     )
@@ -96,17 +100,92 @@ impl Referential {
     }
 
     /// Label d'un type de juridiction (`TJ` → « Tribunal judiciaire »), depuis
-    /// les lignes `juridiction:*` (migration 0102).
-    pub fn juridiction_type_label(&self, code: &str) -> Option<&str> {
+    /// les lignes `jurisdiction_type:*` (migration 0102).
+    pub fn jurisdiction_type_label(&self, code: &str) -> Option<&str> {
         self.values
-            .get(&format!("juridiction:{code}"))
+            .get(&format!("jurisdiction_type:{code}"))
             .map(|e| e.label.as_str())
     }
 
-    /// Entrée `jurisdiction` d'un code (`tj76351`).
+    /// Entrée `jurisdiction` d'un code (`tj_le_havre`).
     pub fn jurisdiction(&self, code: &str) -> Option<&JurisdictionEntry> {
         self.jurisdictions.get(code)
     }
+
+    /// Itère les unités juridictionnelles `(code, entrée)`.
+    pub fn jurisdictions(&self) -> impl Iterator<Item = (&str, &JurisdictionEntry)> {
+        self.jurisdictions.iter().map(|(c, e)| (c.as_str(), e))
+    }
+
+    /// Tokens (suffixes d'uid) d'une facette, triés — le vocabulaire valide
+    /// d'un axe à catégorie contrôlée (`chamber`, `publication`).
+    pub fn facet_tokens(&self, facet: &str) -> Vec<&str> {
+        let mut tokens: Vec<&str> = self
+            .values
+            .iter()
+            .filter(|(_, e)| e.facet == facet)
+            .map(|(uid, _)| uid_suffix(uid))
+            .collect();
+        tokens.sort_unstable();
+        tokens
+    }
+
+    /// Premier token hors vocabulaire d'un axe à catégorie contrôlée.
+    pub fn find_unknown_token<'a>(&self, facet: &str, tokens: &'a [String]) -> Option<&'a str> {
+        tokens
+            .iter()
+            .map(String::as_str)
+            .find(|t| !self.values.contains_key(&format!("{facet}:{t}")))
+    }
+}
+
+/// Message correctif pour un `jurisdiction_code` hors référentiel, avec
+/// suggestions : code source exact (ancien code pré-ADR 0201, « tj75056 » →
+/// « tj_paris »), puis sous-chaîne du libellé (« tribunal_paris » →
+/// « tj_paris » via « paris »), repli typo par distance d'édition.
+pub fn unknown_jurisdiction_code_msg(code: &str, refs: &Referential) -> String {
+    let needle = lj_core::text::fold(code.rsplit(['_', '-']).next().unwrap_or(code));
+    let mut matches: Vec<String> = refs
+        .jurisdictions()
+        .filter(|(_, e)| {
+            e.source_code == code
+                || (needle.len() >= 3 && lj_core::text::fold(&e.label).contains(&needle))
+        })
+        .map(|(c, e)| format!("\"{c}\" ({})", e.label))
+        .collect();
+    matches.sort();
+    if matches.is_empty() {
+        // Repli typo : codes existants les plus proches en distance d'édition.
+        let mut scored: Vec<(usize, String)> = refs
+            .jurisdictions()
+            .map(|(c, e)| (levenshtein(code, c), format!("\"{c}\" ({})", e.label)))
+            .filter(|(d, _)| *d <= 3)
+            .collect();
+        scored.sort();
+        matches = scored.into_iter().map(|(_, s)| s).collect();
+    }
+    matches.truncate(5);
+    let hint = if matches.is_empty() {
+        String::new()
+    } else {
+        format!("; did you mean: {}", matches.join(", "))
+    };
+    format!("unknown jurisdiction_code '{code}'{hint}")
+}
+
+/// Distance de Levenshtein (DP à une ligne), pour les suggestions de codes.
+fn levenshtein(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    for (i, ca) in a.chars().enumerate() {
+        let mut cur = vec![i + 1];
+        for (j, cb) in b.iter().enumerate() {
+            let cost = usize::from(ca != *cb);
+            cur.push((prev[j] + cost).min(prev[j + 1] + 1).min(cur[j] + 1));
+        }
+        prev = cur;
+    }
+    prev[b.len()]
 }
 
 /// Suffixe d'un uid namespacé (`solution:REJET` → `REJET`).
@@ -155,11 +234,12 @@ mod tests {
         let refs = Referential::new(
             vec![
                 fv("solution:REJET", "Rejet", None),
-                fv("juridiction:TJ", "Tribunal judiciaire", None),
+                fv("jurisdiction_type:TJ", "Tribunal judiciaire", None),
             ],
             vec![JurisdictionRow {
-                code: "tj76351".to_string(),
-                juridiction_type: "TJ".to_string(),
+                code: "tj_le_havre".to_string(),
+                source_code: "tj76351".to_string(),
+                jurisdiction_type: "TJ".to_string(),
                 city: Some("Le Havre".to_string()),
                 label: "Tribunal judiciaire du Havre".to_string(),
             }],
@@ -170,12 +250,52 @@ mod tests {
         let tag = refs.tag("solution:INCONNU");
         assert_eq!(tag.label, "INCONNU");
         assert_eq!(
-            refs.juridiction_type_label("TJ"),
+            refs.jurisdiction_type_label("TJ"),
             Some("Tribunal judiciaire")
         );
         assert_eq!(
-            refs.jurisdiction("tj76351").map(|j| j.label.as_str()),
+            refs.jurisdiction("tj_le_havre").map(|j| j.label.as_str()),
             Some("Tribunal judiciaire du Havre")
+        );
+    }
+
+    #[test]
+    fn unknown_code_suggests_accented_label_from_ascii_needle() {
+        // Cas du banc Vibe : « conseil_etat » → needle « etat » sans accent,
+        // libellé « Conseil d'État » accentué — le contains doit être plié.
+        let refs = Referential::new(
+            vec![],
+            vec![JurisdictionRow {
+                code: "ce".to_string(),
+                source_code: "CONSETAT".to_string(),
+                jurisdiction_type: "CE".to_string(),
+                city: None,
+                label: "Conseil d'État".to_string(),
+            }],
+        );
+        assert_eq!(
+            unknown_jurisdiction_code_msg("conseil_etat", &refs),
+            "unknown jurisdiction_code 'conseil_etat'; did you mean: \"ce\" (Conseil d'État)"
+        );
+    }
+
+    #[test]
+    fn facet_tokens_and_unknown_token_lookup() {
+        let refs = Referential::new(
+            vec![
+                fv("chamber:SOCIALE", "Chambre sociale", None),
+                fv("chamber:CIVILE", "Chambre civile", None),
+                fv("publication:B", "Bulletin", None),
+            ],
+            vec![],
+        );
+        assert_eq!(refs.facet_tokens("chamber"), vec!["CIVILE", "SOCIALE"]);
+        // JAF est un token d'office, pas de chambre : hors vocabulaire ici.
+        let values = vec!["SOCIALE".to_string(), "JAF".to_string()];
+        assert_eq!(refs.find_unknown_token("chamber", &values), Some("JAF"));
+        assert_eq!(
+            refs.find_unknown_token("publication", &["B".to_string()]),
+            None
         );
     }
 }

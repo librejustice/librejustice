@@ -1,4 +1,4 @@
-//! Pages `/recherches` `/lectures` `/signets` — port de `activity-page.tsx`.
+//! Pages `/activite/{recherches,lectures,signets}` — port de `activity-page.tsx`.
 //!
 //! Un seul composant `ActivityPage`, le panneau actif est choisi via le path
 //! (`ActivePanel`). Tout est client-side (token Supabase en localStorage, absent
@@ -31,7 +31,7 @@ const PAGE_SIZE: u32 = 50;
 #[component]
 pub fn ActivityPage() -> impl IntoView {
     view! {
-        <Title text="Mon activité — LibreJustice" />
+        <Title text="Mon activité - LibreJustice" />
         <Meta name="robots" content="noindex" />
         <AuthGuard fallback=|| {
             view! {
@@ -121,9 +121,9 @@ fn ActivePanel() -> impl IntoView {
     let pathname = current_pathname();
     move || {
         let path = pathname.get();
-        if path.starts_with("/signets") {
+        if path.starts_with("/activite/signets") {
             view! { <BookmarksPanel /> }.into_any()
-        } else if path.starts_with("/lectures") {
+        } else if path.starts_with("/activite/lectures") {
             view! { <ViewsPanel /> }.into_any()
         } else {
             view! { <HistoryPanel /> }.into_any()
@@ -174,7 +174,12 @@ fn HistoryPanel() -> impl IntoView {
         let id = entry.id;
         let described = filters::describe_filters(&entry.filters);
         let created = entry.created_at.clone();
-        let to = format!("/recherche?q={}", filters::encode_query(&entry.query));
+        // Relance vers le moteur d'origine (ADR 0251).
+        let engine_path = match entry.engine {
+            lj_dtos::SearchEngine::Decisions => "/decisions",
+            lj_dtos::SearchEngine::Textes => "/textes",
+        };
+        let to = format!("{engine_path}?q={}", filters::encode_query(&entry.query));
         let meta = view! {
             <span>{relative_time(&created)}</span>
             {(!described.is_empty())

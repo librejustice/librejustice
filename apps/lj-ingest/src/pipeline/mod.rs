@@ -16,9 +16,15 @@
 //! N) du Python n'est pas reporté tel quel : on traite batch par batch
 //! (prepare rayon → embed → write). Cf. `unresolved`.
 
+mod adde;
+mod ariane;
+mod article_commentaires;
 mod backfill;
 mod batch;
+mod bofip;
+mod circulaires;
 mod cnda;
+mod corpus_toc;
 mod dila;
 mod embed;
 mod embed_missing;
@@ -32,17 +38,28 @@ mod kali;
 mod legal_corpus;
 mod legi;
 mod opendata;
+mod parties;
 mod prepare;
+mod purge_citations;
+mod reconcile;
 mod reextract;
+mod registries;
+mod rekey;
 mod resplit;
+mod roles;
 mod slugs;
+mod suggest_build;
+mod text_refs;
+mod treaty_bodies;
 mod unmerge;
 mod unmerge_dila;
 
-pub use backfill::{
-    backfill_canonical_ref, backfill_decision_sources, backfill_ecli, dedup_backfill,
-    merge_cross_source_duplicates,
-};
+pub use adde::sync_adde;
+pub use ariane::sync_ariane;
+pub use article_commentaires::seed_article_commentaires;
+pub use backfill::{backfill_canonical_ref, backfill_ecli, merge_cross_source_duplicates};
+pub use bofip::{ingest_bofip, sync_bofip};
+pub use circulaires::{sync_circulaires, sync_circulaires_bodies};
 pub use cnda::{ingest_cnda, sync_cnda};
 pub use dila::{ingest_dila, sync_dila, Fond};
 pub use embed_missing::embed_missing;
@@ -50,16 +67,25 @@ pub use eu_catalog::ingest_eu_catalog;
 pub use eu_rproc::ingest_eu_rproc;
 pub use europe::{cache_cedh, ingest_cedh, ingest_cjue, sync_cedh, sync_cjue};
 pub use false_merges::analyze_false_merges;
-pub use jorf::ingest_jorf;
+pub use jorf::{ingest_jorf, sync_jorf};
 pub use kali::{ingest_kali, sync_kali};
 pub use legal_corpus::{
     canonicalize_source_labels, load_legal_corpus, relabel_sources, stamp_freshness,
 };
-pub use legi::{ingest_legi, sync_legi};
+pub use legi::{backfill_links, backfill_textes, backfill_toc, ingest_legi, sync_legi};
 pub use opendata::{ingest_judilibre, ingest_opendata, refetch_judilibre, reingest_stale_opendata};
+pub use parties::{backfill_parties, relink_parties};
+pub use purge_citations::purge_procedural_citations;
+pub use reconcile::reconcile_pending;
 pub use reextract::reextract_fields;
+pub use registries::{load_registries, RegistrySource};
+pub use rekey::{rekey_article_keys, rekey_identity_keys};
 pub use resplit::resplit_false_merges;
+pub use roles::backfill_text_roles;
 pub use slugs::assign_slugs;
+pub use suggest_build::build_suggest;
+pub use text_refs::extract_text_refs;
+pub use treaty_bodies::backfill_treaty_bodies;
 pub use unmerge::unmerge_same_source;
 pub use unmerge_dila::unmerge_same_source_dila;
 
@@ -86,6 +112,9 @@ pub(crate) struct ExtractCtx {
     /// Mapping (type, ville) → code de localisation pour les clés pendantes
     /// de chronologie (ADR 0161), dérivé du référentiel `jurisdiction`.
     pub chrono: lj_extract::chrono::ChronoSnapshot,
+    /// Labels guéris du référentiel `jurisdiction` (code → label avec ville),
+    /// pour composer `search_title` quand le libellé source est nu (ADR 0170).
+    pub jur_labels: std::collections::HashMap<String, String>,
 }
 
 static EXTRACT_CTX: tokio::sync::OnceCell<ExtractCtx> = tokio::sync::OnceCell::const_new();
@@ -105,17 +134,25 @@ pub(crate) async fn extract_ctx(conn: &Connection) -> anyhow::Result<&'static Ex
             let (n_texts, n_articles) = (texts.len(), articles.len());
             let link = LinkSnapshot::build(texts.clone(), articles);
             let vocab = lj_extract::compiled::CompiledVocab::build(&texts, &link);
+            let jurisdictions = repo.load_jurisdictions().await?;
+            // Snapshots keyés par `source_code` (ADR 0201) : l'extraction
+            // travaille en codes source (location Judilibre), le code
+            // canonique n'apparaît qu'à l'écriture (`ensure_jurisdictions`).
+            let jur_labels = jurisdictions
+                .iter()
+                .map(|j| (j.source_code.clone(), j.label.clone()))
+                .collect();
             let chrono = lj_extract::chrono::ChronoSnapshot::new(
-                repo.load_jurisdictions()
-                    .await?
+                jurisdictions
                     .into_iter()
-                    .filter_map(|j| Some((j.code, j.juridiction_type, j.city?))),
+                    .filter_map(|j| Some((j.source_code, j.jurisdiction_type, j.city?))),
             );
             tracing::info!(n_texts, n_articles, "contexte d'extraction hydraté");
             Ok(ExtractCtx {
                 link,
                 vocab,
                 chrono,
+                jur_labels,
             })
         })
         .await
@@ -280,10 +317,12 @@ mod tests_support {
             source_uid: uid.to_string(),
             member_name: uid.to_string(),
             ecli: None,
-            juridiction_code: None,
-            juridiction_nom: None,
-            juridiction_type: Some("ta".to_string()),
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: None,
+            jurisdiction_type: Some("ta".to_string()),
+            jurisdiction_location: None,
             numero_dossier: None,
             numero_dossiers: None,
             numero_role: None,

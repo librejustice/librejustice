@@ -8,7 +8,7 @@
 //!   y émet sa propre description) — parité RR : la route remplace la meta racine,
 //!   jamais deux balises `description`.
 //! - Routes dynamiques : la route `/decision/:id` (SEO-critique : title/desc/OG/
-//!   canonical/JSON-LD dans le HTML initial) et `/recherche` (hérite du shell —
+//!   canonical/JSON-LD dans le HTML initial) et `/decisions` (hérite du shell —
 //!   pas de meta propre côté React, cf. `seo/search.rs`).
 //!
 //! Limite connue : ces tests exercent les fonctions SEO pures + l'assemblage de
@@ -35,7 +35,7 @@
 //! cible wasm hydrate n'exécute pas `cargo test`.
 #![cfg(feature = "ssr")]
 
-use lj_dtos::{DecisionDetail, JuridictionType};
+use lj_dtos::{DecisionDetail, JurisdictionType};
 use lj_web::seo::decision::{build_json_ld, meta_description};
 use lj_web::seo::{canonical_url, site_default, OG_IMAGE};
 
@@ -61,7 +61,7 @@ fn extract_meta_description(head_html: &str) -> Option<&str> {
 fn fixture_detail() -> DecisionDetail {
     DecisionDetail {
         id: "ce-2024-470537".to_string(),
-        juridiction_type: JuridictionType::Ce,
+        jurisdiction_type: JurisdictionType::Ce,
         title: "Conseil d'État, 12 mars 2024, n° 470537".to_string(),
         paragraphs: vec![],
         paragraph_spans: Vec::new(),
@@ -71,16 +71,20 @@ fn fixture_detail() -> DecisionDetail {
              La haute juridiction renvoie l'affaire."
                 .to_string(),
         ),
+        jurisdiction_code: None,
         jurisdiction_name: Some("Conseil d'État".to_string()),
         date_lecture: Some("2024-03-12".to_string()),
         solution: None,
-        voie: None,
+        procedure: None,
         office: None,
         legal_domain: None,
+        publication: None,
         publication_codes: vec![],
         date_audience: None,
         docket_numbers: None,
-        formation_or_chamber: None,
+        seat: None,
+        chamber: None,
+        formation: None,
         legal_references: None,
         source_xml: None,
         themes: Vec::new(),
@@ -88,6 +92,7 @@ fn fixture_detail() -> DecisionDetail {
         ecli: None,
         source: None,
         chronology: Vec::new(),
+        commentaires: vec![],
     }
 }
 
@@ -96,15 +101,12 @@ fn fixture_detail() -> DecisionDetail {
 #[test]
 fn site_default_locks_generic_title_and_description() {
     let meta = site_default();
-    assert_eq!(
-        meta.title,
-        "LibreJustice — recherche de jurisprudence française"
-    );
+    assert_eq!(meta.title, "LibreJustice");
     assert_eq!(
         meta.description,
-        "Moteur de recherche libre sur la jurisprudence française : Conseil d'État, \
-         Cour de cassation, cours d'appel, tribunaux. Recherche hybride lexicale et \
-         sémantique."
+        "Moteur de recherche libre sur le droit français : jurisprudence (Conseil \
+         d'État, Cour de cassation, cours d'appel, tribunaux) et textes (codes, \
+         lois, traités), mis à jour quotidiennement."
     );
     assert!(meta.robots.is_none());
 }
@@ -123,27 +125,6 @@ fn head_extraction_matches_site_default() {
         extract_meta_description(&head),
         Some(meta.description.as_str())
     );
-}
-
-// ── Route /recherche : hérite du shell ───────────────────────────────────────
-
-/// `/recherche` n'a PAS de `<Title>`/`<Meta>` propre côté React (cf.
-/// `lib`/`pages` : aucun export `meta` dynamique). Le `<head>` rendu reste donc
-/// celui de `site_default()`. On verrouille l'absence de title spécifique.
-#[test]
-fn search_route_inherits_site_default_head() {
-    // Le shell émet les balises génériques ; la route recherche n'ajoute rien.
-    let meta = site_default();
-    let head = format!(
-        "<head><title>{}</title><meta name=\"description\" content=\"{}\"/></head>",
-        meta.title, meta.description
-    );
-    assert_eq!(
-        extract_title(&head),
-        Some("LibreJustice — recherche de jurisprudence française")
-    );
-    // Pas de `og:title` « Recherche : … » ni de title dynamique : parité React.
-    assert!(!head.contains("Recherche :"));
 }
 
 // ── Route /decision/:id : SEO-critique ───────────────────────────────────────

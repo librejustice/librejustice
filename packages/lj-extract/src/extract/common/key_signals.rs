@@ -181,8 +181,14 @@ fn classify_citability(text_key: &str, folded: &str, nature: KeyNature) -> Citab
         return Citability::PrivateStatut;
     }
     // « Règlement » sans marqueur UE ni citabilité tranchée = règlement d'une
-    // instance locale/privée non catalogable (procédure, jeu, service…).
-    if nature == KeyNature::Autre && folded.starts_with("reglement") {
+    // instance locale/privée non catalogable (procédure, jeu, service…) —
+    // SAUF la forme légistique datée à queue de titre (« règlement du
+    // 17 décembre 2013 établissant les règles… ») : c'est le droit dérivé UE
+    // cité par date sans numéro, jamais le style d'un règlement privé/local.
+    if nature == KeyNature::Autre
+        && folded.starts_with("reglement")
+        && !re_eu_dated_title().is_match(folded)
+    {
         return Citability::LocalAct;
     }
     Citability::Citable
@@ -460,6 +466,16 @@ fn re_local_act() -> &'static Regex {
     RE.get_or_init(|| {
         Regex::new(
             r"\b(municipal|prefectoral|communal|departemental|plan local d.urbanisme|plu\b|plan d.occupation des sols)",
+        )
+        .unwrap()
+    })
+}
+
+fn re_eu_dated_title() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"^reglement(?:\s*\([^)]{2,20}\))?(?:\s+du parlement europeen et du conseil|\s+du conseil|\s+de la commission)?,?\s+du \d{1,2}(?:er)? (?:janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre) \d{4}\s+(?:etablissant|portant|relatif|relative|concernant|fixant|instituant|modifiant)\b",
         )
         .unwrap()
     })

@@ -43,15 +43,20 @@ const STATEMENT_TIMEOUT_OPTION: &str = "-c statement_timeout=30s";
 /// `postgresql://user:pass@host:port/db?application_name=...`).
 ///
 /// `pool_max` borne le nombre de connexions (cf. `Settings.pool_max`). Le
-/// recyclage joue `ROLLBACK` au checkout (`RecyclingMethod::Custom`) : il clôt
-/// toute transaction laissée ouverte ou avortée sur la connexion (jambe ANN
-/// `SET LOCAL … ; <query>` annulée par `statement_timeout`, ou future annulée
-/// par le `try_join` d'une jambe sœur) avant de la rendre. Sans cela une
-/// connexion en transaction avortée — que `RecyclingMethod::Fast` ne détecte
-/// pas et qu'`idle_in_transaction_session_timeout` (0) ne tue jamais — serait
-/// re-servie indéfiniment et chaque requête y répondrait « current transaction
-/// is aborted ». `ROLLBACK` hors transaction est un no-op (warning), et ne
-/// touche ni au schéma de session ni au cache de requêtes préparées. C'est le
+/// recyclage joue `BEGIN; ROLLBACK;` au checkout (`RecyclingMethod::Custom`) :
+/// il clôt toute transaction laissée ouverte sur la connexion (future annulée
+/// par le `try_join` d'une jambe sœur) avant de la rendre, et fait échouer le
+/// recyclage d'une connexion en transaction **avortée** (jambe ANN `SET LOCAL
+/// … ; <query>` annulée par `statement_timeout`) — `BEGIN` y est rejeté
+/// (« current transaction is aborted ») → deadpool jette la connexion et en
+/// ouvre une neuve. Sans cela une telle connexion — que
+/// `RecyclingMethod::Fast` ne détecte pas et
+/// qu'`idle_in_transaction_session_timeout` (0) ne tue jamais — serait
+/// re-servie indéfiniment. Sur une connexion saine (cas nominal), la paire est
+/// silencieuse : un `ROLLBACK` nu émettrait « WARNING: there is no transaction
+/// in progress » à chaque checkout, loggé deux fois (serveur + relais notices
+/// tokio_postgres) — mesuré à ~3 Go/jour de syslog en prod. Ne touche ni au
+/// schéma de session ni au cache de requêtes préparées. C'est le
 /// reset-sur-retour de `psycopg_pool`.
 pub fn build_pool(dsn: &str, pool_max: usize) -> Result<Pool> {
     let mut pg_config = tokio_postgres::Config::from_str(dsn)
@@ -67,7 +72,7 @@ pub fn build_pool(dsn: &str, pool_max: usize) -> Result<Pool> {
     pg_config.options(&options);
 
     let mgr_config = ManagerConfig {
-        recycling_method: RecyclingMethod::Custom("ROLLBACK".to_string()),
+        recycling_method: RecyclingMethod::Custom("BEGIN; ROLLBACK;".to_string()),
     };
     let manager = Manager::from_config(pg_config, NoTls, mgr_config);
 

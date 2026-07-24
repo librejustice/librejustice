@@ -125,7 +125,7 @@ pub fn AuthorizeMcpPage() -> impl IntoView {
     };
 
     view! {
-        <Title text="Autoriser l'accès MCP — LibreJustice" />
+        <Title text="Autoriser l'accès MCP - LibreJustice" />
         <Meta name="robots" content="noindex" />
         <Show
             when=move || has_session.get()

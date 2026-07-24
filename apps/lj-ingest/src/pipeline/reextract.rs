@@ -27,7 +27,7 @@ pub async fn reextract_fields(
     fields: Option<&[String]>,
     overwrite: bool,
     full: bool,
-    juridiction_types: Option<&[String]>,
+    jurisdiction_types: Option<&[String]>,
     citing_ref_uid: Option<&str>,
     workers: Option<usize>,
 ) -> Result<()> {
@@ -51,7 +51,7 @@ pub async fn reextract_fields(
     // des keyset filtrés répétés. Modes scopés (`--juridiction-type`/
     // `--citing-ref-uid`) : on draine leur keyset (jeux petits) pour bâtir la
     // même worklist, puis on parallélise pareil.
-    let ids = build_worklist(&pool, full, juridiction_types, citing_ref_uid).await?;
+    let ids = build_worklist(&pool, full, jurisdiction_types, citing_ref_uid).await?;
     let total = ids.len();
     tracing::info!(total, workers, "reextract : worklist construite");
     if ids.is_empty() {
@@ -116,18 +116,14 @@ pub async fn reextract_fields(
         "Re-extraction terminée"
     );
 
-    // Chronologie (ADR 0161) : les décisions (re)liées pendant la passe
-    // peuvent être la CIBLE de liens pendants plus anciens — on résout en
-    // batch en fin de run.
+    // Réconciliation des liens pendants en fin de run (ADR 0240) : les décisions
+    // (re)liées pendant la passe peuvent être la CIBLE de liens pendants plus
+    // anciens (chronologie, citations décision→décision et texte→décision), et
+    // les lignes `decision_party` réécrites repartent pendantes. Un seul helper
+    // partagé avec `db reconcile`.
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = lj_store::repository::DecisionRepository::new(&conn);
-    let resolved = repo.resolve_pending_decision_links().await?;
-    tracing::info!(resolved, "liens de chronologie pendants résolus");
-    // Citations de jurisprudence (ADR 0165) : même relink de fin de run — une
-    // décision (ré)ingérée peut être la CIBLE de citations pendantes.
-    let resolved = repo.resolve_pending_case_citations().await?;
-    tracing::info!(resolved, "citations de jurisprudence pendantes résolues");
-    Ok(())
+    super::reconcile::reconcile_pending(&repo).await
 }
 
 /// Construit la worklist d'ids selon le mode. Défaut (version-gated) : un scan.
@@ -136,7 +132,7 @@ pub async fn reextract_fields(
 async fn build_worklist(
     pool: &Pool,
     full: bool,
-    juridiction_types: Option<&[String]>,
+    jurisdiction_types: Option<&[String]>,
     citing_ref_uid: Option<&str>,
 ) -> Result<Vec<i64>> {
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
@@ -145,7 +141,7 @@ async fn build_worklist(
     if full {
         return Ok(repo.all_decision_ids_for_reextract().await?);
     }
-    match (citing_ref_uid, juridiction_types) {
+    match (citing_ref_uid, jurisdiction_types) {
         (None, None) => Ok(repo.stale_decision_ids_for_reextract().await?),
         (uid, jts) => {
             let mut out = Vec::new();
@@ -282,8 +278,14 @@ fn reextract_one(
     ctx: &super::ExtractCtx,
 ) -> Result<ExtractedFields> {
     let decision = Decision::from_source_fields(full_text, source_fields, source_uid);
-    lj_ingest::extract::extracted_fields(&decision, &ctx.link, &ctx.vocab, &ctx.chrono)
-        .map_err(|e| anyhow!("extract id={decision_id}: {e}"))
+    lj_ingest::extract::extracted_fields(
+        &decision,
+        &ctx.link,
+        &ctx.vocab,
+        &ctx.chrono,
+        &ctx.jur_labels,
+    )
+    .map_err(|e| anyhow!("extract id={decision_id}: {e}"))
 }
 
 /// Normalise la liste de champs ré-extractibles (port de `_normalize_reextract_fields`).

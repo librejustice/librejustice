@@ -162,7 +162,7 @@ fn SelectionToolbar(
                 ));
                 let navigate = leptos_router::hooks::use_navigate();
                 navigate(
-                    &format!("/recherche?q={query}"),
+                    &format!("/decisions?q={query}"),
                     leptos_router::NavigateOptions::default(),
                 );
                 clear_selection();

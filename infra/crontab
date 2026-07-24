@@ -1,5 +1,6 @@
 # LibreJustice — ingestion quotidienne
-# Pour un run manuel : podman compose exec cron lj-ingest <cmd>
+# Run manuel : binaire hôte target/release/lj-ingest, jamais exec dans ce
+# conteneur (recréé par `deploy`, qui tue tout run en cours) — règle #21.
 #
 # Chaîne post-ingest (cf. ADR 0044) : résumés des nouvelles décisions, puis
 # push IndexNow (Bing/Yandex) des URLs mises à jour < 24h. generate-summaries
@@ -12,7 +13,8 @@
 # lj-server sert ensuite /sitemap.xml depuis cette table. Google (qui ne consomme
 # pas IndexNow) découvre les décisions du jour en J+0 au lieu de J+6 (sitemap hebdo).
 #
-# Fonds DILA/LEGI + sources liées (sync-dila/cedh/cjue/cnda/legi) chaînés
+# Fonds DILA/LEGI + sources liées (sync-dila/cedh/cjue/cnda/legi/circulaires)
+# chaînés
 # entre l'ingest Judilibre/opendata et generate-summaries (pour que résumés +
 # sitemap couvrent les nouvelles décisions). Chaque sync AUTO-SWITCH cold ↔ warm :
 # au 1er run (watermark vide) il télécharge+ingère le stock global multi-Go puis
@@ -30,24 +32,46 @@
 # intégrale du dimanche (reextract-fields ci-dessous) rejoue extract+link sur
 # tout le fonds < v1000 : véhicule unique de toute amélioration (nouveau texte
 # au catalogue, règle de linking corrigée, bump de version) — latence max 7 j.
-0 3 * * * cd /app && lj-ingest sync && lj-ingest ingest --with-embeddings && lj-ingest sync-dila jade && lj-ingest sync-dila constit && lj-ingest sync-cedh && lj-ingest sync-cjue && lj-ingest sync-cnda && lj-ingest sync-legi && lj-ingest sync-kali && lj-ingest stamp-freshness && lj-ingest generate-summaries && lj-ingest db analyze && lj-ingest db gc-mcp && lj-ingest sitemap && lj-ingest indexnow --since-hours 24
+#
+# SÉRIALISATION : la quotidienne tourne du lundi au samedi ; le dimanche, une
+# ligne unique enchaîne quotidienne PUIS hebdo en && — aucun chevauchement
+# possible, aucun verrou. ⚠️ La chaîne quotidienne existe en DEUX copies
+# (lignes 1-6 et dimanche) : toute modification s'applique aux deux.
+0 3 * * 1-6 cd /app && lj-ingest sync && lj-ingest ingest --with-embeddings && lj-ingest sync-dila jade && lj-ingest sync-dila constit && lj-ingest sync-dila cnil && lj-ingest sync-cedh && lj-ingest sync-cjue && lj-ingest sync-cnda && lj-ingest sync-legi && lj-ingest sync-kali && lj-ingest sync-jorf && lj-ingest sync-circulaires && lj-ingest sync-circulaires-bodies && lj-ingest stamp-freshness && lj-ingest generate-summaries && lj-ingest db analyze && lj-ingest db gc-mcp && lj-ingest sitemap && lj-ingest indexnow --since-hours 24
 
-# Compactage hebdo de decision_chunks (heap + tous les indexes en une op) :
-# VACUUM FULL plutôt que REINDEX car résultat plus compact sur ParadeDB
-# (12 GB vs 16 GB mesuré 2026-05-15) et nettoie en bonus le bloat heap
-# MVCC accumulé par les UPDATE quotidiens, que REINDEX ne touche pas.
-# ⚠️ Lock AccessExclusive ~30-60 min → /search down dimanche 4 h-5 h UTC.
-# Cf. docs/working-notes/migration-bloat-pattern-2026-05-15.md
-0 4 * * 0 cd /app && lj-ingest db vacuum-full-chunks
-
-# Passe intégrale extract+link (ADR 0145) : rejoue capture + linker sur TOUT
-# le fonds < 1000 (--full ; le gold n'est jamais réécrit). Le LinkSnapshot du
-# run voit le catalogue du jour → un texte fraîchement ingéré attire ses
-# citations anciennes (latence max 7 j) ; toute amélioration du linker/bump de
-# version s'applique rétroactivement. Le skip Rust des sets de citations
-# inchangés borne les écritures au delta. --workers 2 : doux sur une prod qui
-# sert du trafic (~4 h sur 3,6 M). À 6 h, après vacuum-full-chunks (5 h max).
-# Puis filet arrays de facettes (ADR 0147) : recompute complet depuis
-# legal_citation, garde IS DISTINCT FROM (lectures seules, ~6 min mesurées
-# sans dérive). Dérive corrigée > 0 = bug d'écrivain → tracing::warn Grafana.
-0 6 * * 0 cd /app && lj-ingest reextract-fields --full --workers 2 && lj-ingest resync-legal-arrays
+# Dimanche : chaîne quotidienne puis hebdo, une seule ligne (étapes hebdo
+# numérotées ci-dessous) :
+#
+# 1. vacuum-full-chunks — compactage de decision_chunks (heap + indexes en une
+#    op). VACUUM FULL plutôt que REINDEX : plus compact sur ParadeDB (12 GB vs
+#    16 GB mesuré 2026-05-15) et nettoie le bloat heap MVCC des UPDATE
+#    quotidiens. ⚠️ Lock AccessExclusive ~30-60 min → /search down pendant
+#    l'étape. Cf. docs/working-notes/migration-bloat-pattern-2026-05-15.md
+# 2. registries avocats (ADR 0179) — re-télécharge l'annuaire CNB (data.gouv,
+#    ressource la plus récente) et remplace le namespace `cnb:` ; uids
+#    déterministes (barreau, nom, prénom), les liens decision_party survivent.
+# 3. parties-relink — re-résolution des conseils contre le registre frais +
+#    reconstruction entity_contentieux (annuaire).
+# 4. reextract-fields --full (ADR 0145) — rejoue capture + linker sur TOUT le
+#    fonds < 1000 (le gold n'est jamais réécrit). Le LinkSnapshot du run voit
+#    le catalogue du jour → un texte fraîchement ingéré attire ses citations
+#    anciennes (latence max 7 j) ; toute amélioration du linker s'applique
+#    rétroactivement. Skip des sets inchangés → écritures bornées au delta.
+#    --workers 2 : doux sur une prod qui sert du trafic (~4 h sur 3,6 M).
+# 5. resync-legal-arrays (ADR 0147) — filet arrays de facettes : recompute
+#    complet depuis legal_citation, garde IS DISTINCT FROM (~6 min mesurées).
+#    Dérive corrigée > 0 = bug d'écrivain → tracing::warn Grafana.
+# 6. usage-terms (ADR 0248) — reconstruit les sacs d'usage des articles
+#    (`legal_article_usage`) depuis legal_citation, que reextract-fields
+#    vient de rafraîchir. Tirage déterministe (~1 h 30, 1 connexion) :
+#    même fonds → mêmes sacs, seuls les deltas d'ingest changent.
+# 7. build-suggest (ADR 0216) — reconstruit le FST d'autocomplétion (blob
+#    suggest_index, ~8 min, échantillon 10 %). Le vocabulaire fréquent est
+#    quasi stationnaire : hebdo suffit ; lj-server recharge à l'expiration de
+#    son cache (TTL 24 h).
+# 8. extract-text-refs (ADR 0217 / 0196 §5) — rejoue doc_extract sur TOUS les
+#    corps du référentiel (versions d'articles + corps monolithiques) →
+#    text_legal_citation + text_case_citation. Les versions arrivées par
+#    sync-legi/kali/bofip dans la semaine gagnent leurs renvois cliquables ;
+#    remplacement au grain texte, idempotent (~8 min sur 2,2 M versions).
+0 3 * * 0 cd /app && lj-ingest sync && lj-ingest ingest --with-embeddings && lj-ingest sync-dila jade && lj-ingest sync-dila constit && lj-ingest sync-dila cnil && lj-ingest sync-cedh && lj-ingest sync-cjue && lj-ingest sync-cnda && lj-ingest sync-legi && lj-ingest sync-kali && lj-ingest sync-jorf && lj-ingest sync-circulaires && lj-ingest sync-circulaires-bodies && lj-ingest stamp-freshness && lj-ingest generate-summaries && lj-ingest db analyze && lj-ingest db gc-mcp && lj-ingest sitemap && lj-ingest indexnow --since-hours 24 && lj-ingest db vacuum-full-chunks && lj-ingest registries avocats && lj-ingest parties-relink && lj-ingest reextract-fields --full --workers 2 && lj-ingest resync-legal-arrays && lj-ingest usage-terms && lj-ingest build-suggest && lj-ingest extract-text-refs

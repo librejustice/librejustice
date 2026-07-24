@@ -8,6 +8,9 @@
 //! 1. **Alias embarqués** (`data/link_aliases.tsv`) — la connaissance curée de
 //!    l'ancienne table d'overrides, devenue du code : une correction de masse
 //!    est un commit sur ce fichier. Validés contre le catalogue à l'hydratation.
+//!    1bis. **NOR porté par la forme brute** (« circulaire NOR JUSK1140023C
+//!    du 14 avril 2011 ») : identifiant interministériel unique en colonne
+//!    `legal_text.nor` — même autorité qu'un alias, avant le gate.
 //! 2. **Gate de citabilité** (`key_signals`) : acte local, norme privée,
 //!    fragment → jamais lié.
 //! 3. **Acte daté par numéro** (Voie B, ADR 0137) : le numéro survit dans la
@@ -57,15 +60,44 @@ pub struct CatalogText {
     pub num_prefix_agnostic: bool,
     /// Nombre d'articles VIGUEUR (désambiguïsation « texte vivant », ADR 0102).
     pub n_vigueur: i64,
+    /// Date de signature (`legal_text.date_texte`) — l'identité datée des
+    /// familles à titre libre (circulaires : le titre du fond ne porte
+    /// presque jamais « Circulaire du <date> », la date vit en colonne).
+    pub date_texte: Option<Date>,
+    /// NOR (`legal_text.nor`) — identifiant interministériel unique, la clé
+    /// de résolution la plus forte quand la décision le cite (visas).
+    pub nor: Option<String>,
 }
 
 impl CatalogText {
     /// Depuis la ligne plate de `lj-store::link_catalog_texts` (même ordre de
     /// colonnes) — la conversion vit ici pour que chaque hydrateur (`lj-ingest`,
-    /// `lj-bench`) ne la réécrive pas.
-    pub fn from_row(row: (String, String, String, String, Option<String>, bool, i64)) -> Self {
-        let (text_uid, title, title_key, nature, jurisdiction, num_prefix_agnostic, n_vigueur) =
-            row;
+    /// `lj-bench`) ne la réécrive pas. `date_texte` en ISO.
+    #[allow(clippy::type_complexity)]
+    pub fn from_row(
+        row: (
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            bool,
+            i64,
+            Option<String>,
+            Option<String>,
+        ),
+    ) -> Self {
+        let (
+            text_uid,
+            title,
+            title_key,
+            nature,
+            jurisdiction,
+            num_prefix_agnostic,
+            n_vigueur,
+            date_texte,
+            nor,
+        ) = row;
         Self {
             text_uid,
             title,
@@ -74,6 +106,8 @@ impl CatalogText {
             jurisdiction,
             num_prefix_agnostic,
             n_vigueur,
+            date_texte: date_texte.and_then(|d| d.parse().ok()),
+            nor,
         }
     }
 }
@@ -84,6 +118,51 @@ pub struct LinkTarget {
     pub ref_text_uid: Option<String>,
     pub ref_num_key: Option<String>,
 }
+
+/// Juridiction ÉMETTRICE de la décision extraite — le contexte qui résout les
+/// instruments nus qu'une cour cite sans les nommer : « du règlement de
+/// procédure » dans un arrêt CJUE désigne le règlement de la formation qui
+/// parle, « de la Convention » dans un arrêt CEDH désigne la CESDH. Dérivé de
+/// `jurisdiction_type` + ECLI (`EU:C`/`EU:T`/`EU:F`), passé à `doc_extract`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Forum {
+    Cedh,
+    CjueCour,
+    CjueTribunal,
+    CjueTfp,
+}
+
+impl Forum {
+    pub fn of(jurisdiction_type: Option<&str>, ecli: Option<&str>) -> Option<Forum> {
+        match jurisdiction_type? {
+            "CEDH" => Some(Forum::Cedh),
+            "CJUE" => match ecli?.split(':').nth(2)? {
+                "C" => Some(Forum::CjueCour),
+                "T" => Some(Forum::CjueTribunal),
+                "F" => Some(Forum::CjueTfp),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+}
+
+/// Cibles des instruments NUS par forum : (forum, nature génitive pliée) →
+/// uid. « statut » est exclu — dans les affaires de fonction publique UE
+/// (EU:F, pourvois EU:T/EU:C), « du statut » désigne le statut des
+/// fonctionnaires, pas celui de la Cour. « du règlement » nu CJUE aussi :
+/// c'est le règlement matériel sous interprétation. Validées au catalogue à
+/// l'hydratation, comme les alias.
+const FORUM_DEFAULTS: &[(Forum, &str, &str)] = &[
+    (Forum::Cedh, "convention", "JORFTEXT000000886019"),
+    (Forum::CjueCour, "reglement de procedure", "EU/RPROC/CJUE"),
+    (
+        Forum::CjueTribunal,
+        "reglement de procedure",
+        "EU/RPROC/TRIBUNAL",
+    ),
+    (Forum::CjueTfp, "reglement de procedure", "EU/RPROC/TFP"),
+];
 
 /// Index mémoire du catalogue pour la passe. ~155 k textes + ~2 M articles :
 /// se rebâtit au début de chaque run d'ingest / passe intégrale.
@@ -102,8 +181,19 @@ pub struct LinkSnapshot {
     nature_num: HashMap<(String, String), String>,
     /// (directive?, « NNNN/NNN ») → uid, uniques seulement.
     eu_num: HashMap<(bool, String), String>,
+    /// Droit dérivé UE par date — TOUS les candidats d'une (directive?, date)
+    /// avec leur titre plié : « règlement du 17 décembre 2013 établissant les
+    /// règles relatives aux paiements directs » se départage par tokens dans
+    /// les six règlements PAC du même jour, comme les traités (6bis).
+    eu_date: HashMap<(bool, Date), Vec<(String, String)>>,
+    /// Cibles des instruments nus par (forum, nature) — [`FORUM_DEFAULTS`]
+    /// filtré aux uids présents au catalogue.
+    forum_defaults: HashMap<(Forum, &'static str), String>,
     /// (nature pliée, date de l'acte) → uid, uniques seulement.
     nature_date: HashMap<(String, Date), String>,
+    /// NOR (majuscules) → uid, uniques seulement — identifiant
+    /// interministériel, même autorité qu'un alias quand la mention le porte.
+    nor: HashMap<String, String>,
     /// Traités par date — TOUTES les dates du titre de l'acte de publication
     /// (« faite à La Haye le 25 octobre 1980 », « signée le 9 septembre
     /// 1966 »…) indexent le texte. TOUS les candidats d'une date (une
@@ -138,17 +228,17 @@ impl LinkSnapshot {
             article_sets.entry(uid).or_default().insert(num_key);
         }
 
-        // Articles « étoilés » (décrets en Conseil d'État : « R*771-5 »,
-        // variantes « *R. », « R** », « D* », « L* ») : les décisions les
-        // citent en forme pointée (« R. 771-5 »). Index forme citée → num_key
-        // officiel, par le MÊME `normalize_article` que la capture.
+        // Articles « étoilés » (décrets en Conseil d'État : « r*771-5 »,
+        // variantes « *r », « r** », « d* », « l* ») : les décisions les
+        // citent en forme pointée (« R. 771-5 »). Index forme citée (repliée
+        // en clé publique) → num_key officiel étoilé.
         let mut star_articles: HashMap<String, HashMap<String, String>> = HashMap::new();
         for (uid, nums) in &article_sets {
             for nk in nums {
                 if !nk.contains('*') {
                     continue;
                 }
-                let cited = crate::extract::normalize_article(&nk.replace('*', ""));
+                let cited = lj_core::article_key::article_key(&nk.replace('*', ""));
                 if !cited.is_empty() && !nums.contains(&cited) {
                     star_articles
                         .entry(uid.clone())
@@ -217,8 +307,11 @@ impl LinkSnapshot {
         let mut nature_num_dead = HashSet::new();
         let mut eu_num = HashMap::new();
         let mut eu_num_dead = HashSet::new();
+        let mut eu_date: HashMap<(bool, Date), Vec<(String, String)>> = HashMap::new();
         let mut nature_date = HashMap::new();
         let mut nature_date_dead = HashSet::new();
+        let mut nor_index = HashMap::new();
+        let mut nor_dead = HashSet::new();
         let mut treaty_date: HashMap<Date, Vec<(String, String)>> = HashMap::new();
         // Candidats accords par (stem gentilé, date) : les avenants et lois
         // d'autorisation réembarquent la date de la convention de base dans
@@ -233,6 +326,31 @@ impl LinkSnapshot {
         for t in &texts {
             let folded_title = fold_link(&t.title);
             let folded_tk = fold_link(&t.title_key);
+
+            // NOR en colonne — le fond CIRCULAIRES le porte à ~92 % ; un
+            // doublon (rééditions) tue la clé, comme partout.
+            if let Some(nor) = &t.nor {
+                insert_unique(
+                    &mut nor_index,
+                    &mut nor_dead,
+                    nor.to_uppercase(),
+                    &t.text_uid,
+                );
+            }
+
+            // Circulaires (ADR 0196) : identité datée en colonne — les titres
+            // du fond sont libres (« Modalités d'attribution… ») et ne
+            // portent presque jamais « Circulaire du <date> ».
+            if t.nature == "CIRCULAIRE" {
+                if let Some(date) = t.date_texte {
+                    insert_unique(
+                        &mut nature_date,
+                        &mut nature_date_dead,
+                        ("circulaire".to_string(), date),
+                        &t.text_uid,
+                    );
+                }
+            }
 
             // Actes datés FR : nature + numéro depuis le title brut (le
             // title_key rabote le numéro), nature + date depuis le title_key.
@@ -255,12 +373,21 @@ impl LinkSnapshot {
                 }
             }
 
-            // Droit dérivé UE : (directive?, année/séquence) depuis le title.
+            // Droit dérivé UE : (directive?, année/séquence) depuis le title,
+            // et TOUTES les dates du title pour la forme citée sans numéro
+            // (« règlement du 17 décembre 2013 établissant… »).
             match t.nature.as_str() {
                 "DIRECTIVE_EURO" | "REGLEMENT" => {
+                    let dir = t.nature == "DIRECTIVE_EURO";
                     if let Some(m) = RE_SLASHNUM.captures(&folded_title) {
-                        let key = (t.nature == "DIRECTIVE_EURO", m[1].to_string());
+                        let key = (dir, m[1].to_string());
                         insert_unique(&mut eu_num, &mut eu_num_dead, key, &t.text_uid);
+                    }
+                    for date in all_dates(&folded_title) {
+                        let cands = eu_date.entry((dir, date)).or_default();
+                        if !cands.iter().any(|(uid, _)| uid == &t.text_uid) {
+                            cands.push((t.text_uid.clone(), folded_title.clone()));
+                        }
                     }
                 }
                 _ => {}
@@ -364,7 +491,19 @@ impl LinkSnapshot {
 
         // Alias embarqués, validés par existence de la cible au catalogue.
         let uids: HashSet<&str> = texts.iter().map(|t| t.text_uid.as_str()).collect();
+        let forum_defaults: HashMap<(Forum, &'static str), String> = FORUM_DEFAULTS
+            .iter()
+            .filter(|(_, _, uid)| uids.contains(uid))
+            .map(|(forum, nature, uid)| ((*forum, *nature), uid.to_string()))
+            .collect();
         let mut alias_text = HashMap::new();
+        // BOFiP (ADR 0196) : le code BOI cité (« BOI-IR-BASE-10-10 ») EST le
+        // `text_uid` catalogue — alias direct, même autorité que le TSV.
+        for t in &texts {
+            if t.nature == "BOFIP" {
+                alias_text.insert(fold_link(&t.text_uid), t.text_uid.clone());
+            }
+        }
         let mut alias_article = HashMap::new();
         for line in LINK_ALIASES_TSV.lines() {
             // 4e colonne (ref_num_key forcé) optionnelle : les text-fixers git
@@ -384,7 +523,9 @@ impl LinkSnapshot {
             if ak.is_empty() {
                 alias_text.insert(fold_link(tk), uid.to_string());
             } else {
-                let forced = (!num.is_empty()).then(|| num.to_string());
+                // La 4e colonne est curée en forme citée ; la clé stockée est
+                // la clé publique (ADR 0209).
+                let forced = (!num.is_empty()).then(|| lj_core::article_key::article_key(num));
                 alias_article.insert((fold_link(tk), ak.to_string()), (uid.to_string(), forced));
             }
         }
@@ -396,7 +537,10 @@ impl LinkSnapshot {
             title_brothers,
             nature_num,
             eu_num,
+            eu_date,
+            forum_defaults,
             nature_date,
+            nor: nor_index,
             treaty_date,
             accords,
             foreign_code,
@@ -411,13 +555,14 @@ impl LinkSnapshot {
     /// snapshot appauvri sans fouiller les champs privés).
     pub fn stats(&self) -> String {
         format!(
-            "titres={} alias={} nature_num={} eu={} dates={} traites={} accords={} \
+            "titres={} alias={} nature_num={} eu={} dates={} nor={} traites={} accords={} \
              etrangers={} textes_articles={}",
             self.title_to_uid.len(),
             self.alias_text.len(),
             self.nature_num.len(),
             self.eu_num.len(),
             self.nature_date.len(),
+            self.nor.len(),
             self.treaty_date.len(),
             self.accords.len(),
             self.foreign_code.len(),
@@ -426,14 +571,17 @@ impl LinkSnapshot {
     }
 
     /// L'article existe-t-il au catalogue pour ce texte ? (validation des
-    /// rattachements du moteur compilé — antécédents, anaphores.)
+    /// rattachements du moteur compilé — antécédents, anaphores.) Même
+    /// frontière d'alphabet que [`Self::num_key_for`] : clé citée → clé
+    /// publique avant consultation du catalogue.
     pub fn has_article(&self, uid: &str, num_key: &str) -> bool {
-        self.articles.get(uid).is_some_and(|s| s.contains(num_key))
+        let ak = &lj_core::article_key::article_key(num_key);
+        self.articles.get(uid).is_some_and(|s| s.contains(ak))
             || self
                 .star_articles
                 .get(uid)
-                .is_some_and(|m| m.contains_key(num_key))
-            || !self.prefixed_variants(uid, num_key).is_empty()
+                .is_some_and(|m| m.contains_key(ak))
+            || !self.prefixed_variants(uid, ak).is_empty()
     }
 
     /// Article cité sans son préfixe de partie (« 1233-62 » pour
@@ -447,7 +595,7 @@ impl LinkSnapshot {
         let Some(set) = self.articles.get(uid) else {
             return Vec::new();
         };
-        ["L. ", "R. ", "D. ", "A. "]
+        ["l", "r", "d", "a"]
             .iter()
             .map(|p| format!("{p}{num_key}"))
             .filter(|cand| set.contains(cand))
@@ -469,10 +617,24 @@ impl LinkSnapshot {
         self.articles.iter().map(|(k, v)| (k.as_str(), v))
     }
 
+    /// Cible de l'instrument NU d'un forum (« du règlement de procédure »
+    /// dans un arrêt CJUE) — présente seulement si le uid est au catalogue.
+    pub fn forum_default<'a>(&'a self, forum: Forum, nature: &str) -> Option<&'a str> {
+        self.forum_defaults
+            .iter()
+            .find(|((f, n), _)| *f == forum && *n == nature)
+            .map(|(_, uid)| uid.as_str())
+    }
+
     /// `ref_num_key` par existence au catalogue, sinon via la table
-    /// préfixe-agnostique du texte. Jamais inventé.
-    fn num_key_for(&self, uid: &str, article_key: Option<&str>) -> Option<String> {
-        let ak = article_key?;
+    /// préfixe-agnostique du texte. Jamais inventé. Frontière d'alphabet : la
+    /// clé citée arrive en forme `normalize_article` (« L. 761-1 »), le
+    /// catalogue est en clé publique slug (ADR 0209) — conversion ici.
+    pub fn num_key_for(&self, uid: &str, article_key: Option<&str>) -> Option<String> {
+        let ak = &lj_core::article_key::article_key(article_key?);
+        if ak.is_empty() {
+            return None;
+        }
         if self.articles.get(uid).is_some_and(|s| s.contains(ak)) {
             return Some(ak.to_string());
         }
@@ -550,6 +712,18 @@ pub fn link_citation_analyzed(
         }
     }
     if let Some(uid) = snap.alias_text.get(folded) {
+        return LinkTarget {
+            ref_text_uid: Some(uid.clone()),
+            ref_num_key: snap.num_key_for(uid, article_key),
+        };
+    }
+
+    // 1bis. NOR porté par la forme brute (« circulaire NOR JUSK1140023C du
+    // 14 avril 2011 », « décret NOR : DEVT0766271D du 26 octobre 2007 ») :
+    // identifiant interministériel unique — même autorité qu'un alias, avant
+    // le gate (une mention qui porte un NOR est un acte réel, pas de la
+    // prose).
+    if let Some(uid) = nor_in_raw(instrument).and_then(|nor| snap.nor.get(&nor)) {
         return LinkTarget {
             ref_text_uid: Some(uid.clone()),
             ref_num_key: snap.num_key_for(uid, article_key),
@@ -650,6 +824,32 @@ fn linked_text_uid(
         let key = (*nature == KeyNature::DirectiveUe, num.to_string());
         if let Some(uid) = snap.eu_num.get(&key) {
             return Some(uid.clone());
+        }
+    }
+
+    // 5bis. Droit dérivé UE par date + tokens — « règlement du 17 décembre
+    // 2013 établissant les règles relatives aux paiements directs » : six
+    // règlements PAC portent cette date, la queue de titre citée départage
+    // (même discipline que les traités en 6bis : UN survivant ou abstention).
+    if act_num.is_none() && (folded.starts_with("reglement") || folded.starts_with("directive")) {
+        if let Some(cands) =
+            act_date.and_then(|d| snap.eu_date.get(&(folded.starts_with("directive"), d)))
+        {
+            let tokens: Vec<&str> = folded
+                .split_whitespace()
+                .filter(|w| {
+                    w.chars().count() >= 4
+                        && month_num(w).is_none()
+                        && !w.chars().all(|c| c.is_ascii_digit())
+                })
+                .collect();
+            let survivors: Vec<&(String, String)> = cands
+                .iter()
+                .filter(|(_, title)| tokens.iter().all(|tok| title.contains(tok)))
+                .collect();
+            if let [(uid, _)] = survivors.as_slice() {
+                return Some(uid.clone());
+            }
         }
     }
 
@@ -762,7 +962,23 @@ fn linked_text_uid(
     None
 }
 
-/// Nature d'acte daté en tête de chaîne pliée (mêmes familles que la Voie B).
+/// NOR dans la forme brute capturée : « NOR JUSK1140023C », « NOR :
+/// INTK9700174C », « NORINTK1207286C » (graphie collée). Majuscules exigées —
+/// la graphie officielle, et le pli casse rendrait « nor » indistinguable
+/// d'un fragment. Préfiltre `contains` : la regex ne court que sur les rares
+/// mentions porteuses.
+fn nor_in_raw(instrument: &str) -> Option<String> {
+    if !instrument.contains("NOR") {
+        return None;
+    }
+    RE_NOR_IN_RAW.captures(instrument).map(|c| c[1].to_string())
+}
+
+static RE_NOR_IN_RAW: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bNOR\s*:?\s*([A-Z]{4}\d{7}[A-Z])\b").unwrap());
+
+/// Nature d'acte daté en tête de chaîne pliée (mêmes familles que la Voie B ;
+/// « circulaire » depuis l'ingest du fond DILA CIRCULAIRES, ADR 0196).
 fn head_act_nature(folded: &str) -> Option<&'static str> {
     [
         "decret",
@@ -771,6 +987,7 @@ fn head_act_nature(folded: &str) -> Option<&'static str> {
         "ordonnance",
         "decision",
         "deliberation",
+        "circulaire",
     ]
     .into_iter()
     .find(|nat| folded.starts_with(nat))
@@ -899,10 +1116,10 @@ fn digit_core(num_key: &str) -> String {
 }
 
 static RE_DATED_ACT_SHAPE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^(?:decret|loi|arrete|ordonnance|decision|deliberation)(?: organique)?(?: du pays)? du \d").unwrap()
+    Regex::new(r"^(?:decret|loi|arrete|ordonnance|decision|deliberation|circulaire)(?: organique)?(?: du pays)? du \d").unwrap()
 });
 static RE_HEAD_ACT_NUM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?:le |la |les |l' ?|du |de la |de l' ?)?\s*(?:decret|loi|arrete|ordonnance|decision|deliberation)[^0-9]{0,40}n[o°]? ?(\d{2,4}-\d+)").unwrap()
+    Regex::new(r"^\s*(?:le |la |les |l' ?|du |de la |de l' ?)?\s*(?:decret|loi|arrete|ordonnance|decision|deliberation|circulaire)[^0-9]{0,40}n[o°]? ?(\d{2,4}-\d+)").unwrap()
 });
 static RE_SLASHNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{1,4}/\d{1,4})").unwrap());
 /// Marqueurs d'instrument conventionnel — pour le tie-break traité (un titre
@@ -993,6 +1210,8 @@ mod tests {
             jurisdiction: jur.map(str::to_string),
             num_prefix_agnostic: false,
             n_vigueur,
+            date_texte: None,
+            nor: None,
         }
     }
 
@@ -1298,6 +1517,57 @@ mod tests {
             &s,
             "le règlement de copropriété",
             "Règlement de copropriété",
+            None,
+        );
+        assert_eq!(t, LinkTarget::default());
+    }
+
+    /// NOR : identifiant plus fort que le gate (1bis), mais un doublon au
+    /// catalogue (rééditions partageant le NOR) tue la clé — abstention.
+    #[test]
+    fn nor_unique_links_duplicate_dead() {
+        let mut a = text(
+            "cir_1",
+            "Titre libre A",
+            "Titre libre A",
+            "CIRCULAIRE",
+            Some("FR"),
+            0,
+        );
+        a.nor = Some("INTV1234567C".to_string());
+        let mut b = text(
+            "cir_2",
+            "Titre libre B",
+            "Titre libre B",
+            "CIRCULAIRE",
+            Some("FR"),
+            0,
+        );
+        b.nor = Some("PRMX7654321J".to_string());
+        let mut c = text(
+            "cir_3",
+            "Titre libre C",
+            "Titre libre C",
+            "CIRCULAIRE",
+            Some("FR"),
+            0,
+        );
+        c.nor = Some("PRMX7654321J".to_string());
+        let s = LinkSnapshot::build(vec![a, b, c], vec![]);
+        // Unique → lié, y compris à travers le gate (l'acte préfectoral
+        // non-citable par la forme reste identifié par son NOR).
+        let t = link_citation(
+            &s,
+            "l'arrêté préfectoral NOR INTV1234567C du 3 mai 2019",
+            "Arrêté préfectoral du 3 mai 2019",
+            None,
+        );
+        assert_eq!(t.ref_text_uid.as_deref(), Some("cir_1"));
+        // Doublon → clé morte, jamais un pari.
+        let t = link_citation(
+            &s,
+            "la circulaire NOR PRMX7654321J du 4 juin 2020",
+            "Circulaire du 4 juin 2020",
             None,
         );
         assert_eq!(t, LinkTarget::default());

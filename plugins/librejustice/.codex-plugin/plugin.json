@@ -1,0 +1,39 @@
+{
+  "name": "librejustice",
+  "version": "1.16.1+codex.20260723221341",
+  "description": "Assistant de recherche juridique (librejustice.fr) : serveur MCP distant avec OAuth automatique + skills \u2014 jurisprudence et normes (codes, trait\u00e9s, UE, droit \u00e9tranger).",
+  "author": {
+    "name": "LibreJustice"
+  },
+  "homepage": "https://librejustice.fr",
+  "keywords": [
+    "jurisprudence",
+    "droit",
+    "france",
+    "justice",
+    "loi",
+    "mcp"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "LibreJustice",
+    "shortDescription": "Jurisprudence et normes \u2014 droit fran\u00e7ais.",
+    "longDescription": "Moteur de recherche libre sur les d\u00e9cisions de justice et la l\u00e9gislation fran\u00e7aises : recherche et citation de jurisprudence (deux ordres) et textes applicables \u00e0 date (112 codes versionn\u00e9s, 9 000+ trait\u00e9s, droit UE, codes de 59 pays).",
+    "developerName": "LibreJustice",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://librejustice.fr",
+    "brandColor": "#892122",
+    "composerIcon": "./assets/icon.png",
+    "logo": "./assets/icon.png",
+    "defaultPrompt": [
+      "Trouve la jurisprudence sur la rupture brutale d'une relation commerciale \u00e9tablie et cite tes sources.",
+      "Quel \u00e9tait le texte de l'article L. 313-11 du CESEDA en vigueur en 2019 ?",
+      "Quels textes s'appliquent \u00e0 un contrat conclu en 2015 ? Donne les versions en vigueur \u00e0 cette date."
+    ]
+  }
+}

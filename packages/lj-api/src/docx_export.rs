@@ -35,7 +35,7 @@ pub enum DocxBlock {
 /// lignes de méta (10 pt) + paragraphe vide si méta → corps. Contrairement au
 /// PDF, **aucun échappement** : `python-docx` écrit le texte tel quel.
 pub fn build_decision_docx_blocks(detail: &DecisionDetail) -> Vec<DocxBlock> {
-    let juridiction =
+    let jurisdiction =
         decision_jurisdiction(jur_type_code(detail), detail.jurisdiction_name.as_deref());
     let docket = detail
         .docket_numbers
@@ -45,7 +45,7 @@ pub fn build_decision_docx_blocks(detail: &DecisionDetail) -> Vec<DocxBlock> {
         .unwrap_or_else(|| detail.id.clone());
 
     let mut blocks: Vec<DocxBlock> = vec![
-        DocxBlock::Heading1(juridiction),
+        DocxBlock::Heading1(jurisdiction),
         DocxBlock::Heading2(docket),
     ];
 
@@ -53,12 +53,8 @@ pub fn build_decision_docx_blocks(detail: &DecisionDetail) -> Vec<DocxBlock> {
     if let Some(date) = detail.date_lecture.as_deref().filter(|s| !s.is_empty()) {
         meta_lines.push(format!("Date de lecture : {date}"));
     }
-    if let Some(formation) = detail
-        .formation_or_chamber
-        .as_deref()
-        .filter(|s| !s.is_empty())
-    {
-        meta_lines.push(format!("Formation : {formation}"));
+    if let Some(seat) = detail.seat.as_deref().filter(|s| !s.is_empty()) {
+        meta_lines.push(format!("Formation : {seat}"));
     }
 
     if !meta_lines.is_empty() {
@@ -127,11 +123,11 @@ fn render_docx(blocks: &[DocxBlock]) -> Vec<u8> {
     buf.into_inner()
 }
 
-/// Code `juridiction_type` (forme DB « TA »/« CC »…) du DTO, pour
+/// Code `jurisdiction_type` (forme DB « TA »/« CC »…) du DTO, pour
 /// [`decision_jurisdiction`].
 fn jur_type_code(detail: &DecisionDetail) -> &'static str {
-    use lj_dtos::JuridictionType::*;
-    match detail.juridiction_type {
+    use lj_dtos::JurisdictionType::*;
+    match detail.jurisdiction_type {
         Ta => "TA",
         Caa => "CAA",
         Ce => "CE",
@@ -144,33 +140,38 @@ fn jur_type_code(detail: &DecisionDetail) -> &'static str {
         Cedh => "CEDH",
         Cjue => "CJUE",
         Cnda => "CNDA",
+        Cnil => "CNIL",
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lj_dtos::JuridictionType;
+    use lj_dtos::JurisdictionType;
 
     fn detail() -> DecisionDetail {
         DecisionDetail {
             id: "abc123".to_string(),
-            juridiction_type: JuridictionType::Ca,
+            jurisdiction_type: JurisdictionType::Ca,
             title: "ignored".to_string(),
             paragraphs: vec!["Corps & <texte>".to_string()],
             paragraph_spans: Vec::new(),
             sections: None,
             summary: None,
+            jurisdiction_code: None,
             jurisdiction_name: Some("Cour d'appel de Paris".to_string()),
             date_lecture: Some("2024-02-13".to_string()),
             solution: None,
-            voie: None,
+            procedure: None,
             office: None,
             legal_domain: None,
+            publication: None,
             publication_codes: Vec::new(),
             date_audience: None,
             docket_numbers: Some(vec!["RG 21/12345".to_string()]),
-            formation_or_chamber: None,
+            seat: None,
+            chamber: None,
+            formation: None,
             legal_references: None,
             source_xml: None,
             themes: Vec::new(),
@@ -178,6 +179,7 @@ mod tests {
             ecli: None,
             source: None,
             chronology: Vec::new(),
+            commentaires: vec![],
         }
     }
 
@@ -226,7 +228,7 @@ mod tests {
     fn no_meta_means_no_empty_paragraph() {
         let mut d = detail();
         d.date_lecture = None;
-        d.formation_or_chamber = None;
+        d.seat = None;
         let blocks = build_decision_docx_blocks(&d);
         // heading1, heading2, corps (pas de séparateur méta), puis pied de
         // provenance : empty + permalien.

@@ -34,6 +34,7 @@ pub fn LegalInstrumentPanel(
             .map(|s| LegalInstrumentFacet {
                 label: s.clone(),
                 value: s,
+                slug: None,
                 count: 0,
                 articles: Vec::new(),
             })

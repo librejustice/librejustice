@@ -1,0 +1,27 @@
+[
+  {
+    "trigger": "frais irrépétibles",
+    "expansion": "frais exposés non compris dans les dépens",
+    "why": "Terme doctrinal/jurisprudentiel absent de la lettre des codes ; la disposition source (art. 700 CPC, L761-1 CJA, 475-1 CPP) emploie « (sommes/frais) exposés et non compris dans les dépens »."
+  },
+  {
+    "trigger": "frais non répétibles",
+    "expansion": "frais exposés non compris dans les dépens",
+    "why": "Variante orthographique du même terme doctrinal."
+  },
+  {
+    "trigger": "indemnité de procédure",
+    "expansion": "frais exposés non compris dans les dépens",
+    "why": "Synonyme usuel des frais irrépétibles (somme allouée au titre de l'art. 700 CPC)."
+  },
+  {
+    "trigger": "exécution provisoire",
+    "expansion": "exécutoires à titre provisoire",
+    "why": "L'article de principe (514 CPC, denylisté : citations censurées, sac d'usage aveugle) dit « de droit exécutoires à titre provisoire » sans jamais la locution ; ses satellites (515, 517, 521, 524) la portent et matchent déjà lexicalement. Vérifié le 20/07/2026 : 164 articles VIGUEUR portent la forme conjonctive."
+  },
+  {
+    "trigger": "non-admission du pourvoi",
+    "expansion": "décision spécialement motivée",
+    "why": "« Non-admission » est le terme prétorien ; depuis 2014 l'art. 1014 CPC (denylisté) dit « il n'y a pas lieu de statuer par une décision spécialement motivée » — ni « admission » ni « non admis » dans sa lettre. Trigger volontairement long : « non-admission » seule est aussi un concept CESEDA (non-admission à la frontière)."
+  }
+]

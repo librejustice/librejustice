@@ -1,6 +1,6 @@
 # LibreJustice — infra + staging/prod
 # Démarrage  : docker compose up -d
-# Run manuel : docker compose exec cron librejustice <cmd>
+# Run manuel lj-ingest : binaire hôte, jamais exec dans `cron` (règle #21).
 
 services:
   postgres:
@@ -18,10 +18,8 @@ services:
       POSTGRES_HOST_AUTH_METHOD: scram-sha-256
     ports:
       # Deux ports loopback → le même Postgres. 5432 = accès local sur la VM
-      # (psql, outils). 5433 = cible locale du proxy `tailscale serve --tcp 5433`
-      # qui expose la base sur le tailnet (posé une fois au bootstrap, tailnet-only,
-      # gated ACL Tailscale — cf. ADR 0110). L'exposition tailnet ne dépend donc
-      # plus d'un bind résolu à la création du conteneur (fragile, cf. ADR 0110).
+      # (psql, outils). 5433 = cible locale du proxy qui expose la base aux
+      # machines de dev (posé hors compose — ADR 0200).
       - "127.0.0.1:5432:5432"
       - "127.0.0.1:5433:5432"
     volumes:

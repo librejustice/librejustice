@@ -61,5 +61,10 @@ pub async fn resync_arrays() -> Result<()> {
         "resync-legal-arrays : terminé ({lo}..={hi}), dérive corrigée : \
          {drift_decisions} décision(s), {drift_chunks} chunk(s)."
     );
+    // Même dérivée de `legal_citation` que les arrays : les décomptes de
+    // décisions citantes (plan des pages citantes + IDF co-citations,
+    // ADR 0250) se recomptent dans la même passe hebdomadaire.
+    let terms = repo.rebuild_citing_decision_counts().await?;
+    println!("citing_decision_counts : {terms} terme(s) upserté(s).");
     Ok(())
 }

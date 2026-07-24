@@ -1,6 +1,8 @@
-//! Guide MCP. Port de `mcp-page.tsx`. Herite du title/description racine.
+//! Guide MCP. Port de `mcp-page.tsx`. `<Title>` propre, hérite de la
+//! description racine.
 
 use leptos::prelude::*;
+use leptos_meta::Title;
 
 use crate::seo::CANONICAL_BASE;
 
@@ -24,6 +26,7 @@ pub fn McpGuide() -> impl IntoView {
     });
 
     view! {
+        <Title text="MCP - LibreJustice" />
         <div class="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-16 px-4 py-16 sm:px-6 lg:px-8">
             // Hero
             <section class="flex flex-col gap-6">
@@ -43,7 +46,7 @@ pub fn McpGuide() -> impl IntoView {
                     </em>
                 </h1>
                 <p class="text-lg leading-relaxed text-[var(--color-ink-muted)]">
-                    "Connectez Claude, ChatGPT ou votre propre agent à la jurisprudence française via le protocole MCP. La recherche sémantique et lexicale, directement dans le contexte de votre IA."
+                    "Connectez Claude, ChatGPT ou votre propre agent au droit français (jurisprudence et textes) via le protocole MCP. La recherche sémantique et lexicale, directement dans le contexte de votre IA."
                 </p>
                 <CopyEndpoint url=mcp_url />
             </section>
@@ -83,7 +86,7 @@ pub fn McpGuide() -> impl IntoView {
                     </Step>
                     <Step n=2>
                         "En bas à gauche, cliquez sur votre avatar puis "
-                        <strong>"Paramètres → Intégrations"</strong>
+                        <strong>"Paramètres → Connecteurs"</strong>
                         "."
                     </Step>
                     <Step n=3>
@@ -109,7 +112,7 @@ pub fn McpGuide() -> impl IntoView {
                         >
                             "chatgpt.com"
                         </a>
-                        " (compte Plus, Pro, Team ou Enterprise requis)."
+                        " (compte Business, Enterprise ou Edu requis, avec Developer mode activé)."
                     </Step>
                     <Step n=2>
                         "Allez dans "
@@ -175,7 +178,7 @@ pub fn McpGuide() -> impl IntoView {
                         >
                             "perplexity.ai"
                         </a>
-                        "."
+                        " (offre Pro, Max ou Enterprise requise)."
                     </Step>
                     <Step n=2>
                         "En bas à gauche, cliquez sur votre avatar puis "
@@ -190,7 +193,7 @@ pub fn McpGuide() -> impl IntoView {
                         ") et collez l'URL de l'endpoint."
                     </Step>
                     <Step n=4>
-                        "Laissez "
+                        "Choisissez "
                         <strong>"OAuth"</strong>
                         " comme méthode d'authentification, puis cliquez sur "
                         <strong>"Ajouter"</strong>

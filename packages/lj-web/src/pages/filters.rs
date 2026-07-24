@@ -1,8 +1,8 @@
 //! Description des filtres d'une recherche passee (chips) — port de la logique
 //! `describeFilters` / `FILTER_LABELS` / `FILTER_VALUE_LABELS` d'`activity-page`.
 //!
-//! Les valeurs des filtres referentiels (solution, voie, office, domaine,
-//! codes de juridiction, publication — ADR 0146) sont affichees brutes
+//! Les valeurs des filtres referentiels (solution, procedure, office,
+//! legalDomain, codes de juridiction, publication — ADR 0146) sont affichees brutes
 //! (suffixes d'uid / codes) : l'historique serialise le `SearchRequest` et le
 //! front n'embarque aucune table de libelles referentiels. Seul le type de
 //! juridiction (enum porte par `lj-dtos`) garde une map locale.
@@ -11,23 +11,25 @@ use serde_json::Value;
 
 /// Champs de requete serialises dans `filters` qui ne sont PAS des filtres
 /// affichables (port de `NON_FILTER_KEYS`).
-const NON_FILTER_KEYS: [&str; 3] = ["mode", "sort", "ai_mode"];
+const NON_FILTER_KEYS: [&str; 3] = ["mode", "sort", "aiMode"];
 
-/// Libelle court par cle de filtre (snake_case via la serialisation serde du
+/// Libelle court par cle de filtre (camelCase via la serialisation serde du
 /// `SearchRequest`).
 fn filter_label(key: &str) -> Option<&'static str> {
     Some(match key {
-        "juridiction_type" => "Juridiction",
+        "jurisdictionType" => "Juridiction",
         "solution" => "Solution",
-        "voie" => "Voie",
+        "procedure" => "Voie",
         "office" => "Office",
-        "legal_domain" => "Domaine",
-        "jurisdiction_code" => "Juridiction",
-        "legal_instrument" => "Texte",
-        "legal_article" => "Article",
+        "chamber" => "Chambre",
+        "legalDomain" => "Domaine",
+        "significance" => "Portée",
+        "jurisdictionCode" => "Juridiction",
+        "legalInstrument" => "Texte",
+        "legalArticle" => "Article",
         "publication" => "Publication",
-        "date_from" => "Depuis le",
-        "date_to" => "Jusqu'au",
+        "dateFrom" => "Depuis le",
+        "dateTo" => "Jusqu'au",
         _ => return None,
     })
 }
@@ -36,7 +38,7 @@ fn filter_label(key: &str) -> Option<&'static str> {
 /// `FILTER_VALUE_LABELS`). `None` si la cle n'a pas de map de valeurs.
 fn value_label(key: &str, code: &str) -> Option<&'static str> {
     match key {
-        "juridiction_type" => juridiction_type_label(code),
+        "jurisdictionType" => jurisdiction_type_label(code),
         _ => None,
     }
 }
@@ -44,7 +46,7 @@ fn value_label(key: &str, code: &str) -> Option<&'static str> {
 // Les CLES sont les codes serialises par serde cote API (sigles maj. pour la
 // juridiction, UPPER_SNAKE pour les enums).
 
-fn juridiction_type_label(code: &str) -> Option<&'static str> {
+fn jurisdiction_type_label(code: &str) -> Option<&'static str> {
     Some(match code {
         "TA" => "Tribunal administratif",
         "CAA" => "Cour administrative d'appel",
@@ -102,25 +104,4 @@ pub(super) fn describe_filters(filters: &Value) -> Vec<DescribedFilter> {
         .collect()
 }
 
-/// Encode un terme de requete pour le query string (parite `encodeURIComponent`).
-pub(super) fn encode_query(query: &str) -> String {
-    let mut out = String::with_capacity(query.len());
-    for b in query.bytes() {
-        match b {
-            b'A'..=b'Z'
-            | b'a'..=b'z'
-            | b'0'..=b'9'
-            | b'-'
-            | b'_'
-            | b'.'
-            | b'!'
-            | b'~'
-            | b'*'
-            | b'\''
-            | b'('
-            | b')' => out.push(b as char),
-            _ => out.push_str(&format!("%{b:02X}")),
-        }
-    }
-    out
-}
+pub(super) use crate::helpers::encode_query;

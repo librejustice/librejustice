@@ -11,6 +11,7 @@ mod reverses;
 mod sitemap;
 mod summary;
 mod tombstones;
+mod usage_terms;
 
 use std::time::{Duration, Instant};
 
@@ -22,12 +23,6 @@ use tracing_subscriber::EnvFilter;
 
 use crate::config::Settings;
 
-/// Sous-dossier source opendata sous `cache_dir` (port de
-/// `librejustice_core.sources.downloader.SOURCE_DIR`).
-const OPENDATA_SOURCE_DIR: &str = "opendata_conseil_etat";
-/// Sous-dossier source Judilibre sous `cache_dir` (port de
-/// `librejustice_core.sources.judilibre.downloader.SOURCE_DIR`).
-const JUDILIBRE_SOURCE_DIR: &str = "judilibre";
 /// Juridictions Judilibre par défaut (port de
 /// `judilibre.DEFAULT_JURISDICTIONS`).
 const JUDILIBRE_DEFAULT_JURISDICTIONS: &[&str] = &["cc", "ca", "tj", "tcom"];
@@ -83,6 +78,16 @@ enum Command {
     Analyze,
     /// Applique les migrations Postgres.
     Migrate,
+    /// Matérialise le champ `legal_article.usage_terms` (sacs de n-grammes
+    /// des contextes de citation + seeds curatés, ADR 0248).
+    UsageTerms {
+        /// Nombre de chunks du pool (parallélisme SQL séquentiel, reprise).
+        #[arg(long, default_value_t = 32)]
+        chunks: i32,
+        /// Seuil de citations pour matérialiser un sac.
+        #[arg(long, default_value_t = 10)]
+        min_citations: i64,
+    },
     /// Ingère les archives locales en base (parse → chunk → upsert).
     Ingest {
         #[arg(long)]
@@ -112,15 +117,15 @@ enum Command {
         /// même déjà à la version courante — c'est le relink hebdomadaire (un
         /// texte nouveau au catalogue attire ses citations anciennes ; le skip
         /// des sets de citations inchangés borne les écritures au delta).
-        #[arg(long, conflicts_with_all = ["juridiction_type", "citing_ref_uid"])]
+        #[arg(long, conflicts_with_all = ["jurisdiction_type", "citing_ref_uid"])]
         full: bool,
-        /// Cible des `juridiction_type` (CSV, ex. `CNDA,CEDH,CJUE,CONSTIT,TC`) à
+        /// Cible des `jurisdiction_type` (CSV, ex. `CNDA,CEDH,CJUE,CONSTIT,TC`) à
         /// re-extraire **quelle que soit la `extract_version`** (sans bump global).
         /// Pour activer un comportement d'extraction nouveau sur un sous-ensemble
         /// (citations famille générique, ADR 0102 §B). Vide = comportement par
         /// défaut (toutes les versions divergentes).
         #[arg(long, value_delimiter = ',')]
-        juridiction_type: Vec<String>,
+        jurisdiction_type: Vec<String>,
         /// Champs à re-extraire (CSV, ex. `legal_references`). Vide = tous les
         /// champs ré-extractibles. Restreindre à `legal_references` ne ré-écrit
         /// que les citations (via `replace_citations`), sans toucher les colonnes.
@@ -148,20 +153,23 @@ enum Command {
     },
     /// Purge les liens de réversion (reverses).
     PurgeReverses,
-    /// Backfill hors-migration des provenances existantes vers `decision_sources`
-    /// (ADR 0080), batché par keyset id et repris (idempotent). Sorti de la
-    /// migration 0056 pour ne pas tenir une transaction longue (base low-IOPS).
-    BackfillDecisionSources,
     /// Génère les résumés LLM manquants.
     GenerateSummaries {
         #[arg(long)]
         limit: Option<usize>,
-        /// Appels Mistral concurrents (sémaphore). Les clés API tournent en
-        /// round-robin par requête → la concurrence soutenable est proportionnelle
-        /// au nombre de clés. Défaut (absent) : dérivé du pool (~5 RPS/clé × 1,5 s
-        /// de latence ≈ 7 requêtes en vol/clé), pour saturer sans franchir le quota.
+        /// Appels Mistral concurrents (sémaphore). Le débit réel est cadencé
+        /// par le throttle du client (~5 s entre appels par clé vivante, sous
+        /// le TPM du modèle) ; ce plafond borne juste les appels en vol.
+        /// Défaut (absent) : clés vivantes × 7.
         #[arg(long)]
         concurrency: Option<usize>,
+        /// Régénère AUSSI les résumés dont le prompt est plus ancien que la
+        /// version courante (`summary_prompt_version < SUMMARY_PROMPT_VERSION`).
+        /// Sans ce flag, seuls les résumés manquants (`summary IS NULL`) sont
+        /// générés : un bump de version ne réécrit jamais le stock historique
+        /// par défaut.
+        #[arg(long)]
+        refresh_stale: bool,
     },
     /// Recompute des arrays légaux dénormalisés depuis `legal_citation`
     /// (réparation / recompute, migration 0098). Idempotent, lots autocommit ;
@@ -194,6 +202,33 @@ enum Command {
     /// `LEGI_*.tar.gz` postérieurs au watermark puis les ingère (le stock global
     /// se bootstrape hors-bande via `legi <path>`). Idempotent.
     SyncLegi,
+    /// Backfill du graphe `legal_link` (ADR 0174) : streame des tarballs DILA
+    /// locaux (stock global puis incréments, LEGI et/ou KALI, dans l'ordre
+    /// chronologique) et remplace les arêtes `<LIENS>` par propriétaire, sans
+    /// upsert d'articles (hors gate `content_checksum`). Rejouable ; purge les
+    /// arêtes orphelines en fin de run.
+    BackfillLinks {
+        /// Archives `tar.gz` DILA, dans l'ordre chronologique.
+        #[arg(required = true)]
+        paths: Vec<std::path::PathBuf>,
+    },
+    /// Backfill de l'arbre structurel `legal_toc_edge` (ADR 0207) : streame des
+    /// tarballs LEGI locaux (stock global puis incréments, ordre chronologique)
+    /// et remplace les arêtes `TEXTELR`/`SECTION_TA` par propriétaire, hors gate
+    /// `content_checksum`. Rejouable ; purge les arbres orphelins en fin de run.
+    BackfillToc {
+        /// Archives `tar.gz` LEGI, dans l'ordre chronologique.
+        #[arg(required = true)]
+        paths: Vec<std::path::PathBuf>,
+    },
+    /// Backfill des métadonnées de textes (ADR 0178) : rejoue l'upsert
+    /// `legal_text` + `upcoming_versions` depuis les `TEXTE_VERSION` des
+    /// tarballs LEGI locaux. Rejouable.
+    BackfillTextes {
+        /// Archives `tar.gz` LEGI, dans l'ordre chronologique.
+        #[arg(required = true)]
+        paths: Vec<std::path::PathBuf>,
+    },
     /// Ingère un stock ou un incrément KALI (conventions collectives nationales,
     /// bulk DILA, ADR 0120) depuis un `tar.gz` local (`Freemium_kali_global_*.tar.gz`
     /// ou incrément `KALI_*.tar.gz`). KALICONT → `legal_text`, KALIARTI → `legal_article`
@@ -207,6 +242,62 @@ enum Command {
     /// puis les incréments `KALI_*.tar.gz` postérieurs au watermark, chacun ingéré.
     /// Idempotent.
     SyncKali,
+    /// Ingère un export JSONL `bofip-vigueur` local (doctrine fiscale DGFiP,
+    /// ADR 0196) : document BOI → `legal_text` (nature=BOFIP, préambule en `body`),
+    /// § numérotés → `legal_article`. Idempotent (snapshot : purge des versions/§
+    /// hors export).
+    Bofip {
+        /// Chemin local de l'export `bofip-vigueur.jsonl`.
+        #[arg(required = true)]
+        path: std::path::PathBuf,
+    },
+    /// Sync BOFiP (ADR 0196) : re-télécharge l'export open data `bofip-vigueur`
+    /// (data.economie.gouv.fr, snapshot des publications en vigueur) puis l'ingère.
+    /// Idempotent.
+    SyncBofip,
+    /// Sync du fond DILA CIRCULAIRES (ADR 0196) : stocks 2009-2014 + abrogations
+    /// historiques + flux chronologiques (last-write-wins par ID) → `legal_text`
+    /// nature=CIRCULAIRE (métadonnées + résumé ; corps = passe séparée
+    /// sync-circulaires-bodies). Reprend au dernier fichier ingéré (manifest).
+    /// Idempotent.
+    SyncCirculaires,
+    /// Passe corps des circulaires (ADR 0222) : stocks PDF + PDF compagnons
+    /// des flux (last-write-wins par ID) → `legal_text.body` (pdftotext natif,
+    /// OCR Mistral cache-first en repli scanné). Reprend au dernier tarball
+    /// rejoué (manifest pdf). Idempotent.
+    SyncCirculairesBodies,
+    /// Corps des traités (TRAITE) et accords interprofessionnels (TI) depuis
+    /// les blocs sans numéro des stocks bulk JORF/KALI du cache (ADR 0223) :
+    /// concaténation dans l'ordre du document → `legal_text.body` des fiches
+    /// sans articles ni corps. Aucun téléchargement. Idempotent.
+    BackfillTreatyBodies,
+    /// Sync ArianeWeb (ADR 0204) : analyses AJCE + existence des conclusions du
+    /// rapporteur public (CRP) → bundles `commentaires[]` en `decision_sources`
+    /// (source `ariane-web`, une ligne par décision CE). Année par année,
+    /// reprend au manifeste, cache HTML sous state_dir. Idempotent.
+    SyncAriane {
+        /// Années à traiter (défaut : toutes depuis 1960, années complètes
+        /// du manifeste skippées).
+        #[arg(long, value_delimiter = ',')]
+        years: Vec<u16>,
+        /// Plafond de documents AJCE téléchargés (sonde) — le run s'arrête
+        /// proprement sans marquer d'année complète.
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Sync ADDE (plan commentaires généralisé) : analyses de jurisprudence de
+    /// l'ADDE → commentaires doctrine web `kind:"note"` (liens sortants) des
+    /// décisions rattachées par (dossier, date). Idempotent, non cherchable.
+    SyncAdde,
+    /// Charge les commentaires de norme curés (ADR 0212) depuis
+    /// `<state_dir>/ingest/article-commentaires.json` → `article_commentaire`
+    /// (liens `kind:"note"` sur des articles de loi/traité). Idempotent.
+    SeedArticleCommentaires,
+    /// Extrait les renvois norme→article (text_legal_citation, ADR 0217) et
+    /// les citations de jurisprudence (text_case_citation, ADR 0196 §5) de
+    /// TOUS les corps du référentiel — versions d'articles + corps
+    /// monolithiques — en une passe doc_extract. Idempotent.
+    ExtractTextRefs,
     /// Ingère un stock ou un incrément JORF (Journal officiel, bulk DILA, ADR 0109)
     /// depuis un `tar.gz` local (`Freemium_jorf_global_*.tar.gz` ou incrément
     /// `JORF_*.tar.gz`). Deux passes : textes (`referential_texts`, tag
@@ -216,16 +307,33 @@ enum Command {
         #[arg(required = true)]
         path: std::path::PathBuf,
     },
-    /// Charge un corpus de loi curé générique (datasets `<state_dir>/sources/
-    /// legal-corpus/*.json`, règle #17) → `legal_text` + `legal_article`. Source-
+    /// Sync du fond JORF complet (ADR 0246, fiches + rôles + liens) : télécharge
+    /// stock/incréments DILA postérieurs au watermark puis les ingère (mécanique
+    /// `sync-legi`). Idempotent, reprenable.
+    SyncJorf,
+    /// Charge un corpus de loi curé générique (datasets `<state_dir>/ingest/
+    /// corpus/*.json`, règle #17) → `legal_text` + `legal_article`. Source-
     /// agnostique : le JSON porte les métadonnées du texte + des `articles[]` **déjà
     /// segmentés par la curation Python** (ADR 0118), chacun mono-version (`texte`)
     /// ou multi-versions (`versions[]`, avenants des traités). Le loader est un pur
-    /// inséreur (seule transformation : `num_key = normalize_article`). Dataset
+    /// inséreur (seule transformation : `num_key = identity_key`, ADR 0236). Dataset
     /// autoritaire (purge avant rechargement). Idempotent. ADR 0108/0109/0118.
     /// Assigne les slugs manquants de `legal_text` (ADR 0162) : backfill puis
     /// no-op (la passe tourne aussi en fin de chaque ingest référentiel).
     AssignSlugs,
+    /// Recalcule `legal_text.role` (ADR 0246, classification v1 conservatrice)
+    /// et aligne `legal_link.verb` sur le repli verbe/nom courant. Idempotent.
+    BackfillTextRoles,
+    /// Rebase les clés d'article (num_key et colonnes liées) vers la clé
+    /// publique slug (ADR 0209). One-shot, idempotent.
+    RekeyArticleKeys,
+    /// Rebase `legal_article.num_key` (+ liens possédés) et
+    /// `legal_toc_edge.child_num_key` vers la clé d'IDENTITÉ recalculée depuis
+    /// le num source (ADR 0236). One-shot, idempotent.
+    RekeyIdentityKeys,
+    /// Purge du stock les citations procédurales (denylist ADR 0211) et
+    /// resynchronise les composites. One-shot, idempotent.
+    PurgeProceduralCitations,
     LoadLegalCorpus {
         /// Restreint le chargement aux datasets dont le nom contient cette sous-chaîne
         /// (chargement chirurgical, ex. `--only eu-rproc`). Défaut : tous les datasets.
@@ -233,7 +341,7 @@ enum Command {
         only: Option<String>,
     },
     /// Génère les datasets catalogue EUR-Lex (règlements/directives UE cités mais
-    /// absents) sous `<state_dir>/sources/legal-corpus/`, via SPARQL Cellar, pilotés par
+    /// absents) sous `<state_dir>/ingest/corpus/`, via SPARQL Cellar, pilotés par
     /// les slashnums réellement cités (spans non liés de `legal_citation`, ADR
     /// 0138/0145). Entrées catalogue-seul (`articles: []`) ; auto-validées (le titre
     /// FR doit porter le slashnum cité). À enchaîner avec `load-legal-corpus` ; les
@@ -284,12 +392,10 @@ enum Command {
     /// historiques (Judilibre porte l'ECLI dans son payload, colonne NULL).
     /// Keyset batché, idempotent.
     BackfillEcli,
-    /// Récupération rétroactive de la dédup inter-sources (ADR 0098 §7 / 0100).
-    /// Enchaîne les passes batchées idempotentes : (1) portage des provenances vers
-    /// `decision_sources` + `source_fields`, (2) calcul de `decisions.canonical_ref`
-    /// (citation légale, ADR 0100). Les passes 3 (clustering) et 4 (fusion des
-    /// doublons) viennent ensuite. Reprenable, hors live path.
-    DedupBackfill,
+    /// Construit le vocabulaire d'autocomplétion (ADR 0219) : n-grammes 1-3
+    /// comptés sur un échantillon des décisions + articles + titres, FST
+    /// déposé en blob dans `suggest_index`. Relançable (remplace le blob).
+    BuildSuggest,
     /// Re-dérive `decisions.canonical_ref` (ADR 0100). Sans `--force` : ne traite
     /// que les `NULL` (peuplement). Avec `--force` : **re-dérive toutes** les
     /// décisions (`full_text` présent) pour migrer les clés 3-champs historiques
@@ -407,6 +513,23 @@ enum Command {
     /// Sync incrémental CNDA : reprend le crawl à la page suivant le watermark
     /// (ADR 0096).
     SyncCnda,
+    /// Charge un registre d'entités (ADR 0179) : SIRENE, RNA, annuaire des
+    /// avocats (CNB) ou avocats aux Conseils (`oacc:`, snapshot curé, ADR 0190)
+    /// — découverte data.gouv + download streamé (bulk) ou lecture du JSON curé
+    /// sous `ingest/corpus/registries/`, remplacement de namespace.
+    Registries {
+        #[arg(value_enum)]
+        source: pipeline::RegistrySource,
+        /// SIRENE : charge aussi l'historique des dénominations (périodes closes).
+        #[arg(long)]
+        with_history: bool,
+    },
+    /// Backfill decision_party depuis les colonnes NER + résolution vers le
+    /// référentiel d'entités (ADR 0181) — TRUNCATE + COPY, rejouable.
+    PartiesBackfill,
+    /// Résout les clés pendantes decision_party → entity (post-rechargement
+    /// mensuel de registre).
+    PartiesRelink,
     /// Maintenance DB (sous-commandes).
     #[command(subcommand)]
     Db(DbCommand),
@@ -422,8 +545,21 @@ enum DbCommand {
     VacuumFullChunks,
     /// GC des tokens/clients MCP expirés.
     GcMcp,
+    /// Réconcilie les liens « pendants » (ADR 0240) : rejoue les quatre
+    /// résolveurs batch (chronologie, citations décision→décision et
+    /// texte→décision, acteurs) + reconstruit l'annuaire. Idempotent — outil de
+    /// rattrapage après un ingest interrompu, sans re-extraction.
+    Reconcile,
     /// Préchauffe le cache (prewarm).
     Prewarm,
+    /// Purge les tombstones **orphelins** (retraits totaux : retirés, vidés,
+    /// sans provenance active). Dry-run par défaut ; `--apply` pour supprimer.
+    PurgeOrphanTombstones {
+        /// Supprime réellement. Sans ce flag : compte + échantillon, aucune
+        /// suppression (ceinture-bretelle).
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 impl Command {
@@ -435,22 +571,39 @@ impl Command {
             Command::JudilibreRanges => "judilibre-ranges",
             Command::Analyze => "analyze",
             Command::Migrate => "migrate",
+            Command::UsageTerms { .. } => "usage-terms",
             Command::Ingest { .. } => "ingest",
             Command::Refetch { .. } => "refetch",
             Command::ReextractFields { .. } => "reextract-fields",
             Command::EmbedMissing { .. } => "embed-missing",
             Command::PurgeReverses => "purge-reverses",
-            Command::BackfillDecisionSources => "backfill-decision-sources",
             Command::GenerateSummaries { .. } => "generate-summaries",
             Command::ResyncLegalArrays => "resync-legal-arrays",
             Command::Sitemap { .. } => "sitemap",
             Command::Indexnow { .. } => "indexnow",
             Command::Legi { .. } => "legi",
             Command::SyncLegi => "sync-legi",
+            Command::BackfillLinks { .. } => "backfill-links",
+            Command::BackfillToc { .. } => "backfill-toc",
+            Command::BackfillTextes { .. } => "backfill-textes",
             Command::Kali { .. } => "kali",
             Command::SyncKali => "sync-kali",
+            Command::Bofip { .. } => "bofip",
+            Command::SyncBofip => "sync-bofip",
+            Command::SyncCirculaires => "sync-circulaires",
+            Command::SyncCirculairesBodies => "sync-circulaires-bodies",
+            Command::BackfillTreatyBodies => "backfill-treaty-bodies",
+            Command::SyncAriane { .. } => "sync-ariane",
+            Command::SyncAdde => "sync-adde",
+            Command::SeedArticleCommentaires => "seed-article-commentaires",
+            Command::ExtractTextRefs => "extract-text-refs",
             Command::Jorf { .. } => "jorf",
+            Command::SyncJorf => "sync-jorf",
             Command::AssignSlugs => "assign-slugs",
+            Command::BackfillTextRoles => "backfill-text-roles",
+            Command::RekeyArticleKeys => "rekey-article-keys",
+            Command::RekeyIdentityKeys => "rekey-identity-keys",
+            Command::PurgeProceduralCitations => "purge-procedural-citations",
             Command::LoadLegalCorpus { .. } => "load-legal-corpus",
             Command::IngestEuCatalog { .. } => "ingest-eu-catalog",
             Command::IngestEuRproc { .. } => "ingest-eu-rproc",
@@ -460,7 +613,7 @@ impl Command {
             Command::IngestDila { .. } => "ingest-dila",
             Command::SyncDila { .. } => "sync-dila",
             Command::BackfillEcli => "backfill-ecli",
-            Command::DedupBackfill => "dedup-backfill",
+            Command::BuildSuggest => "build-suggest",
             Command::BackfillCanonicalRef { .. } => "backfill-canonical-ref",
             Command::MergeCrossSourceDuplicates => "merge-cross-source-duplicates",
             Command::ReingestStaleOpendata => "reingest-stale-opendata",
@@ -475,11 +628,16 @@ impl Command {
             Command::SyncCjue => "sync-cjue",
             Command::IngestCnda { .. } => "ingest-cnda",
             Command::SyncCnda => "sync-cnda",
+            Command::Registries { .. } => "registries",
+            Command::PartiesBackfill => "parties-backfill",
+            Command::PartiesRelink => "parties-relink",
             Command::Db(DbCommand::Analyze) => "db:analyze",
             Command::Db(DbCommand::ReindexSearch) => "db:reindex-search",
             Command::Db(DbCommand::VacuumFullChunks) => "db:vacuum-full-chunks",
             Command::Db(DbCommand::GcMcp) => "db:gc-mcp",
+            Command::Db(DbCommand::Reconcile) => "db:reconcile",
             Command::Db(DbCommand::Prewarm) => "db:prewarm",
+            Command::Db(DbCommand::PurgeOrphanTombstones { .. }) => "db:purge-orphan-tombstones",
         }
     }
 }
@@ -496,7 +654,65 @@ async fn main() -> Result<()> {
     let _telemetry_guard = init_telemetry(&cli.log_level, &settings)?;
     install_panic_hook();
 
-    run_with_watchdog(cli.command, settings.watchdog_secs).await
+    let result = run_with_watchdog(cli.command, settings.watchdog_secs).await;
+    arm_teardown_sentinel();
+    result
+}
+
+/// Délai accordé au teardown post-commande (flush télémétrie + drop du runtime)
+/// avant que la sentinelle ne considère le process comme coincé. Le flush OTLP
+/// est borné à ~5 s par provider (3 providers) : 60 s = large marge.
+const TEARDOWN_SENTINEL_SECS: u64 = 60;
+
+/// Arme un thread détaché qui, si le process est encore vivant
+/// [`TEARDOWN_SENTINEL_SECS`] après la fin de la commande, dumpe l'état de tous
+/// les threads (`/proc/self/task/*` : comm, état, wchan) sur **stderr** puis
+/// `abort()`.
+///
+/// Le teardown (Drop du `TelemetryGuard` puis du runtime tokio) est la seule
+/// phase qui ne peut ni logger sa fin ni être couverte par le watchdog : un
+/// blocage là (ex. `Runtime::drop` attendant une tâche `spawn_blocking`
+/// orpheline coincée sur du réseau) pendait le process en silence — invisible
+/// sans un humain devant un `eu-stack`. La sentinelle rend le diagnostic
+/// autonome (le dump part vers journald via supercronic côté cron) et fait
+/// échouer la chaîne `&&` / le deploy vite et fort au lieu de pendre.
+/// À la sortie normale le thread, détaché et endormi, meurt avec le process.
+fn arm_teardown_sentinel() {
+    std::thread::spawn(|| {
+        std::thread::sleep(Duration::from_secs(TEARDOWN_SENTINEL_SECS));
+        eprintln!(
+            "lj-ingest : teardown bloqué > {TEARDOWN_SENTINEL_SECS} s — état des threads avant abort :"
+        );
+        if let Ok(tasks) = std::fs::read_dir("/proc/self/task") {
+            for task in tasks.flatten() {
+                let path = task.path();
+                let read = |f: &str| {
+                    std::fs::read_to_string(path.join(f))
+                        .unwrap_or_default()
+                        .trim()
+                        .to_string()
+                };
+                // stat : champ 3 = état (R/S/D/…), juste après le `comm`
+                // parenthésé (qui peut contenir espaces et parenthèses → on
+                // coupe après la DERNIÈRE parenthèse fermante).
+                let stat = read("stat");
+                let state = stat
+                    .rsplit(')')
+                    .next()
+                    .and_then(|rest| rest.split_whitespace().next())
+                    .unwrap_or("?")
+                    .to_string();
+                eprintln!(
+                    "  tid={} comm={} état={} wchan={}",
+                    task.file_name().to_string_lossy(),
+                    read("comm"),
+                    state,
+                    read("wchan"),
+                );
+            }
+        }
+        std::process::abort();
+    });
 }
 
 /// Exécute la commande sous un watchdog + breadcrumbs de cycle de vie.
@@ -605,6 +821,10 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::JudilibreRanges => cmd_judilibre_ranges().await,
         Command::Analyze => cmd_analyze(),
         Command::Migrate => cmd_migrate().await,
+        Command::UsageTerms {
+            chunks,
+            min_citations,
+        } => usage_terms::run(chunks, min_citations).await,
         Command::Ingest {
             with_embeddings,
             mode,
@@ -616,7 +836,7 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::ReextractFields {
             overwrite,
             full,
-            juridiction_type,
+            jurisdiction_type,
             field,
             citing_ref_uid,
             workers,
@@ -624,7 +844,7 @@ async fn dispatch(command: Command) -> Result<()> {
             cmd_reextract_fields(
                 overwrite,
                 full,
-                juridiction_type,
+                jurisdiction_type,
                 field,
                 citing_ref_uid,
                 workers,
@@ -633,10 +853,11 @@ async fn dispatch(command: Command) -> Result<()> {
         }
         Command::EmbedMissing { limit } => pipeline::embed_missing(limit).await,
         Command::PurgeReverses => cmd_purge_reverses().await,
-        Command::BackfillDecisionSources => pipeline::backfill_decision_sources().await,
-        Command::GenerateSummaries { limit, concurrency } => {
-            summary_pipeline_generate(limit, concurrency).await
-        }
+        Command::GenerateSummaries {
+            limit,
+            concurrency,
+            refresh_stale,
+        } => summary_pipeline_generate(limit, concurrency, refresh_stale).await,
         Command::ResyncLegalArrays => citations_maintenance::resync_arrays().await,
         Command::Sitemap { dry_run } => cmd_sitemap(dry_run).await,
         Command::Indexnow {
@@ -645,10 +866,27 @@ async fn dispatch(command: Command) -> Result<()> {
         } => cmd_indexnow(since_hours, max_urls).await,
         Command::Legi { path } => pipeline::ingest_legi(&path).await,
         Command::SyncLegi => pipeline::sync_legi().await,
+        Command::BackfillLinks { paths } => pipeline::backfill_links(&paths).await,
+        Command::BackfillToc { paths } => pipeline::backfill_toc(&paths).await,
+        Command::BackfillTextes { paths } => pipeline::backfill_textes(&paths).await,
         Command::Kali { path } => pipeline::ingest_kali(&path).await,
         Command::SyncKali => pipeline::sync_kali().await,
+        Command::Bofip { path } => pipeline::ingest_bofip(&path).await,
+        Command::SyncBofip => pipeline::sync_bofip().await,
+        Command::SyncCirculaires => pipeline::sync_circulaires().await,
+        Command::SyncCirculairesBodies => pipeline::sync_circulaires_bodies().await,
+        Command::BackfillTreatyBodies => pipeline::backfill_treaty_bodies().await,
+        Command::SyncAriane { years, limit } => pipeline::sync_ariane(years, limit).await,
+        Command::SyncAdde => pipeline::sync_adde().await,
+        Command::SeedArticleCommentaires => pipeline::seed_article_commentaires().await,
+        Command::ExtractTextRefs => pipeline::extract_text_refs().await,
         Command::Jorf { path } => pipeline::ingest_jorf(&path).await,
+        Command::SyncJorf => pipeline::sync_jorf().await,
         Command::AssignSlugs => pipeline::assign_slugs().await,
+        Command::BackfillTextRoles => pipeline::backfill_text_roles().await,
+        Command::RekeyArticleKeys => pipeline::rekey_article_keys().await,
+        Command::RekeyIdentityKeys => pipeline::rekey_identity_keys().await,
+        Command::PurgeProceduralCitations => pipeline::purge_procedural_citations().await,
         Command::LoadLegalCorpus { only } => pipeline::load_legal_corpus(only.as_deref()).await,
         Command::IngestEuCatalog { limit } => pipeline::ingest_eu_catalog(limit).await,
         Command::IngestEuRproc { dry_run } => pipeline::ingest_eu_rproc(dry_run).await,
@@ -658,7 +896,7 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::IngestDila { fond } => pipeline::ingest_dila(fond).await,
         Command::SyncDila { fond } => pipeline::sync_dila(fond).await,
         Command::BackfillEcli => pipeline::backfill_ecli().await,
-        Command::DedupBackfill => pipeline::dedup_backfill().await,
+        Command::BuildSuggest => pipeline::build_suggest().await,
         Command::BackfillCanonicalRef { force } => pipeline::backfill_canonical_ref(force).await,
         Command::MergeCrossSourceDuplicates => pipeline::merge_cross_source_duplicates().await,
         Command::ReingestStaleOpendata => cmd_reingest_stale_opendata().await,
@@ -681,6 +919,12 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::SyncCjue => pipeline::sync_cjue().await,
         Command::IngestCnda { mode, only } => pipeline::ingest_cnda(mode, only).await,
         Command::SyncCnda => pipeline::sync_cnda().await,
+        Command::Registries {
+            source,
+            with_history,
+        } => pipeline::load_registries(source, with_history).await,
+        Command::PartiesBackfill => pipeline::backfill_parties().await,
+        Command::PartiesRelink => pipeline::relink_parties().await,
         Command::Db(db_command) => cmd_db(db_command).await,
     }
 }
@@ -851,7 +1095,7 @@ async fn cmd_judilibre_ranges() -> Result<()> {
 /// `extra_dir=[]`, `sample=20`, `seed=0`, `out=None` → stdout).
 fn cmd_analyze() -> Result<()> {
     let settings = Settings::from_env()?;
-    let report = analyze::run(&settings.cache_dir().join(OPENDATA_SOURCE_DIR), &[], 20, 0)?;
+    let report = analyze::run(&settings.paths().opendata(), &[], 20, 0)?;
     // `json.dumps(report, indent=2, ensure_ascii=False)` + newline final.
     let payload = serde_json::to_string_pretty(&report)?;
     println!("{payload}");
@@ -890,10 +1134,8 @@ async fn cmd_migrate() -> Result<()> {
 /// (re-traitement total) jusqu'au triage.
 async fn cmd_ingest(with_embeddings: bool, mode: pipeline::IngestMode) -> Result<()> {
     let settings = Settings::from_env()?;
-    let cache_dir = settings.cache_dir();
-    pipeline::ingest_opendata(&cache_dir.join(OPENDATA_SOURCE_DIR), with_embeddings, mode).await?;
-    pipeline::ingest_judilibre(&cache_dir.join(JUDILIBRE_SOURCE_DIR), with_embeddings, mode)
-        .await?;
+    pipeline::ingest_opendata(&settings.paths().opendata(), with_embeddings, mode).await?;
+    pipeline::ingest_judilibre(&settings.paths().judilibre(), with_embeddings, mode).await?;
     Ok(())
 }
 
@@ -902,8 +1144,7 @@ async fn cmd_ingest(with_embeddings: bool, mode: pipeline::IngestMode) -> Result
 /// ~61,7k cibles (CAA/CE) ; vLLM strict.
 async fn cmd_reingest_stale_opendata() -> Result<()> {
     let settings = Settings::from_env()?;
-    let cache_dir = settings.cache_dir();
-    pipeline::reingest_stale_opendata(&cache_dir.join(OPENDATA_SOURCE_DIR)).await
+    pipeline::reingest_stale_opendata(&settings.paths().opendata()).await
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -919,12 +1160,12 @@ async fn cmd_reingest_stale_opendata() -> Result<()> {
 async fn cmd_reextract_fields(
     overwrite: bool,
     full: bool,
-    juridiction_type: Vec<String>,
+    jurisdiction_type: Vec<String>,
     field: Vec<String>,
     citing_ref_uid: Option<String>,
     workers: Option<usize>,
 ) -> Result<()> {
-    let jts = (!juridiction_type.is_empty()).then_some(juridiction_type);
+    let jts = (!jurisdiction_type.is_empty()).then_some(jurisdiction_type);
     let fields = (!field.is_empty()).then_some(field);
     pipeline::reextract_fields(
         fields.as_deref(),
@@ -970,10 +1211,7 @@ async fn cmd_resplit_false_merges(
 /// `cmd_purge_reverses`.
 async fn cmd_purge_reverses() -> Result<()> {
     let settings = Settings::from_env()?;
-    let csv_dir = settings
-        .cache_dir()
-        .join(OPENDATA_SOURCE_DIR)
-        .join("documents_reverses");
+    let csv_dir = settings.paths().opendata().join("documents_reverses");
     if !csv_dir.exists() {
         return Err(anyhow!("Dossier introuvable : {}", csv_dir.display()));
     }
@@ -997,13 +1235,18 @@ async fn cmd_purge_reverses() -> Result<()> {
 /// Backfill des résumés Mistral (port de `cmd_generate_summaries`). `--concurrency`
 /// borne les appels Mistral concurrents (défaut dérivé du nombre de clés) ;
 /// `batch_size=1000`, `shuffle=False` reprennent les défauts Typer.
-async fn summary_pipeline_generate(limit: Option<usize>, concurrency: Option<usize>) -> Result<()> {
+async fn summary_pipeline_generate(
+    limit: Option<usize>,
+    concurrency: Option<usize>,
+    refresh_stale: bool,
+) -> Result<()> {
     summary::backfill_summaries(
         lj_core::summary::SUMMARY_PROMPT_VERSION,
         concurrency,
         1000,
         limit.map(|l| l as i64),
         false,
+        refresh_stale,
     )
     .await
 }
@@ -1018,6 +1261,8 @@ async fn summary_pipeline_generate(limit: Option<usize>, concurrency: Option<usi
 struct LoadedSitemapSource {
     decisions: Vec<(String, chrono::NaiveDate)>,
     referential: Vec<(String, String, chrono::NaiveDate)>,
+    entities: Vec<(String, String, chrono::NaiveDate)>,
+    codes: Vec<(String, chrono::NaiveDate)>,
 }
 
 impl sitemap::SitemapSource for LoadedSitemapSource {
@@ -1026,6 +1271,12 @@ impl sitemap::SitemapSource for LoadedSitemapSource {
     }
     fn iter_referential_for_sitemap(&self) -> Result<Vec<(String, String, chrono::NaiveDate)>> {
         Ok(self.referential.clone())
+    }
+    fn iter_entities_for_sitemap(&self) -> Result<Vec<(String, String, chrono::NaiveDate)>> {
+        Ok(self.entities.clone())
+    }
+    fn iter_codes_for_sitemap(&self) -> Result<Vec<(String, chrono::NaiveDate)>> {
+        Ok(self.codes.clone())
     }
 }
 
@@ -1039,7 +1290,7 @@ async fn cmd_sitemap(dry_run: bool) -> Result<()> {
 
     tracing::info!("=== build sitemaps ===");
     let pool = pool_with_migrations(&settings).await?;
-    let (decisions, referential) = {
+    let (decisions, referential, entities, codes) = {
         let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
         let repo = lj_store::repository::DecisionRepository::new(&conn);
         let decisions = repo
@@ -1050,13 +1301,23 @@ async fn cmd_sitemap(dry_run: bool) -> Result<()> {
             .iter_referential_for_sitemap()
             .await
             .map_err(|e| anyhow!("iter_referential_for_sitemap: {e}"))?;
-        (decisions, referential)
+        let entities = repo
+            .iter_entities_for_sitemap()
+            .await
+            .map_err(|e| anyhow!("iter_entities_for_sitemap: {e}"))?;
+        let codes = repo
+            .iter_codes_for_sitemap()
+            .await
+            .map_err(|e| anyhow!("iter_codes_for_sitemap: {e}"))?;
+        (decisions, referential, entities, codes)
     };
     let source = LoadedSitemapSource {
         decisions,
         referential,
+        entities,
+        codes,
     };
-    let files = sitemap::build_sitemaps(&source)?;
+    let files = sitemap::build_sitemaps(&source, chrono::Utc::now().date_naive())?;
 
     let sub_count = files.len() - 1; // index exclu
     tracing::info!(
@@ -1190,8 +1451,48 @@ async fn cmd_db(command: DbCommand) -> Result<()> {
         DbCommand::ReindexSearch => db_reindex_search(&conn).await,
         DbCommand::VacuumFullChunks => db_vacuum_full_chunks(&conn).await,
         DbCommand::GcMcp => db_gc_mcp(&conn).await,
+        DbCommand::Reconcile => {
+            let repo = lj_store::repository::DecisionRepository::new(&conn);
+            pipeline::reconcile_pending(&repo).await
+        }
         DbCommand::Prewarm => db_prewarm(&conn).await,
+        DbCommand::PurgeOrphanTombstones { apply } => {
+            db_purge_orphan_tombstones(&conn, apply).await
+        }
     }
+}
+
+/// Purge les tombstones orphelins (retraits totaux vidés sans provenance active,
+/// cf. `DecisionRepository::purge_orphan_tombstones`). Ceinture-bretelle :
+/// dry-run par défaut (compte + échantillon, aucune suppression) ; `--apply`
+/// requis pour supprimer ; re-vérifie l'absence d'orphelin résiduel après coup.
+async fn db_purge_orphan_tombstones(conn: &lj_store::db::Connection, apply: bool) -> Result<()> {
+    let repo = lj_store::repository::DecisionRepository::new(conn);
+    let n = repo.count_orphan_tombstones().await?;
+    println!("Tombstones orphelins (retirés, vidés, sans provenance active) : {n}");
+    let sample = repo.sample_orphan_tombstones(5).await?;
+    if !sample.is_empty() {
+        println!("Échantillon source_uid : {}", sample.join(", "));
+    }
+    if n == 0 {
+        println!("Rien à purger.");
+        return Ok(());
+    }
+    if !apply {
+        println!("Dry-run : aucune suppression. Relancer avec --apply pour purger.");
+        return Ok(());
+    }
+    let deleted = repo.purge_orphan_tombstones().await?;
+    println!("{deleted} décisions supprimées (cascade provenances/chunks/full_text/citations).");
+    // Ceinture-bretelle : il ne doit plus rester aucun orphelin.
+    let remaining = repo.count_orphan_tombstones().await?;
+    if remaining != 0 {
+        return Err(anyhow!(
+            "purge incomplète : {remaining} orphelins résiduels"
+        ));
+    }
+    println!("Vérifié : 0 orphelin résiduel.");
+    Ok(())
 }
 
 /// `ANALYZE` des tables hot (port de `cmd_db_analyze`).
@@ -1201,8 +1502,8 @@ async fn db_analyze(conn: &lj_store::db::Connection) -> Result<()> {
     conn.execute("ANALYZE decisions", &[]).await?;
     conn.execute("ANALYZE decision_chunks", &[]).await?;
     conn.execute("ANALYZE decision_full_text", &[]).await?;
-    // Citations à plat + catalogue (ADR 0145) : stats fraîches pour l'overlay,
-    // les backlinks (`idx_lc_ref`) et les requêtes de service `/loi/`.
+    // Blobs citations + catalogue (ADR 0145/0247) : stats fraîches pour
+    // l'overlay, les backlinks (GIN `lj_cit_terms`) et le service `/texte/`.
     conn.execute("ANALYZE legal_citation", &[]).await?;
     conn.execute("ANALYZE legal_text", &[]).await?;
     conn.execute("ANALYZE legal_article", &[]).await?;

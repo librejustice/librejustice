@@ -43,7 +43,7 @@ pub const PAGE_SIZE: usize = 1000;
 /// qu'en xhtml dans certains cas, 404 silencieux en text/html).
 pub const ACCEPT_CASCADE: [&str; 2] = ["application/xhtml+xml", "text/html"];
 
-const CJUE_SOURCE_DIR: &str = "cjue";
+use crate::state_paths::CJUE_DIR;
 
 /// Liste blanche des prédicats CDM riches retenus en `source_fields` (audit
 /// `cjue.md` §Champs). [`map_predicates`] réduit les URI d'autorité à leur code
@@ -542,7 +542,7 @@ impl CjueManifest {
 
 /// Chemin du manifeste CJUE sous `data_dir` (`<data_dir>/cjue/manifest.json`).
 pub fn manifest_path(data_dir: &Path) -> std::path::PathBuf {
-    data_dir.join(CJUE_SOURCE_DIR).join("manifest.json")
+    data_dir.join(CJUE_DIR).join("manifest.json")
 }
 
 #[cfg(test)]

@@ -186,6 +186,77 @@ impl DecisionRepository<'_> {
         }
         Ok(resolved)
     }
+
+    /// (Ré)écrit les citations de jurisprudence d'un TEXTE du référentiel
+    /// (ADR 0196 §5) : DELETE + COPY au grain `owner_text_uid` (corps + tous
+    /// ses articles d'un coup — l'extraction passe le texte entier). Les
+    /// lignes repartent pendantes ; la résolution se lance en fin de passe
+    /// ([`Self::resolve_pending_text_case_citations`]). Idempotent.
+    pub async fn replace_text_case_citations(
+        &self,
+        owner_text_uid: &str,
+        rows: &[super::types::TextCaseCitationRow],
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM text_case_citation WHERE owner_text_uid = $1",
+                &[&owner_text_uid],
+            )
+            .await?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let sink = self
+            .conn
+            .copy_in(
+                "COPY text_case_citation (owner_text_uid, owner_num_key, owner_date_debut, \
+                 char_start, char_end, target_ref, extract_version) FROM STDIN (FORMAT binary)",
+            )
+            .await?;
+        let writer = BinaryCopyInWriter::new(
+            sink,
+            &[
+                Type::TEXT,
+                Type::TEXT,
+                Type::DATE,
+                Type::INT4,
+                Type::INT4,
+                Type::TEXT,
+                Type::INT2,
+            ],
+        );
+        tokio::pin!(writer);
+        for r in rows {
+            writer
+                .as_mut()
+                .write(&[
+                    &owner_text_uid,
+                    &r.owner_num_key,
+                    &r.owner_date_debut,
+                    &r.char_start,
+                    &r.char_end,
+                    &r.target_ref,
+                    &lj_core::EXTRACT_VERSION,
+                ])
+                .await?;
+        }
+        writer.finish().await?;
+        Ok(())
+    }
+
+    /// Résout les `text_case_citation` pendantes : mêmes familles SQL que
+    /// `case_citation` (colonnes cibles identiques par construction, migration
+    /// 0136) — seul le nom de table change. Pas de pont `decision_links` (les
+    /// textes n'ont pas de chronologie).
+    #[tracing::instrument(name = "db.resolve_pending_text_case_citations", skip(self), fields(db.system = "postgresql"))]
+    pub async fn resolve_pending_text_case_citations(&self) -> Result<u64> {
+        let mut resolved = 0u64;
+        for sql in resolve_case_family_sqls(false) {
+            let sql = sql.replace("case_citation", "text_case_citation");
+            resolved += self.conn.execute(sql.as_str(), &[]).await?;
+        }
+        Ok(resolved)
+    }
 }
 
 /// Pont chronologie → citations (spans pontés métadonnée, v22) : une citation
@@ -282,7 +353,7 @@ fn resolve_case_family_sqls(scoped: bool) -> Vec<String> {
                                     WHEN count(*) FILTER (WHERE c.is_arret) = 1 \
                                          THEN min(c.id) FILTER (WHERE c.is_arret) \
                                   END \
-                           FROM (SELECT d.id, d.juridiction_type, EXISTS ( \
+                           FROM (SELECT d.id, d.jurisdiction_type, EXISTS ( \
                                      SELECT 1 FROM decision_sources s \
                                      WHERE s.decision_id = d.id \
                                        AND s.source_uid LIKE 'cjue/6____' || r.court || 'J%') AS is_arret \
@@ -290,7 +361,7 @@ fn resolve_case_family_sqls(scoped: bool) -> Vec<String> {
                                  WHERE d.deleted_at IS NULL \
                                    AND d.docket_numbers @> ARRAY[r.docket] \
                                  OFFSET 0) c \
-                           WHERE c.juridiction_type = 'CJUE' \
+                           WHERE c.jurisdiction_type = 'CJUE' \
                           ) AS tid \
                    FROM keys r){RESOLVE_TAIL}"
             ),
@@ -320,7 +391,7 @@ const RESOLVE_TAIL: &str = " \
 /// résout chaque clé contre les décisions du type portant le docket.
 ///
 /// Le lookup docket est clôturé (`OFFSET 0`) pour forcer le GIN seul : sans la
-/// clôture, le planner combine en `BitmapAnd` avec l'index `juridiction_type`
+/// clôture, le planner combine en `BitmapAnd` avec l'index `jurisdiction_type`
 /// et scanne des centaines de milliers d'entrées PAR clé (mesuré : 8,5 s par
 /// batch at-write sur la famille CC contre 1 ligne attendue du GIN). Le filtre
 /// juridiction s'applique après, sur les ~1-3 candidats du docket.
@@ -349,16 +420,16 @@ fn resolve_by_jurisdiction_code(prefix: &str) -> String {
     )
 }
 
-fn resolve_unique_by_type(juridiction_type: &str) -> String {
+fn resolve_unique_by_type(jurisdiction_type: &str) -> String {
     format!(
         "), resolved AS ( \
            SELECT r.target_ref, \
                   (SELECT min(x.id) FROM \
-                     (SELECT d.id, d.juridiction_type FROM decisions d \
+                     (SELECT d.id, d.jurisdiction_type FROM decisions d \
                       WHERE d.deleted_at IS NULL \
                         AND d.docket_numbers @> ARRAY[r.docket] \
                       OFFSET 0) x \
-                   WHERE x.juridiction_type = '{juridiction_type}' \
+                   WHERE x.jurisdiction_type = '{jurisdiction_type}' \
                    HAVING count(*) = 1) AS tid \
            FROM keys r){RESOLVE_TAIL}"
     )

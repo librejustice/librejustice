@@ -10,14 +10,23 @@
 use crate::error::Result;
 use flate2::read::GzDecoder;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 use tar::Archive;
 
-/// Ouvre l'archive `.tar.gz` en streaming (décompression gzip à la volée).
-fn open_archive(tar_path: &Path) -> Result<Archive<GzDecoder<File>>> {
-    let file = File::open(tar_path)?;
-    Ok(Archive::new(GzDecoder::new(file)))
+/// Ouvre l'archive en streaming, gzip sniffé au magic (`1f 8b`) : DILA sert
+/// aussi des tar **plats** (`txt/abroge_txt.tar` du fond CIRCULAIRES).
+fn open_archive(tar_path: &Path) -> Result<Archive<Box<dyn Read>>> {
+    let mut file = File::open(tar_path)?;
+    let mut magic = [0u8; 2];
+    let n = file.read(&mut magic)?;
+    file.seek(SeekFrom::Start(0))?;
+    let reader: Box<dyn Read> = if n == 2 && magic == [0x1f, 0x8b] {
+        Box::new(GzDecoder::new(file))
+    } else {
+        Box::new(file)
+    };
+    Ok(Archive::new(reader))
 }
 
 /// Streame TOUS les membres-fichiers (pas les répertoires) d'un `.tar.gz` en

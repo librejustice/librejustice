@@ -7,7 +7,7 @@
 //! main, `last_source` reste `web` même si le MCP la rouvre.
 
 use deadpool_postgres::Pool;
-use lj_dtos::{ActivitySource, DecisionViewItem, JuridictionType};
+use lj_dtos::{ActivitySource, DecisionViewItem, JurisdictionType};
 
 use crate::bookmarks::resolve_decision_pk;
 use crate::error::ApiError;
@@ -15,12 +15,11 @@ use crate::me::ts_to_rfc3339;
 use crate::referential::{referential, Referential};
 use crate::search_history::source_value;
 use crate::state::AppState;
-use crate::titles::decision_title;
 
 /// Désérialise une valeur TEXT de juridiction vers l'enum.
-fn parse_juridiction_type(raw: &str) -> Result<JuridictionType, ApiError> {
+fn parse_jurisdiction_type(raw: &str) -> Result<JurisdictionType, ApiError> {
     serde_json::from_value(serde_json::Value::String(raw.to_string()))
-        .map_err(|e| ApiError::Internal(format!("juridiction_type invalide {raw:?}: {e}")))
+        .map_err(|e| ApiError::Internal(format!("jurisdiction_type invalide {raw:?}: {e}")))
 }
 
 /// Désérialise un TEXT `web`/`mcp` lu en base vers l'enum.
@@ -110,7 +109,7 @@ pub async fn fetch_views(
         .query(
             "SELECT \
                d.public_id, \
-               d.juridiction_type, \
+               d.jurisdiction_type, \
                d.jurisdiction_code, \
                to_char(d.date_lecture, 'YYYY-MM-DD') AS date_lecture, \
                d.docket_numbers, \
@@ -119,7 +118,10 @@ pub async fn fetch_views(
                v.view_count, \
                v.last_source, \
                v.last_viewed_at, \
-               COUNT(*) OVER() AS total \
+               COUNT(*) OVER() AS total, \
+               d.chamber_position, \
+               d.formation_uid, \
+               d.office_uid \
              FROM user_decision_views v \
              JOIN decisions d ON d.id = v.decision_id \
              WHERE v.user_sub = $1 \
@@ -142,20 +144,32 @@ pub async fn fetch_views(
             .as_deref()
             .and_then(|c| refs.jurisdiction(c))
             .map(|j| j.label.clone());
-        // Titre composé depuis les référentiels (ADR 0146 §4), jamais la colonne
-        // `search_title` (formation source brute).
-        let title = decision_title(
-            refs.juridiction_type_label(jur_type_raw)
+        // Titre canonique (ADR 0146 §4 / 0170) : siège recomposé depuis les
+        // axes structurés.
+        let jur_display = crate::titles::decision_jurisdiction(
+            refs.jurisdiction_type_label(jur_type_raw)
                 .unwrap_or(jur_type_raw),
             jurisdiction_name.as_deref(),
-            None,
+        );
+        let seat = crate::titles::decision_seat(
+            &jur_display,
+            row.get::<_, Option<String>>(11).as_deref(),
+            row.get::<_, Option<String>>(12).as_deref(),
+            row.get::<_, Option<String>>(13).as_deref(),
+        );
+        let title = lj_core::titles::decision_title(
+            &jur_display,
+            seat.as_deref(),
             date_lecture.as_deref(),
-            docket_numbers.as_deref(),
+            docket_numbers
+                .as_deref()
+                .and_then(|d| d.first())
+                .map(String::as_str),
         );
         items.push(DecisionViewItem {
             id: row.get(0),
             title,
-            juridiction_type: parse_juridiction_type(jur_type_raw)?,
+            jurisdiction_type: parse_jurisdiction_type(jur_type_raw)?,
             jurisdiction_name,
             date_lecture,
             docket_numbers,

@@ -2,6 +2,7 @@
 
 pub mod active_filters;
 pub mod compact_search;
+pub mod cross_teaser;
 pub mod date_range_picker;
 pub mod facet_widgets;
 pub mod filter_bar;
@@ -17,11 +18,13 @@ pub mod result_skeleton;
 pub mod results_rail;
 pub mod search_submit;
 pub mod sort_select;
+pub mod suggest_box;
 pub mod syntax_hint;
 pub mod text_results;
 
 pub use active_filters::ActiveFilterChips;
 pub use compact_search::CompactSearch;
+pub use cross_teaser::{DecisionsTeaser, TextesTeaser};
 pub use date_range_picker::DateRangePicker;
 pub use filter_bar::DecisionsFilterBar;
 pub use hero_search::HeroSearch;
@@ -34,5 +37,5 @@ pub use result_skeleton::ResultSkeleton;
 pub use results_rail::SearchRail;
 pub use search_submit::SearchSubmit;
 pub use sort_select::SortSelect;
-pub use syntax_hint::SyntaxHint;
+pub use syntax_hint::{HelpCorpus, SyntaxHint};
 pub use text_results::TextesView;

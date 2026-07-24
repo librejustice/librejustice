@@ -41,7 +41,7 @@ fn cedh_judgementdate_to_iso(judgementdate: &str) -> Option<String> {
 /// corps déjà converti HTML→texte au bord (`lj-sources`) ; `columns` est le bloc
 /// `results[].columns` désérialisé ; `itemid` est la PK HUDOC (`001-…`).
 ///
-/// `juridiction_type` = `"CEDH"` (posé explicitement). `ecli` lu verbatim de
+/// `jurisdiction_type` = `"CEDH"` (posé explicitement). `ecli` lu verbatim de
 /// `columns["ecli"]` (arrêts seulement, `None` sinon) — jamais dérivé.
 /// `numero_dossiers` = `columns["appno"]` (`;`-séparé → liste). `date_lecture` =
 /// `columns["kpdate"]` normalisé ISO `YYYY-MM-DD` (repli `judgementdate` `DD/MM/YYYY`),
@@ -91,10 +91,12 @@ pub fn parse_cedh(
         source_uid: format!("cedh/{itemid}"),
         member_name: itemid.to_string(),
         ecli: json_str_nonempty(columns, "ecli").map(str::to_string),
-        juridiction_code: None,
-        juridiction_nom: Some("Cour européenne des droits de l'homme".to_string()),
-        juridiction_type: Some("CEDH".to_string()),
-        juridiction_location: None,
+        jurisdiction_source_code: None,
+        chamber: None,
+        nac: None,
+        jurisdiction_name: Some("Cour européenne des droits de l'homme".to_string()),
+        jurisdiction_type: Some("CEDH".to_string()),
+        jurisdiction_location: None,
         numero_dossier,
         numero_dossiers,
         numero_role: None,
@@ -149,7 +151,7 @@ fn celex_to_case_number(celex: &str) -> String {
 /// texte FR déjà converti (xhtml/html→texte) au bord (`lj-sources`) ;
 /// `predicates` est le bloc de prédicats CDM désérialisé ; `celex` est la PK.
 ///
-/// `juridiction_type` = `"CJUE"` (posé explicitement). `ecli` lu verbatim de
+/// `jurisdiction_type` = `"CJUE"` (posé explicitement). `ecli` lu verbatim de
 /// `predicates["case-law_ecli"]` (100 % présent, `None` si vide) — **jamais
 /// dérivé du CELEX** (l'ECLI dérivé serait faux, audit `cjue.md`). `numero_dossiers`
 /// = numéro d'affaire dérivé du CELEX (`C-560/20`), repli sur le CELEX brut.
@@ -182,10 +184,12 @@ pub fn parse_cjue(
         source_uid: format!("cjue/{celex}"),
         member_name: celex.to_string(),
         ecli: json_str_nonempty(predicates, "case-law_ecli").map(str::to_string),
-        juridiction_code: None,
-        juridiction_nom: Some("Cour de justice de l'Union européenne".to_string()),
-        juridiction_type: Some("CJUE".to_string()),
-        juridiction_location: None,
+        jurisdiction_source_code: None,
+        chamber: None,
+        nac: None,
+        jurisdiction_name: Some("Cour de justice de l'Union européenne".to_string()),
+        jurisdiction_type: Some("CJUE".to_string()),
+        jurisdiction_location: None,
         numero_dossier: Some(case_number),
         numero_dossiers,
         numero_role: None,
@@ -279,9 +283,9 @@ mod tests {
 
         assert_eq!(d.source_uid, "cedh/001-250438");
         assert_eq!(d.member_name, "001-250438");
-        assert_eq!(d.juridiction_type.as_deref(), Some("CEDH"));
+        assert_eq!(d.jurisdiction_type.as_deref(), Some("CEDH"));
         assert_eq!(
-            d.juridiction_nom.as_deref(),
+            d.jurisdiction_name.as_deref(),
             Some("Cour européenne des droits de l'homme")
         );
         // ECLI verbatim, jamais dérivé.
@@ -367,7 +371,7 @@ mod tests {
 
         assert_eq!(d.source_uid, "cjue/62020CJ0560");
         assert_eq!(d.member_name, "62020CJ0560");
-        assert_eq!(d.juridiction_type.as_deref(), Some("CJUE"));
+        assert_eq!(d.jurisdiction_type.as_deref(), Some("CJUE"));
         // ECLI verbatim — surtout PAS dérivé du CELEX (qui donnerait …2020:560).
         assert_eq!(d.ecli.as_deref(), Some("ECLI:EU:C:2024:96"));
         assert_ne!(d.ecli.as_deref(), Some("ECLI:EU:C:2020:560"));

@@ -9,9 +9,10 @@ use regex::Regex;
 
 use lj_dtos::QueryMode;
 
-/// `\b(?:ET|OU|SAUF|AND|OR|NOT)\b|PROCHE\d+|["*]` — détecteur de query booléenne.
-static BOOL_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#"\b(?:ET|OU|SAUF|AND|OR|NOT)\b|PROCHE\d+|[*"]"#).unwrap());
+/// `\b(?:ET|OU|SAUF|AND|OR|NOT)\b|(?:PROCHE|NEAR)\d+|["*]` — détecteur de query booléenne.
+static BOOL_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"\b(?:ET|OU|SAUF|AND|OR|NOT)\b|(?:PROCHE|NEAR)\d+|[*"]"#).unwrap()
+});
 
 // ── Détection de mode / traduction booléenne ─────────────────────────────────
 
@@ -29,7 +30,7 @@ pub(crate) fn is_boolean_query(query: &str) -> bool {
 }
 
 static PROCHE_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#""([^"]*)"PROCHE(\d+)"#).unwrap());
+    LazyLock::new(|| Regex::new(r#""([^"]*)"(?:PROCHE|NEAR)(\d+)"#).unwrap());
 /// Collapse les guillemets doublés `""x""` → `"x"` (parité `re.sub(r'""([^"]*?)""', …)`
 /// côté Python) : deux quotes de chaque côté, pas trois.
 static DOUBLE_QUOTE_RE: LazyLock<Regex> =
@@ -48,11 +49,66 @@ pub(crate) fn translate_boolean(query: &str) -> String {
     enforce_and_precedence(&q)
 }
 
+/// Caractères que la grammaire tantivy interprète hors guillemets : un token nu
+/// qui en porte un (`d'acte`, `acte(s`) fait rejeter la query **entière** par
+/// `paradedb.parse` — l'apostrophe ouvre une phrase single-quote jamais fermée.
+/// Vérifié sur l'index : `' ( ) [ { : ^` cassent tous le parse ; `~` (slop) et
+/// `*` (wildcard) parsent et restent porteurs de sens.
+const TANTIVY_SYNTAX: &[char] = &['\'', '(', ')', '[', ']', '{', '}', ':', '^', '\\'];
+
+/// Token composé uniquement d'étoiles : un wildcard sans préfixe n'est pas une
+/// prefix-query — `+*` fait rejeter la query entière par `paradedb.parse`
+/// (422 mesuré sur « 2 * 3 »). Droppé comme un stopword.
+fn is_bare_star(tok: &str) -> bool {
+    !tok.is_empty() && tok.chars().all(|c| c == '*')
+}
+
+/// Re-sert un token nu porteur de syntaxe tantivy en phrase double-quotée :
+/// l'index la re-tokenise comme le texte source (l'élision `d'acte` se splitte
+/// à l'identique des deux côtés), le match est préservé. Les tokens déjà
+/// quotés et les wildcards passent tels quels.
+fn quote_bare_syntax_token(tok: &str, syntax: &[char]) -> String {
+    if tok.starts_with('"') || tok.contains('*') || !tok.contains(syntax) {
+        tok.to_string()
+    } else {
+        format!("\"{}\"", tok.replace('"', " "))
+    }
+}
+
 /// Force la précédence AND (Tantivy par défaut OR) en préfixant `+`/`-` ;
 /// strippe les stopwords FR qui n'existent pas dans l'index.
 fn enforce_and_precedence(query: &str) -> String {
     if query.contains(" OR ") {
-        return query.to_string();
+        // Chemin OR servi tel quel à tantivy : le grouping `(…)` y est de la
+        // syntaxe voulue — seule l'apostrophe (jamais intentionnelle en
+        // français) est neutralisée.
+        let toks = TOKEN_RE
+            .find_iter(query)
+            .filter(|m| !is_bare_star(m.as_str().trim_start_matches(['+', '-'])))
+            .map(|m| {
+                let tok = m.as_str();
+                match tok.as_bytes().first() {
+                    Some(b'+') | Some(b'-') => {
+                        let (prefix, body) = tok.split_at(1);
+                        format!("{prefix}{}", quote_bare_syntax_token(body, &['\'']))
+                    }
+                    _ => quote_bare_syntax_token(tok, &['\'']),
+                }
+            });
+        // Le drop d'une étoile nue peut rendre un opérateur pendant
+        // (« congés OR » / « OR congés ») — lui aussi un parse error tantivy.
+        let is_op = |t: &str| matches!(t, "AND" | "OR" | "NOT");
+        let mut out: Vec<String> = Vec::new();
+        for t in toks {
+            if is_op(&t) && out.last().is_none_or(|p| is_op(p)) {
+                continue;
+            }
+            out.push(t);
+        }
+        while out.last().is_some_and(|t| is_op(t)) {
+            out.pop();
+        }
+        return out.join(" ");
     }
     let mut out: Vec<String> = Vec::new();
     let mut next_neg = false;
@@ -65,15 +121,23 @@ fn enforce_and_precedence(query: &str) -> String {
             next_neg = true;
             continue;
         }
+        if is_bare_star(tok.trim_start_matches(['+', '-'])) {
+            next_neg = false;
+            continue;
+        }
         if tok.starts_with('+') || tok.starts_with('-') {
-            out.push(tok.to_string());
+            let (prefix, body) = tok.split_at(1);
+            out.push(format!(
+                "{prefix}{}",
+                quote_bare_syntax_token(body, TANTIVY_SYNTAX)
+            ));
         } else if is_stopword(&fold(tok)) {
             next_neg = false;
             continue;
         } else if next_neg {
-            out.push(format!("-{tok}"));
+            out.push(format!("-{}", quote_bare_syntax_token(tok, TANTIVY_SYNTAX)));
         } else {
-            out.push(format!("+{tok}"));
+            out.push(format!("+{}", quote_bare_syntax_token(tok, TANTIVY_SYNTAX)));
         }
         next_neg = false;
     }
@@ -193,7 +257,10 @@ pub(crate) fn phrase_combo_clauses(toks: &[String], spans: &[(usize, usize)]) ->
 /// error) — vérifié sur l'index : `+responsabilite +de` matche (le `+de` vide est
 /// droppé), mais `+de +la` / `""` lèvent l'erreur de parse.
 pub(crate) fn query_lacks_searchable_terms(query: &str) -> bool {
-    !query.contains('*') && tokenize_body(query).iter().all(|t| is_stopword(t))
+    let has_prefix_wildcard = query
+        .split_whitespace()
+        .any(|t| t.contains('*') && !is_bare_star(t.trim_start_matches(['+', '-'])));
+    !has_prefix_wildcard && tokenize_body(query).iter().all(|t| is_stopword(t))
 }
 
 #[cfg(test)]
@@ -213,6 +280,10 @@ mod tests {
             detect_query_mode("travail PROCHE3 dimanche"),
             QueryMode::Lexical
         );
+        assert_eq!(
+            detect_query_mode("travail NEAR3 dimanche"),
+            QueryMode::Lexical
+        );
     }
 
     #[test]
@@ -223,12 +294,55 @@ mod tests {
         assert_eq!(translate_boolean("congés OU payés"), "congés OR payés");
         // SAUF → NOT → préfixe `-`.
         assert_eq!(translate_boolean("congés SAUF maladie"), "+congés -maladie");
+        // NEAR = alias de PROCHE (slop `~N`), sortie identique.
+        assert_eq!(
+            translate_boolean(r#""travail dimanche"NEAR3"#),
+            translate_boolean(r#""travail dimanche"PROCHE3"#)
+        );
     }
 
     #[test]
     fn enforce_and_strips_stopwords() {
         // « de » est un stopword body : retiré, pas de `+de` (parse error PDB).
         assert_eq!(enforce_and_precedence("congés de payés"), "+congés +payés");
+    }
+
+    #[test]
+    fn bare_syntax_tokens_are_quoted() {
+        // Bug prod 15/07/2026 : `+d'acte` fait rejeter la query entière par
+        // `paradedb.parse` (apostrophe = phrase single-quote jamais fermée).
+        // Le token nu porteur de syntaxe est re-servi en phrase double-quotée.
+        assert_eq!(
+            translate_boolean(r#"prise d'acte "produit les effets d'une démission""#),
+            r#"+prise +"d'acte" +"produit les effets d'une démission""#
+        );
+        // Parenthèse / crochet / deux-points nus : même neutralisation.
+        assert_eq!(translate_boolean(r#"acte(s ET nul"#), r#"+"acte(s" +nul"#);
+        // Wildcard préservé, phrase déjà quotée intacte.
+        assert_eq!(
+            translate_boolean(r#"répar* ET "l'astreinte""#),
+            r#"+répar* +"l'astreinte""#
+        );
+        // Chemin OR (servi tel quel) : grouping préservé, apostrophe seule quotée.
+        assert_eq!(
+            translate_boolean("congés OU d'aménagement"),
+            r#"congés OR "d'aménagement""#
+        );
+    }
+
+    #[test]
+    fn bare_star_token_is_dropped() {
+        // Bug prod 19/07/2026 : « 2 * 3 » → `+2 +* +3`, et `+*` (wildcard sans
+        // préfixe) fait rejeter la query entière par `paradedb.parse` (422).
+        assert_eq!(translate_boolean("2 * 3"), "+2 +3");
+        assert_eq!(translate_boolean("faute ** dommage"), "+faute +dommage");
+        assert_eq!(translate_boolean("congés OU *"), "congés");
+        // Le wildcard À préfixe reste porteur de sens.
+        assert_eq!(translate_boolean("répar* ET faute"), "+répar* +faute");
+        // Query réduite aux étoiles : court-circuitée (résultat vide), jamais
+        // servie à tantivy.
+        assert!(query_lacks_searchable_terms("*"));
+        assert!(query_lacks_searchable_terms("* **"));
     }
 
     #[test]

@@ -4,7 +4,11 @@
 //! d'archives ZIP. Aucune logique de parsing métier ici : les bytes/JSON bruts
 //! sont remis aux parsers de `lj-core`.
 
+pub mod adde;
+pub mod ariane;
+pub mod bofip;
 pub mod cedh;
+pub mod circulaires;
 pub mod cjue;
 pub mod cnda;
 pub mod dila;
@@ -17,5 +21,7 @@ pub mod judilibre;
 pub mod legifrance;
 pub mod pdf;
 pub mod piste;
+pub mod registries;
+pub mod state_paths;
 pub mod tar_reader;
 pub mod zip_reader;

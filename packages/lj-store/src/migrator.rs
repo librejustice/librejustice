@@ -621,6 +621,231 @@ pub fn embedded_migrations() -> Vec<Migration> {
             name: "0118_chambres_terres_civi.sql",
             sql: include_str!("../migrations/0118_chambres_terres_civi.sql"),
         },
+        Migration {
+            version: 119,
+            name: "0119_search_title_ecrit_par_ingest.sql",
+            sql: include_str!("../migrations/0119_search_title_ecrit_par_ingest.sql"),
+        },
+        Migration {
+            version: 120,
+            name: "0120_purge_ancien_monde_titres.sql",
+            sql: include_str!("../migrations/0120_purge_ancien_monde_titres.sql"),
+        },
+        Migration {
+            version: 121,
+            name: "0121_juridiction_cassation_maille_cour.sql",
+            sql: include_str!("../migrations/0121_juridiction_cassation_maille_cour.sql"),
+        },
+        Migration {
+            version: 122,
+            name: "0122_legal_link_graphe_liens.sql",
+            sql: include_str!("../migrations/0122_legal_link_graphe_liens.sql"),
+        },
+        Migration {
+            version: 123,
+            name: "0123_legal_toc_edge_arbre_structurel.sql",
+            sql: include_str!("../migrations/0123_legal_toc_edge_arbre_structurel.sql"),
+        },
+        Migration {
+            version: 124,
+            name: "0124_legal_text_upcoming_versions.sql",
+            sql: include_str!("../migrations/0124_legal_text_upcoming_versions.sql"),
+        },
+        Migration {
+            version: 125,
+            name: "0125_entity_referentiel.sql",
+            sql: include_str!("../migrations/0125_entity_referentiel.sql"),
+        },
+        Migration {
+            version: 126,
+            name: "0126_decisions_intervenors.sql",
+            sql: include_str!("../migrations/0126_decisions_intervenors.sql"),
+        },
+        Migration {
+            version: 127,
+            name: "0127_decision_party.sql",
+            sql: include_str!("../migrations/0127_decision_party.sql"),
+        },
+        Migration {
+            version: 128,
+            name: "0128_drop_office_juge_referes.sql",
+            sql: include_str!("../migrations/0128_drop_office_juge_referes.sql"),
+        },
+        Migration {
+            version: 129,
+            name: "0129_juridiction_cnil.sql",
+            sql: include_str!("../migrations/0129_juridiction_cnil.sql"),
+        },
+        Migration {
+            version: 130,
+            name: "0130_decision_party_grain_acteur.sql",
+            sql: include_str!("../migrations/0130_decision_party_grain_acteur.sql"),
+        },
+        Migration {
+            version: 131,
+            name: "0131_decision_party_barreau.sql",
+            sql: include_str!("../migrations/0131_decision_party_barreau.sql"),
+        },
+        Migration {
+            version: 132,
+            name: "0132_entity_contentieux.sql",
+            sql: include_str!("../migrations/0132_entity_contentieux.sql"),
+        },
+        Migration {
+            version: 133,
+            name: "0133_decision_party_role.sql",
+            sql: include_str!("../migrations/0133_decision_party_role.sql"),
+        },
+        Migration {
+            version: 134,
+            name: "0134_entity_surname_key.sql",
+            sql: include_str!("../migrations/0134_entity_surname_key.sql"),
+        },
+        Migration {
+            version: 135,
+            name: "0135_registre_annonce.sql",
+            sql: include_str!("../migrations/0135_registre_annonce.sql"),
+        },
+        Migration {
+            version: 136,
+            name: "0136_document_bodies_text_case_citation.sql",
+            sql: include_str!("../migrations/0136_document_bodies_text_case_citation.sql"),
+        },
+        Migration {
+            version: 137,
+            name: "0137_codes_juridiction_ville.sql",
+            sql: include_str!("../migrations/0137_codes_juridiction_ville.sql"),
+        },
+        Migration {
+            version: 138,
+            name: "0138_referentiel_juridiction_reparations.sql",
+            sql: include_str!("../migrations/0138_referentiel_juridiction_reparations.sql"),
+        },
+        Migration {
+            version: 139,
+            name: "0139_drop_registre_annonce.sql",
+            sql: include_str!("../migrations/0139_drop_registre_annonce.sql"),
+        },
+        Migration {
+            version: 140,
+            name: "0140_pg_trgm.sql",
+            sql: include_str!("../migrations/0140_pg_trgm.sql"),
+        },
+        Migration {
+            version: 141,
+            name: "0141_slugs_sans_uid.sql",
+            sql: include_str!("../migrations/0141_slugs_sans_uid.sql"),
+        },
+        Migration {
+            version: 142,
+            name: "0142_jurisdiction_type_rename.sql",
+            sql: include_str!("../migrations/0142_jurisdiction_type_rename.sql"),
+        },
+        Migration {
+            version: 143,
+            name: "0143_search_history_filters_jurisdiction.sql",
+            sql: include_str!("../migrations/0143_search_history_filters_jurisdiction.sql"),
+        },
+        Migration {
+            version: 144,
+            name: "0144_article_commentaire.sql",
+            sql: include_str!("../migrations/0144_article_commentaire.sql"),
+        },
+        Migration {
+            version: 145,
+            name: "0145_facettes_un_nom_par_axe.sql",
+            sql: include_str!("../migrations/0145_facettes_un_nom_par_axe.sql"),
+        },
+        Migration {
+            version: 146,
+            name: "0146_suggest_index.sql",
+            sql: include_str!("../migrations/0146_suggest_index.sql"),
+        },
+        Migration {
+            version: 147,
+            name: "0147_text_legal_citation.sql",
+            sql: include_str!("../migrations/0147_text_legal_citation.sql"),
+        },
+        Migration {
+            version: 148,
+            name: "0148_purge_fiches_versions_tnc.sql",
+            sql: include_str!("../migrations/0148_purge_fiches_versions_tnc.sql"),
+        },
+        Migration {
+            version: 149,
+            name: "0149_et_suivants_famille.sql",
+            sql: include_str!("../migrations/0149_et_suivants_famille.sql"),
+        },
+        Migration {
+            version: 150,
+            name: "0150_annuaire_registre.sql",
+            sql: include_str!("../migrations/0150_annuaire_registre.sql"),
+        },
+        Migration {
+            version: 151,
+            name: "0151_alphabet_public_suivants.sql",
+            sql: include_str!("../migrations/0151_alphabet_public_suivants.sql"),
+        },
+        Migration {
+            version: 152,
+            name: "0152_mcp_refresh_tokens.sql",
+            sql: include_str!("../migrations/0152_mcp_refresh_tokens.sql"),
+        },
+        Migration {
+            version: 153,
+            name: "0153_annuaire_registre_complet.sql",
+            sql: include_str!("../migrations/0153_annuaire_registre_complet.sql"),
+        },
+        Migration {
+            version: 154,
+            name: "0154_entity_recherche_contentieux_partiel.sql",
+            sql: include_str!("../migrations/0154_entity_recherche_contentieux_partiel.sql"),
+        },
+        Migration {
+            version: 155,
+            name: "0155_entites_mono_table_folded_en_index.sql",
+            sql: include_str!("../migrations/0155_entites_mono_table_folded_en_index.sql"),
+        },
+        Migration {
+            version: 156,
+            name: "0156_mistral_key_status.sql",
+            sql: include_str!("../migrations/0156_mistral_key_status.sql"),
+        },
+        Migration {
+            version: 157,
+            name: "0157_legal_text_role_alias_of.sql",
+            sql: include_str!("../migrations/0157_legal_text_role_alias_of.sql"),
+        },
+        Migration {
+            version: 158,
+            name: "0158_legal_citation_spans_jsonb_par_decision.sql",
+            sql: include_str!("../migrations/0158_legal_citation_spans_jsonb_par_decision.sql"),
+        },
+        Migration {
+            version: 159,
+            name: "0159_legal_article_usage_terms.sql",
+            sql: include_str!("../migrations/0159_legal_article_usage_terms.sql"),
+        },
+        Migration {
+            version: 160,
+            name: "0160_legal_article_usage_table.sql",
+            sql: include_str!("../migrations/0160_legal_article_usage_table.sql"),
+        },
+        Migration {
+            version: 161,
+            name: "0161_drop_legal_text_alias_of.sql",
+            sql: include_str!("../migrations/0161_drop_legal_text_alias_of.sql"),
+        },
+        Migration {
+            version: 162,
+            name: "0162_citing_decision_counts.sql",
+            sql: include_str!("../migrations/0162_citing_decision_counts.sql"),
+        },
+        Migration {
+            version: 163,
+            name: "0163_user_search_history_engine.sql",
+            sql: include_str!("../migrations/0163_user_search_history_engine.sql"),
+        },
     ]
 }
 
@@ -639,6 +864,12 @@ const MIGRATION_LOCK_OBJ: i32 = 0x6D6967; // "mig"
 /// pas lié à la transaction) et reste tenu jusqu'à `pg_advisory_unlock` ou la fin
 /// de session.
 async fn acquire_migration_lock(conn: &Connection) -> Result<()> {
+    // Breadcrumb début/fin : l'attente du verrou est silencieuse et non bornée
+    // (un pair peut le tenir des dizaines de minutes pendant une grosse
+    // migration) — une « prise » sans « obtenu » localise le hang, et
+    // `waited_ms` mesure la contention.
+    tracing::info!("migrations : prise du verrou consultatif");
+    let waited = std::time::Instant::now();
     conn.batch_execute("BEGIN").await?;
     let acquired = async {
         conn.batch_execute("SET LOCAL statement_timeout = 0")
@@ -654,6 +885,10 @@ async fn acquire_migration_lock(conn: &Connection) -> Result<()> {
     match acquired {
         Ok(()) => {
             conn.batch_execute("COMMIT").await?;
+            tracing::info!(
+                waited_ms = waited.elapsed().as_millis() as u64,
+                "migrations : verrou consultatif obtenu"
+            );
             Ok(())
         }
         Err(err) => {

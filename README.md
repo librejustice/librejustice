@@ -1,17 +1,58 @@
 # LibreJustice
 
-Moteur de recherche libre sur les **décisions de justice françaises** — ordre
-administratif (TA/CAA/CE) et ordre judiciaire (Cour de cassation, cours d'appel,
-tribunaux judiciaires, tribunaux de commerce) — adossé à un nœud mono-serveur
-**Postgres + ParadeDB + VectorChord**, exposé via une UI web et un endpoint
-**MCP**.
+**[librejustice.fr](https://librejustice.fr)** — moteur de recherche libre sur
+le droit français et européen, en web, en API et en **MCP** pour les
+assistants IA.
+
+## Ce qu'on y cherche
+
+- **Jurisprudence** : Conseil d'État, Cour de cassation, cours d'appel,
+  tribunaux administratifs et judiciaires, CNDA, Conseil constitutionnel,
+  CEDH, CJUE — filtres par juridiction, date, issue et articles cités.
+- **Textes** : codes et lois **tels qu'en vigueur à n'importe quelle date**
+  (versions consolidées et historique des articles), droit de l'UE, traités
+  et accords bilatéraux, conventions collectives, BOFiP, circulaires, codes
+  étrangers (59 pays).
+- **Annuaire** : avocats, entreprises et juridictions, reliés à leur
+  contentieux.
+
+Corpus mis à jour quotidiennement depuis les sources ouvertes (Judilibre,
+DILA/Légifrance, EUR-Lex…).
+
+## Utiliser LibreJustice depuis un assistant IA
+
+Le serveur MCP public est `https://librejustice.fr/mcp` (OAuth 2.1 avec
+enregistrement dynamique de client : aucune clé à configurer). Cinq outils :
+`search_decisions`, `get_decision`, `search_legal_texts`, `get_legal_text`,
+`list_my_activity`.
+
+Avec Claude Code, le plugin installe le connecteur et les skills d'usage :
+
+```
+/plugin marketplace add librejustice/librejustice
+/plugin install librejustice@librejustice
+```
+
+Les skills seuls (sans le connecteur MCP) s'installent dans n'importe quel
+agent compatible via [skills](https://skills.sh) :
+
+```
+npx skills add librejustice/librejustice
+```
+
+Avec Le Chat, Perplexity ou claude.ai : ajouter un connecteur custom pointant
+sur `https://librejustice.fr/mcp`.
 
 ## Stack
+
+Nœud mono-serveur **Postgres + ParadeDB + VectorChord** (recherche hybride
+BM25 + vecteurs), API et front en Rust.
 
 Workspace Cargo **pur Rust**, scindé en deux racines :
 
 - `packages/` — bibliothèques :
   - `lj-core` — cœur pur : parsing / normalisation / extraction, résumé, refs légales.
+  - `lj-extract` — extraction des champs et citations des décisions.
   - `lj-sources` — I/O sources (Judilibre JSON, ZIP/XML opendata).
   - `lj-store` — accès Postgres (tokio-postgres + deadpool) + migrations.
   - `lj-llm` — backends embedding + cache + quantisation + client Mistral (chat/OCR).

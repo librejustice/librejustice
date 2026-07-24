@@ -1,12 +1,14 @@
-//! Mentions légales. Port de `mentions-legales-page.tsx`. Herite du
-//! title/description racine (pas de `<Title>` propre).
+//! Mentions légales. Port de `mentions-legales-page.tsx`. `<Title>` propre,
+//! hérite de la description racine.
 
 use leptos::prelude::*;
+use leptos_meta::Title;
 use leptos_router::components::A;
 
 #[component]
 pub fn MentionsLegales() -> impl IntoView {
     view! {
+        <Title text="Mentions légales - LibreJustice" />
         <div class="mx-auto flex w-full max-w-2xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <h1 class="font-sans text-3xl text-[var(--color-ink)]">"Mentions légales"</h1>
             <p class="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">

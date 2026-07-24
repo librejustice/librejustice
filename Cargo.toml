@@ -71,6 +71,8 @@ quick-xml = "0.40"
 # Texte / regex / single-pass tokenizer
 regex = "1"
 aho-corasick = "1"
+# Diff de rédactions d'articles (comparateur de versions, ADR 0193).
+similar = { version = "3", features = ["unicode"] }
 html-escape = "0.2"
 # FxHash : hasher non-cryptographique des index de snap citations (lj-extract,
 # lookups de chaînes courtes sur le hot-path — SipHash y pesait ~15 % du profil).
@@ -78,6 +80,10 @@ rustc-hash = "2"
 
 # Parallélisme
 rayon = "1"
+
+# FST (automate minimal, dictionnaire tantivy) : vocabulaire d'autocomplétion
+# (ADR 0216) — build côté lj-ingest, probe préfixe côté lj-api.
+fst = "0.4"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -130,6 +136,7 @@ docx-rs = "0.4"
 pdf-extract = "0.10"
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 flate2 = "1"
+csv = "1"
 # Lecteur d'archives `.tar` (combiné a flate2 pour `.tar.gz` DILA, ADR 0093).
 tar = "0.4"
 
@@ -208,6 +215,26 @@ js-minify = true
 # brotli (-21 %). `wasm-opt -Oz` par-dessus ne grattait plus que ~3 Ko (LLVM a
 # déjà tout fait), d'où pas de `wasm-opt-features` : pas une dépendance pour 0,4 %.
 lib-profile-release = "wasm-release"
+
+# Profil dev du même projet, sans hashing : `cargo leptos watch` + `hash-files`
+# désynchronise les assets (les rebuilds incrémentaux écrivent des noms non
+# hashés sans rafraîchir hash.txt — bug ouvert cargo-leptos #271), ce qui
+# produit CSS vide et fausses erreurs d'hydratation en dev. `mise run dev`
+# sélectionne ce profil ; le build release (deploy) garde `librejustice`.
+[[workspace.metadata.leptos]]
+name = "librejustice-dev"
+bin-package = "lj-server"
+lib-package = "lj-web"
+output-name = "lj-web"
+site-root = "target/site"
+site-pkg-dir = "pkg"
+tailwind-input-file = "packages/lj-web/style/main.css"
+assets-dir = "packages/lj-web/public"
+site-addr = "127.0.0.1:3000"
+reload-port = 3001
+lib-features = ["hydrate"]
+lib-default-features = false
+hash-files = false
 
 # Profil du binaire serveur (lj-server) + ingest/bench. `codegen-units = 16` +
 # `lto = false` : priorité à l'itération sur l'hôte de build, qui builde ET

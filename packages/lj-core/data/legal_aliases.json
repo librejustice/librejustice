@@ -125,5 +125,7 @@
   {"alias": "ai act", "canonical_slug": null, "canonical_text_uid": null, "expansion": "règlement (UE) 2024/1689 du 13 juin 2024 établissant des règles harmonisées concernant l'intelligence artificielle (règlement sur l'intelligence artificielle)", "kind": "usual_name", "catalog_status": "absent"},
   {"alias": "tfue", "canonical_slug": null, "canonical_text_uid": null, "expansion": "traité sur le fonctionnement de l'Union européenne", "kind": "usual_name", "catalog_status": "absent"},
   {"alias": "tue", "canonical_slug": null, "canonical_text_uid": null, "expansion": "traité sur l'Union européenne", "kind": "usual_name", "catalog_status": "absent"},
-  {"alias": "charte des droits fondamentaux de l union europeenne", "canonical_slug": null, "canonical_text_uid": null, "expansion": "charte des droits fondamentaux de l'Union européenne", "kind": "usual_name", "catalog_status": "absent"}
+  {"alias": "charte des droits fondamentaux de l union europeenne", "canonical_slug": null, "canonical_text_uid": null, "expansion": "charte des droits fondamentaux de l'Union européenne", "kind": "usual_name", "catalog_status": "absent"},
+  {"alias": "code civil du senegal", "canonical_slug": "code-de-la-famille-sen", "canonical_text_uid": null, "expansion": "code de la famille sénégalais", "kind": "usual_name", "catalog_status": "present"},
+  {"alias": "code civil senegalais", "canonical_slug": "code-de-la-famille-sen", "canonical_text_uid": null, "expansion": "code de la famille sénégalais", "kind": "usual_name", "catalog_status": "present"}
 ]

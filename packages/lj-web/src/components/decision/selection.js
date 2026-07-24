@@ -24,7 +24,13 @@ export function observeSelection(articleEl, onChange) {
         ? range.commonAncestorContainer
         : range.commonAncestorContainer.parentElement;
 
-    if (!anchor || !articleEl.contains(anchor)) {
+    // Hors de l'article, ou dans une hover card (panneau flotant rendu DANS
+    // l'article, ADR 0168) : pas de toolbar sur ces sélections.
+    if (
+      !anchor ||
+      !articleEl.contains(anchor) ||
+      anchor.closest("[data-hover-card]")
+    ) {
       onChange(null, 0, 0);
       return;
     }

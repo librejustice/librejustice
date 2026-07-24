@@ -28,6 +28,7 @@ jsonwebtoken = { workspace = true }
 getrandom = { workspace = true }
 rmcp = { workspace = true }
 moka = { workspace = true }
+fst = { workspace = true }
 tantivy = { workspace = true }
 chrono = { workspace = true }
 anyhow = { workspace = true }

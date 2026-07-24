@@ -100,9 +100,23 @@ fn cite_view(text: String, targets: Vec<CitationTarget>, at_date: Option<&str>) 
         .collect();
     if linked.len() <= 1 {
         return match linked.pop() {
-            Some((href, label)) => {
-                let kind = preview_kind(&href, at_date);
-                let link = view! {
+            Some((href, label)) => match preview_kind(&href, at_date) {
+                // Carte hover : la tooltip native `title` ferait doublon et
+                // flotterait par-dessus le panneau — on l'omet (la carte porte
+                // déjà le label et bien plus).
+                Some(kind) => {
+                    let link = view! {
+                        <A
+                            href=href
+                            attr:class="underline underline-offset-2 hover:text-[var(--color-accent)]"
+                        >
+                            {text}
+                        </A>
+                    };
+                    view! { <HoverPreview kind=kind>{link}</HoverPreview> }.into_any()
+                }
+                // Sans carte, le `title` reste la seule glose du lien.
+                None => view! {
                     <A
                         href=href
                         attr:title=label
@@ -111,14 +125,8 @@ fn cite_view(text: String, targets: Vec<CitationTarget>, at_date: Option<&str>) 
                         {text}
                     </A>
                 }
-                .into_any();
-                match kind {
-                    Some(kind) => {
-                        view! { <HoverPreview kind=kind>{link}</HoverPreview> }.into_any()
-                    }
-                    None => link,
-                }
-            }
+                .into_any(),
+            },
             None => view! { <span>{text}</span> }.into_any(),
         };
     }
@@ -228,6 +236,28 @@ pub fn CitedParagraph(
     view! { <p>{views}</p> }.into_any()
 }
 
+/// Rend le corps d'un article de norme avec ses renvois cliquables
+/// (ADR 0217) : même composition que [`CitedParagraph`] (offsets codepoints
+/// demi-ouverts sur le texte entier, jamais d'`inner_html`), en un seul bloc
+/// `<div>` — la mise en forme du corps repose sur `whitespace-pre-line`, pas
+/// sur des paragraphes. La date d'un renvoi Chronolégi voyage dans le href
+/// lui-même (l'API date les liens quand la lecture l'est) : pas d'`at_date`
+/// de contexte.
+#[component]
+pub fn CitedBlock(text: String, spans: Vec<CitationSpan>, class: &'static str) -> impl IntoView {
+    if spans.is_empty() {
+        return view! { <div class=class>{text}</div> }.into_any();
+    }
+    let views = split_spans(&text, &spans)
+        .into_iter()
+        .map(|seg| match seg {
+            CiteSeg::Plain(s) => view! { <span>{s}</span> }.into_any(),
+            CiteSeg::Cite { text, targets } => cite_view(text, targets, None),
+        })
+        .collect::<Vec<_>>();
+    view! { <div class=class>{views}</div> }.into_any()
+}
+
 /// Rend un texte avec ses `<mark>` surlignés (mêmes classes que le TSX).
 #[component]
 pub fn Highlighted(#[prop(into)] text: String) -> impl IntoView {
@@ -267,7 +297,7 @@ mod tests {
     fn split_spans_segments_text_cite_text() {
         // "voir article 1240 du code" — « 1240 » aux codepoints 13..17.
         let text = "voir article 1240 du code";
-        let segs = split_spans(text, &[span(13, 17, Some("/loi/code-civil/1240"))]);
+        let segs = split_spans(text, &[span(13, 17, Some("/texte/code-civil/1240"))]);
         assert_eq!(segs.len(), 3);
         match &segs[0] {
             CiteSeg::Plain(s) => assert_eq!(s, "voir article "),
@@ -276,7 +306,7 @@ mod tests {
         match &segs[1] {
             CiteSeg::Cite { text, targets } => {
                 assert_eq!(text, "1240");
-                assert_eq!(targets[0].href.as_deref(), Some("/loi/code-civil/1240"));
+                assert_eq!(targets[0].href.as_deref(), Some("/texte/code-civil/1240"));
             }
             _ => panic!("segment 1 doit être Cite"),
         }
@@ -326,11 +356,11 @@ mod tests {
             end: text.chars().count(),
             targets: vec![
                 CitationTarget {
-                    href: Some("/loi/code-civil/1382".to_string()),
+                    href: Some("/texte/code-civil/1382".to_string()),
                     label: "1382".to_string(),
                 },
                 CitationTarget {
-                    href: Some("/loi/code-civil/1383".to_string()),
+                    href: Some("/texte/code-civil/1383".to_string()),
                     label: "1383".to_string(),
                 },
             ],

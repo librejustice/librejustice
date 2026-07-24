@@ -9,7 +9,7 @@
 //! Le gate est **global et à sens unique** (`Hydrated`, fourni par `App`), pas
 //! par-instance : il ne protège que l'unique hydratation initiale du document.
 //! Après bascule, un (re)montage via nav SPA — p. ex. retour arrière vers
-//! `/recherche` — monte les enfants *directement*, sans re-flasher le squelette
+//! `/decisions` — monte les enfants *directement*, sans re-flasher le squelette
 //! (ces nœuds sont créés frais, jamais réconciliés → rien à éviter). Un gate
 //! par-instance, lui, refaisait le fallback à chaque montage → blink à chaque
 //! entrée sur la route.

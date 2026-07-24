@@ -3,19 +3,24 @@
 
 use lj_dtos::DecisionDetail;
 
-use crate::helpers::{format_iso_date, format_short_decision_jurisdiction};
+use crate::helpers::{
+    format_decision_jurisdiction, format_iso_date, format_short_decision_jurisdiction,
+};
 
 /// Parties de référence d'une décision. Port de `DecisionReferenceParts`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionReferenceParts {
     pub full: String,
+    pub heading: String,
     pub short: String,
     pub filename: String,
 }
 
 /// Construit les références. Port de `buildDecisionReferences` :
-/// - `full` = `detail.title` (titre canonique servi par l'API) ;
-/// - `short`/`filename` = `[juridiction courte, date FR, n° dossier]` joints `, `.
+/// - `full` = `detail.title` (titre canonique servi par l'API, **avec** siège) ;
+/// - `heading` = `[juridiction complète, date FR, n°]` **sans** siège — titre du
+///   topbar (le siège figure déjà dans le bloc métadonnées, ADR 0170) ;
+/// - `short`/`filename` = `[juridiction abrégée, date FR, n° dossier]`.
 pub fn build_decision_references(detail: &DecisionDetail) -> DecisionReferenceParts {
     let date = detail
         .date_lecture
@@ -27,18 +32,25 @@ pub fn build_decision_references(detail: &DecisionDetail) -> DecisionReferencePa
         .and_then(|d| d.first())
         .cloned()
         .unwrap_or_else(|| detail.id.clone());
-    let jurisdiction = format_short_decision_jurisdiction(
-        detail.juridiction_type,
+    let join = |jurisdiction: String| {
+        [Some(jurisdiction), date.clone(), Some(docket.clone())]
+            .into_iter()
+            .flatten()
+            .filter(|p| !p.trim().is_empty())
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    let heading = join(format_decision_jurisdiction(
+        detail.jurisdiction_type,
         detail.jurisdiction_name.as_deref(),
-    );
-    let parts: Vec<String> = [Some(jurisdiction), date, Some(docket)]
-        .into_iter()
-        .flatten()
-        .filter(|p| !p.trim().is_empty())
-        .collect();
-    let short = parts.join(", ");
+    ));
+    let short = join(format_short_decision_jurisdiction(
+        detail.jurisdiction_type,
+        detail.jurisdiction_name.as_deref(),
+    ));
     DecisionReferenceParts {
         full: detail.title.clone(),
+        heading,
         short: short.clone(),
         filename: short,
     }

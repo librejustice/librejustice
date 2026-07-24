@@ -21,7 +21,9 @@ use serde::{Deserialize, Serialize};
 
 pub mod schema;
 
-pub use schema::{Domaine, JuridictionType, JurisdictionLevel, Office, Portee, Solution, Voie};
+pub use schema::{
+    Domain, JurisdictionLevel, JurisdictionType, Office, Procedure, Significance, Solution,
+};
 
 // ── Enums propres à l'API (canal, mode de recherche, tri) ────────────────────
 
@@ -31,6 +33,27 @@ pub use schema::{Domaine, JuridictionType, JurisdictionLevel, Office, Portee, So
 pub enum ActivitySource {
     Web,
     Mcp,
+}
+
+/// Moteur interrogé par une recherche de l'historique (ADR 0251) — axe
+/// orthogonal au canal `ActivitySource` : `decisions` (jurisprudence) ou
+/// `textes` (référentiel de normes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchEngine {
+    Decisions,
+    Textes,
+}
+
+/// Contexte d'un appel de recherche (param transport `context`, pas un
+/// filtre) : `user` = recherche posée par l'utilisateur ; `teaser` = fetch
+/// machine des ponts croisés décisions ↔ textes — jamais enregistré en
+/// historique, marqué sur le span pour l'exclure des comptages d'usage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchContext {
+    User,
+    Teaser,
 }
 
 /// Mode de recherche demandé. `semantic` force le hybride (cf. search.py).
@@ -78,9 +101,12 @@ pub struct HealthResponse {
 pub struct CorpusStatsResponse {
     /// Nombre de décisions actives indexées (non soft-deleted).
     pub decisions_count: i64,
-    /// Nombre de codes/textes navigables (parité catalogue `/codes`).
-    pub codes_count: i64,
-    /// Nombre d'articles de loi en vigueur (somme des articles du catalogue).
+    /// Nombre de textes normatifs du corpus (tout `legal_text`, toutes natures :
+    /// codes, lois, traités, décrets, arrêtés, circulaires… — pas seulement le
+    /// catalogue navigable `/codes`).
+    pub texts_count: i64,
+    /// Nombre d'articles en vigueur du corpus (identités `(text_uid, num_key)`
+    /// distinctes, statut `VIGUEUR`).
     pub articles_count: i64,
 }
 
@@ -91,23 +117,27 @@ pub struct CorpusStatsResponse {
 pub struct SearchRequest {
     pub query: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub juridiction_type: Option<Vec<JuridictionType>>,
+    pub jurisdiction_type: Option<Vec<JurisdictionType>>,
     /// Solutions du dispositif (référentiel `solution:*`, ADR 0146).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<Vec<Solution>>,
-    /// Voies procédurales (référentiel `voie:*`, ADR 0146).
+    /// Voies procédurales (référentiel `procedure:*`, ADR 0146).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voie: Option<Vec<Voie>>,
+    pub procedure: Option<Vec<Procedure>>,
     /// Juges/offices spécialisés (référentiel `office:*`, ADR 0146).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub office: Option<Vec<Office>>,
-    /// Domaines de référence (référentiel `domaine:*`, ADR 0146) — une racine
+    /// Domaines de référence (référentiel `legal_domain:*`, ADR 0146) — une racine
     /// sélectionnée matche elle-même + toutes ses feuilles (expansion API).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub legal_domain: Option<Vec<Domaine>>,
-    /// Codes du référentiel `jurisdiction` (`tj76351`, `ca_paris`, `cass_soc`…).
+    pub legal_domain: Option<Vec<Domain>>,
+    /// Codes du référentiel `jurisdiction` (`tj76351`, `ca_paris`, `cc`…).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_code: Option<Vec<String>>,
+    /// Chambres (catégorie contrôlée `chamber:*`, ADR 0172) — axe uniforme
+    /// tous ordres (suffixes d'uid : `CIVILE`, `SOCIALE`, `ETRANGERS`…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chamber: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_instrument: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -115,10 +145,10 @@ pub struct SearchRequest {
     /// Niveaux de publication (suffixes d'uid `publication:*`, ADR 0146).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub publication: Option<Vec<String>>,
-    /// Portées jurisprudentielles (référentiel `portee:*`, ADR 0167) — groupes
+    /// Portées jurisprudentielles (référentiel `significance:*`, ADR 0167) — groupes
     /// de `publication_codes` au rang le plus fort.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub portee: Option<Vec<Portee>>,
+    pub significance: Option<Vec<Significance>>,
     /// Date ISO `YYYY-MM-DD`. Cap Python : `1678-01-01` ↔ `2262-01-01`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_from: Option<String>,
@@ -183,6 +213,9 @@ pub struct LegalInstrumentFacet {
     pub value: String,
     /// Libellé d'affichage = `legal_text.title` du uid.
     pub label: String,
+    /// Slug URL du texte (`legal_text.slug`) — token lisible côté MCP.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
     pub count: i64,
     #[serde(default)]
     pub articles: Vec<FacetChoice>,
@@ -192,7 +225,7 @@ pub struct LegalInstrumentFacet {
 /// Juridiction (arbre) · Office · Domaine (arbre) · Solution · Publication ·
 /// Date · Textes cités.
 ///
-/// `juridiction` : niveau 1 = racines à valeur **uid complet** (`juridiction:TJ`,
+/// `juridiction` : niveau 1 = racines à valeur **uid complet** (`jurisdiction_type:TJ`,
 /// types 0102) ; niveau 2 = codes `jurisdiction` (`tj76351`, `parent` = uid
 /// racine). Les autres facettes portent le **suffixe** d'uid (`REJET`, `JEX`,
 /// `CIVIL_DROIT_LOCATIF`…).
@@ -200,7 +233,11 @@ pub struct LegalInstrumentFacet {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SearchFacets {
     #[serde(default)]
-    pub juridiction: Vec<FacetChoice>,
+    pub jurisdiction: Vec<FacetChoice>,
+    /// Chambre (catégorie contrôlée `chamber:*`, ADR 0172) — axe uniforme
+    /// tous ordres, remplace le grain-chambre Cassation de la facette juridiction.
+    #[serde(default)]
+    pub chamber: Vec<FacetChoice>,
     #[serde(default)]
     pub office: Vec<FacetChoice>,
     #[serde(default)]
@@ -208,7 +245,7 @@ pub struct SearchFacets {
     #[serde(default)]
     pub solution: Vec<FacetChoice>,
     #[serde(default)]
-    pub portee: Vec<FacetChoice>,
+    pub significance: Vec<FacetChoice>,
     #[serde(default)]
     pub publication: Vec<FacetChoice>,
     #[serde(default)]
@@ -221,10 +258,18 @@ pub struct SearchFacets {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SearchHit {
     pub id: String,
-    pub juridiction_type: JuridictionType,
+    pub jurisdiction_type: JurisdictionType,
+    /// Code de cour précis (`jurisdiction:*`, ex. `tj_paris`) — token du
+    /// filtre `jurisdiction_code`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jurisdiction_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_name: Option<String>,
     pub title_html: String,
+    /// Siège (chambre/formation/office) recomposé, rendu en 2ᵉ ligne discrète
+    /// sous le titre (ADR 0170) — hors du `title_html` qui reste sur une ligne.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seat: Option<String>,
     pub score: f64,
     pub best_chunk: BestChunk,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -235,11 +280,17 @@ pub struct SearchHit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voie: Option<FacetTag>,
+    pub procedure: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub office: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_domain: Option<FacetTag>,
+    /// Spécialisation de chambre (`chamber:*`), tag référentiel résolu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chamber: Option<FacetTag>,
+    /// Catégorie de publication (`publication:*`, de référence-6), tag résolu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<FacetTag>,
     #[serde(default)]
     pub publication_codes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -269,7 +320,7 @@ pub struct SearchResponse {
 pub struct LegalReference {
     pub instrument: String,
     /// Slug du `legal_text` résolu (FK de citation, ADR 0123 §2) — présent quand
-    /// la citation est ancrée au catalogue. Le front bâtit `/loi/{slug}/{numKey}`
+    /// la citation est ancrée au catalogue. Le front bâtit `/texte/{slug}/{numKey}`
     /// directement, sans re-slugifier. `None` ⇒ rendu brut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
@@ -278,7 +329,7 @@ pub struct LegalReference {
 
 /// Un article cité (ADR 0123 §2) : `num` = libellé affiché (brut source) ;
 /// `numKey` = clé canonique résolue (`legal_citation.ref_num_key`) pour le lien
-/// `/loi/{slug}/{numKey}` — vide si l'article n'a pas été ancré au catalogue.
+/// `/texte/{slug}/{numKey}` — vide si l'article n'a pas été ancré au catalogue.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct LegalRefArticle {
@@ -288,7 +339,7 @@ pub struct LegalRefArticle {
 }
 
 /// Cible d'une mention de citation : un article (ou un texte) résolu. `href`
-/// pointe l'article (`/loi/{slug}/{numKey}`) ; `None` ⇒ citation non résolue.
+/// pointe l'article (`/texte/{slug}/{numKey}`) ; `None` ⇒ citation non résolue.
 /// `label` = libellé de la cible (titre/clé canonique).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -334,7 +385,7 @@ pub struct DecisionSection {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecisionSourceXml {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub nom_juridiction: Option<String>,
+    pub nom_jurisdiction_type: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub numero_dossier: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -351,7 +402,7 @@ pub struct DecisionSourceXml {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct DecisionDetail {
     pub id: String,
-    pub juridiction_type: JuridictionType,
+    pub jurisdiction_type: JurisdictionType,
     /// Titre lisible machine/stable « <juridiction>, <date ISO>, <n° rôle> ».
     pub title: String,
     pub paragraphs: Vec<String>,
@@ -364,6 +415,10 @@ pub struct DecisionDetail {
     pub sections: Option<Vec<DecisionSection>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Code de cour précis (`jurisdiction:*`, ex. `tj_paris`) — token du
+    /// filtre `jurisdiction_code`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jurisdiction_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -372,19 +427,31 @@ pub struct DecisionDetail {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voie: Option<FacetTag>,
+    pub procedure: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub office: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_domain: Option<FacetTag>,
+    /// Catégorie de publication (`publication:*`, de référence-6), tag résolu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<FacetTag>,
     #[serde(default)]
     pub publication_codes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_audience: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub docket_numbers: Option<Vec<String>>,
+    /// Siège composé depuis les axes structurés (ADR 0170) : position de
+    /// chambre qualifiée par le type de formation ou l'office — « pôle 5 —
+    /// 3e chambre (formation à trois) ». Jamais une chaîne source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub formation_or_chamber: Option<String>,
+    pub seat: Option<String>,
+    /// Spécialisation de chambre (`chamber:*`) et type de formation
+    /// (`formation:*`), tags référentiels résolus.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chamber: Option<FacetTag>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formation: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_references: Option<Vec<LegalReference>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -407,6 +474,49 @@ pub struct DecisionDetail {
     /// plus récente à la plus ancienne. Vide si la décision n'est pas chaînée.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub chronology: Vec<ChronologyEntry>,
+    /// Commentaires institutionnels (ADR 0204) : analyses officielles dépliées,
+    /// lien vers les conclusions du rapporteur public, documents liés (rapports,
+    /// avis, communiqués Cass). Non cherchables — enrichissement de la fiche,
+    /// rendu en accordéon fermé en fin de page.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commentaires: Vec<Commentaire>,
+}
+
+/// Commentaire institutionnel d'une décision (ADR 0204) : contenu porté
+/// localement déplié sur place (`body`) ou ligne-lien externe (`url`). Trois
+/// formes : `analyse` (body local, AJCE), `conclusions` (existence seule, lien
+/// composé vers ArianeWeb), `note` (document lié — rapports/avis/communiqués
+/// Cass, notes de doctrine — rendu comme lien titré vers l'éditeur).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Commentaire {
+    /// `analyse` | `conclusions` | `note`.
+    pub kind: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// Date ISO du document commenté (date de lecture).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// Libellé du lien (`note`) : type de document Cass, titre de la note…
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    /// Éditeur/source du lien (`Cour de cassation`, `GISTI`…).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publisher: Option<String>,
+    /// Accès : `libre` | `abonnes`. Absent = libre.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub access: Option<String>,
+    /// Rubriques du plan de classement (`code : libellé hiérarchique`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rubriques: Vec<String>,
+    /// Renvois doctrinaux (`(1) Cf. CE, …`).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub renvois: Vec<String>,
+    /// Lien externe — présent = la ligne se rend comme un lien sortant.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub url: Option<String>,
 }
 
 /// Étape de la chronologie d'une affaire (ADR 0169) : une décision de la
@@ -422,6 +532,14 @@ pub struct ChronologyEntry {
     /// Vrai pour la décision affichée (rendue non cliquable).
     #[serde(default)]
     pub current: bool,
+    /// Clé de solution de l'étape (`INFIRMATION`, `CONFIRMATION`, `REJET`…) :
+    /// le sort d'une décision se lit dans la solution de celle qui la révise.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub solution: Option<String>,
+    /// Numéros RG de l'étape — identifient sans ambiguïté quelle décision une
+    /// infirmation/confirmation vise (les titres seuls prêtent à confusion).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub docket_numbers: Option<Vec<String>>,
     /// Nature du lien vers l'étape suivante (la décision attaquée, juste en
     /// dessous) : `APPEL_DE` | `POURVOI_CONTRE` | `RENVOI_APRES_CASSATION`.
     /// Absent quand la paire adjacente n'est pas directement liée (chaîne
@@ -445,6 +563,7 @@ pub fn source_label(code: &str) -> &str {
         "cedh" => "CEDH — HUDOC",
         "cjue" => "CJUE — EUR-Lex",
         "cnda" => "Cour nationale du droit d'asile",
+        "dila-cnil" => "DILA — CNIL (délibérations)",
         other => other,
     }
 }
@@ -480,7 +599,7 @@ pub fn provenance_rows(detail: &DecisionDetail) -> Vec<(&'static str, String)> {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SimilarDecisionHit {
     pub id: String,
-    pub juridiction_type: JuridictionType,
+    pub jurisdiction_type: JurisdictionType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_name: Option<String>,
     pub score: f64,
@@ -492,7 +611,7 @@ pub struct SimilarDecisionHit {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voie: Option<FacetTag>,
+    pub procedure: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub office: Option<FacetTag>,
     #[serde(default)]
@@ -519,7 +638,7 @@ pub struct DecisionPreview {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub voie: Option<FacetTag>,
+    pub procedure: Option<FacetTag>,
     #[serde(default)]
     pub publication_codes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -539,6 +658,10 @@ pub struct LawArticleVersion {
     pub date_debut: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_fin: Option<String>,
+    /// Version future (`date_debut` > aujourd'hui, calculé côté API — l'horloge
+    /// vit côté serveur, ADR 0178) : badge « à venir » sur la frise.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub upcoming: bool,
 }
 
 /// Défaut de `LawArticleResponse::translation` (droit FR LEGI = texte officiel).
@@ -562,7 +685,7 @@ pub struct LawArticleResponse {
     pub code_title: Option<String>,
     pub num: String,
     /// Clé canonique de l'article (`num_key`) pour les liens internes — l'URL
-    /// `/loi/{code}/{numKey}` que le serve résout en lookup exact (ADR 0123 §2).
+    /// `/texte/{code}/{numKey}` que le serve résout en lookup exact (ADR 0123 §2).
     /// `num` reste le libellé affiché.
     pub num_key: String,
     pub etat: String,
@@ -572,10 +695,22 @@ pub struct LawArticleResponse {
     pub source: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub titre_text: Option<String>,
+    /// Fil d'Ariane TOC cliquable : les divisions enclosantes de l'article,
+    /// de la racine à la section directe, `href` = vue-lecture de la section
+    /// (`/texte/{code}/section/{cid}`, ADR 0207). Vide quand la structure n'est
+    /// pas ingérée (texte étranger, JORF) — le front retombe sur `titreText`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub breadcrumb: Vec<LinkedTextRef>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_fin: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texte: Option<String>,
+    /// Renvois cliquables du corps (ADR 0217) : spans codepoints demi-ouverts
+    /// sur `texte` (convention 0143), même forme que les décisions (ADR 0134).
+    /// Hrefs datés quand l'article est servi à date explicite — le renvoi
+    /// navigue dans le même temps que la lecture.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texte_spans: Vec<CitationSpan>,
     /// Corps dans la langue d'origine (ADR 0116), affiché en regard du FR si présent
     /// (couche vérification/vérité ; souvent absent).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -611,16 +746,98 @@ pub struct LawArticleResponse {
     /// normatif. Absent si l'article n'en porte pas.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nota: Option<String>,
+    /// Première version future de l'article (`date_debut` > aujourd'hui, ISO,
+    /// calculé côté API — ADR 0178) : bandeau « sera modifié le … ». La
+    /// sentinelle `2222-02-22` signifie « à une date à déterminer ».
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub upcoming_version_date: Option<String>,
     pub versions: Vec<LawArticleVersion>,
     /// Articles voisins pour la lecture en contexte (ADR 0114) : division
     /// enclosante ou fenêtre, l'article courant marqué `current`. Vide si pas de
     /// contexte exploitable.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub context: Vec<ArticleNeighbor>,
+    /// Corps « dispositions modifiées » d'un article modificatif (ordonnance/loi
+    /// de réforme), dérivé du graphe `legal_link` (bloc `<LIENS>` DILA, ADR 0174) :
+    /// cibles exactes par ID, liens garantis. Non vide ⇒ le front rend cette liste
+    /// au lieu de `texte` (qui reste le résumé brut, illisible). Vide pour un
+    /// article normal.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modifications: Vec<ArticleModification>,
+    /// Textes qui ont modifié/créé/abrogé CET article (liens entrants du graphe,
+    /// ADR 0174) : l'historique « Modifié par », dans l'ordre du fichier source.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub modified_by: Vec<LinkedTextRef>,
+    /// Dispositions que cet article cite (liens sortants CITATION, ADR 0174).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cites: Vec<LinkedTextRef>,
+    /// Dispositions qui citent cet article (liens entrants CITATION, ADR 0174).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cited_by: Vec<LinkedTextRef>,
+    /// Commentaires de norme (ADR 0212) : doctrine ancrée sur cet article ou
+    /// sur le texte entier, même forme que côté décision (ADR 0204). Non
+    /// cherchables — accordéon fermé en fin de page.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub commentaires: Vec<Commentaire>,
+    /// Travaux parlementaires (ADR 0215, zéro ingest) : une ligne par **loi**
+    /// modificatrice de l'article, `href` composé
+    /// `https://www.legifrance.gouv.fr/jorf/id/{JORFTEXT}` (bloc « Travaux
+    /// préparatoires » et dossiers législatifs servis par Légifrance).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub travaux_parlementaires: Vec<LinkedTextRef>,
+}
+
+/// Opération d'un segment du comparateur de versions (ADR 0193).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LawCompareOp {
+    Equal,
+    Insert,
+    Delete,
+}
+
+/// Tronçon contigu du diff entre deux rédactions (ADR 0193). Le texte d'un côté
+/// se reconstruit en concaténant `equal`+`delete` (ancien) ou `equal`+`insert`
+/// (nouveau) ; les sauts de ligne restent dans `text`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LawCompareSegment {
+    pub op: LawCompareOp,
+    pub text: String,
+}
+
+/// Réponse du comparateur de versions d'un article (ADR 0193) : identité,
+/// les deux versions comparées (métadonnées de frise), le diff en segments,
+/// et la timeline complète pour les sélecteurs.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LawCompareResponse {
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_title: Option<String>,
+    pub num: String,
+    pub num_key: String,
+    pub from: LawArticleVersion,
+    pub to: LawArticleVersion,
+    pub segments: Vec<LawCompareSegment>,
+    pub versions: Vec<LawArticleVersion>,
+}
+
+/// Une référence de texte/article liée par le graphe `legal_link` (ADR 0174) :
+/// libellé verbatim DILA (« LOI n°2018-287 du 20 avril 2018 - art. 16 »), lien
+/// interne quand la cible est en base, date de signature du texte si connue.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LinkedTextRef {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
 }
 
 /// Article voisin pour le contexte de lecture (ADR 0114) : numéro + état, sans
-/// corps (clic = navigation `/loi/{code}/{numKey}`). `current` = l'article de la
+/// corps (clic = navigation `/texte/{code}/{numKey}`). `current` = l'article de la
 /// page. `numKey` = clé canonique pour le lien (ADR 0123 §2) ; `num` = affichage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -629,6 +846,41 @@ pub struct ArticleNeighbor {
     pub num_key: String,
     pub etat: String,
     pub current: bool,
+}
+
+/// Une cible d'une disposition d'article modificatif (graphe `legal_link`,
+/// ADR 0174) : un article (numéro linkable, `href` garanti quand la cible est
+/// en base), une division de code (`section`, non linkable — ancres en
+/// Phase B), ou un texte entier (`texte`, lié à son sommaire).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ModificationItem {
+    /// `article` (numéro dans `label`), `section` (titre de division) ou
+    /// `texte` (libellé complet).
+    pub kind: String,
+    /// Numéro d'article (« 1302 », « L611-7 »), titre de section, ou libellé.
+    pub label: String,
+    /// Lien interne (`/texte/{code}/{numKey}` pour un article résolu,
+    /// `/texte/{code}` pour un texte) ; absent si la cible n'est pas en base.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+}
+
+/// Un bloc du corps « dispositions modifiées » d'un article modificatif (graphe
+/// `legal_link`, ADR 0174). Une action portant sur un texte cible, avec ses
+/// dispositions. Rendu en liste par le front — remplace le rendu brut illisible
+/// du résumé de liens (aligné sur  / de référence).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ArticleModification {
+    /// `modifie` / `cree` / `abroge`.
+    pub action: String,
+    /// Nom affichable du code cible (« Code civil »).
+    pub code: String,
+    /// Lien interne vers le sommaire du code cible (`/texte/{code}`) quand résolu.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_href: Option<String>,
+    pub items: Vec<ModificationItem>,
 }
 
 /// Sommaire d'un code LEGI (ADR 0092). `code` = `code_court` (slug).
@@ -642,21 +894,63 @@ pub struct LawCodeSummary {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub derniere_modification: Option<String>,
     pub article_count: i64,
+    /// Dates programmées de versions futures du texte (`VERSIONS_A_VENIR`
+    /// DILA, ADR 0178), ISO, triées — bandeau « sera modifié le … ». La
+    /// sentinelle `2222-02-22` signifie « à une date à déterminer ».
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub upcoming_versions: Vec<String>,
+    /// Corps monolithique d'un texte sans articles (circulaires…, ADR 0196).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    /// État de diffusion du texte (`VIGUEUR`/`ABROGE`, ADR 0196).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    /// NOR (familles qui en portent : circulaires, actes JO).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nor: Option<String>,
+    /// Date de signature ISO (`date_texte`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date_texte: Option<String>,
+    /// Libellé de portée quand le texte relève de la doctrine administrative
+    /// (ADR 0196) ; absent pour les normes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<String>,
 }
 
 /// Décision citant un article LEGI (ADR 0092), via `legal_citation` (ADR 0145).
+/// `portee` = portée jurisprudentielle (groupes de `publication_codes`,
+/// ADR 0167) — ordre de la liste et badge « Portée majeure/importante ».
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CitingDecisionHit {
     pub id: String,
     pub title: String,
-    pub juridiction_type: JuridictionType,
+    pub jurisdiction_type: JurisdictionType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_lecture: Option<String>,
+    pub significance: Significance,
+    /// Résumé de la décision (première phrase affichée en carte, comme les
+    /// décisions similaires). Absent tant que le cron résumé n'est pas passé.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+}
+
+/// Article « souvent cité avec » l'article de la page (plan graphe Phase D) :
+/// co-citation dans `legal_citation` sur un échantillon de décisions citantes,
+/// boilerplate procédural exclu. `numKey` = numéro affichable et clé de lien ;
+/// `count` = décisions de l'échantillon citant les deux articles.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CoCitedArticle {
+    pub num_key: String,
+    pub text_title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
+    pub count: i64,
 }
 
 /// Un résultat de recherche d'article (ADR 0114, `/recherche-textes`). `code` =
-/// slug du texte parent (lien `/loi/{code}/{numKey}`) ; `codeTitle` = titre
+/// slug du texte parent (lien `/texte/{code}/{numKey}`) ; `codeTitle` = titre
 /// lisible du code ; `titrePath` = fil d'Ariane ; `snippet` = extrait surligné du
 /// corps. `numKey` = clé canonique pour le lien (ADR 0123 §2), `num` = affichage.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -686,12 +980,19 @@ pub struct ArticleSearchResponse {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ArticleSearchFacets {
+    /// Textes porteurs de hits : `value` = slug (`/texte/{slug}`), token du filtre `code`.
+    #[serde(default)]
+    pub code: Vec<FacetChoice>,
     pub jurisdiction: Vec<FacetChoice>,
     pub nature: Vec<FacetChoice>,
     pub source: Vec<FacetChoice>,
+    /// Sur-facette « portée » (ADR 0196) : `norme` | `doctrine_administrative`,
+    /// agrégée côté API depuis les buckets `nature` (mapping code, pas de colonne).
+    #[serde(default)]
+    pub scope: Vec<FacetChoice>,
 }
 
-/// Entrée du catalogue des codes (`/api/codes`). `code` = slug (lien `/loi/{code}`).
+/// Entrée du catalogue des codes (`/api/codes`). `code` = slug (lien `/texte/{code}`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodeCatalogueEntry {
@@ -702,11 +1003,24 @@ pub struct CodeCatalogueEntry {
     pub article_count: i64,
 }
 
-/// Réponse de `/api/codes` : liste des codes du corpus.
+impl CodeCatalogueEntry {
+    /// Familles de TÊTE du catalogue `/codes` (rendues SSR) : codes et
+    /// constitutions. La longue traîne (lois, ordonnances, règlements UE —
+    /// ~6 500 entrées) se charge à la demande (`scope=head` côté API) : la
+    /// rendre dans le document initial pesait 6,2 Mo de DOM.
+    pub fn is_head(&self) -> bool {
+        let n = self.nature.to_ascii_uppercase();
+        n.starts_with("CODE") || n == "ETAT_CIVIL" || n == "CONSTITUTION" || n == "LOI_CONSTIT"
+    }
+}
+
+/// Réponse de `/api/codes` : liste des codes du corpus. `total` = nombre
+/// d'entrées toutes natures — supérieur à `entries.len()` sur `scope=head`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodeCatalogueResponse {
     pub entries: Vec<CodeCatalogueEntry>,
+    pub total: u64,
 }
 
 /// Entrée de la table des matières d'un code. `numKey` = clé canonique, `num` =
@@ -721,11 +1035,98 @@ pub struct TocEntry {
     pub status: String,
 }
 
-/// Réponse de `/api/loi/{code}/sommaire` : table des matières d'un code.
+/// Nœud du sommaire arborescent réel d'un texte (ADR 0207), aplati en ordre
+/// de lecture — le front reconstruit l'imbrication par `depth` (1 = premier
+/// niveau). `kind` = `section` (avec `cid`, l'ancre stable `#{cid}` et la clé
+/// de la vue-lecture `/texte/{code}/section/{cid}`) ou `article` (avec `numKey`,
+/// le lien `/texte/{code}/{numKey}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TocNode {
+    pub kind: String,
+    pub depth: i32,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_key: Option<String>,
+    pub etat: String,
+}
+
+/// Taille maximale (en articles) d'une vue-lecture servie/matérialisée en
+/// place (ADR 0214) : seuil de la vue-lecture intégrale des textes courts
+/// côté API (`reading` du sommaire) et borne d'éligibilité d'une division à
+/// l'accordéon de lecture côté front. Une seule règle, récursive — le texte
+/// entier n'est que la division racine.
+pub const INLINE_READING_MAX: usize = 150;
+
+/// Réponse de `/api/texte/{code}/sommaire` : table des matières d'un code.
+/// `tree` = l'arbre structurel réel daté (ADR 0207) quand le texte en a un ;
+/// il prime sur `entries` (sommaire à plat par `titlePath`, servi seulement
+/// quand `tree` est vide — textes sans structure ingérée). `reading` = vue-
+/// lecture intégrale (corps joints) servie à la place des `entries` pour les
+/// textes courts — un BOFiP de 22 § ou un décret se lit sur sa page, pas en
+/// chips ; `tree` reste servi pour le rail « Plan du texte ».
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct CodeTocResponse {
     pub entries: Vec<TocEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tree: Vec<TocNode>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub reading: Vec<LawSectionItem>,
+}
+
+/// Item de la vue-lecture d'une section (ADR 0207) : sous-arbre en ordre de
+/// lecture. `kind` = `section` (intertitre, `cid` pour l'ancre) ou `article`
+/// (corps `texte`/`nota` joints ; `numKey` → lien vers la page article).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LawSectionItem {
+    pub kind: String,
+    pub depth: i32,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cid: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub num_key: Option<String>,
+    pub etat: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub texte: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nota: Option<String>,
+}
+
+/// Référence d'une division du texte : fil d'Ariane et navigation bloc
+/// précédent / suivant de la vue-lecture.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LawSectionRef {
+    pub cid: String,
+    pub label: String,
+}
+
+/// Réponse de `/api/texte/{code}/section/{cid}` : vue-lecture d'une section
+/// (ADR 0207) — les articles de la division rendus à la suite, intertitres
+/// des sous-sections inclus. `code` = slug du texte, `title` = titre de la
+/// section (porté par l'arête parente). `ancestors` = divisions englobantes
+/// (de la racine au parent) ; `prev`/`next` = bloc précédent / suivant en
+/// ordre de lecture (hors sous-arbre de la section).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct LawSectionResponse {
+    pub code: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub code_title: Option<String>,
+    pub cid: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ancestors: Vec<LawSectionRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prev: Option<LawSectionRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next: Option<LawSectionRef>,
+    pub items: Vec<LawSectionItem>,
 }
 
 // ── Compte utilisateur ──────────────────────────────────────────────────────
@@ -767,7 +1168,7 @@ pub struct ActivityTrackingUpdate {
 pub struct BookmarkItem {
     pub id: String,
     pub title: String,
-    pub juridiction_type: JuridictionType,
+    pub jurisdiction_type: JurisdictionType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -799,6 +1200,9 @@ pub struct SearchHistoryEntry {
     /// `dict[str, Any]` côté Python : payload de filtres opaque.
     pub filters: serde_json::Value,
     pub source: ActivitySource,
+    /// Moteur interrogé (ADR 0251) : route le relancement de l'entrée
+    /// (`/decisions?q=` vs `/textes?q=`).
+    pub engine: SearchEngine,
     pub created_at: String,
 }
 
@@ -816,7 +1220,7 @@ pub struct SearchHistoryResponse {
 pub struct DecisionViewItem {
     pub id: String,
     pub title: String,
-    pub juridiction_type: JuridictionType,
+    pub jurisdiction_type: JurisdictionType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -840,127 +1244,355 @@ pub struct DecisionViewsResponse {
     pub total: i64,
 }
 
-// ── Filtrage articles de procédure (denylist, ADR 0058) ──────────────────────
-
-/// Port fidèle de `schemas._PROCEDURAL_ARTICLE_DENYLIST` : articles de pure
-/// procédure masqués de la sortie API (facet + détail) sans toucher la base.
-/// `(instrument normalisé, &[articles])`.
-mod procedural {
-    pub(super) const DENYLIST: &[(&str, &[&str])] = &[
-        (
-            "Code de procédure civile",
-            &[
-                // frais et dépens
-                "695", "696", "699", "700", // forme et prononcé du jugement
-                "450", "451", "452", "453", "454", "455", "456", "457", "458", "459", "462", "463",
-                "464", "465", "466", // mise en état
-                "446-1", "446-2", "446-3", "446-4", "763", "776", "778", "779", "780", "785",
-                "786", "787", "788", "789", "790", "799", "800", "802", "803", "804", "805", "807",
-                "808", // exécution provisoire
-                "514", "515", "517", "521", "524",
-                // circuits d'appel et forme des conclusions
-                "905", "905-1", "905-2", "906", "907", "908", "909", "910", "911", "912", "913",
-                "914", "916", "954", "960", "961", "963", // désistement / péremption
-                "384", "385", "394", "395", "399", // procédure de cassation
-                "627", "974", "978", "979", "982", "1009-1", "1010", "1011", "1014", "1015",
-                "1018", "1022", "1026", "1031-1",
-            ],
-        ),
-        (
-            "Code de procédure pénale",
-            &[
-                // forme de l'arrêt et procédure du pourvoi
-                "567", "567-1-1", "568", "584", "585", "585-1", "586", "590", "591", "592", "593",
-                "594", "598", "609-1", "612", "614", "615", "802",
-            ],
-        ),
-        (
-            "Code de l'organisation judiciaire",
-            &[
-                "L. 131-6",
-                "L. 131-6-1",
-                "L. 431-3",
-                "L. 431-4",
-                "L. 432-1",
-                "R. 431-5",
-            ],
-        ),
-        // frais (équivalent administratif de l'article 700 CPC)
-        ("Code de justice administrative", &["L. 761-1"]),
-        // aide juridictionnelle
-        ("Loi du 10 juillet 1991", &["20", "24", "37", "75"]),
+/// Préfixe un titre d'instrument par « du / de la / de l' » selon son premier
+/// mot : élision devant voyelle (« de l'Ordonnance n° 2016-131 », « de
+/// l'Arrêté »), féminins usuels des natures de textes (« de la Loi »), sinon
+/// « du » (« du Code civil », « du Décret »). Sert les titres « Article N … »
+/// (page /texte, hover card, MCP).
+pub fn instrument_with_de(name: &str) -> String {
+    let first = name.split_whitespace().next().unwrap_or("").to_lowercase();
+    if first
+        .chars()
+        .next()
+        .is_some_and(|c| "aeiouéèêë".contains(c))
+    {
+        return format!("de l'{name}");
+    }
+    const FEMININS: &[&str] = &[
+        "loi",
+        "constitution",
+        "convention",
+        "décision",
+        "directive",
+        "déclaration",
+        "délibération",
+        "charte",
     ];
-}
-
-/// `true` si `(instrument, article)` est de la pure procédure (denylist).
-///
-/// Port de `schemas.is_procedural_article`. `article = None` ⇒ `false` (un
-/// instrument cité sans article précis n'est jamais procédural). Sert à masquer
-/// ces articles de la sortie API sans toucher la base. ADR 0058.
-pub fn is_procedural_article(instrument: &str, article: Option<&str>) -> bool {
-    let Some(article) = article else {
-        return false;
-    };
-    procedural::DENYLIST
-        .iter()
-        .find(|(name, _)| *name == instrument)
-        .is_some_and(|(_, arts)| arts.contains(&article))
-}
-
-/// Construit les `LegalReference` exposées, articles procéduraux masqués.
-///
-/// Port de `schemas.parse_legal_refs`. Un instrument réduit à de la pure
-/// procédure après filtrage disparaît ; un instrument cité sans article précis
-/// est conservé tel quel. `raw` est la valeur JSON brute des `legal_references`
-/// extraites. Renvoie `None` si vide / tout filtré.
-pub fn parse_legal_refs(raw: &serde_json::Value) -> Option<Vec<LegalReference>> {
-    let items = raw.as_array()?;
-    if items.is_empty() {
-        return None;
-    }
-    let mut refs: Vec<LegalReference> = Vec::new();
-    for r in items {
-        let instrument = r.get("instrument")?.as_str()?.to_string();
-        let original: Vec<String> = r
-            .get("articles")
-            .and_then(|a| a.as_array())
-            .map(|arr| {
-                arr.iter()
-                    .filter_map(|v| v.as_str().map(str::to_string))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let articles: Vec<LegalRefArticle> = original
-            .iter()
-            .filter(|a| !is_procedural_article(&instrument, Some(a.as_str())))
-            // Chemin brut (JSON stocké, sans résolution catalogue) : pas de `numKey`
-            // résolu → vide, pas de lien (la résolution vit côté `lj-api`, ADR 0123 §2).
-            .map(|a| LegalRefArticle {
-                num: a.clone(),
-                num_key: String::new(),
-            })
-            .collect();
-        // Un instrument cité AVEC articles, tous procéduraux ⇒ on le retire.
-        if !original.is_empty() && articles.is_empty() {
-            continue;
-        }
-        refs.push(LegalReference {
-            instrument,
-            slug: None,
-            articles,
-        });
-    }
-    if refs.is_empty() {
-        None
+    if FEMININS.contains(&first.as_str()) {
+        format!("de la {name}")
     } else {
-        Some(refs)
+        format!("du {name}")
     }
+}
+
+/// Libellé FR d'un état DILA de version d'article (`legal_article.status`,
+/// ADR 0178) : les états différés (`*_DIFF` = décidé mais pas encore effectif)
+/// et les cas de chronique (mort-né, disjoint) deviennent lisibles à l'écran.
+/// État inconnu ou vide → l'appelant retombe sur la valeur brute. Vit ici
+/// (pas dans `lj-core`) : consommé par le front WASM comme par l'API — même
+/// statut que [`instrument_with_de`].
+pub fn article_status_label(status: &str) -> Option<&'static str> {
+    Some(match status {
+        "VIGUEUR" => "En vigueur",
+        "MODIFIE" => "Modifié",
+        "ABROGE" => "Abrogé",
+        "PERIME" => "Périmé",
+        "REMPLACE" => "Remplacé",
+        "TRANSFERE" => "Transféré",
+        "DEPLACE" => "Déplacé",
+        "ANNULE" => "Annulé",
+        "DENONCE" => "Dénoncé",
+        "DISJOINT" => "Disjoint",
+        "VIGUEUR_DIFF" => "Entrée en vigueur différée",
+        "ABROGE_DIFF" => "Abrogation différée",
+        "MODIFIE_MORT_NE" => "Modifié, jamais entré en vigueur",
+        _ => return None,
+    })
+}
+
+// ── Fiche entité (ADR 0189) ──────────────────────────────────────────────────
+
+/// Fiche d'une entité du référentiel (`entity`, ADR 0179) : identité registre
+/// + agrégats contentieux dérivés de `decision_party`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityPageResponse {
+    pub header: EntityHeaderDto,
+    pub stats: EntityStatsDto,
+}
+
+/// Identité registre. `namespace` = préfixe de l'uid (`siren` | `rna` |
+/// `cnb` | `oacc`) ; `nature` = `physique` | `morale_privee` |
+/// `morale_publique`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityHeaderDto {
+    /// Uid complet namespacé (ex. `siren:552043002`).
+    pub uid: String,
+    pub namespace: String,
+    pub nature: String,
+    /// Dénomination courante.
+    pub denomination: String,
+    pub sigle: Option<String>,
+    pub forme: Option<String>,
+    pub active: bool,
+    /// Dénominations datées (la courante incluse), ordre chronologique.
+    pub denominations: Vec<EntityDenominationDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityDenominationDto {
+    pub denomination: String,
+    /// Dates ISO `YYYY-MM-DD` ; `None` = borne ouverte.
+    pub date_debut: Option<String>,
+    pub date_fin: Option<String>,
+}
+
+/// Agrégats contentieux d'une entité sur le corpus de décisions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityStatsDto {
+    pub decision_count: i64,
+    pub as_applicant: i64,
+    pub as_defendant: i64,
+    /// Décisions par année, ordre chronologique.
+    pub by_year: Vec<EntityYearCountDto>,
+    /// Décisions par juridiction, décroissant.
+    pub by_jurisdiction: Vec<EntityKeyCountDto>,
+    /// Conseils (avocats/cabinets) observés aux côtés de l'entité, décroissant.
+    pub top_counsel: Vec<EntityCounselDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityYearCountDto {
+    pub year: i32,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityKeyCountDto {
+    /// Clé machine (ex. code juridiction).
+    pub key: String,
+    /// Libellé d'affichage.
+    pub label: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityCounselDto {
+    /// Uid registre du conseil si lui-même résolu (`cnb:…`, `oacc:…`).
+    pub uid: Option<String>,
+    pub name: String,
+    pub count: i64,
+}
+
+/// Décisions citant l'entité, paginées, plus récentes d'abord. Les items
+/// portent les mêmes hits que la recherche (rendu unifié `ResultCard`,
+/// précédent : jurisprudence des pages article) plus le rôle de l'entité.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityDecisionsResponse {
+    pub total: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub items: Vec<EntityDecisionHitDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityDecisionHitDto {
+    pub hit: SearchHit,
+    /// Côté de l'entité dans cette décision (`applicant` | `defendant`).
+    pub side: Option<String>,
+    /// Qualité de l'entité (`party` | `law_firm` | `counsel_name`).
+    pub quality: String,
+}
+
+// ── Autocomplétion (ADR 0216) ─────────────────────────────────────────────────
+
+/// Suggestions d'autocomplétion (`GET /suggest`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct SuggestResponse {
+    /// Nombre de mots de fin de query que chaque suggestion remplace (contexte
+    /// re-suggéré inclus — le mot en cours de frappe compte pour un).
+    pub matched_tokens: u32,
+    pub suggestions: Vec<String>,
+}
+
+// ── Annuaire des entités (ADR 0192) ──────────────────────────────────────────
+
+/// Résultat de recherche d'entités (annuaire — registre complet, ADR 0239).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntitySearchResponse {
+    pub items: Vec<EntityDirectoryItemDto>,
+}
+
+/// Listing annuaire paginé d'une catégorie — registre complet, trié par
+/// contentieux décroissant (ADR 0239).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityDirectoryResponse {
+    /// Lignes paginables du filtre courant (registre entier de la catégorie,
+    /// ou sous-ensemble barreau).
+    pub total: i64,
+    /// Dont entités avec ≥ 1 décision liée (même filtre).
+    pub contentieux: i64,
+    pub page: i64,
+    pub page_size: i64,
+    pub items: Vec<EntityDirectoryItemDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityDirectoryItemDto {
+    /// Uid complet namespacé (ex. `siren:552043002`) → fiche `/entite/{ns}/{id}`.
+    pub uid: String,
+    pub namespace: String,
+    pub denomination: String,
+    pub nature: String,
+    pub forme: Option<String>,
+    pub active: bool,
+    /// Slug barreau (avocats `cnb:` uniquement, extrait de l'uid).
+    pub barreau: Option<String>,
+    /// Nombre de décisions liées (source du tri).
+    pub decision_count: i64,
+}
+
+/// Compteurs d'une catégorie de l'annuaire : total du registre chargé et
+/// entités avec au moins une décision liée (ADR 0233).
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnnuaireCategorieStatsDto {
+    pub registre: i64,
+    pub contentieux: i64,
+}
+
+/// Compteurs de l'annuaire par catégorie (page d'accueil annuaire).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AnnuaireStatsResponse {
+    pub entreprises: AnnuaireCategorieStatsDto,
+    pub personnes_publiques: AnnuaireCategorieStatsDto,
+    pub associations: AnnuaireCategorieStatsDto,
+    pub avocats: AnnuaireCategorieStatsDto,
+    pub cabinets: AnnuaireCategorieStatsDto,
+}
+
+/// Encart « Parties » d'une décision : acteurs extraits, liés au registre
+/// quand résolus.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecisionPartiesResponse {
+    pub parties: Vec<DecisionPartyDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct DecisionPartyDto {
+    pub quality: String,
+    pub side: Option<String>,
+    /// Verbatim extrait de la décision.
+    pub value: String,
+    pub nature: Option<String>,
+    /// Slug officiel CNB du barreau (counsel uniquement).
+    pub barreau: Option<String>,
+    /// Uid registre si résolu → fiche `/entite/{ns}/{id}`.
+    pub entity_uid: Option<String>,
+}
+
+// ── Fiche entité — volet registre servi par APIs externes (ADR 0199) ─────────
+
+/// Volet registre d'une fiche entité, servi à l'affichage par les APIs
+/// publiques (recherche-entreprises, BODACC/JOAFE Opendatasoft) — aucun stock
+/// local. Chaque section absente (API indisponible, entité hors périmètre)
+/// est simplement `None`/vide : le rendu dégrade sans erreur.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityRegistreResponse {
+    /// Identité enrichie + dirigeants + finances (entreprises `siren:` seulement).
+    pub entreprise: Option<RegistreEntrepriseDto>,
+    /// Annonces officielles, plus récentes d'abord (BODACC pour `siren:`,
+    /// JOAFE pour `rna:`).
+    pub annonces: Vec<RegistreAnnonceDto>,
+    /// Nombre total d'annonces au registre (la liste est tronquée).
+    pub annonces_total: i64,
+    /// Liens sortants (annuaire-entreprises, documents INPI…).
+    pub liens: Vec<RegistreLienDto>,
+}
+
+/// Identité registre d'une entreprise (recherche-entreprises.api.gouv.fr —
+/// données SIRENE + RNE).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistreEntrepriseDto {
+    pub siege_adresse: Option<String>,
+    /// Code NAF/APE de l'activité principale (ex. `62.01Z`).
+    pub activite_naf: Option<String>,
+    pub date_creation: Option<String>,
+    /// Libellé de la tranche d'effectif salarié (ex. « 20 à 49 salariés »).
+    pub effectif: Option<String>,
+    pub dirigeants: Vec<RegistreDirigeantDto>,
+    /// Années comptables publiées, plus récente d'abord.
+    pub finances: Vec<RegistreFinanceDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistreDirigeantDto {
+    /// Nom affichable (personne physique « Prénom NOM », morale : dénomination).
+    pub nom: String,
+    pub qualite: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistreFinanceDto {
+    pub annee: String,
+    pub chiffre_affaires: Option<i64>,
+    pub resultat_net: Option<i64>,
+}
+
+/// Une annonce officielle (BODACC ou JOAFE).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistreAnnonceDto {
+    /// Date de parution ISO.
+    pub date: Option<String>,
+    /// Famille lisible (« Dépôts des comptes », « Création »…).
+    pub famille: String,
+    /// PDF officiel hébergé par la DILA (JOAFE uniquement) — lien direct,
+    /// jamais proxifié.
+    pub url_pdf: Option<String>,
+}
+
+/// Lien sortant vers la source officielle.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct RegistreLienDto {
+    pub label: String,
+    pub url: String,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn instrument_with_de_contracte_selon_le_premier_mot() {
+        // Spec utilisateur : « Article 2 du Ordonnance » est fautif.
+        assert_eq!(
+            instrument_with_de("Ordonnance n° 2016-131 du 10 février 2016"),
+            "de l'Ordonnance n° 2016-131 du 10 février 2016"
+        );
+        assert_eq!(instrument_with_de("Code civil"), "du Code civil");
+        assert_eq!(
+            instrument_with_de("Loi n° 2018-287 du 20 avril 2018"),
+            "de la Loi n° 2018-287 du 20 avril 2018"
+        );
+        assert_eq!(instrument_with_de("Décret n° 94-46"), "du Décret n° 94-46");
+        assert_eq!(
+            instrument_with_de("Arrêté du 12 mai"),
+            "de l'Arrêté du 12 mai"
+        );
+        assert_eq!(instrument_with_de("Constitution"), "de la Constitution");
+    }
 
     #[test]
     fn search_mode_camel_and_lowercase_roundtrip() {
@@ -992,19 +1624,19 @@ mod tests {
         assert_eq!(req.limit, 20);
         assert_eq!(req.offset, 0);
         assert!(!req.ai_mode);
-        assert!(req.juridiction_type.is_none());
+        assert!(req.jurisdiction_type.is_none());
 
         // Les clés JSON sont en camelCase (= to_camel côté Pydantic).
         let body = json!({
             "query": "x",
-            "juridictionType": ["CA", "TJ"],
+            "jurisdictionType": ["CA", "TJ"],
             "dateFrom": "2020-01-01",
             "aiMode": true
         });
         let req: SearchRequest = serde_json::from_value(body).unwrap();
         assert_eq!(
-            req.juridiction_type,
-            Some(vec![JuridictionType::Ca, JuridictionType::Tj])
+            req.jurisdiction_type,
+            Some(vec![JurisdictionType::Ca, JurisdictionType::Tj])
         );
         assert_eq!(req.date_from.as_deref(), Some("2020-01-01"));
         assert!(req.ai_mode);
@@ -1021,9 +1653,11 @@ mod tests {
     fn search_hit_serializes_camel_case() {
         let hit = SearchHit {
             id: "ce-1".into(),
-            juridiction_type: JuridictionType::Ce,
+            jurisdiction_type: JurisdictionType::Ce,
+            jurisdiction_code: Some("ce".into()),
             jurisdiction_name: Some("Conseil d'État".into()),
             title_html: "<b>x</b>".into(),
+            seat: None,
             score: 1.5,
             best_chunk: BestChunk {
                 chunk_index: 0,
@@ -1035,15 +1669,17 @@ mod tests {
                 key: "REJET".into(),
                 label: "Rejet".into(),
             }),
-            voie: None,
+            procedure: None,
             office: None,
             legal_domain: None,
+            chamber: None,
+            publication: None,
             publication_codes: vec!["B".into()],
             chars: Some(4200),
             summary: None,
         };
         let v = serde_json::to_value(&hit).unwrap();
-        assert_eq!(v["juridictionType"], "CE");
+        assert_eq!(v["jurisdictionType"], "CE");
         assert_eq!(v["titleHtml"], "<b>x</b>");
         assert_eq!(v["bestChunk"]["chunkIndex"], 0);
         // Tags référentiels : paire clé + libellé résolue par l'API (ADR 0146).
@@ -1051,7 +1687,7 @@ mod tests {
         assert_eq!(v["solution"]["label"], "Rejet");
         // None ⇒ champ omis (skip_serializing_if).
         assert!(v.get("summary").is_none());
-        assert!(v.get("voie").is_none());
+        assert!(v.get("procedure").is_none());
     }
 
     #[test]
@@ -1064,16 +1700,18 @@ mod tests {
             value: "tj76351".into(),
             label: "Le Havre".into(),
             count: 2,
-            parent: Some("juridiction:TJ".into()),
+            parent: Some("jurisdiction_type:TJ".into()),
         };
         let v = serde_json::to_value(&child).unwrap();
-        assert_eq!(v["parent"], "juridiction:TJ");
+        assert_eq!(v["parent"], "jurisdiction_type:TJ");
         assert!(serde_json::to_value(&flat).unwrap().get("parent").is_none());
     }
 
     #[test]
     fn legi_article_response_serializes_camel_case() {
         let art = LawArticleResponse {
+            upcoming_version_date: None,
+            breadcrumb: Vec::new(),
             legiarti: "LEGIARTI000006832947".into(),
             legitext: "LEGITEXT000006070721".into(),
             code: "code-civil".into(),
@@ -1086,6 +1724,7 @@ mod tests {
             titre_text: Some("Livre Ier > Titre III".into()),
             date_fin: None,
             texte: Some("Le contrat…".into()),
+            texte_spans: vec![],
             texte_original: None,
             lang_original: None,
             translation: "officiel".into(),
@@ -1098,12 +1737,19 @@ mod tests {
             source_upstream_url: None,
             nota: Some("Conformément à la loi n° 2019-222…".into()),
             versions: vec![LawArticleVersion {
+                upcoming: false,
                 legiarti: "LEGIARTI000006832947".into(),
                 etat: "MODIFIE".into(),
                 date_debut: "1804-03-15".into(),
                 date_fin: Some("1992-05-14".into()),
             }],
             context: Vec::new(),
+            modifications: Vec::new(),
+            modified_by: Vec::new(),
+            cites: Vec::new(),
+            cited_by: Vec::new(),
+            commentaires: Vec::new(),
+            travaux_parlementaires: Vec::new(),
         };
         let v = serde_json::to_value(&art).unwrap();
         assert_eq!(v["legiarti"], "LEGIARTI000006832947");
@@ -1125,80 +1771,14 @@ mod tests {
         let hit = CitingDecisionHit {
             id: "cass-1".into(),
             title: "Cour de cassation, 2024-01-10, 22-12.345".into(),
-            juridiction_type: JuridictionType::Cc,
+            jurisdiction_type: JurisdictionType::Cc,
             date_lecture: Some("2024-01-10".into()),
+            significance: Significance::Majeure,
+            summary: None,
         };
         let v = serde_json::to_value(&hit).unwrap();
-        assert_eq!(v["juridictionType"], "CC");
+        assert_eq!(v["jurisdictionType"], "CC");
         assert_eq!(v["dateLecture"], "2024-01-10");
-    }
-
-    #[test]
-    fn procedural_denylist_matches_spec() {
-        // CPC 700 (frais) + 905 (circuit d'appel) sont procéduraux.
-        assert!(is_procedural_article(
-            "Code de procédure civile",
-            Some("700")
-        ));
-        assert!(is_procedural_article(
-            "Code de procédure civile",
-            Some("905-1")
-        ));
-        // Principes directeurs (CPC 16) NON inclus dans la denylist.
-        assert!(!is_procedural_article(
-            "Code de procédure civile",
-            Some("16")
-        ));
-        // Article inconnu d'un code non répertorié.
-        assert!(!is_procedural_article("Code civil", Some("1240")));
-        // article=None ⇒ jamais procédural.
-        assert!(!is_procedural_article("Code de procédure civile", None));
-        // L. 761-1 CJA (frais administratif).
-        assert!(is_procedural_article(
-            "Code de justice administrative",
-            Some("L. 761-1")
-        ));
-    }
-
-    #[test]
-    fn parse_legal_refs_filters_procedural() {
-        // Instrument réduit à de la pure procédure après filtrage ⇒ disparaît.
-        let raw = json!([
-            {"instrument": "Code de procédure civile", "articles": ["700"]},
-            {"instrument": "Code civil", "articles": ["1240", "1241"]},
-            {"instrument": "Code de l'environnement", "articles": []}
-        ]);
-        let refs = parse_legal_refs(&raw).unwrap();
-        // CPC (que 700) retiré ; Code civil conservé ; instrument sans article conservé.
-        assert_eq!(refs.len(), 2);
-        assert_eq!(refs[0].instrument, "Code civil");
-        let nums: Vec<&str> = refs[0].articles.iter().map(|a| a.num.as_str()).collect();
-        assert_eq!(nums, vec!["1240", "1241"]);
-        // Chemin brut : `numKey` non résolu (vide), `slug` absent.
-        assert!(refs[0].articles.iter().all(|a| a.num_key.is_empty()));
-        assert!(refs[0].slug.is_none());
-        assert_eq!(refs[1].instrument, "Code de l'environnement");
-        assert!(refs[1].articles.is_empty());
-    }
-
-    #[test]
-    fn parse_legal_refs_mixed_articles_keeps_substantive() {
-        // CPC avec un article de fond + un procédural ⇒ conservé, procédural retiré.
-        let raw = json!([
-            {"instrument": "Code de procédure civile", "articles": ["9", "700"]}
-        ]);
-        let refs = parse_legal_refs(&raw).unwrap();
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].articles.len(), 1);
-        assert_eq!(refs[0].articles[0].num, "9");
-    }
-
-    #[test]
-    fn parse_legal_refs_empty_is_none() {
-        assert!(parse_legal_refs(&json!([])).is_none());
-        assert!(parse_legal_refs(&json!(null)).is_none());
-        // Tout filtré ⇒ None.
-        let raw = json!([{"instrument": "Code de procédure civile", "articles": ["700", "696"]}]);
-        assert!(parse_legal_refs(&raw).is_none());
+        assert_eq!(v["significance"], "MAJEURE");
     }
 }

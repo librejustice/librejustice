@@ -162,73 +162,6 @@ impl DecisionRepository<'_> {
         Ok(())
     }
 
-    /// Portage batché (keyset par `decisions.id`) des provenances existantes vers
-    /// `decision_sources` (ADR 0098 §7 passe 1). Une ligne par `decisions` au-delà
-    /// de `after_id`, dans l'ordre d'id, plafonné à `batch`. Idempotent : crée la
-    /// provenance et **y porte le `source_fields`** de la décision mono-source ;
-    /// `ON CONFLICT (source_uid) DO UPDATE` ne complète qu'un `source_fields` resté
-    /// NULL (rejouable, n'écrase pas un existant). `source` dérivé du préfixe
-    /// `source_uid` (`source_from_source_uid`) ; `source_rank` est une colonne
-    /// **générée** depuis `source` (ADR 0113), jamais écrite ici. `payload_format`
-    /// repris de `decision_full_text` (source de vérité du format dans cette version
-    /// staged), repli sur le format du préfixe. Renvoie `(rows_touched, last_id)` où
-    /// `last_id` est l'id max du lot lu (curseur de reprise), `None` quand le lot est
-    /// vide (épuisement).
-    #[tracing::instrument(name = "db.backfill_decision_sources_batch", skip(self), fields(db.system = "postgresql"))]
-    pub async fn backfill_decision_sources_batch(
-        &self,
-        after_id: i64,
-        batch: i64,
-    ) -> Result<Option<(u64, i64)>> {
-        let row = self
-            .conn
-            .query_one(
-                "
-                WITH lot AS (
-                    SELECT d.id, d.source_uid, d.content_checksum, d.source_fields,
-                           ft.payload_format AS ft_format
-                    FROM decisions d
-                    LEFT JOIN decision_full_text ft ON ft.decision_id = d.id
-                    WHERE d.id > $1
-                    ORDER BY d.id
-                    LIMIT $2
-                ),
-                ins AS (
-                    INSERT INTO decision_sources
-                        (decision_id, source, source_uid, content_checksum,
-                         payload_format, source_fields)
-                    SELECT
-                        l.id,
-                        CASE WHEN l.source_uid LIKE 'judilibre/%' THEN 'judilibre' ELSE 'opendata' END,
-                        l.source_uid,
-                        l.content_checksum,
-                        COALESCE(
-                            l.ft_format,
-                            CASE WHEN l.source_uid LIKE 'judilibre/%' THEN 'json' ELSE 'xml' END
-                        ),
-                        l.source_fields
-                    FROM lot l
-                    -- Portage idempotent (ADR 0098 §7 passe 1) : crée la provenance et
-                    -- y porte le `source_fields` de la décision mono-source. Rejoué,
-                    -- complète un `source_fields` resté NULL sans écraser un existant.
-                    ON CONFLICT (source_uid) DO UPDATE SET
-                        source_fields = COALESCE(decision_sources.source_fields, EXCLUDED.source_fields)
-                    RETURNING 1
-                )
-                SELECT
-                    (SELECT count(*) FROM ins)  AS inserted,
-                    (SELECT max(id) FROM lot)   AS last_id
-                ",
-                &[&after_id, &batch],
-            )
-            .await?;
-        let inserted = row.get::<_, i64>(0) as u64;
-        match row.get::<_, Option<i64>>(1) {
-            Some(last_id) => Ok(Some((inserted, last_id))),
-            None => Ok(None),
-        }
-    }
-
     /// Backfill batché (keyset par `decisions.id`) de la colonne `decisions.ecli`
     /// depuis `decision_sources.source_fields->>'ecli'` de la provenance
     /// autoritaire (ADR 0093/0098) : Judilibre porte l'ECLI dans son payload mais
@@ -616,6 +549,56 @@ impl DecisionRepository<'_> {
         Ok(())
     }
 
+    /// Prédicat d'un tombstone **orphelin** (retrait total, purgeable) : décision
+    /// retirée (`deleted_at`), vidée (`full_text IS NULL` — garde ceinture : on ne
+    /// supprime jamais une ligne qui porte encore du texte), et **sans aucune
+    /// provenance active**. Une provenance active la ressusciterait via
+    /// [`reconcile`](Self::reconcile) (autorité rang max → texte re-servi) : ces
+    /// tombstones multi-provenance sont donc **exclus**. Partagé par le comptage,
+    /// l'échantillon et le DELETE pour garantir exactement la même cible.
+    const ORPHAN_TOMBSTONE_WHERE: &'static str = "d.deleted_at IS NOT NULL \
+         AND d.full_text IS NULL \
+         AND NOT EXISTS ( \
+           SELECT 1 FROM decision_sources s \
+           WHERE s.decision_id = d.id AND s.deleted_at IS NULL)";
+
+    /// Compte les tombstones orphelins (cf. [`Self::ORPHAN_TOMBSTONE_WHERE`]).
+    pub async fn count_orphan_tombstones(&self) -> Result<i64> {
+        let sql = format!(
+            "SELECT count(*) FROM decisions d WHERE {}",
+            Self::ORPHAN_TOMBSTONE_WHERE
+        );
+        Ok(self.conn.query_one(&sql, &[]).await?.get(0))
+    }
+
+    /// Échantillon de `source_uid` d'orphelins (contrôle avant purge).
+    pub async fn sample_orphan_tombstones(&self, limit: i64) -> Result<Vec<String>> {
+        let sql = format!(
+            "SELECT (SELECT source_uid FROM decision_sources \
+                     WHERE decision_id = d.id LIMIT 1) \
+             FROM decisions d WHERE {} LIMIT $1",
+            Self::ORPHAN_TOMBSTONE_WHERE
+        );
+        let rows = self.conn.query(&sql, &[&limit]).await?;
+        Ok(rows
+            .iter()
+            .filter_map(|r| r.get::<_, Option<String>>(0))
+            .collect())
+    }
+
+    /// Hard-delete des tombstones orphelins (cascade FK : provenances, chunks,
+    /// `decision_full_text`, citations). Renvoie le nombre supprimé. La clause
+    /// re-vérifie l'absence de provenance active **au moment du DELETE**
+    /// (atomique, race-safe : une réactivation concurrente sort la ligne de la
+    /// cible). Ne ressuscite jamais rien — c'est un retrait, pas une bascule.
+    pub async fn purge_orphan_tombstones(&self) -> Result<u64> {
+        let sql = format!(
+            "DELETE FROM decisions d WHERE {}",
+            Self::ORPHAN_TOMBSTONE_WHERE
+        );
+        Ok(self.conn.execute(&sql, &[]).await?)
+    }
+
     /// Détache un groupe de provenances faussement fusionnées du canonique vers une
     /// **nouvelle** décision (#29 / ADR 0100 §5) — l'inverse d'une fusion.
     /// Sous la transaction de l'appelant : (1) INSERT d'une ligne `decisions`
@@ -630,7 +613,7 @@ impl DecisionRepository<'_> {
         &self,
         canonical_id: i64,
         group_source_uids: &[String],
-        juridiction_type: &str,
+        jurisdiction_type: &str,
         public_id: &str,
         canonical_ref: &str,
     ) -> Result<i64> {
@@ -639,10 +622,10 @@ impl DecisionRepository<'_> {
         let new_id: i64 = self
             .conn
             .query_one(
-                "INSERT INTO decisions (juridiction_type, public_id, updated_at, \
+                "INSERT INTO decisions (jurisdiction_type, public_id, updated_at, \
                    canonical_ref) \
                  VALUES ($1, $2, $3, $4) RETURNING id",
-                &[&juridiction_type, &public_id, &now(), &canonical_ref],
+                &[&jurisdiction_type, &public_id, &now(), &canonical_ref],
             )
             .await?
             .get(0);
@@ -858,7 +841,7 @@ impl DecisionRepository<'_> {
     /// cache mensuel est indexé par `decision_date`), la re-matérialisation DILA
     /// passe par un **streaming des tarballs** (non indexés par décision) → on n'a
     /// pas besoin du `source_fields` ; on renvoie directement `canonical_ref` et
-    /// `juridiction_type` **de la décision** (identiques au perdant, fusionnés sur
+    /// `jurisdiction_type` **de la décision** (identiques au perdant, fusionnés sur
     /// la clé) pour amorcer le squelette de `create_split_decision` (la ré-ingestion
     /// du membre tar écrase ensuite ces champs). Tombstonés exclus (RGPD).
     pub async fn fetch_same_source_dila_jade_losers(
@@ -878,7 +861,7 @@ impl DecisionRepository<'_> {
                        WHERE deleted_at IS NULL AND source = 'dila-jade' \
                        GROUP BY decision_id HAVING count(*) >= 2) \
                  ) \
-                 SELECT r.decision_id, r.source_uid, d.canonical_ref, d.juridiction_type \
+                 SELECT r.decision_id, r.source_uid, d.canonical_ref, d.jurisdiction_type \
                  FROM ranked r JOIN decisions d ON d.id = r.decision_id \
                  WHERE r.rn > 1 ORDER BY r.decision_id",
                 &[],
@@ -894,6 +877,182 @@ impl DecisionRepository<'_> {
                     r.get::<_, Option<String>>(3),
                 )
             })
+            .collect())
+    }
+
+    /// Index de rattachement ArianeWeb (ADR 0204) : une entrée par
+    /// (n° de dossier, date de lecture ISO) des décisions CE actives —
+    /// `docket_numbers` dénesté. Chargé une fois par run `sync-ariane`, la
+    /// jointure se fait en mémoire (192 k lignes CE, l'ECLI brut ne joint pas).
+    #[tracing::instrument(name = "db.ce_docket_date_index", skip(self), fields(db.system = "postgresql"))]
+    pub async fn ce_docket_date_index(&self) -> Result<Vec<(String, String, i64)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT unnest(docket_numbers), date_lecture::text, id \
+                 FROM decisions \
+                 WHERE jurisdiction_type = 'CE' AND deleted_at IS NULL \
+                   AND date_lecture IS NOT NULL",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| {
+                (
+                    r.get::<_, String>(0),
+                    r.get::<_, String>(1),
+                    r.get::<_, i64>(2),
+                )
+            })
+            .collect())
+    }
+
+    /// Checksums des bundles ArianeWeb déjà en base (`source = 'ariane-web'`),
+    /// par `source_uid` — skip d'idempotence (#7) avant upsert.
+    #[tracing::instrument(name = "db.ariane_checksums", skip(self), fields(db.system = "postgresql"))]
+    pub async fn ariane_checksums(&self) -> Result<HashMap<String, String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid, content_checksum FROM decision_sources \
+                 WHERE source = 'ariane-web' AND deleted_at IS NULL",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1)))
+            .collect())
+    }
+
+    /// Upsert d'un commentaire de norme (ADR 0212). `num_key` NULL = commentaire
+    /// du texte entier. Conflit sur `source_uid` (idempotent, #7).
+    #[tracing::instrument(name = "db.upsert_article_commentaire", skip(self, source_fields), fields(db.system = "postgresql"))]
+    pub async fn upsert_article_commentaire(
+        &self,
+        text_uid: &str,
+        num_key: Option<&str>,
+        source: &str,
+        source_uid: &str,
+        content_checksum: &str,
+        source_fields: &Value,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "
+                INSERT INTO article_commentaire
+                  (text_uid, num_key, source, source_uid, content_checksum, source_fields)
+                VALUES ($1, $2, $3, $4, $5, $6)
+                ON CONFLICT (source_uid) DO UPDATE SET
+                  text_uid = EXCLUDED.text_uid,
+                  num_key = EXCLUDED.num_key,
+                  source = EXCLUDED.source,
+                  content_checksum = EXCLUDED.content_checksum,
+                  source_fields = EXCLUDED.source_fields,
+                  deleted_at = NULL,
+                  ingested_at = NOW()
+                ",
+                &[
+                    &text_uid,
+                    &num_key,
+                    &source,
+                    &source_uid,
+                    &content_checksum,
+                    &source_fields,
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Checksums des commentaires de norme d'une `source`, par `source_uid` —
+    /// skip d'idempotence avant upsert.
+    #[tracing::instrument(name = "db.article_commentaire_checksums", skip(self), fields(db.system = "postgresql"))]
+    pub async fn article_commentaire_checksums(
+        &self,
+        source: &str,
+    ) -> Result<HashMap<String, String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid, content_checksum FROM article_commentaire \
+                 WHERE source = $1 AND deleted_at IS NULL",
+                &[&source],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1)))
+            .collect())
+    }
+
+    /// Commentaires d'un article de norme (page `/texte/{code}/{num_key}`) :
+    /// entrées `commentaires[]` ancrées sur cet article **et** celles du texte
+    /// entier (`num_key IS NULL`, ex. débats de la loi). Agrégées en un tableau
+    /// jsonb, `None` si aucune. La propagation depuis les textes modificateurs
+    /// (`legal_link`) est un enrichissement ultérieur.
+    #[tracing::instrument(name = "db.article_commentaires", skip(self), fields(db.system = "postgresql"))]
+    pub async fn article_commentaires(
+        &self,
+        text_uid: &str,
+        num_key: &str,
+    ) -> Result<Option<Value>> {
+        let row = self
+            .conn
+            .query_opt(
+                "SELECT jsonb_agg(c) FROM article_commentaire ac \
+                 CROSS JOIN LATERAL jsonb_array_elements(ac.source_fields->'commentaires') c \
+                 WHERE ac.text_uid = $1 AND (ac.num_key = $2 OR ac.num_key IS NULL) \
+                   AND ac.deleted_at IS NULL \
+                   AND jsonb_typeof(ac.source_fields->'commentaires') = 'array'",
+                &[&text_uid, &num_key],
+            )
+            .await?;
+        Ok(row.and_then(|r| r.get::<_, Option<Value>>(0)))
+    }
+
+    /// Résout une décision par (n° de dossier, date de lecture) — le n° seul
+    /// n'est pas unique (un `2509454` de TA existe à plusieurs dates). Renvoie
+    /// les `(id, public_id)` correspondants (plusieurs si des dossiers homonymes
+    /// partagent la date, cas rare — le `public_id` distingue alors les
+    /// `source_uid`). Utilisé pour rattacher les commentaires doctrine web.
+    #[tracing::instrument(name = "db.decisions_by_docket_date", skip(self), fields(db.system = "postgresql"))]
+    pub async fn decisions_by_docket_date(
+        &self,
+        docket: &str,
+        date_iso: &str,
+    ) -> Result<Vec<(i64, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT id, public_id FROM decisions \
+                 WHERE $1 = ANY(docket_numbers) AND date_lecture::text = $2 \
+                   AND deleted_at IS NULL",
+                &[&docket, &date_iso],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<_, i64>(0), r.get::<_, String>(1)))
+            .collect())
+    }
+
+    /// Checksums des commentaires ADDE déjà en base (`source = 'adde'`), par
+    /// `source_uid` — skip d'idempotence (#7) avant upsert.
+    #[tracing::instrument(name = "db.adde_checksums", skip(self), fields(db.system = "postgresql"))]
+    pub async fn adde_checksums(&self) -> Result<HashMap<String, String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid, content_checksum FROM decision_sources \
+                 WHERE source = 'adde' AND deleted_at IS NULL",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1)))
             .collect())
     }
 }

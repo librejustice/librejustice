@@ -11,9 +11,9 @@ use crate::helpers::cn;
 
 /// Onglets du hub (routes distinctes, panneau selon le path).
 const TABS: [(&str, &str); 3] = [
-    ("/recherches", "Recherches"),
-    ("/lectures", "Lectures"),
-    ("/signets", "Signets"),
+    ("/activite/recherches", "Recherches"),
+    ("/activite/lectures", "Lectures"),
+    ("/activite/signets", "Signets"),
 ];
 
 /// Shell 2 colonnes (contenu + aside) des pages d'activite.

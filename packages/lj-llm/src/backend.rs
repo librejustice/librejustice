@@ -2,8 +2,7 @@
 
 use crate::error::Result;
 use ndarray::Array2;
-use std::sync::Mutex;
-use std::time::Instant;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// Dimension cible des embeddings.
 pub const EMBEDDING_DIM: usize = 1024;
@@ -31,92 +30,67 @@ pub trait Embedder {
     async fn embed_query(&self, texts: &[String]) -> Result<Array2<f32>>;
 }
 
-/// Poids de l'historique dans l'EMA par observation (port de `_FAILURE_ALPHA`).
-const FAILURE_ALPHA: f64 = 0.70;
-/// Demi-vie temporelle (1 h) — score /2 sans activité (port de `_FAILURE_HALF_LIFE`).
-const FAILURE_HALF_LIFE: f64 = 3600.0;
-/// Seuil au-dessus duquel vLLM est sauté (port de `_FAILURE_SKIP`).
-const FAILURE_SKIP: f64 = 0.80;
-
-/// Failure score ∈ [0, 1] pour un backend (port de `_BackendHealth`, Python).
-///
-/// Deux mécanismes indépendants :
-/// - EMA par observation (alpha fixe) : chaque appel compte autant, peu importe
-///   la cadence. 5 échecs consécutifs → score > 0.8.
-/// - Décroissance temporelle (demi-vie 1 h) : le score fond naturellement quand
-///   le backend n'est plus sollicité ou réussit à nouveau.
-///
-/// Horloge monotone via `std::time::Instant` (équivalent de `time.monotonic`),
-/// décroissance via `f64::exp` — pur Rust, ARM-safe. État mutable derrière un
-/// `Mutex` pour rester `&self` (le trait `Embedder` n'accorde qu'un emprunt
-/// partagé).
-struct BackendHealthState {
-    failure_score: f64,
-    last_update: Instant,
-}
-
-pub struct BackendHealth {
-    inner: Mutex<BackendHealthState>,
-}
-
-impl Default for BackendHealth {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl BackendHealth {
-    pub fn new() -> Self {
-        Self {
-            inner: Mutex::new(BackendHealthState {
-                failure_score: 0.0,
-                last_update: Instant::now(),
-            }),
-        }
-    }
-
-    /// Score courant, décru temporellement depuis le dernier événement (port de
-    /// `current_score` : `exp(-dt/half_life) * failure_score`, sans mutation).
-    pub fn current_score(&self) -> f64 {
-        let st = self.inner.lock().expect("backend health mutex");
-        let dt = st.last_update.elapsed().as_secs_f64();
-        (-dt / FAILURE_HALF_LIFE).exp() * st.failure_score
-    }
-
-    /// Enregistre une observation succès/échec (port de `record`) : décroissance
-    /// temporelle depuis le dernier événement, puis EMA fixe alpha-pondérée.
-    pub fn record(&self, failed: bool) {
-        let mut st = self.inner.lock().expect("backend health mutex");
-        let now = Instant::now();
-        let dt = now.duration_since(st.last_update).as_secs_f64();
-        let time_decayed = (-dt / FAILURE_HALF_LIFE).exp() * st.failure_score;
-        st.failure_score =
-            FAILURE_ALPHA * time_decayed + (1.0 - FAILURE_ALPHA) * if failed { 1.0 } else { 0.0 };
-        st.last_update = now;
-    }
-
-    /// Lecture brute du `failure_score` (pour le log de parité, sans décroissance).
-    fn raw_score(&self) -> f64 {
-        self.inner
-            .lock()
-            .expect("backend health mutex")
-            .failure_score
-    }
-}
-
 /// Dispatcher statique des backends (évite `dyn Embedder`, non object-safe à
 /// cause des `async fn`). Construit par `auto`/`cloudflare`/`openai-http`.
 pub enum AnyEmbedder {
     Dummy(DummyEmbedder),
     Cloudflare(crate::cloudflare::CloudflareWorkersAIEmbedder),
     OpenAiHttp(crate::openai_http::OpenAIHttpEmbedder),
-    /// vLLM (OpenAI-HTTP) en priorité, fallback Cloudflare Workers AI piloté par
-    /// un `BackendHealth` (port de `AutoEmbedder`, Python).
+    /// vLLM (OpenAI-HTTP) primaire, repli Cloudflare Workers AI en disjoncteur
+    /// binaire (ADR 0221). `degraded=false` : vLLM seul. À son premier échec
+    /// (typiquement le `connect_timeout` quand la machine vLLM est éteinte) on
+    /// latch `degraded=true` ; chaque requête lance alors vLLM et Cloudflare en
+    /// même temps, le premier qui répond gagne — un succès vLLM ré-arme
+    /// `degraded=false`.
     Auto {
         vllm: crate::openai_http::OpenAIHttpEmbedder,
         cloudflare: crate::cloudflare::CloudflareWorkersAIEmbedder,
-        health: BackendHealth,
+        degraded: AtomicBool,
     },
+}
+
+/// Disjoncteur du mode `auto` (ADR 0221), factorisé entre passages et requêtes
+/// via deux fabriques de futures (une par backend), ré-appelables (`Fn`).
+///
+/// `degraded=false` : vLLM seul. Son premier échec latch `degraded=true` et sert
+/// la requête courante via Cloudflare (le seul appel qui « attend » vLLM — borné
+/// par son `connect_timeout`). `degraded=true` : vLLM et Cloudflare sont lancés
+/// **en même temps**, `tokio::select!` renvoie le premier qui répond. Cloudflare
+/// répond vite donc l'utilisateur n'attend jamais l'échec de vLLM ; le vLLM
+/// concurrent est la sonde de reprise — dès qu'il regagne la course (vLLM local
+/// bat Cloudflare quand il est up), on ré-arme `degraded=false`.
+async fn auto_embed<VF, CF, VFut, CFut>(
+    degraded: &AtomicBool,
+    vllm: VF,
+    cloudflare: CF,
+) -> Result<Array2<f32>>
+where
+    VF: Fn() -> VFut,
+    CF: Fn() -> CFut,
+    VFut: std::future::Future<Output = Result<Array2<f32>>>,
+    CFut: std::future::Future<Output = Result<Array2<f32>>>,
+{
+    if !degraded.load(Ordering::Relaxed) {
+        match vllm().await {
+            Ok(r) => return Ok(r),
+            Err(exc) => {
+                degraded.store(true, Ordering::Relaxed);
+                tracing::warn!(error = %exc, "vllm KO → dégradé, repli Cloudflare");
+                return cloudflare().await;
+            }
+        }
+    }
+    tokio::select! {
+        r = vllm() => match r {
+            Ok(v) => {
+                degraded.store(false, Ordering::Relaxed);
+                tracing::info!("vllm a regagné la course → mode nominal réarmé");
+                Ok(v)
+            }
+            Err(_) => cloudflare().await,
+        },
+        r = cloudflare() => r,
+    }
 }
 
 impl Embedder for AnyEmbedder {
@@ -128,28 +102,14 @@ impl Embedder for AnyEmbedder {
             AnyEmbedder::Auto {
                 vllm,
                 cloudflare,
-                health,
+                degraded,
             } => {
-                let score = health.current_score();
-                if score < FAILURE_SKIP {
-                    match vllm.embed_passages(texts).await {
-                        Ok(result) => {
-                            health.record(false);
-                            return Ok(result);
-                        }
-                        Err(exc) => {
-                            health.record(true);
-                            tracing::warn!(
-                                failure_score = health.raw_score(),
-                                error = %exc,
-                                "vllm embed échoué → cloudflare"
-                            );
-                        }
-                    }
-                } else {
-                    tracing::debug!(failure_score = score, "vllm sauté");
-                }
-                cloudflare.embed_passages(texts).await
+                auto_embed(
+                    degraded,
+                    || vllm.embed_passages(texts),
+                    || cloudflare.embed_passages(texts),
+                )
+                .await
             }
         }
     }
@@ -161,31 +121,14 @@ impl Embedder for AnyEmbedder {
             AnyEmbedder::Auto {
                 vllm,
                 cloudflare,
-                health,
+                degraded,
             } => {
-                // Port de `AutoEmbedder.embed_query` : sous 0.8 on tente vLLM,
-                // tout échec → record(failed) + log + fallthrough Cloudflare ;
-                // au-dessus de 0.8 on saute vLLM direct vers Cloudflare.
-                let score = health.current_score();
-                if score < FAILURE_SKIP {
-                    match vllm.embed_query(texts).await {
-                        Ok(result) => {
-                            health.record(false);
-                            return Ok(result);
-                        }
-                        Err(exc) => {
-                            health.record(true);
-                            tracing::warn!(
-                                failure_score = health.raw_score(),
-                                error = %exc,
-                                "vllm embed échoué → cloudflare"
-                            );
-                        }
-                    }
-                } else {
-                    tracing::debug!(failure_score = score, "vllm sauté");
-                }
-                cloudflare.embed_query(texts).await
+                auto_embed(
+                    degraded,
+                    || vllm.embed_query(texts),
+                    || cloudflare.embed_query(texts),
+                )
+                .await
             }
         }
     }
@@ -337,48 +280,6 @@ French court decisions that best answer it."
         let a = e.embed_query(&["a".to_string()]).await.unwrap();
         let b = e.embed_query(&["b".to_string()]).await.unwrap();
         assert_ne!(a, b);
-    }
-
-    #[test]
-    fn backend_health_five_failures_skip_vllm() {
-        // Parité du docstring `_BackendHealth` : 5 échecs consécutifs poussent le
-        // score > 0.8 (seuil FAILURE_SKIP). Les `record` sont immédiats donc
-        // dt≈0 → décroissance temporelle ≈ 1.0, on reste sur l'EMA pure :
-        // s_{k} = 0.7 * s_{k-1} + 0.3 ; partant de 0 → 0.3, 0.51, 0.657, 0.7599, 0.83193.
-        let h = BackendHealth::new();
-        for _ in 0..5 {
-            h.record(true);
-        }
-        let score = h.current_score();
-        assert!(
-            score > FAILURE_SKIP,
-            "score={score} (attendu > {FAILURE_SKIP})"
-        );
-
-        // Vérification analytique (dt≈0 sur la fenêtre du test).
-        assert!(
-            (h.raw_score() - 0.83193).abs() < 1e-3,
-            "raw={}",
-            h.raw_score()
-        );
-    }
-
-    #[test]
-    fn backend_health_success_decays_score() {
-        // Un succès enregistre une observation 0.0 → l'EMA fait baisser le score.
-        let h = BackendHealth::new();
-        for _ in 0..5 {
-            h.record(true);
-        }
-        let before = h.raw_score();
-        h.record(false);
-        assert!(
-            h.raw_score() < before,
-            "after={} before={before}",
-            h.raw_score()
-        );
-        // Un seul succès depuis un score saturé : 0.7 * 0.83193 ≈ 0.5824 < seuil.
-        assert!(h.current_score() < FAILURE_SKIP);
     }
 
     #[tokio::test]

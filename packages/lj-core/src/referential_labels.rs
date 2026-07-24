@@ -90,6 +90,7 @@ pub fn nature_label(nature: &str) -> Option<&'static str> {
         "ACCORD" => "Accord",
         "ACCORD_FONCTION_PUBLIQUE" => "Accord fonction publique",
         "ARRETE" => "Arrêté",
+        "BOFIP" => "BOFiP (doctrine fiscale)",
         "CHARTE" => "Charte",
         "CIRCULAIRE" => "Circulaire",
         "CODE" => "Code",
@@ -138,6 +139,8 @@ pub fn nature_label(nature: &str) -> Option<&'static str> {
 pub fn source_label(source: &str) -> Option<&'static str> {
     Some(match source {
         "legifrance" => "Légifrance",
+        "bofip" => "BOFiP (DGFiP)",
+        "circulaire" => "Circulaires (DILA)",
         "kali" => "Conventions collectives (KALI)",
         "jorf" => "Journal officiel (JORF)",
         "jafbase" => "JAFBase",
@@ -154,6 +157,36 @@ pub fn source_label(source: &str) -> Option<&'static str> {
         "legislatie-ro" => "Legislație (Roumanie)",
         "ris-at" => "RIS (Autriche)",
         "wetten-nl" => "Wetten.nl (Pays-Bas)",
+        _ => return None,
+    })
+}
+
+/// Natures « doctrine administrative » (ADR 0196) : interprétations officielles
+/// de la norme par l'administration (opposables/invocables dans leurs régimes),
+/// par opposition aux normes elles-mêmes. Pilote la sur-facette `scope` du
+/// scope textes ; toute nature hors liste est une norme.
+pub const DOCTRINE_ADMIN_NATURES: &[&str] = &[
+    "BOFIP",
+    "CIRCULAIRE",
+    "INSTRUCTION",
+    "REPONSE_MINISTERIELLE",
+    "RESCRIT",
+];
+
+/// Portée d'une nature (ADR 0196) : `norme` | `doctrine_administrative`.
+pub fn nature_scope(nature: &str) -> &'static str {
+    if DOCTRINE_ADMIN_NATURES.contains(&nature.to_uppercase().as_str()) {
+        "doctrine_administrative"
+    } else {
+        "norme"
+    }
+}
+
+/// Libellé FR d'une portée (facette `scope` du scope textes).
+pub fn scope_label(scope: &str) -> Option<&'static str> {
+    Some(match scope {
+        "norme" => "Normes",
+        "doctrine_administrative" => "de référence administrative",
         _ => return None,
     })
 }

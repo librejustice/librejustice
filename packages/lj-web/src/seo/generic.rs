@@ -4,7 +4,7 @@
 /// unique partagée backend ↔ front ([`lj_dtos::SITE_BASE`]).
 pub const CANONICAL_BASE: &str = lj_dtos::SITE_BASE;
 /// Carte Open Graph (1200x630).
-pub const OG_IMAGE: &str = "https://librejustice.fr/og-card-v2.png";
+pub const OG_IMAGE: &str = "https://librejustice.fr/og-card-v3.png";
 
 /// Metadonnees d'une page, rendues via `leptos_meta`.
 pub struct PageMeta {
@@ -16,10 +16,10 @@ pub struct PageMeta {
 /// Meta generiques du site (heritees par les pages sans `<Title>` propre).
 pub fn site_default() -> PageMeta {
     PageMeta {
-        title: "LibreJustice — recherche de jurisprudence française".to_string(),
-        description: "Moteur de recherche libre sur la jurisprudence française : Conseil d'État, \
-                      Cour de cassation, cours d'appel, tribunaux. Recherche hybride lexicale et \
-                      sémantique."
+        title: "LibreJustice".to_string(),
+        description: "Moteur de recherche libre sur le droit français : jurisprudence (Conseil \
+                      d'État, Cour de cassation, cours d'appel, tribunaux) et textes (codes, \
+                      lois, traités), mis à jour quotidiennement."
             .to_string(),
         robots: None,
     }
@@ -28,7 +28,7 @@ pub fn site_default() -> PageMeta {
 /// Meta de la page 404 (noindex).
 pub fn not_found_meta() -> PageMeta {
     PageMeta {
-        title: "Page introuvable — LibreJustice".to_string(),
+        title: "Page introuvable - LibreJustice".to_string(),
         description: site_default().description,
         robots: Some("noindex"),
     }

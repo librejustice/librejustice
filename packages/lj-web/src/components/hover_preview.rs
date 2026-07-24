@@ -1,5 +1,5 @@
 //! Hover card de prévisualisation des références (ADR 0168) : au survol d'un
-//! lien d'article de code (`/loi/{code}/{num}`) ou de décision
+//! lien d'article de code (`/texte/{code}/{num}`) ou de décision
 //! (`/decision/{id}`), un panneau flottant montre le contenu pointé sans
 //! naviguer — gabarit  (recon 2026-07-02, shots 14/15).
 //!
@@ -18,7 +18,7 @@ use lj_dtos::{DecisionPreview, LawArticleResponse};
 
 use crate::components::ui::{Badge, BadgeTone};
 use crate::helpers::format_iso_date;
-use crate::pages::decision_page::labels::portee_badge;
+use crate::pages::decision_page::labels::significance_badge;
 use crate::pages::law_page::article_title;
 
 /// Cible prévisualisable d'un lien de référence. `date` (article) = date de la
@@ -36,23 +36,33 @@ pub enum PreviewKind {
     },
 }
 
-/// Cible de prévisualisation d'un `href` interne : `/loi/{code}/{num}` →
-/// article (version à `at_date` si fournie), `/decision/{id}` → décision. Les
-/// autres formes (`/loi/{code}` nu, version datée `/loi/{code}/{num}/{date}`)
-/// n'ont pas de carte.
+/// Cible de prévisualisation d'un `href` interne : `/texte/{code}/{num}` →
+/// article (version à `at_date` si fournie), `/texte/{code}/{num}/{date}` →
+/// article à la date **portée par le lien** (renvoi Chronolégi, ADR 0217 — elle
+/// prime sur le contexte hôte), `/decision/{id}` → décision. Les autres formes
+/// (`/texte/{code}` nu) n'ont pas de carte.
 pub fn preview_kind(href: &str, at_date: Option<&str>) -> Option<PreviewKind> {
     if let Some(id) = href.strip_prefix("/decision/") {
         return (!id.is_empty() && !id.contains('/'))
             .then(|| PreviewKind::Decision { id: id.to_string() });
     }
-    let rest = href.strip_prefix("/loi/")?;
+    let rest = href.strip_prefix("/texte/")?;
     let mut parts = rest.split('/');
-    match (parts.next(), parts.next(), parts.next()) {
-        (Some(code), Some(num), None) if !code.is_empty() && !num.is_empty() => {
+    match (parts.next(), parts.next(), parts.next(), parts.next()) {
+        (Some(code), Some(num), None, None) if !code.is_empty() && !num.is_empty() => {
             Some(PreviewKind::Article {
                 code: code.to_string(),
                 num: num.to_string(),
                 date: at_date.map(str::to_string),
+            })
+        }
+        (Some(code), Some(num), Some(date), None)
+            if !code.is_empty() && !num.is_empty() && !date.is_empty() =>
+        {
+            Some(PreviewKind::Article {
+                code: code.to_string(),
+                num: num.to_string(),
+                date: Some(date.to_string()),
             })
         }
         _ => None,
@@ -210,7 +220,11 @@ pub fn HoverPreview(kind: PreviewKind, children: Children) -> impl IntoView {
                 // Le wrapper (pont transparent inclus) garde les handlers : y
                 // entrer annule la fermeture différée (contenu scrollable
                 // atteignable au pointeur).
+                // `data-hover-card` : la toolbar de sélection du corps de
+                // décision ignore les sélections nées dans cet îlot (il est
+                // rendu DANS l'`<article>` observé — cf. `selection.js`).
                 <span
+                    data-hover-card=""
                     style=move || style.get()
                     on:mouseenter=on_enter
                     on:mouseleave=on_leave
@@ -270,14 +284,14 @@ fn article_card(article: LawArticleResponse) -> AnyView {
 /// les cartes résultat), résumé scrollable.
 fn decision_card(preview: DecisionPreview) -> AnyView {
     let solution = preview.solution.map(|s| s.label);
-    let voie = preview.voie.map(|v| v.label);
-    let portee = portee_badge(&preview.publication_codes);
-    let badges = (solution.is_some() || voie.is_some() || portee.is_some()).then(|| {
+    let procedure = preview.procedure.map(|v| v.label);
+    let significance = significance_badge(&preview.publication_codes);
+    let badges = (solution.is_some() || procedure.is_some() || significance.is_some()).then(|| {
         view! {
             <span class="mt-1.5 flex flex-wrap gap-1.5">
                 {solution.map(|label| view! { <Badge tone=BadgeTone::Outline>{label}</Badge> })}
-                {voie.map(|label| view! { <Badge tone=BadgeTone::Accent>{label}</Badge> })}
-                {portee.map(|label| view! { <Badge tone=BadgeTone::Neutral>{label}</Badge> })}
+                {procedure.map(|label| view! { <Badge tone=BadgeTone::Accent>{label}</Badge> })}
+                {significance.map(|label| view! { <Badge tone=BadgeTone::Neutral>{label}</Badge> })}
             </span>
         }
     });
@@ -301,13 +315,18 @@ mod tests {
     #[test]
     fn preview_kind_parses_article_and_decision() {
         assert!(matches!(
-            preview_kind("/loi/code-civil/1728", Some("2015-06-04")),
+            preview_kind("/texte/code-civil/1728", Some("2015-06-04")),
             Some(PreviewKind::Article { code, num, date })
                 if code == "code-civil" && num == "1728" && date.as_deref() == Some("2015-06-04")
         ));
         assert!(matches!(
-            preview_kind("/loi/code-civil/1728", None),
+            preview_kind("/texte/code-civil/1728", None),
             Some(PreviewKind::Article { date: None, .. })
+        ));
+        // Href daté (ADR 0217) : la date du lien prime sur celle du contexte.
+        assert!(matches!(
+            preview_kind("/texte/code-civil/1728/2016-10-01", Some("2015-06-04")),
+            Some(PreviewKind::Article { date: Some(d), .. }) if d == "2016-10-01"
         ));
         assert!(matches!(
             preview_kind("/decision/z-hk-uk5YqPg", None),
@@ -317,11 +336,11 @@ mod tests {
 
     #[test]
     fn preview_kind_rejects_other_shapes() {
-        // Mention nue d'un texte, version datée, id vide, autres routes.
-        assert!(preview_kind("/loi/code-civil", None).is_none());
-        assert!(preview_kind("/loi/code-civil/1728/2016-10-01", None).is_none());
+        // Mention nue d'un texte, segments surnuméraires, id vide, autres routes.
+        assert!(preview_kind("/texte/code-civil", None).is_none());
+        assert!(preview_kind("/texte/code-civil/1728/2016-10-01/x", None).is_none());
         assert!(preview_kind("/decision/", None).is_none());
         assert!(preview_kind("/decision/a/b", None).is_none());
-        assert!(preview_kind("/recherche", None).is_none());
+        assert!(preview_kind("/decisions", None).is_none());
     }
 }

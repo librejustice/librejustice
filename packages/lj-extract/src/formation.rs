@@ -1,8 +1,8 @@
 //! Parse structuré de la formation (ADR 0170) : décompose les champs SOURCE
 //! (code chambre CC, chambre de bandeau Judilibre, formation greffe
 //! Judilibre/DILA) en quatre axes — position de la chambre (display canonique
-//! recomposé), spécialisation (`chambre:*`), type de formation
-//! (`formation:*`), rôle (`office:*` / `voie:*`).
+//! recomposé), spécialisation (`chamber:*`), type de formation
+//! (`formation:*`), rôle (`office:*` / `procedure:*`).
 //!
 //! de référence 0157 §4 : vocabulaire fermé, comparaisons pliées
 //! (`compiled::fold_stable`), une poignée de regex génériques de position —
@@ -22,72 +22,72 @@ use crate::compiled::fold_stable;
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct FormationAxes {
     pub chamber_position: Option<String>,
-    pub chambre_uid: Option<&'static str>,
+    pub chamber_uid: Option<&'static str>,
     pub formation_uid: Option<&'static str>,
     pub office_uid: Option<&'static str>,
-    pub voie_uid: Option<&'static str>,
+    pub procedure_uid: Option<&'static str>,
 }
 
 impl FormationAxes {
     pub fn is_empty(&self) -> bool {
         self.chamber_position.is_none()
-            && self.chambre_uid.is_none()
+            && self.chamber_uid.is_none()
             && self.formation_uid.is_none()
             && self.office_uid.is_none()
-            && self.voie_uid.is_none()
+            && self.procedure_uid.is_none()
     }
 }
 
 // ─────────────────────────── référentiels embarqués ─────────────────────────
 
-/// Spécialisations `chambre:*` : (uid, label référentiel, adjectif accolable à
+/// Spécialisations `chamber:*` : (uid, label référentiel, adjectif accolable à
 /// une position numérotée — « 5ᵉ chambre prud'homale »). Le seed SQL de la
 /// migration reprend exactement ces (uid, label).
 pub const CHAMBRE_SEED: &[(&str, &str, Option<&str>)] = &[
-    ("chambre:CIVILE", "Chambre civile", Some("civile")),
-    ("chambre:SOCIALE", "Chambre sociale", Some("sociale")),
+    ("chamber:CIVILE", "Chambre civile", Some("civile")),
+    ("chamber:SOCIALE", "Chambre sociale", Some("sociale")),
     (
-        "chambre:COMMERCIALE",
+        "chamber:COMMERCIALE",
         "Chambre commerciale",
         Some("commerciale"),
     ),
     (
-        "chambre:CRIMINELLE",
+        "chamber:CRIMINELLE",
         "Chambre criminelle",
         Some("criminelle"),
     ),
     (
-        "chambre:CORRECTIONNELLE",
+        "chamber:CORRECTIONNELLE",
         "Chambre correctionnelle",
         Some("correctionnelle"),
     ),
     (
-        "chambre:PRUD_HOMALE",
+        "chamber:PRUD_HOMALE",
         "Chambre prud'homale",
         Some("prud'homale"),
     ),
-    ("chambre:PROTECTION_SOCIALE", "Protection sociale", None),
+    ("chamber:PROTECTION_SOCIALE", "Protection sociale", None),
     (
-        "chambre:PROCEDURES_COLLECTIVES",
+        "chamber:PROCEDURES_COLLECTIVES",
         "Procédures collectives",
         None,
     ),
-    ("chambre:INSTRUCTION", "Chambre de l'instruction", None),
-    ("chambre:FAMILLE", "Chambre de la famille", None),
-    ("chambre:BAUX", "Chambre des baux", None),
-    ("chambre:CONSTRUCTION", "Chambre de la construction", None),
-    ("chambre:ETRANGERS", "Étrangers et rétention", None),
-    ("chambre:CONSEIL", "Chambre du conseil", None),
-    ("chambre:EXPROPRIATION", "Expropriation", None),
-    ("chambre:PROXIMITE", "Proximité", None),
-    ("chambre:SURENDETTEMENT", "Surendettement", None),
-    ("chambre:COPROPRIETE", "Copropriété", None),
-    ("chambre:URGENCES", "Urgences", None),
-    ("chambre:DALO", "Droit au logement (DALO)", None),
-    ("chambre:MINEURS", "Chambre des mineurs", None),
-    ("chambre:NATIONALITE", "Nationalité", None),
-    ("chambre:TERRES", "Chambre des terres", None),
-    ("chambre:CIVI", "Indemnisation des victimes (CIVI)", None),
+    ("chamber:INSTRUCTION", "Chambre de l'instruction", None),
+    ("chamber:FAMILLE", "Chambre de la famille", None),
+    ("chamber:BAUX", "Chambre des baux", None),
+    ("chamber:CONSTRUCTION", "Chambre de la construction", None),
+    ("chamber:ETRANGERS", "Étrangers et rétention", None),
+    ("chamber:CONSEIL", "Chambre du conseil", None),
+    ("chamber:EXPROPRIATION", "Expropriation", None),
+    ("chamber:PROXIMITE", "Proximité", None),
+    ("chamber:SURENDETTEMENT", "Surendettement", None),
+    ("chamber:COPROPRIETE", "Copropriété", None),
+    ("chamber:URGENCES", "Urgences", None),
+    ("chamber:DALO", "Droit au logement (DALO)", None),
+    ("chamber:MINEURS", "Chambre des mineurs", None),
+    ("chamber:NATIONALITE", "Nationalité", None),
+    ("chamber:TERRES", "Chambre des terres", None),
+    ("chamber:CIVI", "Indemnisation des victimes (CIVI)", None),
 ];
 
 /// Types de formation `formation:*` : (uid, label référentiel). Même contrat
@@ -118,7 +118,7 @@ pub const OFFICE_SEED_EXTRA: &[(&str, &str)] = &[
     ("office:JUGE_EXPROPRIATION", "Juge de l'expropriation"),
 ];
 
-fn chambre_label(uid: &str) -> &'static str {
+fn chamber_label(uid: &str) -> &'static str {
     CHAMBRE_SEED
         .iter()
         .find(|(u, _, _)| *u == uid)
@@ -126,7 +126,7 @@ fn chambre_label(uid: &str) -> &'static str {
         .expect("uid chambre hors seed")
 }
 
-fn chambre_adjective(uid: &str) -> Option<&'static str> {
+fn chamber_adjective(uid: &str) -> Option<&'static str> {
     CHAMBRE_SEED
         .iter()
         .find(|(u, _, _)| *u == uid)
@@ -145,13 +145,13 @@ enum Position {
     /// CA « 2ème CH - section 1 » / TA « 4e section - 1re chambre » — le
     /// display suit l'ordre source (au TA la section contient les chambres).
     ChambreSection {
-        chambre: u32,
+        chamber: u32,
         section: u32,
         section_d_abord: bool,
     },
     Pole {
         pole: u32,
-        chambre: Option<u32>,
+        chamber: Option<u32>,
     },
     Section(u32),
     /// CE historique : sous-section jugeant seule (« 2 ss », « 4ème ssjs »).
@@ -181,30 +181,30 @@ impl Position {
             Position::ChambreLettre(c) => format!("Chambre {}", c.to_uppercase()),
             Position::ChambreComposee(a, b) => format!("Chambre {a}-{b}"),
             Position::ChambreSection {
-                chambre,
+                chamber,
                 section,
                 section_d_abord: false,
             } => format!(
                 "{} chambre, {} section",
-                ordinal(*chambre),
+                ordinal(*chamber),
                 ordinal(*section)
             ),
             Position::ChambreSection {
-                chambre,
+                chamber,
                 section,
                 section_d_abord: true,
             } => format!(
                 "{} section, {} chambre",
                 ordinal(*section),
-                ordinal(*chambre)
+                ordinal(*chamber)
             ),
             Position::Pole {
                 pole,
-                chambre: Some(c),
+                chamber: Some(c),
             } => format!("Pôle {pole} — {} chambre", ordinal(*c)),
             Position::Pole {
                 pole,
-                chambre: None,
+                chamber: None,
             } => format!("Pôle {pole}"),
             Position::Section(n) => format!("{} section", ordinal(*n)),
             Position::SousSection(n) => format!("{} sous-section", ordinal(*n)),
@@ -256,22 +256,22 @@ struct PositionPatterns {
     sous_section: Regex,
     ss: Regex,
     pole: Regex,
-    chambre_composee: Regex,
-    chambre_ord: Regex,
-    chambre_num: Regex,
-    chambre_collee: Regex,
-    chambre_mot: Regex,
-    chambre_lettre: Regex,
-    chambre_num_lettre: Regex,
-    chambre_num_lettre_collee: Regex,
-    chambre_ord_lettre: Regex,
+    chamber_composee: Regex,
+    chamber_ord: Regex,
+    chamber_num: Regex,
+    chamber_collee: Regex,
+    chamber_mot: Regex,
+    chamber_lettre: Regex,
+    chamber_num_lettre: Regex,
+    chamber_num_lettre_collee: Regex,
+    chamber_ord_lettre: Regex,
     section_ord: Regex,
     section_num: Regex,
     section_courte: Regex,
     section_lettre: Regex,
     composee_lettre: Regex,
     spec_lettre: Regex,
-    chambre_solo: Regex,
+    chamber_solo: Regex,
     nombres: Regex,
 }
 
@@ -320,13 +320,14 @@ fn position_patterns() -> &'static PositionPatterns {
         .unwrap(),
         // TCOM « chambre 2-5 », CA « chambre civile 1-6 », « Ch civ. 1-4 »,
         // « Ch.protection sociale 4-7 » (jusqu'à deux mots interposés, points
-        // de greffe tolérés), lettre de section collée (« chambre 4-8a »).
-        chambre_composee: Regex::new(&format!(
-            r"\b{CHAMBRE_MOT_SEUL}(?:[\s.]+[a-z']+){{0,2}}[\s.]*0*(\d{{1,2}})\s*-\s*0*(\d{{1,2}})[a-h]?\b"
+        // de greffe tolérés), lettre de section (« chambre 4-8a ») ou suffixe
+        // matière deux lettres (« Chambre 1-5DP ») collés.
+        chamber_composee: Regex::new(&format!(
+            r"\b{CHAMBRE_MOT_SEUL}(?:[\s.]+[a-z']+){{0,2}}[\s.]*0*(\d{{1,2}})\s*-\s*0*(\d{{1,2}})(?:[a-h]|[a-z]{{2}})?\b"
         ))
         .unwrap(),
         // « 1ere chambre », « 2eme CH », « 3e chambre », « 2° chambre ».
-        chambre_ord: Regex::new(&format!(
+        chamber_ord: Regex::new(&format!(
             r"\b0*(\d{{1,2}})\s*{ORD_SUFFIX_REQ}\s*{CHAMBRE_ALIAS}\b"
         ))
         .unwrap(),
@@ -334,35 +335,35 @@ fn position_patterns() -> &'static PositionPatterns {
         // « chambre-1 » (tiret de jonction — la composée « 2-5 » passe
         // avant), lettre de section collée tolérée (« Ch 9b » ; e = ordinal
         // et h = heure exclus).
-        chambre_num: Regex::new(&format!(
+        chamber_num: Regex::new(&format!(
             r"\b{CHAMBRE_ALIAS}[\s.\-]*n?°?\s*0*(\d{{1,2}})[a-dfg]?\b"
         ))
         .unwrap(),
         // « 13CH JCP civil » — numéro collé au mot chambre.
-        chambre_collee: Regex::new(r"\b0*(\d{1,2})(?:chambre|chbre|ch)\b").unwrap(),
+        chamber_collee: Regex::new(r"\b0*(\d{1,2})(?:chambre|chbre|ch)\b").unwrap(),
         // « premiere chambre », « troisieme chambre ».
-        chambre_mot: Regex::new(&format!(
+        chamber_mot: Regex::new(&format!(
             r"\b(premiere|seconde|deuxieme|troisieme|quatrieme|cinquieme|sixieme|septieme|huitieme|neuvieme|dixieme|onzieme|douzieme)\s+{CHAMBRE_ALIAS}\b"
         ))
         .unwrap(),
         // « chambre b » (chambres lettrées de CA).
-        chambre_lettre: Regex::new(&format!(r"\b{CHAMBRE_MOT_SEUL}\s+([a-h])\b")).unwrap(),
+        chamber_lettre: Regex::new(&format!(r"\b{CHAMBRE_MOT_SEUL}\s+([a-h])\b")).unwrap(),
         // « Chambre 9 - B », « Pôle 4 - chambre 9 - A », « Chambre 1 A » —
         // lettre de section derrière le numéro de chambre. Séparateur REQUIS :
         // collé au chiffre, « e » est un ordinal (« chambre 2e section »).
-        chambre_num_lettre: Regex::new(&format!(
+        chamber_num_lettre: Regex::new(&format!(
             r"\b{CHAMBRE_MOT_SEUL}[\s.]*n?°?\s*0*\d{{1,2}}(?:\s*[-.]\s*|\s+)([a-h])(?:[^a-z0-9']|$)"
         ))
         .unwrap(),
         // « Ch 9b », « Chambre 5b » — lettre de section collée au numéro
         // (e = ordinal et h = heure exclus).
-        chambre_num_lettre_collee: Regex::new(&format!(
+        chamber_num_lettre_collee: Regex::new(&format!(
             r"\b{CHAMBRE_MOT_SEUL}[\s.]*n?°?\s*0*\d{{1,2}}([a-dfg])\b"
         ))
         .unwrap(),
         // « 1re chambre B », « 8e chambre C » — lettre derrière le mot
         // chambre d'une position ordinale.
-        chambre_ord_lettre: Regex::new(&format!(
+        chamber_ord_lettre: Regex::new(&format!(
             r"\b0*\d{{1,2}}\s*{ORD_SUFFIX_REQ}\s*{CHAMBRE_MOT_SEUL}(?:\s*[-.]\s*|\s+)([a-h])(?:[^a-z0-9']|$)"
         ))
         .unwrap(),
@@ -388,7 +389,7 @@ fn position_patterns() -> &'static PositionPatterns {
         .unwrap(),
         // « 2EME protection sociale » — ordinal suffixé isolé : numéro de la
         // chambre spécialisée (suffixe requis, jamais un chiffre nu).
-        chambre_solo: Regex::new(&format!(r"\b0*(\d{{1,2}})\s*{ORD_SUFFIX_REQ}\b")).unwrap(),
+        chamber_solo: Regex::new(&format!(r"\b0*(\d{{1,2}})\s*{ORD_SUFFIX_REQ}\b")).unwrap(),
         nombres: Regex::new(r"\d{1,2}").unwrap(),
     })
 }
@@ -434,14 +435,14 @@ fn parse_position(folded: &str) -> Option<Position> {
         if let Some(n) = c[1].parse().ok().filter(|n| *n > 0) {
             return Some(Position::Pole {
                 pole: n,
-                chambre: c
+                chamber: c
                     .get(2)
                     .and_then(|m| m.as_str().parse().ok())
                     .filter(|n| *n > 0),
             });
         }
     }
-    if let Some(c) = p.chambre_composee.captures(folded) {
+    if let Some(c) = p.chamber_composee.captures(folded) {
         let a: u32 = c[1].parse().ok()?;
         let b: u32 = c[2].parse().ok()?;
         // Un zéro est un placeholder de greffe, pas une position.
@@ -452,18 +453,18 @@ fn parse_position(folded: &str) -> Option<Position> {
     // Chambre et section numérotées : capture + OFFSET, pour restituer
     // l'ordre source (TA : « 4e section - 1re chambre », la section contient
     // les chambres).
-    let chambre: Option<(u32, usize)> = p
-        .chambre_ord
+    let chamber: Option<(u32, usize)> = p
+        .chamber_ord
         .captures(folded)
-        .or_else(|| p.chambre_num.captures(folded))
-        .or_else(|| p.chambre_collee.captures(folded))
+        .or_else(|| p.chamber_num.captures(folded))
+        .or_else(|| p.chamber_collee.captures(folded))
         .and_then(|c| {
             let n: u32 = c[1].parse().ok()?;
             // « Chambre 0 » / « Chambre 00 » : placeholder de greffe.
             (n > 0).then(|| (n, c.get(0).unwrap().start()))
         })
         .or_else(|| {
-            p.chambre_mot
+            p.chamber_mot
                 .captures(folded)
                 .and_then(|c| Some((word_ordinal(&c[1])?, c.get(0)?.start())))
         });
@@ -478,7 +479,7 @@ fn parse_position(folded: &str) -> Option<Position> {
             let n: u32 = c[1].parse().ok()?;
             (n > 0).then(|| (n, c.get(0).unwrap().start()))
         });
-    if section.is_none() && chambre.is_some() {
+    if section.is_none() && chamber.is_some() {
         // « 11ème civ. S1 » : la graphie courte ne vaut section qu'adossée
         // à une chambre — seule, « S3 » est du code de greffe.
         section = p.section_courte.captures(folded).and_then(|c| {
@@ -486,10 +487,10 @@ fn parse_position(folded: &str) -> Option<Position> {
             (n > 0).then(|| (n, c.get(0).unwrap().start()))
         });
     }
-    match (chambre, section) {
+    match (chamber, section) {
         (Some((c, ch_at)), Some((s, se_at))) => {
             return Some(Position::ChambreSection {
-                chambre: c,
+                chamber: c,
                 section: s,
                 section_d_abord: se_at < ch_at,
             })
@@ -498,7 +499,7 @@ fn parse_position(folded: &str) -> Option<Position> {
         (None, Some((s, _))) => return Some(Position::Section(s)),
         (None, None) => {}
     }
-    if let Some(c) = p.chambre_lettre.captures(folded) {
+    if let Some(c) = p.chamber_lettre.captures(folded) {
         return Some(Position::ChambreLettre(c[1].chars().next()?));
     }
     None
@@ -561,113 +562,113 @@ fn collapse_single_letters(folded: &str) -> Option<String> {
 /// Spécialisations : phrases pliées → uid. L'ordre fait autorité (les motifs
 /// englobants — « protection sociale » avant « sociale » — passent d'abord).
 const CHAMBRE_PHRASES: &[(&str, &str)] = &[
-    ("protection sociale", "chambre:PROTECTION_SOCIALE"),
-    ("protection soc", "chambre:PROTECTION_SOCIALE"),
-    ("securite sociale", "chambre:PROTECTION_SOCIALE"),
-    ("sec soc", "chambre:PROTECTION_SOCIALE"),
-    ("secu", "chambre:PROTECTION_SOCIALE"),
-    ("ctx technique", "chambre:PROTECTION_SOCIALE"),
-    ("contentieux sociaux", "chambre:PROTECTION_SOCIALE"),
-    ("tarification", "chambre:PROTECTION_SOCIALE"),
-    ("tass", "chambre:PROTECTION_SOCIALE"),
-    ("procedures collectives", "chambre:PROCEDURES_COLLECTIVES"),
-    ("procedure collective", "chambre:PROCEDURES_COLLECTIVES"),
-    ("procedure collectives", "chambre:PROCEDURES_COLLECTIVES"),
-    ("procedures collect", "chambre:PROCEDURES_COLLECTIVES"),
-    ("proc collectives", "chambre:PROCEDURES_COLLECTIVES"),
-    ("proc coll", "chambre:PROCEDURES_COLLECTIVES"),
-    ("pcl", "chambre:PROCEDURES_COLLECTIVES"),
-    ("liquidation judiciaire", "chambre:PROCEDURES_COLLECTIVES"),
-    ("liquidations judiciaires", "chambre:PROCEDURES_COLLECTIVES"),
-    ("liquid judiciaire", "chambre:PROCEDURES_COLLECTIVES"),
-    ("redressement judiciaire", "chambre:PROCEDURES_COLLECTIVES"),
+    ("protection sociale", "chamber:PROTECTION_SOCIALE"),
+    ("protection soc", "chamber:PROTECTION_SOCIALE"),
+    ("securite sociale", "chamber:PROTECTION_SOCIALE"),
+    ("sec soc", "chamber:PROTECTION_SOCIALE"),
+    ("secu", "chamber:PROTECTION_SOCIALE"),
+    ("ctx technique", "chamber:PROTECTION_SOCIALE"),
+    ("contentieux sociaux", "chamber:PROTECTION_SOCIALE"),
+    ("tarification", "chamber:PROTECTION_SOCIALE"),
+    ("tass", "chamber:PROTECTION_SOCIALE"),
+    ("procedures collectives", "chamber:PROCEDURES_COLLECTIVES"),
+    ("procedure collective", "chamber:PROCEDURES_COLLECTIVES"),
+    ("procedure collectives", "chamber:PROCEDURES_COLLECTIVES"),
+    ("procedures collect", "chamber:PROCEDURES_COLLECTIVES"),
+    ("proc collectives", "chamber:PROCEDURES_COLLECTIVES"),
+    ("proc coll", "chamber:PROCEDURES_COLLECTIVES"),
+    ("pcl", "chamber:PROCEDURES_COLLECTIVES"),
+    ("liquidation judiciaire", "chamber:PROCEDURES_COLLECTIVES"),
+    ("liquidations judiciaires", "chamber:PROCEDURES_COLLECTIVES"),
+    ("liquid judiciaire", "chamber:PROCEDURES_COLLECTIVES"),
+    ("redressement judiciaire", "chamber:PROCEDURES_COLLECTIVES"),
     (
         "redressements judiciaires",
-        "chambre:PROCEDURES_COLLECTIVES",
+        "chamber:PROCEDURES_COLLECTIVES",
     ),
-    ("cessation des paiements", "chambre:PROCEDURES_COLLECTIVES"),
-    ("juge commissaire", "chambre:PROCEDURES_COLLECTIVES"),
-    ("prud'homale", "chambre:PRUD_HOMALE"),
-    ("prud'hommale", "chambre:PRUD_HOMALE"),
-    ("prud'hommes", "chambre:PRUD_HOMALE"),
-    ("prudhomale", "chambre:PRUD_HOMALE"),
-    ("prudhommale", "chambre:PRUD_HOMALE"),
-    ("prudhommes", "chambre:PRUD_HOMALE"),
-    ("loyers commerciaux", "chambre:BAUX"),
-    ("loyer commerciaux", "chambre:BAUX"),
-    ("baux commerciaux", "chambre:BAUX"),
-    ("baux ruraux", "chambre:BAUX"),
-    ("baux", "chambre:BAUX"),
-    ("tpbr", "chambre:BAUX"),
-    ("sociale", "chambre:SOCIALE"),
-    ("social", "chambre:SOCIALE"),
-    ("commerciale", "chambre:COMMERCIALE"),
-    ("commercial", "chambre:COMMERCIALE"),
-    ("commerce", "chambre:COMMERCIALE"),
-    ("economique", "chambre:COMMERCIALE"),
-    ("ecocom", "chambre:COMMERCIALE"),
-    ("chcom", "chambre:COMMERCIALE"),
-    ("civile", "chambre:CIVILE"),
-    ("civiles", "chambre:CIVILE"),
-    ("civil", "chambre:CIVILE"),
-    ("civ", "chambre:CIVILE"),
-    ("criminelle", "chambre:CRIMINELLE"),
-    ("correctionnelle", "chambre:CORRECTIONNELLE"),
-    ("correctionnel", "chambre:CORRECTIONNELLE"),
-    ("appels correctionnels", "chambre:CORRECTIONNELLE"),
-    ("chambre correct", "chambre:CORRECTIONNELLE"),
-    ("instruction", "chambre:INSTRUCTION"),
-    ("famille", "chambre:FAMILLE"),
-    ("affaires familiales", "chambre:FAMILLE"),
-    ("aff familiales", "chambre:FAMILLE"),
-    ("divorces", "chambre:FAMILLE"),
-    ("divorce", "chambre:FAMILLE"),
-    ("filiation", "chambre:FAMILLE"),
-    ("construction", "chambre:CONSTRUCTION"),
-    ("etrangers", "chambre:ETRANGERS"),
-    ("etranger", "chambre:ETRANGERS"),
-    ("retention administrative", "chambre:ETRANGERS"),
-    ("retentions", "chambre:ETRANGERS"),
-    ("retention", "chambre:ETRANGERS"),
-    ("reconduite a la frontiere", "chambre:ETRANGERS"),
-    ("reconduites a la frontiere", "chambre:ETRANGERS"),
-    ("reconduites", "chambre:ETRANGERS"),
-    ("reconduite", "chambre:ETRANGERS"),
-    ("eloignement", "chambre:ETRANGERS"),
-    ("oqtf", "chambre:ETRANGERS"),
-    ("asile", "chambre:ETRANGERS"),
-    ("96h", "chambre:ETRANGERS"),
-    ("96 h", "chambre:ETRANGERS"),
-    ("expropriations", "chambre:EXPROPRIATION"),
-    ("expropriation", "chambre:EXPROPRIATION"),
-    ("expro", "chambre:EXPROPRIATION"),
-    ("chambre du conseil", "chambre:CONSEIL"),
-    ("chbre du conseil", "chambre:CONSEIL"),
-    ("ch du conseil", "chambre:CONSEIL"),
-    ("proximite", "chambre:PROXIMITE"),
-    ("proxi", "chambre:PROXIMITE"),
-    ("pprox", "chambre:PROXIMITE"),
-    ("prox", "chambre:PROXIMITE"),
-    ("tprox", "chambre:PROXIMITE"),
-    ("tprx", "chambre:PROXIMITE"),
-    ("tpx", "chambre:PROXIMITE"),
-    ("surendettement", "chambre:SURENDETTEMENT"),
-    ("surendettemment", "chambre:SURENDETTEMENT"),
-    ("retablissement personnel", "chambre:SURENDETTEMENT"),
-    ("surend", "chambre:SURENDETTEMENT"),
-    ("surendet", "chambre:SURENDETTEMENT"),
-    ("surdt", "chambre:SURENDETTEMENT"),
-    ("copropriete", "chambre:COPROPRIETE"),
-    ("dalo", "chambre:DALO"),
-    ("mineurs", "chambre:MINEURS"),
-    ("nationalite", "chambre:NATIONALITE"),
-    ("elections pro", "chambre:SOCIALE"),
-    ("urgences", "chambre:URGENCES"),
-    ("urgence", "chambre:URGENCES"),
-    ("chambre des terres", "chambre:TERRES"),
-    ("tribunal foncier", "chambre:TERRES"),
-    ("civip", "chambre:CIVI"),
-    ("civi", "chambre:CIVI"),
+    ("cessation des paiements", "chamber:PROCEDURES_COLLECTIVES"),
+    ("juge commissaire", "chamber:PROCEDURES_COLLECTIVES"),
+    ("prud'homale", "chamber:PRUD_HOMALE"),
+    ("prud'hommale", "chamber:PRUD_HOMALE"),
+    ("prud'hommes", "chamber:PRUD_HOMALE"),
+    ("prudhomale", "chamber:PRUD_HOMALE"),
+    ("prudhommale", "chamber:PRUD_HOMALE"),
+    ("prudhommes", "chamber:PRUD_HOMALE"),
+    ("loyers commerciaux", "chamber:BAUX"),
+    ("loyer commerciaux", "chamber:BAUX"),
+    ("baux commerciaux", "chamber:BAUX"),
+    ("baux ruraux", "chamber:BAUX"),
+    ("baux", "chamber:BAUX"),
+    ("tpbr", "chamber:BAUX"),
+    ("sociale", "chamber:SOCIALE"),
+    ("social", "chamber:SOCIALE"),
+    ("commerciale", "chamber:COMMERCIALE"),
+    ("commercial", "chamber:COMMERCIALE"),
+    ("commerce", "chamber:COMMERCIALE"),
+    ("economique", "chamber:COMMERCIALE"),
+    ("ecocom", "chamber:COMMERCIALE"),
+    ("chcom", "chamber:COMMERCIALE"),
+    ("civile", "chamber:CIVILE"),
+    ("civiles", "chamber:CIVILE"),
+    ("civil", "chamber:CIVILE"),
+    ("civ", "chamber:CIVILE"),
+    ("criminelle", "chamber:CRIMINELLE"),
+    ("correctionnelle", "chamber:CORRECTIONNELLE"),
+    ("correctionnel", "chamber:CORRECTIONNELLE"),
+    ("appels correctionnels", "chamber:CORRECTIONNELLE"),
+    ("chambre correct", "chamber:CORRECTIONNELLE"),
+    ("instruction", "chamber:INSTRUCTION"),
+    ("famille", "chamber:FAMILLE"),
+    ("affaires familiales", "chamber:FAMILLE"),
+    ("aff familiales", "chamber:FAMILLE"),
+    ("divorces", "chamber:FAMILLE"),
+    ("divorce", "chamber:FAMILLE"),
+    ("filiation", "chamber:FAMILLE"),
+    ("construction", "chamber:CONSTRUCTION"),
+    ("etrangers", "chamber:ETRANGERS"),
+    ("etranger", "chamber:ETRANGERS"),
+    ("retention administrative", "chamber:ETRANGERS"),
+    ("retentions", "chamber:ETRANGERS"),
+    ("retention", "chamber:ETRANGERS"),
+    ("reconduite a la frontiere", "chamber:ETRANGERS"),
+    ("reconduites a la frontiere", "chamber:ETRANGERS"),
+    ("reconduites", "chamber:ETRANGERS"),
+    ("reconduite", "chamber:ETRANGERS"),
+    ("eloignement", "chamber:ETRANGERS"),
+    ("oqtf", "chamber:ETRANGERS"),
+    ("asile", "chamber:ETRANGERS"),
+    ("96h", "chamber:ETRANGERS"),
+    ("96 h", "chamber:ETRANGERS"),
+    ("expropriations", "chamber:EXPROPRIATION"),
+    ("expropriation", "chamber:EXPROPRIATION"),
+    ("expro", "chamber:EXPROPRIATION"),
+    ("chambre du conseil", "chamber:CONSEIL"),
+    ("chbre du conseil", "chamber:CONSEIL"),
+    ("ch du conseil", "chamber:CONSEIL"),
+    ("proximite", "chamber:PROXIMITE"),
+    ("proxi", "chamber:PROXIMITE"),
+    ("pprox", "chamber:PROXIMITE"),
+    ("prox", "chamber:PROXIMITE"),
+    ("tprox", "chamber:PROXIMITE"),
+    ("tprx", "chamber:PROXIMITE"),
+    ("tpx", "chamber:PROXIMITE"),
+    ("surendettement", "chamber:SURENDETTEMENT"),
+    ("surendettemment", "chamber:SURENDETTEMENT"),
+    ("retablissement personnel", "chamber:SURENDETTEMENT"),
+    ("surend", "chamber:SURENDETTEMENT"),
+    ("surendet", "chamber:SURENDETTEMENT"),
+    ("surdt", "chamber:SURENDETTEMENT"),
+    ("copropriete", "chamber:COPROPRIETE"),
+    ("dalo", "chamber:DALO"),
+    ("mineurs", "chamber:MINEURS"),
+    ("nationalite", "chamber:NATIONALITE"),
+    ("elections pro", "chamber:SOCIALE"),
+    ("urgences", "chamber:URGENCES"),
+    ("urgence", "chamber:URGENCES"),
+    ("chambre des terres", "chamber:TERRES"),
+    ("tribunal foncier", "chamber:TERRES"),
+    ("civip", "chamber:CIVI"),
+    ("civi", "chamber:CIVI"),
 ];
 
 /// Types de formation : phrases pliées → uid, englobants d'abord.
@@ -707,6 +708,8 @@ const FORMATION_PHRASES: &[(&str, &str)] = &[
     ("10 000", "formation:JUGE_UNIQUE"),
     ("10000", "formation:JUGE_UNIQUE"),
     ("r222 13", "formation:JUGE_UNIQUE"),
+    // Forme lexicale à séparateurs normalisés (« - R. 222-13 » → « r 222 13 »).
+    ("r 222 13", "formation:JUGE_UNIQUE"),
     ("15 jours", "formation:JUGE_UNIQUE"),
     ("72 heures", "formation:JUGE_UNIQUE"),
     ("ju oqtf", "formation:JUGE_UNIQUE"),
@@ -776,7 +779,7 @@ const OFFICE_PHRASES: &[(&str, &str)] = &[
 ];
 
 /// Voies lisibles directement dans la formation greffe.
-const VOIE_PHRASES: &[(&str, &str)] = &[("qpc", "voie:QPC")];
+const VOIE_PHRASES: &[(&str, &str)] = &[("qpc", "procedure:QPC")];
 
 /// Chaîne ENTIÈRE (pliée, séparateurs normalisés) → axe. Pour les mots trop
 /// ambigus en simple `contains` (« Section » seul = jugement en Section du
@@ -786,12 +789,12 @@ const WHOLE_STRING: &[(&str, &str)] = &[
     ("avis section", "formation:SECTION"),
     ("assemblee", "formation:ASSEMBLEE"),
     ("pleniere", "formation:PLENIERE"),
-    ("rj", "chambre:PROCEDURES_COLLECTIVES"),
-    ("lj", "chambre:PROCEDURES_COLLECTIVES"),
-    ("rj lj", "chambre:PROCEDURES_COLLECTIVES"),
-    ("rjlj", "chambre:PROCEDURES_COLLECTIVES"),
-    ("rlj", "chambre:PROCEDURES_COLLECTIVES"),
-    ("sauvegarde", "chambre:PROCEDURES_COLLECTIVES"),
+    ("rj", "chamber:PROCEDURES_COLLECTIVES"),
+    ("lj", "chamber:PROCEDURES_COLLECTIVES"),
+    ("rj lj", "chamber:PROCEDURES_COLLECTIVES"),
+    ("rjlj", "chamber:PROCEDURES_COLLECTIVES"),
+    ("rlj", "chamber:PROCEDURES_COLLECTIVES"),
+    ("sauvegarde", "chamber:PROCEDURES_COLLECTIVES"),
 ];
 
 /// Acronymes en graphie éclatée (« J.E.X », « R E F E R E », « C.E.S.E.D.A. »),
@@ -803,7 +806,7 @@ const COMPACT_ACRONYMS: &[(&str, &str)] = &[
     ("jaf", "office:JAF"),
     ("refere", "office:JUGE_REFERES"),
     ("referes", "office:JUGE_REFERES"),
-    ("ceseda", "chambre:ETRANGERS"),
+    ("ceseda", "chamber:ETRANGERS"),
 ];
 
 // ────────────────────────────── chambres CC ─────────────────────────────────
@@ -814,7 +817,7 @@ struct CcChamber {
     code: &'static str,
     folded_label: &'static str,
     display: Option<&'static str>,
-    chambre_uid: Option<&'static str>,
+    chamber_uid: Option<&'static str>,
     formation_uid: Option<&'static str>,
     office_uid: Option<&'static str>,
 }
@@ -824,7 +827,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "civ1",
         folded_label: "premiere chambre civile",
         display: Some("Première chambre civile"),
-        chambre_uid: Some("chambre:CIVILE"),
+        chamber_uid: Some("chamber:CIVILE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -832,7 +835,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "civ2",
         folded_label: "deuxieme chambre civile",
         display: Some("Deuxième chambre civile"),
-        chambre_uid: Some("chambre:CIVILE"),
+        chamber_uid: Some("chamber:CIVILE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -840,7 +843,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "civ3",
         folded_label: "troisieme chambre civile",
         display: Some("Troisième chambre civile"),
-        chambre_uid: Some("chambre:CIVILE"),
+        chamber_uid: Some("chamber:CIVILE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -848,7 +851,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "soc",
         folded_label: "chambre sociale",
         display: Some("Chambre sociale"),
-        chambre_uid: Some("chambre:SOCIALE"),
+        chamber_uid: Some("chamber:SOCIALE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -856,7 +859,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "comm",
         folded_label: "chambre commerciale",
         display: Some("Chambre commerciale"),
-        chambre_uid: Some("chambre:COMMERCIALE"),
+        chamber_uid: Some("chamber:COMMERCIALE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -864,7 +867,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "comm",
         folded_label: "chambre commerciale, financiere et economique",
         display: Some("Chambre commerciale"),
-        chambre_uid: Some("chambre:COMMERCIALE"),
+        chamber_uid: Some("chamber:COMMERCIALE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -872,7 +875,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "cr",
         folded_label: "chambre criminelle",
         display: Some("Chambre criminelle"),
-        chambre_uid: Some("chambre:CRIMINELLE"),
+        chamber_uid: Some("chamber:CRIMINELLE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -880,7 +883,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "mi",
         folded_label: "chambre mixte",
         display: Some("Chambre mixte"),
-        chambre_uid: None,
+        chamber_uid: None,
         formation_uid: Some("formation:MIXTE"),
         office_uid: None,
     },
@@ -888,7 +891,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "pl",
         folded_label: "assemblee pleniere",
         display: Some("Assemblée plénière"),
-        chambre_uid: None,
+        chamber_uid: None,
         formation_uid: Some("formation:PLENIERE"),
         office_uid: None,
     },
@@ -896,7 +899,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "ord",
         folded_label: "ordonnance du premier president",
         display: None,
-        chambre_uid: None,
+        chamber_uid: None,
         formation_uid: None,
         office_uid: Some("office:PREMIER_PRESIDENT"),
     },
@@ -904,7 +907,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "ordo",
         folded_label: "ordonnance du premier president",
         display: None,
-        chambre_uid: None,
+        chamber_uid: None,
         formation_uid: None,
         office_uid: Some("office:PREMIER_PRESIDENT"),
     },
@@ -912,7 +915,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "creun",
         folded_label: "chambre reunies",
         display: Some("Chambres réunies"),
-        chambre_uid: None,
+        chamber_uid: None,
         formation_uid: Some("formation:CHAMBRES_REUNIES"),
         office_uid: None,
     },
@@ -920,7 +923,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "creun",
         folded_label: "chambres reunies",
         display: Some("Chambres réunies"),
-        chambre_uid: None,
+        chamber_uid: None,
         formation_uid: Some("formation:CHAMBRES_REUNIES"),
         office_uid: None,
     },
@@ -928,7 +931,7 @@ const CC_CHAMBERS: &[CcChamber] = &[
         code: "allciv",
         folded_label: "toutes chambres civiles",
         display: None,
-        chambre_uid: Some("chambre:CIVILE"),
+        chamber_uid: Some("chamber:CIVILE"),
         formation_uid: None,
         office_uid: None,
     },
@@ -947,7 +950,7 @@ fn cc_by_label(folded: &str) -> Option<&'static CcChamber> {
 
 fn apply_cc(cc: &CcChamber, axes: &mut FormationAxes) {
     axes.chamber_position = cc.display.map(str::to_string);
-    axes.chambre_uid = cc.chambre_uid;
+    axes.chamber_uid = cc.chamber_uid;
     axes.formation_uid = axes.formation_uid.or(cc.formation_uid);
     axes.office_uid = axes.office_uid.or(cc.office_uid);
 }
@@ -988,11 +991,11 @@ fn parse_part(part: &str, axes: &mut FormationAxes, state: &mut PositionState) -
     // display verbatim céderait la position (« 1re chambre » + « chambre
     // sociale » bandeau).
     if let Some(cc) = cc_by_label(&folded) {
-        if axes.chamber_position.is_none() && axes.chambre_uid.is_none() && state.position.is_none()
+        if axes.chamber_position.is_none() && axes.chamber_uid.is_none() && state.position.is_none()
         {
             apply_cc(cc, axes);
         } else {
-            for uid in [cc.chambre_uid, cc.formation_uid, cc.office_uid]
+            for uid in [cc.chamber_uid, cc.formation_uid, cc.office_uid]
                 .into_iter()
                 .flatten()
             {
@@ -1092,9 +1095,9 @@ fn parse_part(part: &str, axes: &mut FormationAxes, state: &mut PositionState) -
         // Ordinal suffixé isolé porté par une spécialisation (« 2EME
         // protection sociale ») : le numéro est celui de la chambre
         // spécialisée.
-        if state.position.is_none() && axes.chamber_position.is_none() && axes.chambre_uid.is_some()
+        if state.position.is_none() && axes.chamber_position.is_none() && axes.chamber_uid.is_some()
         {
-            if let Some(c) = position_patterns().chambre_solo.captures(&folded_raw) {
+            if let Some(c) = position_patterns().chamber_solo.captures(&folded_raw) {
                 if let Some(n) = c[1].parse().ok().filter(|n| *n > 0) {
                     state.position = Some(Position::Chambre(n));
                     hit = true;
@@ -1126,13 +1129,13 @@ fn parse_part(part: &str, axes: &mut FormationAxes, state: &mut PositionState) -
         .captures(&folded_raw)
         .or_else(|| pat.composee_lettre.captures(&folded_raw))
         .or_else(|| {
-            pat.chambre_num_lettre
+            pat.chamber_num_lettre
                 .captures(&folded_raw)
                 .filter(|c| garde_a(c))
         })
-        .or_else(|| pat.chambre_num_lettre_collee.captures(&folded_raw))
+        .or_else(|| pat.chamber_num_lettre_collee.captures(&folded_raw))
         .or_else(|| {
-            pat.chambre_ord_lettre
+            pat.chamber_ord_lettre
                 .captures(&folded_raw)
                 .filter(|c| garde_a(c))
         })
@@ -1151,25 +1154,49 @@ fn parse_part(part: &str, axes: &mut FormationAxes, state: &mut PositionState) -
 /// position structurelle (adjectivée par la spécialisation — « 1re chambre
 /// civile »), sinon label référentiel de la spécialisation seule ; la section
 /// lettrée se suffixe (« Chambre sociale, section B », « 1re section D »).
+/// Offices à juge unique par régime : le juge des référés (L. 511-2 CJA,
+/// art. 484 CPC) et le magistrat désigné statuent seuls — l'office implique
+/// la composition quand rien d'autre ne l'a posée. Exception CA : une chambre
+/// NUMÉROTÉE de référés y juge l'APPEL des ordonnances en collégiale —
+/// l'implication ne vaut que sans position de chambre (service des référés,
+/// premier président).
+fn imply_single_judge(jurisdiction_type: Option<&str>, axes: &mut FormationAxes) {
+    if axes.formation_uid.is_none()
+        && matches!(
+            axes.office_uid,
+            Some("office:JUGE_REFERES") | Some("office:MAGISTRAT_DESIGNE")
+        )
+        && !(jurisdiction_type == Some("CA") && axes.chamber_position.is_some())
+    {
+        axes.formation_uid = Some("formation:JUGE_UNIQUE");
+    }
+    // Le référé est une voie (`procedure:REFERE_*`), pas un office : la surface
+    // greffe « référés » implique la composition juge unique ci-dessus mais
+    // ne sort jamais en `office_uid` (gold : 0 JUGE_REFERES sur 2 964).
+    if axes.office_uid == Some("office:JUGE_REFERES") {
+        axes.office_uid = None;
+    }
+}
+
 fn finish(axes: &mut FormationAxes, state: PositionState) {
     if axes.chamber_position.is_some() {
         return;
     }
-    let base = match (&state.position, axes.chambre_uid) {
+    let base = match (&state.position, axes.chamber_uid) {
         // Section numérotée d'une chambre spécialisée sans numéro :
         // « Chambre sociale-2ème sect » → « Chambre sociale, 2e section ».
         (Some(Position::Section(n)), Some(uid)) => {
-            Some(format!("{}, {} section", chambre_label(uid), ordinal(*n)))
+            Some(format!("{}, {} section", chamber_label(uid), ordinal(*n)))
         }
         // Chambre numérotée (simple ou composée) d'une spécialisation sans
         // adjectif accolable : le label se compose — « 1re chambre de la
         // famille » quand il est lui-même une chambre, « 2e chambre —
         // protection sociale » / « Chambre 4-7 — protection sociale » sinon.
         (Some(pos @ (Position::Chambre(_) | Position::ChambreComposee(..))), Some(uid))
-            if chambre_adjective(uid).is_none() =>
+            if chamber_adjective(uid).is_none() =>
         {
             let base = pos.display(None);
-            let label = chambre_label(uid);
+            let label = chamber_label(uid);
             Some(match (label.strip_prefix("Chambre "), pos) {
                 (Some(rest), Position::Chambre(_)) => format!("{base} {rest}"),
                 (Some(_), _) => base,
@@ -1180,8 +1207,8 @@ fn finish(axes: &mut FormationAxes, state: PositionState) {
                 }
             })
         }
-        (Some(pos), _) => Some(pos.display(axes.chambre_uid.and_then(chambre_adjective))),
-        (None, Some(uid)) => Some(chambre_label(uid).to_string()),
+        (Some(pos), _) => Some(pos.display(axes.chamber_uid.and_then(chamber_adjective))),
+        (None, Some(uid)) => Some(chamber_label(uid).to_string()),
         (None, None) => None,
     };
     axes.chamber_position = match (base, state.section_lettre) {
@@ -1197,10 +1224,10 @@ fn finish(axes: &mut FormationAxes, state: PositionState) {
 
 /// Premier écrivain par axe : un uid déjà posé n'est jamais écrasé.
 fn merge_uid(axes: &mut FormationAxes, uid: &'static str) {
-    if let Some(rest) = uid.strip_prefix("chambre:") {
+    if let Some(rest) = uid.strip_prefix("chamber:") {
         let _ = rest;
-        if axes.chambre_uid.is_none() {
-            axes.chambre_uid = Some(uid);
+        if axes.chamber_uid.is_none() {
+            axes.chamber_uid = Some(uid);
         }
     } else if uid.starts_with("formation:") {
         if axes.formation_uid.is_none() {
@@ -1210,12 +1237,12 @@ fn merge_uid(axes: &mut FormationAxes, uid: &'static str) {
         if axes.office_uid.is_none() {
             axes.office_uid = Some(uid);
         }
-    } else if uid.starts_with("voie:") && axes.voie_uid.is_none() {
-        axes.voie_uid = Some(uid);
+    } else if uid.starts_with("procedure:") && axes.procedure_uid.is_none() {
+        axes.procedure_uid = Some(uid);
     }
 }
 
-/// Entrée production : champs SOURCE de la décision. `juridiction_code` =
+/// Entrée production : champs SOURCE de la décision. `jurisdiction_source_code` =
 /// code chambre Judilibre (CC), `chamber` = champ `chamber` greffe (texte
 /// libre CA/TJ/TCOM), `bandeau_chamber` = chambre lue dans le bandeau
 /// d'en-tête, `formation` = champ formation greffe (Judilibre) /
@@ -1226,16 +1253,16 @@ fn merge_uid(axes: &mut FormationAxes, uid: &'static str) {
 /// adjectivée civile) mais sa position structurelle ne compte que si le champ
 /// greffe est resté muet.
 pub fn parse_formation(
-    juridiction_type: Option<&str>,
-    juridiction_code: Option<&str>,
+    jurisdiction_type: Option<&str>,
+    jurisdiction_source_code: Option<&str>,
     chamber: Option<&str>,
     bandeau_chamber: Option<&str>,
     formation: Option<&str>,
 ) -> FormationAxes {
     let mut axes = FormationAxes::default();
     let mut state = PositionState::default();
-    if juridiction_type == Some("CC") {
-        if let Some(cc) = juridiction_code.and_then(cc_by_code) {
+    if jurisdiction_type == Some("CC") {
+        if let Some(cc) = jurisdiction_source_code.and_then(cc_by_code) {
             apply_cc(cc, &mut axes);
         }
     } else {
@@ -1255,6 +1282,7 @@ pub fn parse_formation(
         parse_part(&strip_rnsm(f), &mut axes, &mut state);
     }
     finish(&mut axes, state);
+    imply_single_judge(jurisdiction_type, &mut axes);
     axes
 }
 
@@ -1280,10 +1308,10 @@ pub enum ParseStatus {
 /// Entrée sonde / conversion GT : la colonne COMPOSÉE historique
 /// (`formation_or_chamber`), re-séparée sur le tiret cadratin de jointure.
 /// La production ne passe jamais par ici — elle lit les champs source.
-pub fn parse_composed(juridiction_type: &str, composed: &str) -> (FormationAxes, ParseStatus) {
+pub fn parse_composed(jurisdiction_type: &str, composed: &str) -> (FormationAxes, ParseStatus) {
     let parts: Vec<&str> = if composed.contains(" — ") {
         composed.split(" — ").collect()
-    } else if juridiction_type == "CC" && composed.contains(" - ") {
+    } else if jurisdiction_type == "CC" && composed.contains(" - ") {
         composed.split(" - ").collect()
     } else {
         vec![composed]
@@ -1297,6 +1325,7 @@ pub fn parse_composed(juridiction_type: &str, composed: &str) -> (FormationAxes,
         }
     }
     finish(&mut axes, state);
+    imply_single_judge(Some(jurisdiction_type), &mut axes);
     let status = if axes.is_empty() {
         ParseStatus::Residue
     } else if hits == parts.len() {
@@ -1328,7 +1357,7 @@ mod tests {
             axes.chamber_position.as_deref(),
             Some("Deuxième chambre civile")
         );
-        assert_eq!(axes.chambre_uid, Some("chambre:CIVILE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:CIVILE"));
         assert_eq!(axes.formation_uid, Some("formation:RESTREINTE"));
     }
 
@@ -1337,6 +1366,61 @@ mod tests {
         let axes = parse_formation(Some("CC"), Some("ordo"), None, None, None);
         assert_eq!(axes.chamber_position, None);
         assert_eq!(axes.office_uid, Some("office:PREMIER_PRESIDENT"));
+    }
+
+    #[test]
+    fn juge_des_referes_implique_juge_unique() {
+        // Le juge des référés statue seul (L. 511-2 CJA) : la surface pose la
+        // composition quand rien d'autre ne l'a donnée — mais le référé est
+        // une voie, pas un office (jamais de `office:JUGE_REFERES` en sortie).
+        let axes = parse_formation(Some("CAA"), None, None, None, Some("Juge des référés"));
+        assert_eq!(axes.office_uid, None);
+        assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
+    }
+
+    #[test]
+    fn ca_chamber_numerotee_de_referes_reste_collegiale() {
+        // CA : la chambre NUMÉROTÉE de référés juge l'appel des ordonnances
+        // en collégiale — pas d'implication juge unique quand une position
+        // de chambre est posée.
+        let axes = parse_formation(Some("CA"), None, Some("Chambre 1-11 référés"), None, None);
+        assert_eq!(axes.office_uid, None);
+        assert_eq!(axes.formation_uid, None);
+        // Service des référés sans position : premier président / délégué,
+        // statuant seul.
+        let axes2 = parse_formation(Some("CA"), None, Some("Service des Référés"), None, None);
+        assert_eq!(axes2.formation_uid, Some("formation:JUGE_UNIQUE"));
+        // TJ : le référé de première instance est toujours à juge seul,
+        // position ou pas (« Référés 2ème Section »).
+        let axes3 = parse_formation(Some("TJ"), None, Some("REFERES 2ème Section"), None, None);
+        assert_eq!(axes3.formation_uid, Some("formation:JUGE_UNIQUE"));
+    }
+
+    #[test]
+    fn magistrat_designe_implique_juge_unique() {
+        let axes = parse_formation(
+            Some("TA"),
+            None,
+            None,
+            None,
+            Some("Président, magistrat désigné R.778-3"),
+        );
+        assert_eq!(axes.office_uid, Some("office:MAGISTRAT_DESIGNE"));
+        assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
+    }
+
+    #[test]
+    fn suffixe_r222_13_vaut_juge_unique() {
+        // « - R. 222-13 » (CJA : magistrat statuant seul) sous sa forme
+        // lexicale normalisée (points/tirets → espaces).
+        let axes = parse_formation(
+            Some("TA"),
+            None,
+            None,
+            None,
+            Some("Magistrat : Mme Baufume - R. 222-13"),
+        );
+        assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
     }
 
     #[test]
@@ -1351,7 +1435,7 @@ mod tests {
             None,
         );
         assert_eq!(axes.chamber_position.as_deref(), Some("1re chambre civile"));
-        assert_eq!(axes.chambre_uid, Some("chambre:CIVILE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:CIVILE"));
     }
 
     #[test]
@@ -1366,11 +1450,11 @@ mod tests {
             None,
         );
         assert_eq!(axes.chamber_position.as_deref(), Some("2e chambre sociale"));
-        assert_eq!(axes.chambre_uid, Some("chambre:SOCIALE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:SOCIALE"));
     }
 
     #[test]
-    fn chambre_et_section_numerotees_sans_confusion() {
+    fn chamber_et_section_numerotees_sans_confusion() {
         // Le chiffre de la chambre devant le mot « section » ne vaut pas
         // numéro de section (bug « chambre 2 section 1 » → 2/2).
         let axes = composed("CA", "Chambre 2 section 1");
@@ -1442,11 +1526,11 @@ mod tests {
     #[test]
     fn graphies_eclatees_recollees() {
         let axes = composed("TCOM", "R E F E R E et procédure accélérée au fond");
-        assert_eq!(axes.office_uid, Some("office:JUGE_REFERES"));
+        assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
         let axes = composed("TJ", "Chambre J.A.F. cab 5");
         assert_eq!(axes.office_uid, Some("office:JAF"));
         let axes = composed("TJ", "R.J. L.J.");
-        assert_eq!(axes.chambre_uid, Some("chambre:PROCEDURES_COLLECTIVES"));
+        assert_eq!(axes.chamber_uid, Some("chamber:PROCEDURES_COLLECTIVES"));
     }
 
     #[test]
@@ -1464,7 +1548,7 @@ mod tests {
         assert_eq!(axes.chamber_position.as_deref(), Some("Chambre 1-6"));
         // Juge-commissaire → procédures collectives (tiret lexical).
         let axes = composed("TCOM", "Juge-commissaire");
-        assert_eq!(axes.chambre_uid, Some("chambre:PROCEDURES_COLLECTIVES"));
+        assert_eq!(axes.chamber_uid, Some("chamber:PROCEDURES_COLLECTIVES"));
         // Juge unique par régime : ≤ 10 000 €, R222-13.
         let axes = composed("TJ", "CTX gal inf/= 10 000€");
         assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
@@ -1490,24 +1574,24 @@ mod tests {
         // Tiret de jonction alias-numéro.
         let axes = composed("CA", "Chambre-1 civile et com.");
         assert_eq!(axes.chamber_position.as_deref(), Some("1re chambre civile"));
-        assert_eq!(axes.chambre_uid, Some("chambre:CIVILE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:CIVILE"));
         // Ordinal suffixé isolé porté par la spécialisation.
         let axes = composed("TJ", "2EME protection sociale");
         assert_eq!(
             axes.chamber_position.as_deref(),
             Some("2e chambre — protection sociale")
         );
-        assert_eq!(axes.chambre_uid, Some("chambre:PROTECTION_SOCIALE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:PROTECTION_SOCIALE"));
         // Label-chambre : composition directe, pas d'em-dash.
         let axes = composed("TJ", "3ème chambre famille");
         assert_eq!(
             axes.chamber_position.as_deref(),
             Some("3e chambre de la famille")
         );
-        // Siège du juge des référés à régime juge unique : les deux axes
-        // sortent (précédence display côté lj-core).
+        // Siège du juge des référés à régime juge unique : la composition
+        // sort, l'office reste vide (le référé est une voie).
         let axes = composed("TJ", "Chamb. référés(sup 10000)");
-        assert_eq!(axes.office_uid, Some("office:JUGE_REFERES"));
+        assert_eq!(axes.office_uid, None);
         assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
         assert_eq!(axes.chamber_position, None);
     }
@@ -1517,12 +1601,12 @@ mod tests {
         // Chambre zéro = placeholder de greffe, pas une position.
         let axes = composed("TJ", "Chambre 0 referes");
         assert_eq!(axes.chamber_position, None);
-        assert_eq!(axes.office_uid, Some("office:JUGE_REFERES"));
+        assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
         assert_eq!(composed("TCOM", "Chambre 00").chamber_position, None);
         // Composée à alias pointé / spécialisation interposée (Aix).
         let axes = composed("CA", "Ch civ. 1-4 copropriété");
         assert_eq!(axes.chamber_position.as_deref(), Some("Chambre 1-4"));
-        assert_eq!(axes.chambre_uid, Some("chambre:CIVILE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:CIVILE"));
         let axes = composed("CA", "Ch.protection sociale 4-7");
         assert_eq!(
             axes.chamber_position.as_deref(),
@@ -1578,6 +1662,9 @@ mod tests {
             axes.chamber_position.as_deref(),
             Some("5e chambre, section B")
         );
+        // Suffixe matière deux lettres collé à la composée.
+        let axes = composed("CA", "Chambre 1-5DP");
+        assert_eq!(axes.chamber_position.as_deref(), Some("Chambre 1-5"));
     }
 
     #[test]
@@ -1601,7 +1688,7 @@ mod tests {
             axes.chamber_position.as_deref(),
             Some("Chambre sociale, section B")
         );
-        assert_eq!(axes.chambre_uid, Some("chambre:SOCIALE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:SOCIALE"));
 
         let axes = composed("CA", "2ème chambre section A");
         assert_eq!(
@@ -1643,14 +1730,14 @@ mod tests {
             None,
         );
         assert_eq!(axes.chamber_position.as_deref(), Some("Protection sociale"));
-        assert_eq!(axes.chambre_uid, Some("chambre:PROTECTION_SOCIALE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:PROTECTION_SOCIALE"));
     }
 
     #[test]
     fn admin_ordinal_chamber() {
         let axes = composed("TA", "2ème chambre");
         assert_eq!(axes.chamber_position.as_deref(), Some("2e chambre"));
-        assert!(axes.chambre_uid.is_none());
+        assert!(axes.chamber_uid.is_none());
     }
 
     #[test]
@@ -1712,14 +1799,14 @@ mod tests {
             axes.chamber_position.as_deref(),
             Some("5e chambre prud'homale")
         );
-        assert_eq!(axes.chambre_uid, Some("chambre:PRUD_HOMALE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:PRUD_HOMALE"));
     }
 
     #[test]
     fn ca_specialisation_alone_uses_referential_label() {
         let axes = composed("CA", "Chambre sociale");
         assert_eq!(axes.chamber_position.as_deref(), Some("Chambre sociale"));
-        assert_eq!(axes.chambre_uid, Some("chambre:SOCIALE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:SOCIALE"));
     }
 
     #[test]
@@ -1732,7 +1819,7 @@ mod tests {
     }
 
     #[test]
-    fn ca_chambre_lettree() {
+    fn ca_chamber_lettree() {
         let axes = composed("CA", "Chambre B");
         assert_eq!(axes.chamber_position.as_deref(), Some("Chambre B"));
     }
@@ -1769,19 +1856,19 @@ mod tests {
     #[test]
     fn tj_ctx_protection_sociale() {
         let axes = composed("TJ", "CTX protection sociale");
-        assert_eq!(axes.chambre_uid, Some("chambre:PROTECTION_SOCIALE"));
+        assert_eq!(axes.chamber_uid, Some("chamber:PROTECTION_SOCIALE"));
         assert_eq!(axes.chamber_position.as_deref(), Some("Protection sociale"));
     }
 
     #[test]
     fn tj_proximite() {
         assert_eq!(
-            composed("TJ", "PCP JTJ proxi fond").chambre_uid,
-            Some("chambre:PROXIMITE")
+            composed("TJ", "PCP JTJ proxi fond").chamber_uid,
+            Some("chamber:PROXIMITE")
         );
         assert_eq!(
-            composed("TJ", "Pprox_fond").chambre_uid,
-            Some("chambre:PROXIMITE")
+            composed("TJ", "Pprox_fond").chamber_uid,
+            Some("chamber:PROXIMITE")
         );
     }
 
@@ -1800,28 +1887,28 @@ mod tests {
     #[test]
     fn tcom_refere_eclate() {
         assert_eq!(
-            composed("TCOM", "R E F E R E").office_uid,
-            Some("office:JUGE_REFERES")
+            composed("TCOM", "R E F E R E").formation_uid,
+            Some("formation:JUGE_UNIQUE")
         );
     }
 
     #[test]
-    fn referes_map_to_office() {
-        assert_eq!(
-            composed("CAA", "Juge des référés").office_uid,
-            Some("office:JUGE_REFERES")
-        );
-        assert_eq!(
-            composed("TJ", "Service des référés").office_uid,
-            Some("office:JUGE_REFERES")
-        );
+    fn referes_sans_office() {
+        // La surface « référés » implique le juge unique sans jamais poser
+        // d'office : le référé est une voie.
+        let caa = composed("CAA", "Juge des référés");
+        assert_eq!(caa.office_uid, None);
+        assert_eq!(caa.formation_uid, Some("formation:JUGE_UNIQUE"));
+        let tj = composed("TJ", "Service des référés");
+        assert_eq!(tj.office_uid, None);
+        assert_eq!(tj.formation_uid, Some("formation:JUGE_UNIQUE"));
     }
 
     #[test]
     fn ta_eloignement_et_ju() {
         assert_eq!(
-            composed("TA", "Eloignement 72 heures").chambre_uid,
-            Some("chambre:ETRANGERS")
+            composed("TA", "Eloignement 72 heures").chamber_uid,
+            Some("chamber:ETRANGERS")
         );
         assert_eq!(
             composed("TA", "Ju1").formation_uid,
@@ -1841,6 +1928,6 @@ mod tests {
     #[test]
     fn ta_reconduite_frontiere() {
         let axes = composed("TA", "Reconduite à la frontière");
-        assert_eq!(axes.chambre_uid, Some("chambre:ETRANGERS"));
+        assert_eq!(axes.chamber_uid, Some("chamber:ETRANGERS"));
     }
 }

@@ -11,7 +11,7 @@ use lj_dtos::{DecisionDetail, SimilarDecisionHit};
 use crate::components::decision_bar::{use_decision_bar, use_result_nav, ResultNavSeed};
 use crate::components::ui::{Badge, BadgeTone};
 use crate::helpers::{format_decision_jurisdiction, format_iso_date};
-use crate::pages::decision_page::labels::portee_badge;
+use crate::pages::decision_page::labels::significance_badge;
 use crate::seo::decision::first_sentence;
 
 use super::decision_header::DecisionActions;
@@ -86,7 +86,7 @@ pub fn DecisionSimilar(
 #[component]
 fn SimilarCard(hit: SimilarDecisionHit) -> impl IntoView {
     let mut title_parts: Vec<String> = vec![format_decision_jurisdiction(
-        hit.juridiction_type,
+        hit.jurisdiction_type,
         hit.jurisdiction_name.as_deref(),
     )];
     if let Some(date) = hit.date_lecture.as_deref() {
@@ -139,14 +139,14 @@ fn SimilarCard(hit: SimilarDecisionHit) -> impl IntoView {
 
 #[component]
 fn SimilarMeta(hit: SimilarDecisionHit) -> impl IntoView {
-    // Badges depuis les tags référentiels servis (ADR 0146). `voie` absente =
+    // Badges depuis les tags référentiels servis (ADR 0146). `procedure` absente =
     // procédure ordinaire (pas de badge). Portée notable (ADR 0167) en lieu et
     // place du badge publication brut, comme sur les cartes résultat.
     let solution = hit.solution.clone();
-    let voie = hit.voie.clone();
-    let pub_badge = portee_badge(&hit.publication_codes);
+    let procedure = hit.procedure.clone();
+    let pub_badge = significance_badge(&hit.publication_codes);
 
-    if solution.is_none() && voie.is_none() && pub_badge.is_none() {
+    if solution.is_none() && procedure.is_none() && pub_badge.is_none() {
         return ().into_any();
     }
 
@@ -156,7 +156,7 @@ fn SimilarMeta(hit: SimilarDecisionHit) -> impl IntoView {
         }
         .into_any()
     });
-    let voie_badge = voie.map(|t| {
+    let procedure_badge = procedure.map(|t| {
         view! {
             <Badge tone=BadgeTone::Accent>{t.label}</Badge>
         }
@@ -172,7 +172,7 @@ fn SimilarMeta(hit: SimilarDecisionHit) -> impl IntoView {
     view! {
         <div class="flex flex-wrap gap-1.5">
             {solution_badge}
-            {voie_badge}
+            {procedure_badge}
             {publication_badge_view}
         </div>
     }

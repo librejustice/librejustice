@@ -46,7 +46,11 @@ js-sys = { workspace = true, optional = true }
 console_error_panic_hook = { workspace = true, optional = true }
 # `Window`/`Location` : origine de la page pour bâtir l'URL absolue du client
 # `/api` (reqwest-wasm rejette une URL relative → "builder error").
-web-sys = { workspace = true, optional = true, features = ["Window", "Location"] }
+# `History` : fragment aligné sans entrée d'historique à la matérialisation
+# d'une division (accordéon de lecture, ADR 0214).
+# `Element`/`HtmlFormElement` : clic sur une suggestion → `requestSubmit` du
+# formulaire englobant (suggest_box, ADR 0216).
+web-sys = { workspace = true, optional = true, features = ["Window", "Location", "History", "Element", "HtmlFormElement"] }
 send_wrapper = { workspace = true, optional = true }
 
 [features]

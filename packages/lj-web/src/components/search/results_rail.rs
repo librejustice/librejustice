@@ -1,4 +1,4 @@
-//! Rail gauche de `/recherche` : volumétrie + synthèse cliquable des résultats
+//! Rail gauche de `/decisions` : volumétrie + synthèse cliquable des résultats
 //! (histogramme des années, textes les plus cités, juridictions, dispositif) +
 //! aide à la recherche. Desktop uniquement — le conteneur `aside` de la page
 //! est `hidden lg:block` ; sur mobile la volumétrie vit dans la rangée tri de
@@ -18,7 +18,8 @@ use lj_dtos::{QueryMode, SearchFacets};
 use crate::helpers::{format_results_count, group_thousands};
 
 use super::compact_search::{query_state, DraftQuery};
-use super::facet_widgets::{juridiction_root_value, Nav};
+use super::cross_teaser::TextesTeaser;
+use super::facet_widgets::Nav;
 use super::syntax_hint::SyntaxHint;
 
 /// Lignes par bloc de facettes.
@@ -116,7 +117,7 @@ pub fn SearchRail(
         let max = years.iter().map(|(_, c)| *c).max().unwrap_or(1).max(1);
         let (first, last) = (years[0].0, years[years.len() - 1].0);
         let map = query_map.get();
-        let (from, to) = (map.get("from"), map.get("to"));
+        let (from, to) = (map.get("dateFrom"), map.get("dateTo"));
         let bars = years
             .into_iter()
             .map(|(year, count)| {
@@ -171,7 +172,7 @@ pub fn SearchRail(
         let Some(f) = facets.get() else {
             return ().into_any();
         };
-        let picked = selected("li");
+        let picked = selected("legalInstrument");
         let mut items = f.legal_instrument;
         items.sort_by_key(|i| std::cmp::Reverse(i.count));
         let rows: Vec<RailRow> = items
@@ -184,16 +185,16 @@ pub fn SearchRail(
                 value: i.value,
             })
             .collect();
-        rail_list("Textes les plus cités", "li", rows, toggle)
+        rail_list("Textes les plus cités", "legalInstrument", rows, toggle)
     };
 
     let jurisdictions = move || {
         let Some(f) = facets.get() else {
             return ().into_any();
         };
-        let picked = selected("jur");
+        let picked = selected("jurisdictionType");
         let mut roots: Vec<_> = f
-            .juridiction
+            .jurisdiction
             .into_iter()
             .filter(|c| c.parent.is_none())
             .collect();
@@ -201,17 +202,14 @@ pub fn SearchRail(
         let rows: Vec<RailRow> = roots
             .into_iter()
             .take(ROWS)
-            .map(|c| {
-                let value = juridiction_root_value(&c.value);
-                RailRow {
-                    active: picked.contains(&value),
-                    label: c.label,
-                    count: c.count,
-                    value,
-                }
+            .map(|c| RailRow {
+                active: picked.contains(&c.value),
+                label: c.label,
+                count: c.count,
+                value: c.value,
             })
             .collect();
-        rail_list("Juridictions", "jur", rows, toggle)
+        rail_list("Juridictions", "jurisdictionType", rows, toggle)
     };
 
     let solutions = move || {
@@ -242,6 +240,9 @@ pub fn SearchRail(
                 {cited}
                 {jurisdictions}
                 {solutions}
+                // Pont croisé : la même requête posée au moteur textes — un
+                // utilisateur qui cherche une norme ici est rattrapé.
+                <TextesTeaser query=query />
                 <div class="border-t border-[var(--color-rule)] pt-4">
                     <SyntaxHint />
                 </div>

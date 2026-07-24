@@ -1,0 +1,27 @@
+{
+  "name": "librejustice",
+  "owner": {
+    "name": "LibreJustice"
+  },
+  "plugins": [
+    {
+      "name": "librejustice",
+      "source": "./plugins/librejustice",
+      "description": "Assistant de recherche juridique (librejustice.fr) : serveur MCP distant avec OAuth automatique + skills — jurisprudence et normes (codes, traités, UE, droit étranger).",
+      "version": "1.16.1",
+      "author": {
+        "name": "LibreJustice"
+      },
+      "homepage": "https://librejustice.fr",
+      "keywords": [
+        "jurisprudence",
+        "droit",
+        "france",
+        "justice",
+        "loi",
+        "mcp"
+      ],
+      "category": "productivity"
+    }
+  ]
+}

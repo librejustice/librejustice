@@ -4,8 +4,8 @@
 //! patron que le référentiel : le corpus ne bouge qu'à l'ingest quotidien, donc
 //! la DB n'est relue qu'à l'expiration — jamais par requête. Les comptes sont
 //! donc exacts (un seq scan 2×/jour est négligeable) : décisions **actives**
-//! (non soft-deleted), et codes/articles depuis le catalogue navigable (`/codes`),
-//! source unique de « ce qui compte comme un code ».
+//! (non soft-deleted), et le corpus normatif entier (tout `legal_text` + articles
+//! en vigueur, toutes natures) — pas le seul catalogue navigable `/codes`.
 
 use std::sync::Arc;
 
@@ -35,16 +35,16 @@ async fn load(state: &AppState) -> Result<Arc<CorpusStatsResponse>> {
         .count_active_decisions()
         .await
         .map_err(ApiError::Store)?;
-    // Réutilise la définition du catalogue (`list_legal_texts`, ADR 0133) plutôt
-    // que de dupliquer son filtre « navigable » : codes ET articles suivent le
-    // contenu de `/codes`. Payload minuscule (quelques dizaines de lignes) : le
-    // compte de codes et la somme des articles en vigueur sortent du même appel.
-    let catalog = repo.list_legal_texts().await.map_err(ApiError::Store)?;
-    let codes_count = catalog.len() as i64;
-    let articles_count = catalog.iter().map(|t| t.article_count).sum();
+    // Corpus normatif entier (`legal_text` toutes natures + articles en vigueur),
+    // pas le seul catalogue navigable `/codes` : le règne de la Norme porte
+    // ~215 k textes et ~930 k articles, d'un aller-retour derrière le cache.
+    let (texts_count, articles_count) = repo
+        .count_normative_corpus()
+        .await
+        .map_err(ApiError::Store)?;
     Ok(Arc::new(CorpusStatsResponse {
         decisions_count,
-        codes_count,
+        texts_count,
         articles_count,
     }))
 }

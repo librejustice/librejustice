@@ -112,7 +112,7 @@
     {
       "query": "l'instruction",
       "mode": "hybrid",
-      "translate_boolean": "+l'instruction",
+      "translate_boolean": "+\"l'instruction\"",
       "phrase_combo_parse": "l instruction \"l instruction\"",
       "tokenize_body": [
         "l",

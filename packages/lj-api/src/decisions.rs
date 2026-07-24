@@ -12,7 +12,7 @@ use lj_core::decision::Decision;
 use lj_core::truecase;
 use lj_dtos::{
     CitationSpan, CitationTarget, DecisionDetail, DecisionPreview, DecisionSection,
-    DecisionSourceXml, FacetTag, JuridictionType, LegalRefArticle, LegalReference,
+    DecisionSourceXml, FacetTag, JurisdictionType, LegalRefArticle, LegalReference,
     SimilarDecisionHit,
 };
 
@@ -21,7 +21,6 @@ use tracing::instrument;
 use crate::error::{ApiError, Result};
 use crate::referential::{referential, Referential};
 use crate::state::AppState;
-use crate::titles::decision_title;
 
 /// Facteur d'élargissement de la fenêtre ANN interne (parité avec
 /// `_SIMILAR_INNER_LIMIT_FACTOR`).
@@ -87,7 +86,7 @@ fn paragraph_global_ranges(decision: &Decision) -> Vec<(usize, usize)> {
 /// Méta source brute pour `DecisionSourceXml` (port de `_decision_source_meta`).
 fn decision_source_meta(decision: &Decision) -> DecisionSourceXml {
     DecisionSourceXml {
-        nom_juridiction: decision.juridiction_nom.clone(),
+        nom_jurisdiction_type: decision.jurisdiction_name.clone(),
         numero_dossier: decision.numero_dossier.clone(),
         date_lecture: decision.date_lecture.clone(),
         formation_jugement: decision.formation.clone(),
@@ -228,6 +227,9 @@ struct RawCite {
     num_key: Option<String>,
     href: String,
     label: String,
+    /// Span « N et suivants » (ADR 0226) : la cible est la famille TOC de
+    /// l'ancre — résolue à l'assemblage, menu comme les plages.
+    suivants: bool,
 }
 
 /// Deux mentions adjacentes forment-elles une plage d'articles
@@ -360,60 +362,17 @@ fn find_char(haystack: &str, needle: &str, from_char: usize) -> Option<usize> {
     Some(from_char + char_off)
 }
 
-/// Articles purement procéduraux à masquer en sortie API (port de
-/// `_PROCEDURAL_ARTICLE_DENYLIST` + `is_procedural_article`, ADR 0058).
-fn is_procedural_article(instrument: &str, article: &str) -> bool {
-    let denylist: &[&str] = match instrument {
-        "Code de procédure civile" => &[
-            // frais et dépens
-            "695", "696", "699", "700", // forme et prononcé du jugement
-            "450", "451", "452", "453", "454", "455", "456", "457", "458", "459", "462", "463",
-            "464", "465", "466", // mise en état
-            "446-1", "446-2", "446-3", "446-4", "763", "776", "778", "779", "780", "785", "786",
-            "787", "788", "789", "790", "799", "800", "802", "803", "804", "805", "807", "808",
-            // exécution provisoire
-            "514", "515", "517", "521", "524",
-            // circuits d'appel et forme des conclusions
-            "905", "905-1", "905-2", "906", "907", "908", "909", "910", "911", "912", "913", "914",
-            "916", "954", "960", "961", "963", // désistement / péremption
-            "384", "385", "394", "395", "399", // procédure de cassation
-            "627", "974", "978", "979", "982", "1009-1", "1010", "1011", "1014", "1015", "1018",
-            "1022", "1026", "1031-1",
-        ],
-        "Code de procédure pénale" => &[
-            // forme de l'arrêt et procédure du pourvoi
-            "567", "567-1-1", "568", "584", "585", "585-1", "586", "590", "591", "592", "593",
-            "594", "598", "609-1", "612", "614", "615", "802",
-        ],
-        "Code de l'organisation judiciaire" => &[
-            "L. 131-6",
-            "L. 131-6-1",
-            "L. 431-3",
-            "L. 431-4",
-            "L. 432-1",
-            "R. 431-5",
-        ],
-        // frais (équivalent administratif de l'article 700 CPC)
-        "Code de justice administrative" => &["L. 761-1"],
-        // aide juridictionnelle
-        "Loi du 10 juillet 1991" => &["20", "24", "37", "75"],
-        _ => &[],
-    };
-    denylist.contains(&article)
-}
-
 /// Une référence brute lue de la DB : `(instrument, slug résolu, [(num affiché,
 /// ref_num_key résolu)])`. Le `slug`/`num_key` portent la FK de citation résolue à
 /// l'ingest (ADR 0123 §2) ; `None` = non ancré au catalogue (pas de lien).
 type RawLegalRef = (String, Option<String>, Vec<(String, Option<String>)>);
 
-/// Construit les `LegalReference` exposées, articles procéduraux masqués (port
-/// de `parse_legal_refs`).
+/// Construit les `LegalReference` exposées. Les citations procédurales ne sont
+/// plus dans le stock (ADR 0211) — rien à masquer en sortie.
 ///
-/// Un instrument réduit à de la pure procédure après filtrage disparaît ; un
-/// instrument cité sans article précis est conservé tel quel. Le `slug` et le
+/// Un instrument cité sans article précis est conservé tel quel. Le `slug` et le
 /// `numKey` résolus (ADR 0123 §2) sont propagés au DTO pour bâtir les liens
-/// `/loi/{slug}/{numKey}` sans re-slugifier côté front. `None` si la liste
+/// `/texte/{slug}/{numKey}` sans re-slugifier côté front. `None` si la liste
 /// résultante est vide.
 fn parse_legal_refs(raw: &[RawLegalRef]) -> Option<Vec<LegalReference>> {
     if raw.is_empty() {
@@ -431,16 +390,12 @@ fn parse_legal_refs(raw: &[RawLegalRef]) -> Option<Vec<LegalReference>> {
         let mut seen = std::collections::HashSet::new();
         let articles: Vec<LegalRefArticle> = original
             .iter()
-            .filter(|(num, _)| !is_procedural_article(instrument, num))
             .filter(|(num, _)| seen.insert(num.clone()))
             .map(|(num, num_key)| LegalRefArticle {
                 num: num.clone(),
                 num_key: num_key.clone().unwrap_or_default(),
             })
             .collect();
-        if !original.is_empty() && articles.is_empty() {
-            continue;
-        }
         refs.push(LegalReference {
             instrument: instrument.clone(),
             slug: slug.clone(),
@@ -454,66 +409,25 @@ fn parse_legal_refs(raw: &[RawLegalRef]) -> Option<Vec<LegalReference>> {
     }
 }
 
-/// Rend lisible la formation source. Deux familles de bruit :
-/// - le marqueur cryptique « (JU) » — variantes « (J.U) », « (ju) »,
-///   « (J.U.) » — signifie *juge unique* (par opposition à « formation à 3 »)
-///   et est développé en clair ;
-/// - les codes de tri interne des TA (`formationJugement` DILA :
-///   « - etrangers - 15 jours », « - 96h - eloignement », « - 10 000€ »…),
-///   qui désignent un circuit d'urgence à juge unique, mappés vers un libellé
-///   de formation propre. Un label vide ou réduit au tiret disparaît.
-fn formation_display(raw: String) -> Option<String> {
-    let stripped = raw
-        .trim()
-        .trim_start_matches(['-', '–', '—'])
-        .trim()
-        .to_lowercase();
-    let mapped = match stripped.as_str() {
-        "" => return None,
-        "etrangers - 15 jours" => Some("Juge unique — étrangers (15 jours)"),
-        "asile - 15 jours" => Some("Juge unique — asile (15 jours)"),
-        "96h - eloignement" => Some("Juge unique — éloignement (96 h)"),
-        "ju refere etr 15 jours" | "ju refere etrangers 15 jours" => {
-            Some("Juge unique — référé étrangers (15 jours)")
-        }
-        "10 000€" => Some("Juge unique — litiges de moins de 10 000 €"),
-        "48h - gens du voyage" => Some("Juge unique — gens du voyage (48 h)"),
-        "référé suspension" | "référés suspension" => Some("Référé suspension"),
-        "référé \"mesures utiles\"" | "référés \"mesures utiles\"" => {
-            Some("Référé mesures utiles")
-        }
-        _ => None,
-    };
-    if let Some(label) = mapped {
-        return Some(label.to_string());
-    }
-    static RE_JU: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
-    Some(
-        RE_JU
-            .get_or_init(|| regex::Regex::new(r"(?i)\(\s*j\.?\s*u\.?\s*\)").unwrap())
-            .replace_all(&raw, "(juge unique)")
-            .into_owned(),
-    )
-}
-
-/// Valide le code `juridiction_type` issu de la DB et le convertit en
-/// [`JuridictionType`] (parité avec le garde Python `if jur_type not in (...)`).
-fn parse_jur_type(raw: &str) -> Result<JuridictionType> {
+/// Valide le code `jurisdiction_type` issu de la DB et le convertit en
+/// [`JurisdictionType`] (parité avec le garde Python `if jur_type not in (...)`).
+fn parse_jur_type(raw: &str) -> Result<JurisdictionType> {
     match raw {
-        "TA" => Ok(JuridictionType::Ta),
-        "CAA" => Ok(JuridictionType::Caa),
-        "CE" => Ok(JuridictionType::Ce),
-        "CONSTIT" => Ok(JuridictionType::Constit),
-        "TC" => Ok(JuridictionType::Tc),
-        "CC" => Ok(JuridictionType::Cc),
-        "CA" => Ok(JuridictionType::Ca),
-        "TJ" => Ok(JuridictionType::Tj),
-        "TCOM" => Ok(JuridictionType::Tcom),
-        "CEDH" => Ok(JuridictionType::Cedh),
-        "CJUE" => Ok(JuridictionType::Cjue),
-        "CNDA" => Ok(JuridictionType::Cnda),
+        "TA" => Ok(JurisdictionType::Ta),
+        "CAA" => Ok(JurisdictionType::Caa),
+        "CE" => Ok(JurisdictionType::Ce),
+        "CONSTIT" => Ok(JurisdictionType::Constit),
+        "TC" => Ok(JurisdictionType::Tc),
+        "CC" => Ok(JurisdictionType::Cc),
+        "CA" => Ok(JurisdictionType::Ca),
+        "TJ" => Ok(JurisdictionType::Tj),
+        "TCOM" => Ok(JurisdictionType::Tcom),
+        "CEDH" => Ok(JurisdictionType::Cedh),
+        "CJUE" => Ok(JurisdictionType::Cjue),
+        "CNDA" => Ok(JurisdictionType::Cnda),
+        "CNIL" => Ok(JurisdictionType::Cnil),
         other => Err(ApiError::Internal(format!(
-            "juridiction_type DB invalide : {other:?}"
+            "jurisdiction_type DB invalide : {other:?}"
         ))),
     }
 }
@@ -590,11 +504,11 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             SELECT
               d.id,
               d.public_id,
-              d.juridiction_type,
+              d.jurisdiction_type,
               d.full_text,
               ds.source_fields,
               d.solution_uid,
-              d.voie_uid,
+              d.procedure_uid,
               d.office_uid,
               d.legal_domain_uid,
               d.publication_codes,
@@ -602,10 +516,16 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
               d.date_audience::text,
               d.jurisdiction_code,
               d.docket_numbers,
-              d.formation_or_chamber,
+              d.chamber_position,
               d.summary,
               d.ecli,
-              ds.source
+              ds.source,
+              d.chamber_uid,
+              d.formation_uid,
+              ariane.source_fields,
+              d.publication_uid,
+              notes.files,
+              web.notes
             FROM decisions d
             LEFT JOIN LATERAL (
                 SELECT source_fields, source
@@ -614,6 +534,29 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
                 ORDER BY source_rank DESC, (lang = 'fra') IS TRUE DESC, id ASC
                 LIMIT 1
             ) ds ON true
+            LEFT JOIN LATERAL (
+                SELECT source_fields
+                FROM decision_sources
+                WHERE decision_id = d.id AND deleted_at IS NULL
+                  AND source = 'ariane-web'
+                LIMIT 1
+            ) ariane ON true
+            LEFT JOIN LATERAL (
+                SELECT source_fields->'files' AS files
+                FROM decision_sources
+                WHERE decision_id = d.id AND deleted_at IS NULL
+                  AND source = 'judilibre'
+                  AND jsonb_array_length(COALESCE(source_fields->'files', '[]'::jsonb)) > 0
+                LIMIT 1
+            ) notes ON true
+            LEFT JOIN LATERAL (
+                SELECT jsonb_agg(c) AS notes
+                FROM decision_sources ds3
+                CROSS JOIN LATERAL jsonb_array_elements(ds3.source_fields->'commentaires') c
+                WHERE ds3.decision_id = d.id AND ds3.deleted_at IS NULL
+                  AND ds3.source <> 'ariane-web'
+                  AND jsonb_typeof(ds3.source_fields->'commentaires') = 'array'
+            ) web ON true
             WHERE d.public_id = $1
             ",
             &[&public_id],
@@ -628,7 +571,7 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
     let full_text: Option<String> = row.get(3);
     let source_fields: Option<serde_json::Value> = row.get(4);
     let solution_uid: Option<String> = row.get(5);
-    let voie_uid: Option<String> = row.get(6);
+    let procedure_uid: Option<String> = row.get(6);
     let office_uid: Option<String> = row.get(7);
     let legal_domain_uid: Option<String> = row.get(8);
     let publication_codes: Vec<String> = row.get(9);
@@ -636,10 +579,16 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
     let date_audience: Option<String> = row.get(11);
     let jurisdiction_code: Option<String> = row.get(12);
     let docket_numbers_raw: Option<Vec<String>> = row.get(13);
-    let formation_or_chamber: Option<String> = row.get(14);
+    let chamber_position: Option<String> = row.get(14);
     let summary: Option<String> = row.get(15);
     let ecli: Option<String> = row.get(16);
     let source: Option<String> = row.get(17);
+    let chamber_uid: Option<String> = row.get(18);
+    let formation_uid: Option<String> = row.get(19);
+    let ariane_bundle: Option<serde_json::Value> = row.get(20);
+    let publication_uid: Option<String> = row.get(21);
+    let judilibre_files: Option<serde_json::Value> = row.get(22);
+    let web_notes: Option<serde_json::Value> = row.get(23);
 
     let jur_type = parse_jur_type(&jur_type_raw)?;
     // Nom de juridiction résolu depuis le référentiel `jurisdiction` (ADR 0146) —
@@ -653,7 +602,7 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
     // (`legal_citation`, ADR 0145 M4). Seules les citations liées apparaissent
     // (ref_text_uid NOT NULL — même doctrine que l'overlay : on ne liste pas ce
     // qui ne mène nulle part). Libellé = titre catalogue ; articles = les
-    // `ref_num_key` distincts (clé canonique du lien `/loi/{slug}/{numKey}`,
+    // `ref_num_key` distincts (clé canonique du lien `/texte/{slug}/{numKey}`,
     // qui sert aussi de libellé).
     let ref_rows = conn
         .query(
@@ -661,11 +610,12 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             SELECT lt.title AS instrument,
                    lt.slug,
                    lt.text_uid,
-                   COALESCE(array_agg(DISTINCT lc.ref_num_key ORDER BY lc.ref_num_key)
-                            FILTER (WHERE lc.ref_num_key IS NOT NULL),
+                   COALESCE(array_agg(DISTINCT el->>3 ORDER BY el->>3)
+                            FILTER (WHERE el->>3 IS NOT NULL),
                             ARRAY[]::text[]) AS num_keys
             FROM legal_citation lc
-            JOIN legal_text lt ON lt.text_uid = lc.ref_text_uid
+            CROSS JOIN LATERAL jsonb_array_elements(lc.spans) AS el
+            JOIN legal_text lt ON lt.text_uid = el->>2
             WHERE lc.decision_id = $1
             GROUP BY lt.text_uid, lt.title, lt.slug
             ORDER BY 1
@@ -674,9 +624,10 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
         )
         .await?;
 
-    // Spans cliquables (ADR 0125 / 0145) : une ligne `legal_citation` = une
-    // mention (codepoints sur `decisions.full_text`, convention 0143). PK scan,
-    // une table ; le JOIN `legal_text` fournit slug (href) et titre (libellé).
+    // Spans cliquables (ADR 0125 / 0145 / 0247) : un élément du blob `spans` =
+    // une mention (codepoints sur `decisions.full_text`, convention 0143). PK
+    // scan, une table ; le JOIN `legal_text` fournit slug (href) et titre
+    // (libellé).
     //
     // **INNER JOIN sur `legal_text` (ref_text_uid lié)** : on n'overlaye QUE
     // les citations ancrées à un texte enregistré. Les références non liées
@@ -685,16 +636,18 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
     let span_rows = conn
         .query(
             "
-            SELECT lc.char_start,
-                   lc.char_end,
+            SELECT (el->>0)::int AS char_start,
+                   (el->>1)::int AS char_end,
                    lt.text_uid,
                    lt.slug,
-                   lc.ref_num_key,
+                   el->>3 AS ref_num_key,
                    lt.title AS label,
                    EXISTS (SELECT 1 FROM legal_article a
-                           WHERE a.text_uid = lt.text_uid) AS has_articles
+                           WHERE a.text_uid = lt.text_uid) AS has_articles,
+                   (el->>4)::bool AS suivants
             FROM legal_citation lc
-            JOIN legal_text lt ON lt.text_uid = lc.ref_text_uid
+            CROSS JOIN LATERAL jsonb_array_elements(lc.spans) AS el
+            JOIN legal_text lt ON lt.text_uid = el->>2
             WHERE lc.decision_id = $1
             ",
             &[&decision_id],
@@ -732,15 +685,16 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             let num_key: Option<String> = r.get(4);
             let label: String = r.get(5);
             let has_articles: bool = r.get(6);
+            let suivants: bool = r.get(7);
             let slug = slug?;
             let num_key = num_key.filter(|k| !k.is_empty());
-            // Article ciblé → /loi/{slug}/{numKey}. Mention nue → /loi/{slug}
+            // Article ciblé → /texte/{slug}/{numKey}. Mention nue → /texte/{slug}
             // seulement si le texte a ≥ 1 article en base (ADR 0162 §4). Pas de
             // lien = pas de rendu du tout (mort du pointillé, décision
             // opérateur 2026-07-05) : on ne décore pas ce qui ne mène nulle part.
             let href = match num_key.as_deref() {
-                Some(k) => format!("/loi/{slug}/{k}"),
-                None if has_articles => format!("/loi/{slug}"),
+                Some(k) => format!("/texte/{slug}/{k}"),
+                None if has_articles => format!("/texte/{slug}"),
                 None => return None,
             };
             Some(RawCite {
@@ -751,6 +705,7 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
                 num_key,
                 href,
                 label,
+                suivants,
             })
         })
         .collect();
@@ -778,10 +733,55 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             .peek()
             .is_some_and(|b| is_article_range(&a, b, &text_chars));
         if !ranged {
+            // « N et suivants » (ADR 0226) : la famille TOC de l'ancre en
+            // menu, comme une plage — `_suivants_family_keys` porte la
+            // sémantique (section unique, VIGUEUR, cap 20 ; NULL sinon,
+            // l'ancre reste alors un lien simple). Les clés publiques de la
+            // famille repassent en numéro d'affichage (`legal_article.num`)
+            // pour parler la même forme que les plages.
+            let family: Vec<String> = match (a.suivants, a.num_key.as_deref()) {
+                (true, Some(nk)) => conn
+                    .query(
+                        "
+                        SELECT coalesce(
+                                 (SELECT la.num FROM legal_article la
+                                  WHERE la.text_uid = $1 AND la.num_key = t.k
+                                  ORDER BY la.date_debut DESC LIMIT 1), t.k)
+                        FROM unnest(_suivants_family_keys($1, $2))
+                             WITH ORDINALITY AS t(k, ord)
+                        ORDER BY t.ord
+                        ",
+                        &[&a.text_uid, &lj_core::article_key::article_key(nk)],
+                    )
+                    .await?
+                    .iter()
+                    .map(|r| r.get(0))
+                    .collect(),
+                _ => Vec::new(),
+            };
+            let targets = if family.is_empty() {
+                vec![single(&a)]
+            } else {
+                let members = range_members.entry(a.text_uid.clone()).or_default();
+                members.extend(family.iter().cloned());
+                family
+                    .iter()
+                    .map(|nk| CitationTarget {
+                        // Libellé en numéro d'affichage, lien dans l'alphabet
+                        // public (ADR 0209) — la route ne connaît que lui.
+                        href: Some(format!(
+                            "/texte/{}/{}",
+                            a.slug,
+                            lj_core::article_key::article_key(nk)
+                        )),
+                        label: format!("{nk} — {}", a.label),
+                    })
+                    .collect()
+            };
             citations.push(GlobalCitation {
                 start: a.start,
                 end: a.end,
-                targets: vec![single(&a)],
+                targets,
             });
             continue;
         }
@@ -821,12 +821,15 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             });
         }
         // Dans le menu d'une plage, chaque ligne s'identifie par son numéro
-        // (le titre du texte est déjà porté par la phrase autour du span).
+        // en forme d'affichage (le titre du texte est déjà porté par la
+        // phrase autour du span).
         let bound = |c: &RawCite| CitationTarget {
             href: Some(c.href.clone()),
             label: format!(
                 "{} — {}",
-                c.num_key.as_deref().expect("gardé par is_article_range"),
+                lj_core::article_key::display(
+                    c.num_key.as_deref().expect("gardé par is_article_range")
+                ),
                 c.label
             ),
         };
@@ -836,8 +839,8 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
         members.push(b.num_key.clone().expect("gardé par is_article_range"));
         let mut targets = vec![bound(&a)];
         targets.extend(inter.into_iter().map(|nk| CitationTarget {
-            href: Some(format!("/loi/{}/{nk}", a.slug)),
-            label: format!("{nk} — {}", a.label),
+            href: Some(format!("/texte/{}/{nk}", a.slug)),
+            label: format!("{} — {}", lj_core::article_key::display(&nk), a.label),
         }));
         targets.push(bound(&b));
         citations.push(GlobalCitation {
@@ -890,8 +893,14 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
                 num_keys.sort();
                 num_keys.dedup();
             }
-            let articles: Vec<(String, Option<String>)> =
-                num_keys.into_iter().map(|k| (k.clone(), Some(k))).collect();
+            // Libellé en forme d'affichage, lien en alphabet public (ADR 0209).
+            let articles: Vec<(String, Option<String>)> = num_keys
+                .into_iter()
+                .map(|k| {
+                    let key = lj_core::article_key::article_key(&k);
+                    (lj_core::article_key::display(&key), Some(key))
+                })
+                .collect();
             (instrument, slug, articles)
         })
         .collect();
@@ -919,10 +928,12 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             )
             SELECT d.public_id,
                    d.jurisdiction_code,
-                   d.juridiction_type,
+                   d.jurisdiction_type,
                    d.date_lecture::text,
                    d.id = $1 AS is_current,
-                   d.id
+                   d.id,
+                   d.solution_uid,
+                   d.docket_numbers
             FROM decisions d
             JOIN (SELECT DISTINCT id FROM chain) c ON c.id = d.id
             WHERE d.deleted_at IS NULL
@@ -972,16 +983,21 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
                 let jt: String = r.get(2);
                 let date: Option<String> = r.get(3);
                 let current: bool = r.get(4);
+                let solution_uid: Option<String> = r.get(6);
                 let label = code
                     .as_deref()
                     .and_then(|c| refs.jurisdiction(c))
                     .map(|j| j.label.clone())
-                    .unwrap_or_else(|| refs.juridiction_type_label(&jt).unwrap_or(&jt).to_string());
+                    .unwrap_or_else(|| {
+                        refs.jurisdiction_type_label(&jt).unwrap_or(&jt).to_string()
+                    });
                 lj_dtos::ChronologyEntry {
                     id: entry_id,
                     label,
                     date,
                     current,
+                    solution: solution_uid.as_deref().map(|u| refs.tag(u).key),
+                    docket_numbers: r.get(7),
                     link: None,
                 }
             })
@@ -1061,35 +1077,51 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
 
     let docket_numbers = docket_numbers_raw.filter(|d| !d.is_empty());
 
-    // Titre machine/stable servi au front (SEO) — même source que MCP/résumé.
-    let formation_or_chamber = formation_or_chamber.and_then(formation_display);
-    let title = decision_title(
-        refs.juridiction_type_label(&jur_type_raw)
+    // Titre canonique (ADR 0170) : siège recomposé depuis les axes structurés,
+    // même composition que `search_title` à l'ingest.
+    let jur_display = crate::titles::decision_jurisdiction(
+        refs.jurisdiction_type_label(&jur_type_raw)
             .unwrap_or(&jur_type_raw),
         jurisdiction_name.as_deref(),
-        formation_or_chamber.as_deref(),
+    );
+    let seat = crate::titles::decision_seat(
+        &jur_display,
+        chamber_position.as_deref(),
+        formation_uid.as_deref(),
+        office_uid.as_deref(),
+    );
+    let title = lj_core::titles::decision_title(
+        &jur_display,
+        seat.as_deref(),
         date_lecture.as_deref(),
-        docket_numbers.as_deref(),
+        docket_numbers
+            .as_deref()
+            .and_then(|d| d.first())
+            .map(String::as_str),
     );
 
     Ok(DecisionDetail {
         id,
-        juridiction_type: jur_type,
+        jurisdiction_type: jur_type,
         title,
         paragraphs,
         paragraph_spans,
         sections,
         summary,
+        jurisdiction_code,
         jurisdiction_name,
         date_lecture,
         solution: opt_tag(&solution_uid, &refs),
-        voie: opt_tag(&voie_uid, &refs),
+        procedure: opt_tag(&procedure_uid, &refs),
         office: opt_tag(&office_uid, &refs),
         legal_domain: opt_tag(&legal_domain_uid, &refs),
+        publication: opt_tag(&publication_uid, &refs),
         publication_codes,
         date_audience,
         docket_numbers,
-        formation_or_chamber,
+        seat,
+        chamber: opt_tag(&chamber_uid, &refs),
+        formation: opt_tag(&formation_uid, &refs),
         legal_references,
         source_xml,
         themes,
@@ -1097,7 +1129,150 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
         ecli,
         source,
         chronology,
+        commentaires: {
+            let mut c = ariane_bundle
+                .as_ref()
+                .map(commentaires_from_bundle)
+                .unwrap_or_default();
+            if let Some(files) = judilibre_files.as_ref() {
+                c.extend(notes_from_judilibre_files(files));
+            }
+            if let Some(notes) = web_notes.as_ref() {
+                c.extend(notes_from_web_bundle(notes));
+            }
+            c
+        },
     })
+}
+
+/// Commentaires doctrine web (`source_fields.commentaires[]` des fournisseurs
+/// autres qu'ArianeWeb : ADDE, plus tard GISTI…) → DTO. Entrées `note`
+/// auto-suffisantes (le lien est stocké tel quel — pas de composition).
+fn notes_from_web_bundle(notes: &serde_json::Value) -> Vec<lj_dtos::Commentaire> {
+    notes
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter(|c| c["kind"].as_str() == Some("note") && c["url"].is_string())
+                .map(|c| lj_dtos::Commentaire {
+                    kind: "note".to_string(),
+                    author: c["author"].as_str().map(str::to_string),
+                    date: c["date"].as_str().map(str::to_string),
+                    body: None,
+                    title: c["title"].as_str().map(str::to_string),
+                    publisher: c["publisher"].as_str().map(str::to_string),
+                    access: c["access"].as_str().map(str::to_string),
+                    rubriques: Vec::new(),
+                    renvois: Vec::new(),
+                    url: c["url"].as_str().map(str::to_string),
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Libellé public d'un type de document lié Judilibre (taxonomie `filetype`).
+/// `None` = type non doctrinal (graphiques, décision annotée) → écarté.
+fn judilibre_filetype_label(t: &str) -> Option<&'static str> {
+    Some(match t {
+        "prep_rapp" => "Rapport du conseiller",
+        "prep_raco" => "Rapport complémentaire du conseiller",
+        "prep_avpg" => "Avis du procureur général",
+        "prep_avis" => "Avis de l'avocat général",
+        "prep_oral" => "Avis oral de l'avocat général",
+        "prep_avco" => "Avis complémentaire de l'avocat général",
+        "comm_comm" => "Communiqué",
+        "comm_note" => "Note explicative",
+        "comm_nora" => "Notice au rapport annuel",
+        "comm_lett" => "Lettre de chambre",
+        "comm_trad" => "Arrêt traduit",
+        _ => return None,
+    })
+}
+
+/// Documents liés Judilibre (`files[]`, Licence Ouverte 2.0) → commentaires
+/// `note` : rapports, avis, communiqués, notes explicatives de la Cour de
+/// cassation. Lien direct vers le PDF public (`rawUrl`). Les graphiques et la
+/// décision annotée (`datt_*`) sont écartés — ce ne sont pas des commentaires.
+fn notes_from_judilibre_files(files: &serde_json::Value) -> Vec<lj_dtos::Commentaire> {
+    files
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|f| {
+                    let label = judilibre_filetype_label(f["type"].as_str()?)?;
+                    let url = f["rawUrl"].as_str()?.to_string();
+                    Some(lj_dtos::Commentaire {
+                        kind: "note".to_string(),
+                        author: None,
+                        date: f["date"].as_str().map(str::to_string),
+                        body: None,
+                        title: Some(label.to_string()),
+                        publisher: Some("Cour de cassation".to_string()),
+                        access: None,
+                        rubriques: Vec::new(),
+                        renvois: Vec::new(),
+                        url: Some(url),
+                    })
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Bundle `commentaires[]` ArianeWeb (ADR 0204) → DTO. Les analyses se
+/// déplient sur place ; l'entrée `conclusions` (existence seule en base)
+/// devient une ligne-lien composée ici — **seul endroit** à corriger si le
+/// Conseil d'État change son schéma d'URL.
+fn commentaires_from_bundle(bundle: &serde_json::Value) -> Vec<lj_dtos::Commentaire> {
+    let dossier = bundle["dossier"].as_str();
+    let date = bundle["date_lecture"].as_str();
+    let str_vec = |v: &serde_json::Value| -> Vec<String> {
+        v.as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|s| s.as_str().map(str::to_string))
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    bundle["commentaires"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|c| match c["kind"].as_str()? {
+                    "analyse" => Some(lj_dtos::Commentaire {
+                        kind: "analyse".to_string(),
+                        author: c["author"].as_str().map(str::to_string),
+                        date: c["date"].as_str().map(str::to_string),
+                        body: c["body"].as_str().map(str::to_string),
+                        title: None,
+                        publisher: None,
+                        access: None,
+                        rubriques: str_vec(&c["meta"]["rubriques"]),
+                        renvois: str_vec(&c["meta"]["renvois"]),
+                        url: None,
+                    }),
+                    "conclusions" => Some(lj_dtos::Commentaire {
+                        kind: "conclusions".to_string(),
+                        author: None,
+                        date: date.map(str::to_string),
+                        body: None,
+                        title: None,
+                        publisher: None,
+                        access: None,
+                        rubriques: Vec::new(),
+                        renvois: Vec::new(),
+                        url: Some(format!(
+                            "https://www.conseil-etat.fr/fr/arianeweb/CRP/conclusion/{}/{}",
+                            date?, dossier?
+                        )),
+                    }),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Prévisualisation légère d'une décision par `public_id` (hover card des
@@ -1117,15 +1292,17 @@ pub async fn decision_preview(state: &AppState, public_id: &str) -> Result<Decis
             "
             SELECT
               d.public_id,
-              d.juridiction_type,
+              d.jurisdiction_type,
               d.jurisdiction_code,
               d.date_lecture::text,
               d.docket_numbers,
               d.solution_uid,
-              d.voie_uid,
+              d.procedure_uid,
               d.publication_codes,
               d.summary,
-              d.formation_or_chamber
+              d.chamber_position,
+              d.formation_uid,
+              d.office_uid
             FROM decisions d
             WHERE d.public_id = $1
             ",
@@ -1140,30 +1317,44 @@ pub async fn decision_preview(state: &AppState, public_id: &str) -> Result<Decis
     let date_lecture: Option<String> = row.get(3);
     let docket_numbers: Option<Vec<String>> = row.get(4);
     let solution_uid: Option<String> = row.get(5);
-    let voie_uid: Option<String> = row.get(6);
+    let procedure_uid: Option<String> = row.get(6);
     let publication_codes: Vec<String> = row.get(7);
     let summary: Option<String> = row.get(8);
-    let formation: Option<String> = row.get::<_, Option<String>>(9).and_then(formation_display);
+    let chamber_position: Option<String> = row.get(9);
+    let formation_uid: Option<String> = row.get(10);
+    let office_uid: Option<String> = row.get(11);
 
     let jurisdiction_name = jurisdiction_code
         .as_deref()
         .and_then(|c| refs.jurisdiction(c))
         .map(|j| j.label.clone());
     let docket_numbers = docket_numbers.filter(|d| !d.is_empty());
-    let title = decision_title(
-        refs.juridiction_type_label(&jur_type_raw)
+    let jur_display = crate::titles::decision_jurisdiction(
+        refs.jurisdiction_type_label(&jur_type_raw)
             .unwrap_or(&jur_type_raw),
         jurisdiction_name.as_deref(),
-        formation.as_deref(),
+    );
+    let seat = crate::titles::decision_seat(
+        &jur_display,
+        chamber_position.as_deref(),
+        formation_uid.as_deref(),
+        office_uid.as_deref(),
+    );
+    let title = lj_core::titles::decision_title(
+        &jur_display,
+        seat.as_deref(),
         date_lecture.as_deref(),
-        docket_numbers.as_deref(),
+        docket_numbers
+            .as_deref()
+            .and_then(|d| d.first())
+            .map(String::as_str),
     );
 
     Ok(DecisionPreview {
         id,
         title,
         solution: opt_tag(&solution_uid, &refs),
-        voie: opt_tag(&voie_uid, &refs),
+        procedure: opt_tag(&procedure_uid, &refs),
         publication_codes,
         summary,
     })
@@ -1234,13 +1425,13 @@ pub async fn similar_decisions(
         )
         SELECT
           d.public_id,
-          d.juridiction_type,
+          d.jurisdiction_type,
           d.jurisdiction_code,
           r.score,
           d.date_lecture::text,
           d.docket_numbers,
           d.solution_uid,
-          d.voie_uid,
+          d.procedure_uid,
           d.office_uid,
           d.publication_codes,
           d.summary
@@ -1293,14 +1484,14 @@ pub async fn similar_decisions(
         let docket_numbers: Option<Vec<String>> = row.get(5);
         let docket_numbers = docket_numbers.filter(|d| !d.is_empty());
         let solution_uid: Option<String> = row.get(6);
-        let voie_uid: Option<String> = row.get(7);
+        let procedure_uid: Option<String> = row.get(7);
         let office_uid: Option<String> = row.get(8);
         let publication_codes: Option<Vec<String>> = row.get(9);
         let summary: Option<String> = row.get(10);
 
         hits.push(SimilarDecisionHit {
             id,
-            juridiction_type: parse_enum_str(&jur_type_raw).unwrap_or(JuridictionType::Ta),
+            jurisdiction_type: parse_enum_str(&jur_type_raw).unwrap_or(JurisdictionType::Ta),
             jurisdiction_name: jurisdiction_code
                 .as_deref()
                 .and_then(|c| refs.jurisdiction(c))
@@ -1309,7 +1500,7 @@ pub async fn similar_decisions(
             date_lecture,
             docket_numbers,
             solution: opt_tag(&solution_uid, &refs),
-            voie: opt_tag(&voie_uid, &refs),
+            procedure: opt_tag(&procedure_uid, &refs),
             office: opt_tag(&office_uid, &refs),
             publication_codes: publication_codes.unwrap_or_default(),
             summary,
@@ -1327,68 +1518,6 @@ fn parse_enum_str<T: for<'de> serde::Deserialize<'de>>(code: &str) -> Option<T> 
 mod tests {
     use super::*;
 
-    #[test]
-    fn formation_display_expands_juge_unique() {
-        let f = |s: &str| formation_display(s.to_string()).unwrap();
-        assert_eq!(f("10ème chambre (JU)"), "10ème chambre (juge unique)");
-        assert_eq!(f("3ème chambre (J.U)"), "3ème chambre (juge unique)");
-        assert_eq!(f("Pole social (ju)"), "Pole social (juge unique)");
-        assert_eq!(f("8ème chambre (J.U.)"), "8ème chambre (juge unique)");
-        // Les autres parenthèses passent telles quelles.
-        assert_eq!(
-            f("4ème chambre (formation à 3)"),
-            "4ème chambre (formation à 3)"
-        );
-        assert_eq!(f("Juge unique (6)"), "Juge unique (6)");
-    }
-
-    #[test]
-    fn formation_display_maps_ta_urgency_circuits() {
-        let f = |s: &str| formation_display(s.to_string());
-        assert_eq!(
-            f("- etrangers - 15 jours").as_deref(),
-            Some("Juge unique — étrangers (15 jours)")
-        );
-        assert_eq!(
-            f("Asile - 15 jours").as_deref(),
-            Some("Juge unique — asile (15 jours)")
-        );
-        assert_eq!(
-            f("- 96h - eloignement").as_deref(),
-            Some("Juge unique — éloignement (96 h)")
-        );
-        assert_eq!(
-            f("JU refere etr 15 jours").as_deref(),
-            Some("Juge unique — référé étrangers (15 jours)")
-        );
-        assert_eq!(
-            f("- 10 000€").as_deref(),
-            Some("Juge unique — litiges de moins de 10 000 €")
-        );
-        assert_eq!(
-            f("- référés \"mesures utiles\"").as_deref(),
-            Some("Référé mesures utiles")
-        );
-        // Tiret seul = pas de formation.
-        assert_eq!(f("-"), None);
-        // Un label normal passe tel quel.
-        assert_eq!(f("1ère chambre").as_deref(), Some("1ère chambre"));
-    }
-
-    #[test]
-    fn procedural_articles_are_masked_per_instrument() {
-        // CPC 700 (frais) est procédural ; CPC 4 (principe directeur) ne l'est pas.
-        assert!(is_procedural_article("Code de procédure civile", "700"));
-        assert!(!is_procedural_article("Code de procédure civile", "4"));
-        // CJA L. 761-1 (équivalent 700) masqué.
-        assert!(is_procedural_article(
-            "Code de justice administrative",
-            "L. 761-1"
-        ));
-        // Instrument inconnu → jamais procédural.
-        assert!(!is_procedural_article("Code civil", "1240"));
-    }
-
     /// Raccourci de construction d'une `RawLegalRef` pour les tests : `(num,
     /// num_key)` posés à l'identique (forme déjà canonique).
     fn raw_ref(instrument: &str, slug: Option<&str>, articles: &[&str]) -> RawLegalRef {
@@ -1400,26 +1529,6 @@ mod tests {
                 .map(|a| (a.to_string(), Some(a.to_string())))
                 .collect(),
         )
-    }
-
-    #[test]
-    fn parse_legal_refs_drops_fully_procedural_instrument() {
-        let raw = vec![
-            raw_ref(
-                "Code de procédure civile",
-                Some("code-procedure-civile"),
-                &["700", "699"],
-            ),
-            raw_ref("Code civil", Some("code-civil"), &["1240"]),
-        ];
-        let refs = parse_legal_refs(&raw).expect("au moins une ref");
-        // L'instrument 100% procédural disparaît ; le Code civil reste.
-        assert_eq!(refs.len(), 1);
-        assert_eq!(refs[0].instrument, "Code civil");
-        assert_eq!(refs[0].slug.as_deref(), Some("code-civil"));
-        assert_eq!(refs[0].articles.len(), 1);
-        assert_eq!(refs[0].articles[0].num, "1240");
-        assert_eq!(refs[0].articles[0].num_key, "1240");
     }
 
     #[test]
@@ -1484,10 +1593,12 @@ mod tests {
             source_uid: String::new(),
             member_name: String::new(),
             ecli: None,
-            juridiction_code: None,
-            juridiction_nom: None,
-            juridiction_type: None,
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: None,
+            jurisdiction_type: None,
+            jurisdiction_location: None,
             numero_dossier: None,
             numero_dossiers: None,
             numero_role: None,
@@ -1529,8 +1640,9 @@ mod tests {
             text_uid: text_uid.to_string(),
             slug: "code-de-la-route".to_string(),
             num_key: num_key.map(str::to_string),
-            href: "/loi/code-de-la-route".to_string(),
+            href: "/texte/code-de-la-route".to_string(),
             label: "Code de la route".to_string(),
+            suivants: false,
         }
     }
 
@@ -1605,7 +1717,7 @@ mod tests {
         let (p0s, p0e) = ranges[0];
         assert_eq!((p0s, p0e), (0, n_p0));
         let spans0 = spans_for_range(
-            &[cite(g_start, g_end, Some("/loi/code-civil/1240"))],
+            &[cite(g_start, g_end, Some("/texte/code-civil/1240"))],
             p0s,
             p0e,
         );
@@ -1626,14 +1738,14 @@ mod tests {
         // Paragraphe [0, 40). Deux citations qui se chevauchent → UNE région
         // (enveloppe 10..30) portant les DEUX cibles (menu déroulant côté front) :
         // aucune n'est droppée, contrairement à l'ancien longest-win.
-        let short = cite(12, 20, Some("/loi/x/court"));
-        let long = cite(10, 30, Some("/loi/x/long"));
+        let short = cite(12, 20, Some("/texte/x/court"));
+        let long = cite(10, 30, Some("/texte/x/long"));
         let spans = spans_for_range(&[short, long], 0, 40);
         assert_eq!(spans.len(), 1);
         assert_eq!((spans[0].start, spans[0].end), (10, 30));
         // Ordre = apparition (tri par début) : long (10) puis court (12).
         let hrefs: Vec<_> = spans[0].targets.iter().map(|t| t.href.as_deref()).collect();
-        assert_eq!(hrefs, vec![Some("/loi/x/long"), Some("/loi/x/court")]);
+        assert_eq!(hrefs, vec![Some("/texte/x/long"), Some("/texte/x/court")]);
     }
 
     #[test]
@@ -1650,10 +1762,10 @@ mod tests {
             }],
         };
         let cites = [
-            mk("/loi/code-civil/1382", "1382"),
-            mk("/loi/code-civil/1383", "1383"),
-            mk("/loi/code-civil/1384", "1384"),
-            mk("/loi/code-civil/1382", "1382"), // doublon exact → dédupliqué
+            mk("/texte/code-civil/1382", "1382"),
+            mk("/texte/code-civil/1383", "1383"),
+            mk("/texte/code-civil/1384", "1384"),
+            mk("/texte/code-civil/1382", "1382"), // doublon exact → dédupliqué
         ];
         let spans = spans_for_range(&cites, 0, 60);
         assert_eq!(spans.len(), 1);
@@ -1668,7 +1780,7 @@ mod tests {
     #[test]
     fn disjoint_spans_kept_and_sorted_by_start() {
         // Deux citations disjointes (résolue + non résolue) → deux spans, triés.
-        let a = cite(20, 24, Some("/loi/x/2"));
+        let a = cite(20, 24, Some("/texte/x/2"));
         let b = cite(5, 9, None);
         let spans = spans_for_range(&[a, b], 0, 40);
         assert_eq!(spans.len(), 2);
@@ -1676,14 +1788,14 @@ mod tests {
         assert_eq!(spans[0].targets.len(), 1);
         assert!(spans[0].targets[0].href.is_none()); // la projection est agnostique au href
         assert_eq!((spans[1].start, spans[1].end), (20, 24));
-        assert_eq!(spans[1].targets[0].href.as_deref(), Some("/loi/x/2"));
+        assert_eq!(spans[1].targets[0].href.as_deref(), Some("/texte/x/2"));
     }
 
     #[test]
     fn multi_occurrence_yields_one_span_per_mention() {
         // Une même citation mentionnée deux fois dans le paragraphe → deux spans.
-        let m1 = cite(3, 7, Some("/loi/x/9"));
-        let m2 = cite(15, 19, Some("/loi/x/9"));
+        let m1 = cite(3, 7, Some("/texte/x/9"));
+        let m2 = cite(15, 19, Some("/texte/x/9"));
         let spans = spans_for_range(&[m1, m2], 0, 30);
         assert_eq!(spans.len(), 2);
         assert_eq!((spans[0].start, spans[0].end), (3, 7));
@@ -1693,10 +1805,10 @@ mod tests {
     #[test]
     fn span_outside_paragraph_is_ignored() {
         // Span entièrement hors de la plage du paragraphe → aucun span.
-        let spans = spans_for_range(&[cite(100, 110, Some("/loi/x/1"))], 0, 40);
+        let spans = spans_for_range(&[cite(100, 110, Some("/texte/x/1"))], 0, 40);
         assert!(spans.is_empty());
         // Span à cheval sur la borne (non entièrement contenu) → ignoré.
-        let spans = spans_for_range(&[cite(38, 45, Some("/loi/x/1"))], 0, 40);
+        let spans = spans_for_range(&[cite(38, 45, Some("/texte/x/1"))], 0, 40);
         assert!(spans.is_empty());
     }
 }

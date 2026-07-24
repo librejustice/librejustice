@@ -15,25 +15,42 @@ mod cases;
 mod chunks;
 mod citations;
 mod decisions;
+mod entities;
 mod identity;
+mod legal_links;
+mod legal_toc;
 mod links;
+mod llm_keys;
+mod parties;
 mod referential;
+mod rekey;
+mod suggest;
 mod support;
 mod types;
+mod usage_terms;
 
 use crate::db::Connection;
 
 pub use bench::ManualFields;
 pub use cases::CaseCitationWriteItem;
 pub use citations::CitationWriteItem;
+pub use entities::{EntityHistoryWriteItem, EntityWriteItem};
 pub use links::DecisionLinkWriteItem;
+pub use parties::DecisionPartyWriteItem;
+pub use suggest::SUGGEST_FST_KEY;
 pub use support::source_from_source_uid;
 pub use types::{
-    ArticleNeighborRow, ArticleSearchRow, ArticleSearchStats, BulkDecisionWrite, CaseCitationRow,
-    ChunkWrite, CitationOccurrenceRow, CitingDecisionRow, DecisionLinkRow, ExistingDecisionState,
-    ExtractedFields, FacetCount, FacetValueRow, GtDoc, JurisdictionRow, LawCodeSummaryRow,
-    LawVersionRow, LegalArticleRow, LegalTextCatalogRow, LegalTextMeta, LegalTextRow,
-    MissingSummaryRow, SitemapRow, TocArticleRow, UpsertResult, UpsertStatus,
+    ArticleCitationSpanRow, ArticleNeighborRow, ArticleRankHit, ArticleRrf, ArticleSearchRow,
+    ArticleSearchStats, ArticleTitleMode, BulkDecisionWrite, CaseCitationRow, ChunkWrite,
+    CitationOccurrenceRow, CitingDecisionRow, CoCitedArticleRow, DecisionLinkRow,
+    DecisionPartyReadRow, DecisionPartyRow, EntityContentieuxCounts, EntityCounselRow,
+    EntityDecisionRow, EntityDenominationReadRow, EntityDirectoryRow, EntityHeaderRow,
+    EntityJurisdictionCountRow, EntityYearCountRow, ExistingDecisionState, ExtractedFields,
+    FacetCount, FacetValueRow, GtDoc, JurisdictionRow, LawCodeSummaryRow, LawVersionRow,
+    LegalArticleRow, LegalLinkOwner, LegalLinkRow, LegalTextCatalogRow, LegalTextMeta,
+    LegalTextRow, MissingSummaryRow, ResolvedLegalLink, SitemapRow, SlugSourceRow,
+    TextCaseCitationRow, TextLegalCitationRow, TocArticleRow, TocEdgeRow, TocOwner, TocReadingRow,
+    TocTreeRow, UpsertResult, UpsertStatus,
 };
 
 pub use support::REEXTRACTABLE_FIELDS;

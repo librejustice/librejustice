@@ -5,9 +5,10 @@
 //! POST HTTP). On ne le ré-instancie jamais en réponse à une requête.
 
 use crate::config::Settings;
-use lj_llm::backend::{AnyEmbedder, BackendHealth, DummyEmbedder};
+use lj_llm::backend::{AnyEmbedder, DummyEmbedder};
 use lj_llm::cloudflare::CloudflareWorkersAIEmbedder;
 use lj_llm::openai_http::OpenAIHttpEmbedder;
+use std::sync::atomic::AtomicBool;
 
 /// Construit l'embedder de requête selon `settings.embed_backend`
 /// (`dummy` / `openai-http` / `cloudflare` / `auto`).
@@ -18,11 +19,10 @@ use lj_llm::openai_http::OpenAIHttpEmbedder;
 /// fois au démarrage : une config invalide doit faire échouer le boot, pas une
 /// requête.
 ///
-/// Mode `auto` (port de `AutoEmbedder`/`_BackendHealth`) : vLLM (OpenAI-HTTP) à
-/// l'URL résolue (`embed_url` ou `http://localhost:8400/v1/embeddings`) en
-/// priorité, fallback Cloudflare Workers AI piloté par un failure-score (EMA
-/// alpha=0.70, demi-vie 1 h, skip au-dessus de 0.80). Les creds Cloudflare sont
-/// requises (parité des préconditions Python) car elles servent au fallback.
+/// Mode `auto` (ADR 0221) : vLLM (OpenAI-HTTP) à l'URL résolue (`embed_url` ou
+/// `http://localhost:8400/v1/embeddings`) primaire, repli Cloudflare Workers AI
+/// en disjoncteur binaire (`degraded`). Les creds Cloudflare sont requises car
+/// elles servent au repli.
 pub fn build_query_embedder(settings: &Settings) -> AnyEmbedder {
     match settings.embed_backend.as_str() {
         "dummy" => AnyEmbedder::Dummy(DummyEmbedder::default()),
@@ -76,7 +76,7 @@ pub fn build_query_embedder(settings: &Settings) -> AnyEmbedder {
             AnyEmbedder::Auto {
                 vllm,
                 cloudflare,
-                health: BackendHealth::new(),
+                degraded: AtomicBool::new(false),
             }
         }
         other => panic!("embed_backend inconnu : {other:?}"),

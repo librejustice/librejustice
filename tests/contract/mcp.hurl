@@ -109,7 +109,7 @@ jsonpath "$.result" exists
 jsonpath "$.error" not exists
 
 # -----------------------------------------------------------------------------
-# tools/list — three tools, exact names, ordering, strict inputSchema
+# tools/list — five tools, exact names, ordering, strict inputSchema
 # -----------------------------------------------------------------------------
 POST {{base}}/mcp/
 Accept: application/json, text/event-stream
@@ -125,10 +125,12 @@ HTTP 200
 jsonpath "$.jsonrpc" == "2.0"
 jsonpath "$.id" == 3
 jsonpath "$.result.tools" isCollection
-jsonpath "$.result.tools" count == 3
+jsonpath "$.result.tools" count == 5
 jsonpath "$.result.tools[0].name" == "search_decisions"
 jsonpath "$.result.tools[1].name" == "get_decision"
 jsonpath "$.result.tools[2].name" == "list_my_activity"
+jsonpath "$.result.tools[3].name" == "get_legal_text"
+jsonpath "$.result.tools[4].name" == "search_legal_texts"
 # Every tool: description + inputSchema, no title-bearing $ref/$defs leakage.
 jsonpath "$.result.tools[0].description" isString
 jsonpath "$.result.tools[0].inputSchema" exists
@@ -146,20 +148,20 @@ jsonpath "$.result.tools[0].inputSchema.properties.sort.enum" includes "date_des
 jsonpath "$.result.tools[0].inputSchema.properties.sort.enum" includes "date_asc"
 jsonpath "$.result.tools[0].inputSchema.properties.limit.minimum" == 1
 jsonpath "$.result.tools[0].inputSchema.properties.limit.maximum" == 20
-jsonpath "$.result.tools[0].inputSchema.properties.aiRerank.type" == "boolean"
-jsonpath "$.result.tools[0].inputSchema.properties.juridictionType.items.enum" includes "TA"
-jsonpath "$.result.tools[0].inputSchema.properties.juridictionType.items.enum" includes "CC"
-jsonpath "$.result.tools[0].inputSchema.properties.juridictionType.items.enum" includes "TCOM"
-# search_decisions écrit un log d'activité privé (record_search) → non read-only,
-# non idempotent (cf. activity_logging_annotations dans mcp.rs).
-jsonpath "$.result.tools[0].annotations.readOnlyHint" == false
+jsonpath "$.result.tools[0].inputSchema.properties.ai_rerank.type" == "boolean"
+jsonpath "$.result.tools[0].inputSchema.properties.jurisdiction_type.anyOf[0].items.enum" includes "TA"
+jsonpath "$.result.tools[0].inputSchema.properties.jurisdiction_type.anyOf[0].items.enum" includes "CC"
+jsonpath "$.result.tools[0].inputSchema.properties.jurisdiction_type.anyOf[0].items.enum" includes "TCOM"
+# Tous les outils sont read-only (le log d'activité est une journalisation
+# privée du compte, cf. read_only_annotations dans mcp.rs).
+jsonpath "$.result.tools[0].annotations.readOnlyHint" == true
 jsonpath "$.result.tools[0].annotations.destructiveHint" == false
-jsonpath "$.result.tools[0].annotations.idempotentHint" == false
+jsonpath "$.result.tools[0].annotations.idempotentHint" == true
 jsonpath "$.result.tools[0].annotations.openWorldHint" == false
 jsonpath "$.result.tools[1].inputSchema.additionalProperties" == false
-jsonpath "$.result.tools[1].inputSchema.required" includes "id"
-jsonpath "$.result.tools[1].inputSchema.properties.id.type" == "string"
-jsonpath "$.result.tools[1].inputSchema.properties.id.minLength" == 1
+jsonpath "$.result.tools[1].inputSchema.required" includes "url"
+jsonpath "$.result.tools[1].inputSchema.properties.url.type" == "string"
+jsonpath "$.result.tools[1].inputSchema.properties.url.minLength" == 1
 jsonpath "$.result.tools[2].inputSchema.additionalProperties" == false
 jsonpath "$.result.tools[2].inputSchema.properties.kind.enum" includes "searches"
 jsonpath "$.result.tools[2].inputSchema.properties.kind.enum" includes "bookmarks"
@@ -183,7 +185,7 @@ Content-Type: application/json
   "method": "tools/call",
   "params": {
     "name": "search_decisions",
-    "arguments": {"query": "responsabilité hôpital infection nosocomiale", "limit": 5, "aiRerank": false}
+    "arguments": {"query": "responsabilité hôpital infection nosocomiale", "limit": 5, "ai_rerank": false}
   }
 }
 HTTP 200
@@ -195,16 +197,20 @@ jsonpath "$.result.content[0].type" == "text"
 jsonpath "$.result.content[0].text" isString
 jsonpath "$.result.structuredContent" exists
 jsonpath "$.result.structuredContent.query" isString
-jsonpath "$.result.structuredContent.total" isInteger
 jsonpath "$.result.structuredContent.hits" isCollection
 jsonpath "$.result.isError" == false
 # Per-hit shape (only assert when at least one hit; data-dependent):
-# hits[].id/title/url/preview/chars/jurisdiction always present (camelCase),
-# optional: dateLecture, docketNumbers, solution, voie, office,
-# legalDomain, publication (omitted when null — skip_serializing_if).
+# hits[].title/url/chars/jurisdictionType always present (camelCase), plus
+# exactly one of aiSummary (semantic) / snippet (lexical) per hit,
+# optional metadata = filter tokens: jurisdictionCode, chamber, solution,
+# procedure, office, legalDomain, publication, dateLecture, docketNumbers
+# (omitted when null — skip_serializing_if).
 
 # -----------------------------------------------------------------------------
-# tools/call get_decision — not-found id → tool error path
+# tools/call get_decision — not-found url → contrat d'erreur structuré :
+# result.isError == true, content[0].text = JSON {error, category, retryable,
+# hint}. Un lookup par url n'est PAS une recherche : le hint dit « url erronée
+# ou inventée (ou décision dépubliée) », pas « corpus non exhaustif ».
 # -----------------------------------------------------------------------------
 POST {{base}}/mcp/
 Accept: application/json, text/event-stream
@@ -213,21 +219,21 @@ Content-Type: application/json
   "jsonrpc": "2.0",
   "id": 5,
   "method": "tools/call",
-  "params": {"name": "get_decision", "arguments": {"id": "does-not-exist-zzz"}}
+  "params": {"name": "get_decision", "arguments": {"url": "https://librejustice.fr/decision/does-not-exist-zzz"}}
 }
 HTTP 200
 [Asserts]
 jsonpath "$.jsonrpc" == "2.0"
 jsonpath "$.id" == 5
-# DIVERGENCE (CRITICAL): Python FastMCP turns ToolError("decision not found...")
-# into a SUCCESSFUL tools/call result with result.isError == true and
-# result.content[0].text carrying the message — NO top-level JSON-RPC error.
-# Rust returns a top-level {"error": {"code": -32603, "message": "decision not
-# found for id=..."}} and NO result. The differ must reconcile these two error
-# shapes; do not assert one branch.
+jsonpath "$.result.isError" == true
+jsonpath "$.result.content[0].type" == "text"
+jsonpath "$.result.content[0].text" contains "\"category\":\"not_found\""
+jsonpath "$.result.content[0].text" contains "\"retryable\":false"
+jsonpath "$.result.content[0].text" contains "cannot be composed or guessed"
+jsonpath "$.error" not exists
 
 # -----------------------------------------------------------------------------
-# tools/call get_decision — missing required arg `id` → invalid params
+# tools/call get_decision — missing required arg `url` → invalid params
 # -----------------------------------------------------------------------------
 POST {{base}}/mcp/
 Accept: application/json, text/event-stream
@@ -242,11 +248,11 @@ HTTP 200
 [Asserts]
 jsonpath "$.jsonrpc" == "2.0"
 jsonpath "$.id" == 6
-# Rust: top-level error code -32602 "missing tool argument: id".
+# Rust: top-level error code -32602 "missing tool argument: url".
 # Python: FastMCP validation error → result.isError true (SDK-shaped message).
 
 # -----------------------------------------------------------------------------
-# tools/call unknown tool name → not found
+# tools/call unknown tool name → isError + contrat d'erreur (validation, hint)
 # -----------------------------------------------------------------------------
 POST {{base}}/mcp/
 Accept: application/json, text/event-stream
@@ -261,11 +267,14 @@ HTTP 200
 [Asserts]
 jsonpath "$.jsonrpc" == "2.0"
 jsonpath "$.id" == 7
-# Rust: top-level error code -32601 (method_not_found) for unknown tool name.
-# Python FastMCP: "Unknown tool" → result.isError true.
+jsonpath "$.result.isError" == true
+jsonpath "$.result.content[0].text" contains "Unknown tool"
+jsonpath "$.result.content[0].text" contains "\"category\":\"validation\""
+jsonpath "$.result.content[0].text" contains "\"hint\""
 
 # -----------------------------------------------------------------------------
-# unknown top-level method → method not found
+# resources/list — liste vide assumée (primitive application-controlled sans
+# consommateur réel côté clients ; cf. ADR 0244).
 # -----------------------------------------------------------------------------
 POST {{base}}/mcp/
 Accept: application/json, text/event-stream
@@ -280,11 +289,67 @@ HTTP 200
 [Asserts]
 jsonpath "$.jsonrpc" == "2.0"
 jsonpath "$.id" == 8
+jsonpath "$.result.resources" count == 0
+jsonpath "$.error" not exists
+
+# -----------------------------------------------------------------------------
+# prompts/list + prompts/get — workflows invocables par l'utilisateur
+# -----------------------------------------------------------------------------
+POST {{base}}/mcp/
+Accept: application/json, text/event-stream
+Content-Type: application/json
+{
+  "jsonrpc": "2.0",
+  "id": 10,
+  "method": "prompts/list",
+  "params": {}
+}
+HTTP 200
+[Asserts]
+jsonpath "$.result.prompts" count == 3
+jsonpath "$.result.prompts[0].name" == "recherche_jurisprudence"
+jsonpath "$.result.prompts[1].name" == "article_a_date"
+jsonpath "$.result.prompts[2].name" == "textes_applicables"
+jsonpath "$.result.prompts[0].arguments[0].name" == "question"
+jsonpath "$.result.prompts[0].arguments[0].required" == true
+jsonpath "$.error" not exists
+
+POST {{base}}/mcp/
+Accept: application/json, text/event-stream
+Content-Type: application/json
+{
+  "jsonrpc": "2.0",
+  "id": 11,
+  "method": "prompts/get",
+  "params": {"name": "article_a_date", "arguments": {"article": "article 1240 du code civil", "date": "2018-01-01"}}
+}
+HTTP 200
+[Asserts]
+jsonpath "$.result.messages[0].role" == "user"
+jsonpath "$.result.messages[0].content.type" == "text"
+jsonpath "$.result.messages[0].content.text" contains "article 1240 du code civil"
+jsonpath "$.result.messages[0].content.text" contains "2018-01-01"
+jsonpath "$.error" not exists
+
+# -----------------------------------------------------------------------------
+# unknown top-level method → method not found
+# -----------------------------------------------------------------------------
+POST {{base}}/mcp/
+Accept: application/json, text/event-stream
+Content-Type: application/json
+{
+  "jsonrpc": "2.0",
+  "id": 12,
+  "method": "nonexistent/method",
+  "params": {}
+}
+HTTP 200
+[Asserts]
+jsonpath "$.jsonrpc" == "2.0"
+jsonpath "$.id" == 12
 jsonpath "$.result" not exists
 jsonpath "$.error.code" == -32601
-jsonpath "$.error.message" contains "resources/list"
-# Python FastMCP may answer resources/list/prompts/list (it supports those
-# methods) rather than erroring — capability-set divergence; flag.
+jsonpath "$.error.message" contains "nonexistent/method"
 
 # -----------------------------------------------------------------------------
 # AUTH CONTRACT (mcp_require_auth=True) — unauthenticated initialize → 401

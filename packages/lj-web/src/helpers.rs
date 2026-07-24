@@ -4,7 +4,7 @@
 //! - formatters : port de `lib/format.ts` (juridiction, score, comptes, dates
 //!   FR). Logique pure (pas d'I/O) ; les libelles longs viennent des enums DTO.
 
-use lj_dtos::JuridictionType;
+use lj_dtos::JurisdictionType;
 
 /// Concatene des fragments de classes Tailwind : trim, drop des vides, join sur
 /// un espace.
@@ -22,40 +22,42 @@ pub fn cn<'a, I: IntoIterator<Item = &'a str>>(classes: I) -> String {
         .join(" ")
 }
 
-/// Sigle court d'un ordre de juridiction (port de `JURIDICTION_SHORT`).
-pub fn juridiction_short(jur: JuridictionType) -> &'static str {
+/// Sigle court d'un ordre de juridiction (port de `JURISDICTION_SHORT`).
+pub fn juridiction_short(jur: JurisdictionType) -> &'static str {
     match jur {
-        JuridictionType::Ta => "TA",
-        JuridictionType::Caa => "CAA",
-        JuridictionType::Ce => "CE",
-        JuridictionType::Constit => "Cons. const.",
-        JuridictionType::Tc => "TC",
-        JuridictionType::Cc => "CC",
-        JuridictionType::Ca => "CA",
-        JuridictionType::Tj => "TJ",
-        JuridictionType::Tcom => "TCOM",
-        JuridictionType::Cedh => "CEDH",
-        JuridictionType::Cjue => "CJUE",
-        JuridictionType::Cnda => "CNDA",
+        JurisdictionType::Ta => "TA",
+        JurisdictionType::Caa => "CAA",
+        JurisdictionType::Ce => "CE",
+        JurisdictionType::Constit => "Cons. const.",
+        JurisdictionType::Tc => "TC",
+        JurisdictionType::Cc => "CC",
+        JurisdictionType::Ca => "CA",
+        JurisdictionType::Tj => "TJ",
+        JurisdictionType::Tcom => "TCOM",
+        JurisdictionType::Cedh => "CEDH",
+        JurisdictionType::Cjue => "CJUE",
+        JurisdictionType::Cnda => "CNDA",
+        JurisdictionType::Cnil => "CNIL",
     }
 }
 
-/// Libelle long d'un ordre de juridiction (port de `JURIDICTION_TYPE_LABELS` /
+/// Libelle long d'un ordre de juridiction (port de `JURISDICTION_TYPE_LABELS` /
 /// `formatJuridiction`).
-pub fn format_juridiction(jur: JuridictionType) -> &'static str {
+pub fn format_juridiction(jur: JurisdictionType) -> &'static str {
     match jur {
-        JuridictionType::Ta => "Tribunal administratif",
-        JuridictionType::Caa => "Cour administrative d'appel",
-        JuridictionType::Ce => "Conseil d'État",
-        JuridictionType::Constit => "Conseil constitutionnel",
-        JuridictionType::Tc => "Tribunal des conflits",
-        JuridictionType::Cc => "Cour de cassation",
-        JuridictionType::Ca => "Cour d'appel",
-        JuridictionType::Tj => "Tribunal judiciaire",
-        JuridictionType::Tcom => "Tribunal de commerce",
-        JuridictionType::Cedh => "Cour européenne des droits de l'homme",
-        JuridictionType::Cjue => "Cour de justice de l'Union européenne",
-        JuridictionType::Cnda => "Cour nationale du droit d'asile",
+        JurisdictionType::Ta => "Tribunal administratif",
+        JurisdictionType::Caa => "Cour administrative d'appel",
+        JurisdictionType::Ce => "Conseil d'État",
+        JurisdictionType::Constit => "Conseil constitutionnel",
+        JurisdictionType::Tc => "Tribunal des conflits",
+        JurisdictionType::Cc => "Cour de cassation",
+        JurisdictionType::Ca => "Cour d'appel",
+        JurisdictionType::Tj => "Tribunal judiciaire",
+        JurisdictionType::Tcom => "Tribunal de commerce",
+        JurisdictionType::Cedh => "Cour européenne des droits de l'homme",
+        JurisdictionType::Cjue => "Cour de justice de l'Union européenne",
+        JurisdictionType::Cnda => "Cour nationale du droit d'asile",
+        JurisdictionType::Cnil => "Commission nationale de l'informatique et des libertés",
     }
 }
 
@@ -104,7 +106,7 @@ fn strip_trailing_chamber(s: &str) -> &str {
     if let Some(comma) = s.rfind(',') {
         let tail = s[comma + 1..].trim_start();
         let lower = tail.to_lowercase();
-        // Doit commencer par 1-2 chiffres puis (optionnel) re|ère|e, espaces, "chambre".
+        // Doit commencer par 1-2 chiffres puis (optionnel) re|ère|e, espaces, "chamber".
         if matches_chamber(&lower) {
             return s[..comma].trim_end();
         }
@@ -131,7 +133,7 @@ fn matches_chamber(lower: &str) -> bool {
     }
     let rest = &lower[byte_offset(&bytes, i)..];
     let rest = rest.trim_start();
-    rest.starts_with("chambre")
+    rest.starts_with("chamber")
 }
 
 fn byte_offset(chars: &[char], char_idx: usize) -> usize {
@@ -152,13 +154,13 @@ fn strip_trailing_refere(s: &str) -> &str {
 
 /// Nom affichable pour une decision : nom de juridiction nettoye, sinon libelle
 /// long du type. Port de `formatDecisionJurisdiction`.
-pub fn format_decision_jurisdiction(jur: JuridictionType, name: Option<&str>) -> String {
+pub fn format_decision_jurisdiction(jur: JurisdictionType, name: Option<&str>) -> String {
     sanitize_jurisdiction_name(name).unwrap_or_else(|| format_juridiction(jur).to_string())
 }
 
 /// Variante courte : nom nettoye avec abreviations TA/CAA/CE en tete, sinon le
 /// sigle. Port de `formatShortDecisionJurisdiction`.
-pub fn format_short_decision_jurisdiction(jur: JuridictionType, name: Option<&str>) -> String {
+pub fn format_short_decision_jurisdiction(jur: JurisdictionType, name: Option<&str>) -> String {
     match sanitize_jurisdiction_name(name) {
         None => juridiction_short(jur).to_string(),
         Some(name) => {
@@ -174,6 +176,13 @@ pub fn format_short_decision_jurisdiction(jur: JuridictionType, name: Option<&st
             }
         }
     }
+}
+
+/// Décompose un uid d'entité namespacé (`siren:552043002`) en
+/// `(namespace, id local)`. Sans `:`, le namespace est vide et l'uid entier est
+/// pris pour id local.
+pub fn split_entity_uid(uid: &str) -> (&str, &str) {
+    uid.split_once(':').unwrap_or(("", uid))
 }
 
 /// Score formate a 3 decimales. Port de `formatScore`.
@@ -192,6 +201,39 @@ pub fn format_results_count(total: i64) -> String {
         n if n > RESULTS_CAP => format!("{RESULTS_CAP}+ résultats"),
         n => format!("{} résultats", group_thousands(n)),
     }
+}
+
+/// Libelle FR d'un nombre de resultats EXACT — corpus textes, dont le total
+/// n'est pas plafonne (le plafond 400 vient du cap de pagination decisions).
+pub fn format_results_count_exact(total: i64) -> String {
+    match total {
+        0 => "Aucun résultat".to_string(),
+        1 => "1 résultat".to_string(),
+        n => format!("{} résultats", group_thousands(n)),
+    }
+}
+
+/// Encode un terme de requete pour le query string (parite `encodeURIComponent`).
+pub fn encode_query(query: &str) -> String {
+    let mut out = String::with_capacity(query.len());
+    for b in query.bytes() {
+        match b {
+            b'A'..=b'Z'
+            | b'a'..=b'z'
+            | b'0'..=b'9'
+            | b'-'
+            | b'_'
+            | b'.'
+            | b'!'
+            | b'~'
+            | b'*'
+            | b'\''
+            | b'('
+            | b')' => out.push(b as char),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }
 
 /// Insere une espace insecable fine tous les 3 chiffres (rendu `toLocaleString
@@ -239,16 +281,19 @@ const MONTHS_FR: [&str; 12] = [
 ];
 
 /// Numéro d'article en graphie française : la forme compacte LEGI colle le
-/// préfixe de partie au numéral (« L1142-1 », « R123-4 », « D45 »), la
-/// convention des juristes l'écrit « L. 1142-1 ». Seul un préfixe lettre
-/// unique L/R/D/A directement suivi d'un chiffre est réécrit — les autres
-/// formes (numéraux nus, « LO119 », étoilés « R*011 », libellés « Annexe V »)
-/// passent telles quelles.
+/// préfixe de partie au numéral (« L1142-1 », « R123-4 », « D45 ») et la clé
+/// publique le plie en minuscules (« l1142-1 », ADR 0209) ; la convention des
+/// juristes l'écrit « L. 1142-1 ». Seul un préfixe lettre unique L/R/D/A
+/// directement suivi d'un chiffre est réécrit — les autres formes (numéraux
+/// nus, « LO119 », étoilés « R*011 », libellés « Annexe V ») passent telles
+/// quelles.
 pub fn format_article_num(num: &str) -> String {
     let mut chars = num.chars();
     match (chars.next(), chars.next()) {
-        (Some(p @ ('L' | 'R' | 'D' | 'A')), Some(d)) if d.is_ascii_digit() => {
-            format!("{p}. {}", &num[1..])
+        (Some(p), Some(d))
+            if matches!(p.to_ascii_uppercase(), 'L' | 'R' | 'D' | 'A') && d.is_ascii_digit() =>
+        {
+            format!("{}. {}", p.to_ascii_uppercase(), &num[1..])
         }
         _ => num.to_string(),
     }

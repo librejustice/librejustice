@@ -55,7 +55,7 @@ pub struct ChronoSnapshot {
 }
 
 impl ChronoSnapshot {
-    /// `rows` = lignes `(code, juridiction_type, city)` du référentiel
+    /// `rows` = lignes `(code, jurisdiction_type, city)` du référentiel
     /// `jurisdiction`. Le code TCOM référentiel est préfixé (`tcom0603`) alors
     /// que la localisation Judilibre est nue (`0603`) : on déprefixe. TA/CAA
     /// servent la chaîne du fond administratif (ADR 0165) ; CPH est vide
@@ -71,14 +71,16 @@ impl ChronoSnapshot {
                 "TCOM" => code.strip_prefix("tcom").unwrap_or(&code).to_string(),
                 _ => code,
             };
-            let key = (jt, normalize_component(&city));
-            match by_type_city.get(&key) {
-                Some(Some(prev)) if *prev != location => {
-                    by_type_city.insert(key, None);
-                }
-                Some(_) => {}
-                None => {
-                    by_type_city.insert(key, Some(location));
+            for city_key in city_keys(&normalize_component(&city)) {
+                let key = (jt.clone(), city_key);
+                match by_type_city.get(&key) {
+                    Some(Some(prev)) if *prev != location => {
+                        by_type_city.insert(key, None);
+                    }
+                    Some(_) => {}
+                    None => {
+                        by_type_city.insert(key, Some(location.clone()));
+                    }
                 }
             }
         }
@@ -104,7 +106,7 @@ impl ChronoSnapshot {
 /// (première instance, discriminants manquants, juridiction cible hors
 /// nomenclature type CPH).
 pub fn prior_decision_refs(d: &Decision, snap: &ChronoSnapshot) -> Vec<PriorRef> {
-    match d.juridiction_type.as_deref() {
+    match d.jurisdiction_type.as_deref() {
         Some("CC") | Some("CA") => from_attacked_meta(d, snap)
             .or_else(|| from_deferee_text(d, snap))
             .into_iter()
@@ -124,7 +126,7 @@ fn from_attacked_meta(d: &Decision, snap: &ChronoSnapshot) -> Option<PriorRef> {
     if date.len() != 10 {
         return None;
     }
-    let source_jt = d.juridiction_type.as_deref()?;
+    let source_jt = d.jurisdiction_type.as_deref()?;
 
     if label == "cour de cassation" || label.starts_with("cour de cassation ") {
         // Arrêt attaqué rendu par la Cassation : c'est un renvoi.
@@ -154,6 +156,23 @@ fn from_attacked_meta(d: &Decision, snap: &ChronoSnapshot) -> Option<PriorRef> {
     })
 }
 
+/// Clés de ville d'une ligne référentielle : la forme pliée, plus la forme
+/// sans article de tête (« le havre » → aussi « havre ») — les citations
+/// contractent l'article (« du Havre », « des Sables-d'Olonne ») quand la
+/// ville référentielle le porte en toutes lettres.
+fn city_keys(folded: &str) -> Vec<String> {
+    let mut keys = vec![folded.to_string()];
+    for article in ["la ", "le ", "les "] {
+        if let Some(rest) = folded.strip_prefix(article) {
+            if !rest.is_empty() {
+                keys.push(rest.to_string());
+            }
+            break;
+        }
+    }
+    keys
+}
+
 /// Libellé plié (`cour d appel d aix en provence`) → (type, ville pliée).
 /// Le juge de l'exécution et l'ex-TGI/TI sont des formations du TJ de la même
 /// ville. CPH, tribunaux paritaires, cours d'assises : hors nomenclature.
@@ -174,6 +193,7 @@ fn jurisdiction_from_label(folded: &str) -> Option<(&'static str, String)> {
                 .or_else(|| rest.strip_prefix("de "))
                 .or_else(|| rest.strip_prefix("d "))
                 .or_else(|| rest.strip_prefix("du "))
+                .or_else(|| rest.strip_prefix("des "))
                 .unwrap_or(rest)
                 .trim();
             if city.is_empty() {
@@ -317,7 +337,7 @@ fn from_admin_text(d: &Decision) -> Option<PriorRef> {
         } else {
             format!("{jur}|{rg}|{date}")
         };
-        let link_type = match d.juridiction_type.as_deref() {
+        let link_type = match d.jurisdiction_type.as_deref() {
             Some("CE") if header_has_pourvoi(header) => LinkType::PourvoiContre,
             _ => LinkType::AppelDe,
         };
@@ -340,18 +360,20 @@ fn header_has_pourvoi(header: &str) -> bool {
 }
 
 /// « Décision déférée à la Cour : jugement rendu le 07 Septembre 2017 par le
-/// Tribunal judiciaire de PARIS - RG n° 15/02585 » et la variante « jugement
-/// du <date> - Juge de l'exécution de SAINT-ETIENNE … RG : 18/00064 » —
-/// en-têtes CA Judilibre quand `contested` manque (97 % des CA).
+/// Tribunal judiciaire de PARIS - RG n° 15/02585 » et les variantes « jugement
+/// du <date> - Juge de l'exécution de SAINT-ETIENNE … RG : 18/00064 » et
+/// « jugement du <date> rendu par le tribunal judiciaire de PARIS - RG
+/// n° 21/00000 » — en-têtes CA Judilibre quand `contested` manque
+/// (97 % des CA).
 static RE_DEFEREE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)d[ée]cision\s+d[ée]f[ée]r[ée]e[^:]{0,60}:\s*(?:jugements?|ordonnances?|arr[êe]ts?)[^:;]{0,80}?(?:rendue?\s+le|du)\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})\s*(?:par\s+l[ea]\s*|[-–]\s*)?((?:tribunal\s+judiciaire|tribunal\s+de\s+grande\s+instance|tribunal\s+d[’']instance|juge\s+de\s+l[’']ex[ée]cution|tribunal\s+de\s+commerce|tribunal\s+mixte\s+de\s+commerce)\s+(?:de\s+la\s+|de\s+|d[’']|du\s+)?[\p{L}][\p{L}'’ \-]{1,40}?)\s*[-–,(].{0,120}?RG\s*(?:n[°ºo]\s*)?:?\s*([0-9][0-9A-Za-z/.\-]{3,15})",
+        r"(?i)d[ée]cision\s+d[ée]f[ée]r[ée]e[^:]{0,60}:\s*(?:jugements?|ordonnances?|arr[êe]ts?)[^:;]{0,80}?(?:rendue?\s+le|du)\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})\s*(?:(?:rendue?\s+)?par\s+l[ea]\s*|[-–]\s*)?((?:tribunal\s+judiciaire|tribunal\s+de\s+grande\s+instance|tribunal\s+d[’']instance|juge\s+de\s+l[’']ex[ée]cution|tribunal\s+de\s+commerce|tribunal\s+mixte\s+de\s+commerce)\s+(?:de\s+la\s+|de\s+|d[’']|du\s+)?[\p{L}][\p{L}'’ \-]{1,40}?)\s*[-–,(].{0,120}?RG\s*(?:n[°ºo]\s*)?:?\s*([0-9][0-9A-Za-z/.\-]{3,15})",
     )
     .unwrap()
 });
 
 fn from_deferee_text(d: &Decision, snap: &ChronoSnapshot) -> Option<PriorRef> {
-    if d.juridiction_type.as_deref() != Some("CA") {
+    if d.jurisdiction_type.as_deref() != Some("CA") {
         return None;
     }
     let text = &d.texte_integral_clean;
@@ -393,10 +415,12 @@ mod tests {
             source_uid: "test".to_string(),
             member_name: String::new(),
             ecli: None,
-            juridiction_code: None,
-            juridiction_nom: None,
-            juridiction_type: Some(jt.to_string()),
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: None,
+            jurisdiction_type: Some(jt.to_string()),
+            jurisdiction_location: None,
             numero_dossier: None,
             numero_dossiers: None,
             numero_role: None,
@@ -432,6 +456,34 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].link_type, LinkType::PourvoiContre);
         assert_eq!(refs[0].target_ref, "ca|ca nancy|19 00207|2020-12-08");
+    }
+
+    /// Villes à article : le référentiel porte « Le Havre » / « La Rochelle »
+    /// quand la citation contracte (« du Havre ») ou strippe (« de La
+    /// Rochelle » → « rochelle ») l'article — les deux formes doivent mapper.
+    #[test]
+    fn article_city_resolves_contracted_citation() {
+        let snap = ChronoSnapshot::new(vec![
+            ("tj76351".into(), "TJ".into(), "Le Havre".into()),
+            ("tj17300".into(), "TJ".into(), "La Rochelle".into()),
+        ]);
+        let mut d = decision("CC", "");
+        d.attacked = Some(lj_core::decision::AttackedRef {
+            jurisdiction: Some("Tribunal judiciaire du Havre".into()),
+            number: Some("21/00123".into()),
+            date: Some("2023-01-10".into()),
+        });
+        let refs = prior_decision_refs(&d, &snap);
+        assert_eq!(refs[0].target_ref, "tj|tj76351|21 00123|2023-01-10");
+
+        let mut d = decision("CC", "");
+        d.attacked = Some(lj_core::decision::AttackedRef {
+            jurisdiction: Some("Tribunal judiciaire de La Rochelle".into()),
+            number: Some("22/00456".into()),
+            date: Some("2023-06-15".into()),
+        });
+        let refs = prior_decision_refs(&d, &snap);
+        assert_eq!(refs[0].target_ref, "tj|tj17300|22 00456|2023-06-15");
     }
 
     #[test]
@@ -513,6 +565,21 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].link_type, LinkType::AppelDe);
         assert_eq!(refs[0].target_ref, "tj|tj75056|12 81319|2013-11-19");
+    }
+
+    #[test]
+    fn ca_deferee_du_date_rendu_par_le_tj() {
+        let d = decision(
+            "CA",
+            "COUR D'APPEL DE PARIS Pôle 3 - Chambre 5 ARRET DU 23 JUIN 2026 Numéro \
+             d'inscription au répertoire général : N° RG 25/00001 - N° Portalis X \
+             Décision déférée à la Cour : Jugement du 23 janvier 2025 rendu par le \
+             tribunal judiciaire de PARIS - RG n° 21/00002 APPELANT LE MINISTERE PUBLIC",
+        );
+        let refs = prior_decision_refs(&d, &snap());
+        assert_eq!(refs.len(), 1);
+        assert_eq!(refs[0].link_type, LinkType::AppelDe);
+        assert_eq!(refs[0].target_ref, "tj|tj75056|21 00002|2025-01-23");
     }
 
     #[test]

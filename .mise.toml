@@ -8,7 +8,7 @@ _.file = [".env", ".env.local"]
 # + rustup). Le reste est de la tooling ops/dev, pas du code applicatif :
 #   node = npx (add-mcp / skills, cf. AGENTS.md) + bw (Bitwarden CLI, bootstrap).
 #   uv   = installe podman-compose 1.5.0 (le `podman compose` intégré ne gère pas
-#          `--profile`, requis par `deploy`) — cf. scripts/bootstrap-server.sh.
+#          `--profile`, requis par `deploy`).
 #   prek = hooks pre-commit ; usage = parsing des flags de task ; hurl = smoke HTTP.
 [tools]
 node = "24"
@@ -36,18 +36,6 @@ description = "Lint Rust + tous les tests du workspace"
 depends = ["lint"]
 run = "cargo test --workspace"
 
-# Une UNIQUE note Bitwarden `librejustice` regroupe tous les secrets serveur :
-# .env (racine repo) + cert/clé Cloudflare Origin (state dir, hors-repo).
-# `scripts/secrets.sh` assemble (push) / re-scinde (pull) par sentinelles.
-# Aucun token CF requis pour le TLS (cert statique, valide ~2041).
-[tasks.secrets-pull]
-description = "Reconstitue .env + cert/clé Origin depuis l'unique note Bitwarden."
-run = 'BW_SESSION="$(bw unlock --raw)" ./scripts/secrets.sh pull'
-
-[tasks.secrets-push]
-description = "Pousse .env + cert/clé Origin dans l'unique note Bitwarden."
-run = 'BW_SESSION="$(bw unlock --raw)" ./scripts/secrets.sh push'
-
 [tasks.ensure-pgdata]
 description = "Aligne le propriétaire du bind-mount pgdata sur l'uid postgres (999) mappé en rootless podman."
 run = """
@@ -68,12 +56,12 @@ podman compose -f infra/docker-compose.yml up -d --no-recreate postgres
 # Mono-process fusionné (ADR 0061) : lj-server = API + MCP + SSR Leptos + assets,
 # servi sur :3000 via cargo-leptos (build bin lj-server + wasm hydrate lj-web +
 # Tailwind, hot-reload :3001). Pas de `dbs` : on tape directement la DB de
-# `LIBREJUSTICE_DB_URL` (.env → prod distante par Tailscale), embeddings via Cloudflare
+# `LIBREJUSTICE_DB_URL` (.env → prod distante), embeddings via Cloudflare
 # (`auto`). L'API Rust cache en mémoire — aucun Postgres local requis.
 [tasks.dev]
 description = "lj-server fusionné (API + MCP + SSR Leptos, :3000) via cargo-leptos watch ; DB = LIBREJUSTICE_DB_URL (.env → prod)"
 env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "dev" }
-run = "cargo leptos watch"
+run = "cargo leptos watch --project librejustice-dev"
 
 [tasks.deploy-staging]
 env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "staging", LIBREJUSTICE_API_DB_APPLICATION_NAME = "librejustice-api-staging" }
@@ -109,8 +97,8 @@ podman image prune -f
 # lj-ingest + assets SSR, compilés en release sur la machine (glibc hôte), puis
 # précompressés. L'image conteneur (infra/Dockerfile.app) ne fait ensuite que COPY
 # ces artefacts → zéro compilation en conteneur, deploys incrémentaux rapides.
-# Outils en binaires pré-compilés (cargo-leptos, wasm-bindgen-cli, tailwindcss,
-# cf. scripts/bootstrap-server.sh) ; cargo/rustup hors tools mise → PATH explicite.
+# Outils en binaires pré-compilés (cargo-leptos, wasm-bindgen-cli, tailwindcss) ;
+# cargo/rustup hors tools mise → PATH explicite.
 [tasks.build-app]
 description = "Compile lj-server + lj-ingest + assets SSR (release, hôte) et précompresse — artefacts pour l'image fine (infra/Dockerfile.app, ADR 0065)."
 run = """
@@ -178,9 +166,9 @@ run = "podman compose -f infra/docker-compose.yml logs -f"
 #
 # --recreate : force-recreate au lieu d'un simple restart, pour ré-appliquer la
 # config figée à la CRÉATION du conteneur (env, image) qu'un restart ne relit
-# jamais. L'exposition tailnet de la base ne dépend plus du conteneur (proxy
-# `tailscale serve --tcp 5433`, posé hors compose — ADR 0110) → un simple restart
-# suffit dans le cas courant ; --recreate ne sert plus qu'aux changements env/image.
+# jamais. L'exposition réseau de la base ne dépend pas du conteneur (proxy posé
+# hors compose — ADR 0200) → un simple restart suffit dans le cas courant ;
+# --recreate ne sert qu'aux changements env/image.
 [tasks.db-restart]
 description = "Restart (ou --recreate) Postgres puis bounce l'app (pool neuf — évite les 500 post-restart)."
 usage = '''
@@ -201,7 +189,7 @@ podman compose -f infra/docker-compose.yml --profile prod restart app
 """
 
 [tasks.vllm]
-description = "Lance vLLM (GPU) — écoute sur 0.0.0.0:8400 (loopback + Tailscale)"
+description = "Lance vLLM (GPU) — écoute sur 0.0.0.0:8400"
 usage = '''
 flag "-g --gpu-memory-utilization <val>" help="Fraction GPU vLLM" default="0.75"
 flag "-m --max-model-len <val>" help="Contexte max" default="10240"

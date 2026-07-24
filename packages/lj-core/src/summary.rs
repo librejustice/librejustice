@@ -10,7 +10,7 @@ use regex::Regex;
 
 /// Version du prompt persistée en DB (`decisions.summary_prompt_version`,
 /// colonne `SMALLINT` → `i16`).
-pub const SUMMARY_PROMPT_VERSION: i16 = 4;
+pub const SUMMARY_PROMPT_VERSION: i16 = 8;
 
 /// Prompt système de résumé (texte intégral, source de vérité).
 pub const SUMMARY_PROMPT: &str = include_str!("../data/summary_prompt.txt");
@@ -131,7 +131,7 @@ mod tests {
 
     #[test]
     fn prompt_version_is_locked() {
-        assert_eq!(SUMMARY_PROMPT_VERSION, 4);
+        assert_eq!(SUMMARY_PROMPT_VERSION, 8);
         assert!(SUMMARY_PROMPT.starts_with("Tu es juriste."));
     }
 

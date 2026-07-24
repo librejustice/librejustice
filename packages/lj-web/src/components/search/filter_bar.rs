@@ -14,8 +14,7 @@ use lj_dtos::{FacetChoice, SearchFacets};
 use super::compact_search::{query_state, DraftQuery};
 use super::date_range_picker::DateRangePicker;
 use super::facet_widgets::{
-    build_tree, juridiction_root_value, scroll_lock_ref, CheckboxOption, FacetChecklist,
-    FilterSearchInput, Nav, TreeRow,
+    build_tree, scroll_lock_ref, CheckboxOption, FacetChecklist, FilterSearchInput, Nav, TreeRow,
 };
 use super::filter_dropdown::{FilterDropdown, OpenDropdown};
 use super::legal_instrument_filter::LegalInstrumentPanel;
@@ -61,26 +60,27 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
     };
 
     // ── Sélections courantes (URL) ────────────────────────────────────────────
-    let jurs = Signal::derive(move || get_all("jur"));
+    let jurs = Signal::derive(move || get_all("jurisdictionType"));
     let offices = Signal::derive(move || get_all("office"));
-    let jcodes = Signal::derive(move || get_all("jcode"));
-    let domaines = Signal::derive(move || get_all("domaine"));
+    let jcodes = Signal::derive(move || get_all("jurisdictionCode"));
+    let chambres = Signal::derive(move || get_all("chamber"));
+    let domaines = Signal::derive(move || get_all("legalDomain"));
     let solutions = Signal::derive(move || get_all("solution"));
-    let portees = Signal::derive(move || get_all("portee"));
+    let portees = Signal::derive(move || get_all("significance"));
     let pubs = Signal::derive(move || get_all("publication"));
-    let lis = Signal::derive(move || get_all("li"));
-    let las = Signal::derive(move || get_all("la"));
-    let date_from = Signal::derive(move || query_map.get().get("from").unwrap_or_default());
-    let date_to = Signal::derive(move || query_map.get().get("to").unwrap_or_default());
+    let lis = Signal::derive(move || get_all("legalInstrument"));
+    let las = Signal::derive(move || get_all("legalArticle"));
+    let date_from = Signal::derive(move || query_map.get().get("dateFrom").unwrap_or_default());
+    let date_to = Signal::derive(move || query_map.get().get("dateTo").unwrap_or_default());
 
-    // ── Juridiction : arbre facette (racines `juridiction:*`, enfants = codes
+    // ── Juridiction : arbre facette (racines `jurisdiction_type:*`, enfants = codes
     // `jurisdiction`). `Memo` : lu par les signaux par ligne (compteurs,
     // sélection) — mémoïsé = calculé une fois par changement de facettes/saisie.
-    let juridiction_choices =
-        Memo::new(move |_| facets.get().map(|f| f.juridiction).unwrap_or_default());
-    let juridiction_tree = Memo::new(move |_| {
+    let jurisdiction_choices =
+        Memo::new(move |_| facets.get().map(|f| f.jurisdiction).unwrap_or_default());
+    let jurisdiction_tree = Memo::new(move |_| {
         let needle = jur_filter.get().to_lowercase();
-        build_tree(&juridiction_choices.get())
+        build_tree(&jurisdiction_choices.get())
             .into_iter()
             .filter(|(root, children)| {
                 needle.is_empty()
@@ -94,25 +94,22 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
     // Sélections absentes de la facette : lignes orphelines plates
     // `(clé d'URL, valeur)` en fin de liste.
     let juridiction_orphans = Memo::new(move |_| {
-        let choices = juridiction_choices.get();
+        let choices = jurisdiction_choices.get();
         let mut out: Vec<(&'static str, String)> = Vec::new();
         for s in jurs.get() {
-            if !choices
-                .iter()
-                .any(|c| c.value == format!("juridiction:{s}"))
-            {
-                out.push(("jur", s));
+            if !choices.iter().any(|c| c.value == s) {
+                out.push(("jurisdictionType", s));
             }
         }
         for s in jcodes.get() {
             if !choices.iter().any(|c| c.value == s) {
-                out.push(("jcode", s));
+                out.push(("jurisdictionCode", s));
             }
         }
         out
     });
 
-    // ── Domaine : arbre facette (valeurs = suffixes `domaine:*`, racine et
+    // ── Domaine : arbre facette (valeurs = suffixes `legal_domain:*`, racine et
     // feuille se filtrent par la même clé).
     let domaine_choices =
         Memo::new(move |_| facets.get().map(|f| f.legal_domain).unwrap_or_default());
@@ -127,25 +124,30 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
     });
 
     let office_choices = Signal::derive(move || facets.get().map(|f| f.office).unwrap_or_default());
+    let chamber_choices =
+        Signal::derive(move || facets.get().map(|f| f.chamber).unwrap_or_default());
     let solution_choices =
         Signal::derive(move || facets.get().map(|f| f.solution).unwrap_or_default());
-    let portee_choices = Signal::derive(move || facets.get().map(|f| f.portee).unwrap_or_default());
+    let significance_choices =
+        Signal::derive(move || facets.get().map(|f| f.significance).unwrap_or_default());
     let publication_choices =
         Signal::derive(move || facets.get().map(|f| f.publication).unwrap_or_default());
 
     // ── Compteurs actifs des boutons ─────────────────────────────────────────
     let jur_count = Signal::derive(move || jurs.get().len() + jcodes.get().len());
     let office_count = Signal::derive(move || offices.get().len());
+    let chamber_count = Signal::derive(move || chambres.get().len());
     let domaine_count = Signal::derive(move || domaines.get().len());
     let dates_count = Signal::derive(move || {
         usize::from(!date_from.get().is_empty() || !date_to.get().is_empty())
     });
     let textes_count = Signal::derive(move || lis.get().len() + las.get().len());
     let solution_count = Signal::derive(move || solutions.get().len());
-    let portee_count = Signal::derive(move || portees.get().len());
+    let significance_count = Signal::derive(move || portees.get().len());
     let publication_count = Signal::derive(move || pubs.get().len());
-    let more_count =
-        Signal::derive(move || offices.get().len() + solutions.get().len() + pubs.get().len());
+    let more_count = Signal::derive(move || {
+        offices.get().len() + chambres.get().len() + solutions.get().len() + pubs.get().len()
+    });
 
     // « Plus de filtres » déplie Office + Dispositif + Publication EN PLACE
     // dans la barre ; un filtre actif dans ce groupe les épingle (on ne cache
@@ -182,17 +184,17 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                     // reconstruit donc pas la liste : seuls les signaux par ligne
                     // (`selected`, compteurs) se mettent à jour en place.
                     <For
-                        each=move || juridiction_tree.get()
+                        each=move || jurisdiction_tree.get()
                         key=|(root, _): &(FacetChoice, Vec<FacetChoice>)| root.value.clone()
                         children=move |(root, _): (FacetChoice, Vec<FacetChoice>)| {
                             let uid = root.value.clone();
-                            let toggle_value = juridiction_root_value(&uid);
+                            let toggle_value = uid.clone();
                             // Ligne réactive : compteur/libellé/enfants relus dans le
                             // `Memo` d'arbre à chaque arrivée de facettes (la ligne
                             // keyée persiste, ses props se rafraîchissent en place).
                             let row_uid = uid.clone();
                             let row = Memo::new(move |_| {
-                                juridiction_tree
+                                jurisdiction_tree
                                     .get()
                                     .into_iter()
                                     .find(|(r, _)| r.value == row_uid)
@@ -220,11 +222,11 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                                     child_choices=child_choices
                                     selected_children=jcodes
                                     on_toggle=Callback::new(move |_| toggle_root(
-                                        "jur".to_string(),
+                                        "jurisdictionType".to_string(),
                                         toggle_value.clone(),
                                     ))
                                     on_toggle_child=Callback::new(move |code: String| toggle_child(
-                                        "jcode".to_string(),
+                                        "jurisdictionCode".to_string(),
                                         code,
                                     ))
                                 />
@@ -238,7 +240,7 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                             let sel_value = value.clone();
                             let is_sel = Signal::derive(move || {
                                 let selection = match key {
-                                    "jcode" => jcodes.get(),
+                                    "jurisdictionCode" => jcodes.get(),
                                     _ => jurs.get(),
                                 };
                                 selection.contains(&sel_value)
@@ -265,12 +267,12 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
             // Portée jurisprudentielle (majeure/importante/limitée/indéterminée,
             // groupes de `publication_codes` — ADR 0167). Jumelle assumée de
             // Publication, en lecture normalisée inter-ordres (gabarit ).
-            <FilterDropdown id="portee" label="Portée" active_count=portee_count>
+            <FilterDropdown id="significance" label="Portée" active_count=significance_count>
                 <FacetChecklist
-                    choices=portee_choices
+                    choices=significance_choices
                     selected=portees
                     on_toggle=Callback::new(move |value: String| toggle(
-                        "portee".to_string(),
+                        "significance".to_string(),
                         value,
                     ))
                 />
@@ -281,7 +283,7 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
             <Show when=move || {
                 !domaine_tree.get().is_empty() || domaine_count.get() > 0
             }>
-            <FilterDropdown id="domaine" label="Domaine du droit" active_count=domaine_count>
+            <FilterDropdown id="legalDomain" label="Domaine du droit" active_count=domaine_count>
                 <div
                     node_ref=scroll_lock_ref()
                     class="filter-scroll flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto"
@@ -323,11 +325,11 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                                     child_choices=child_choices
                                     selected_children=domaines
                                     on_toggle=Callback::new(move |_| toggle_root(
-                                        "domaine".to_string(),
+                                        "legalDomain".to_string(),
                                         toggle_value.clone(),
                                     ))
                                     on_toggle_child=Callback::new(move |leaf: String| toggle_child(
-                                        "domaine".to_string(),
+                                        "legalDomain".to_string(),
                                         leaf,
                                     ))
                                 />
@@ -350,7 +352,7 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                                     count=Signal::derive(|| 0)
                                     selected=is_sel
                                     on_toggle=Callback::new(move |_| toggle_orphan(
-                                        "domaine".to_string(),
+                                        "legalDomain".to_string(),
                                         toggle_value.clone(),
                                     ))
                                     indent=false
@@ -368,11 +370,11 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                     selected_instruments=lis
                     selected_articles=las
                     on_toggle_instrument=Callback::new(move |value: String| toggle(
-                        "li".to_string(),
+                        "legalInstrument".to_string(),
                         value,
                     ))
                     on_toggle_article=Callback::new(move |value: String| toggle(
-                        "la".to_string(),
+                        "legalArticle".to_string(),
                         value,
                     ))
                 />
@@ -391,6 +393,24 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                         selected=offices
                         on_toggle=Callback::new(move |value: String| toggle(
                             "office".to_string(),
+                            value,
+                        ))
+                    />
+                </FilterDropdown>
+                </Show>
+
+                // Chambre (catégorie contrôlée uniforme tous ordres, ADR 0172) :
+                // sous-unité du siège, en miroir du filtre `chamber_uid`. Masquée
+                // quand la facette est vide, sauf sélection active.
+                <Show when=move || {
+                    !chamber_choices.get().is_empty() || chamber_count.get() > 0
+                }>
+                <FilterDropdown id="chamber" label="Chambre" active_count=chamber_count>
+                    <FacetChecklist
+                        choices=chamber_choices
+                        selected=chambres
+                        on_toggle=Callback::new(move |value: String| toggle(
+                            "chamber".to_string(),
                             value,
                         ))
                     />

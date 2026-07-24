@@ -6,6 +6,7 @@
 use std::path::PathBuf;
 
 use anyhow::Result;
+use lj_sources::state_paths::StatePaths;
 
 /// Lecture canonique de l'env, factorisée pour ne lire une variable qu'ici.
 ///
@@ -100,11 +101,6 @@ pub struct Settings {
     /// Accepte les suffixes `k`/`m` (ex. `"9k"` → 9000). `None` = pas de cap.
     pub ingest_neuron_budget: Option<usize>,
     pub mistral_api_keys: Vec<String>,
-    /// Clés Mistral dédiées à l'API document (OCR `/v1/ocr`), séparées des clés
-    /// chat (`mistral_api_keys`) : un usage OCR en rafale depuis l'IP datacenter
-    /// fait flaguer les comptes, on isole donc le pool pour ne pas tuer les clés
-    /// chat (résumés). Vide → l'OCR n'est pas disponible (erreur franche à l'appel).
-    pub mistral_docapi_keys: Vec<String>,
     pub mistral_model: String,
     pub indexnow_key: Option<String>,
     pub grafana_otlp_endpoint: Option<String>,
@@ -123,9 +119,7 @@ pub struct Settings {
 impl Settings {
     /// Lit l'environnement (prefix `LIBREJUSTICE_`) et valide.
     pub fn from_env() -> Result<Self> {
-        let state_dir = env_opt("LIBREJUSTICE_STATE_DIR")
-            .map(PathBuf::from)
-            .unwrap_or_else(default_state_dir);
+        let state_dir = StatePaths::from_env().root().to_path_buf();
 
         let pg_password = env_opt("LIBREJUSTICE_PG_PASSWORD");
         let db_url_raw = env_or(
@@ -151,8 +145,7 @@ impl Settings {
                 "LIBREJUSTICE_INGEST_NEURON_BUDGET",
             ))?,
             mistral_api_keys: split_csv(env_opt("LIBREJUSTICE_MISTRAL_API_KEYS")),
-            mistral_docapi_keys: split_csv(env_opt("LIBREJUSTICE_MISTRAL_DOCAPI_KEYS")),
-            mistral_model: env_or("LIBREJUSTICE_MISTRAL_MODEL", "mistral-small-2506"),
+            mistral_model: env_or("LIBREJUSTICE_MISTRAL_MODEL", "mistral-small-2603"),
             indexnow_key: env_opt("LIBREJUSTICE_INDEXNOW_KEY"),
             grafana_otlp_endpoint: env_opt("LIBREJUSTICE_GRAFANA_OTLP_ENDPOINT"),
             grafana_otlp_user: env_opt("LIBREJUSTICE_GRAFANA_OTLP_USER"),
@@ -163,26 +156,22 @@ impl Settings {
         })
     }
 
-    /// `state_dir / "ingest/cache"` — port du `@computed_field cache_dir`.
+    /// Chemins sous `state_dir` — source de vérité unique du layout
+    /// (`lj_sources::state_paths::StatePaths`).
+    pub fn paths(&self) -> StatePaths {
+        StatePaths::new(self.state_dir.clone())
+    }
+
+    /// `ingest/cache` — fonds auto-téléchargés (working data du pipeline).
     pub fn cache_dir(&self) -> PathBuf {
-        self.state_dir.join("ingest/cache")
+        self.paths().cache()
     }
 
-    /// `state_dir / "sources/legal-corpus"` — datasets curés génériques (métadonnées
-    /// `legal_text` + chemin du markdown OCR), chargés par `load-legal-corpus`
-    /// (ADR 0108). Donnée d'ingest produite par les scripts Python jettables ; vit
-    /// dans `state_dir`, jamais en git ni en chemin relatif.
+    /// `ingest/corpus` — datasets légaux curés (métadonnées `legal_text` +
+    /// chemin du markdown OCR), chargés par `load-legal-corpus` (ADR 0108).
     pub fn legal_corpus_dir(&self) -> PathBuf {
-        self.state_dir.join("sources/legal-corpus")
+        self.paths().corpus()
     }
-}
-
-/// `Path.home() / ".local/share/librejustice"`.
-fn default_state_dir() -> PathBuf {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
-    home.join(".local/share/librejustice")
 }
 
 /// Injecte `pg_password` dans `db_url` si l'URL n'en porte pas déjà un.
@@ -312,7 +301,6 @@ mod tests {
             cloudflare_backend_token: None,
             ingest_neuron_budget: None,
             mistral_api_keys: vec![],
-            mistral_docapi_keys: vec![],
             mistral_model: "m".into(),
             indexnow_key: None,
             grafana_otlp_endpoint: None,

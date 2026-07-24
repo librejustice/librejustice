@@ -33,7 +33,7 @@ use super::batch::drain_batch_in_txn;
 use super::embed::build_vllm_strict;
 use super::files::read_jsonl_gz_lines;
 use super::prepare::classify_judilibre;
-use super::resplit::{provenance_canonical_ref, provenance_juridiction_type};
+use super::resplit::{provenance_canonical_ref, provenance_jurisdiction_type};
 use super::{generate_public_id, IngestCounts, IngestMode};
 use crate::config::Settings;
 
@@ -155,7 +155,7 @@ pub async fn unmerge_same_source(execute: bool, limit: Option<usize>) -> Result<
             continue;
         };
         let jur_type =
-            provenance_juridiction_type(&sf, &source_uid).unwrap_or_else(|| "tj".to_string());
+            provenance_jurisdiction_type(&sf, &source_uid).unwrap_or_else(|| "tj".to_string());
         by_file
             .entry((jur.to_string(), ym))
             .or_default()

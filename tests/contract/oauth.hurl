@@ -23,8 +23,9 @@ jsonpath "$.registration_endpoint" endsWith "/oauth/register"
 jsonpath "$.response_types_supported" isCollection
 jsonpath "$.response_types_supported" count == 1
 jsonpath "$.response_types_supported[0]" == "code"
-jsonpath "$.grant_types_supported" count == 1
+jsonpath "$.grant_types_supported" count == 2
 jsonpath "$.grant_types_supported[0]" == "authorization_code"
+jsonpath "$.grant_types_supported[1]" == "refresh_token"
 jsonpath "$.code_challenge_methods_supported" count == 1
 jsonpath "$.code_challenge_methods_supported[0]" == "S256"
 jsonpath "$.token_endpoint_auth_methods_supported" count == 1
@@ -83,8 +84,9 @@ jsonpath "$.redirect_uris" isCollection
 jsonpath "$.redirect_uris" count == 1
 jsonpath "$.redirect_uris[0]" == "https://claude.ai/api/mcp/auth_callback"
 jsonpath "$.client_name" == "Claude Connector"
-jsonpath "$.grant_types" count == 1
+jsonpath "$.grant_types" count == 2
 jsonpath "$.grant_types[0]" == "authorization_code"
+jsonpath "$.grant_types[1]" == "refresh_token"
 jsonpath "$.response_types" count == 1
 jsonpath "$.response_types[0]" == "code"
 jsonpath "$.token_endpoint_auth_method" == "none"
@@ -179,6 +181,25 @@ Content-Type: application/x-www-form-urlencoded
 grant_type: authorization_code
 code: x
 code_verifier: x
+client_id: lj_x
+HTTP *
+[Asserts]
+status >= 400
+
+# 6d. refresh_token grant with unknown/expired refresh token -> 400 invalid_grant
+POST {{base}}/oauth/token
+Content-Type: application/x-www-form-urlencoded
+[FormParams]
+grant_type: refresh_token
+refresh_token: nonexistent_refresh_token_value
+client_id: lj_x
+HTTP 400
+
+# 6e. refresh_token grant missing refresh_token field -> non-2xx (422 missing).
+POST {{base}}/oauth/token
+Content-Type: application/x-www-form-urlencoded
+[FormParams]
+grant_type: refresh_token
 client_id: lj_x
 HTTP *
 [Asserts]

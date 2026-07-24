@@ -28,6 +28,7 @@ use leptos_router::hooks::{use_navigate, use_query_map};
 
 use self::ai_mode::use_ai_mode;
 use super::search_submit::{SearchSubmit, SubmitSize};
+use super::suggest_box::{SuggestController, SuggestPanel};
 
 /// Texte courant de la barre de recherche, partagé via contexte avec le rail de
 /// filtres. Cocher un filtre applique CE texte comme `q` (même non soumis), pour
@@ -36,7 +37,7 @@ use super::search_submit::{SearchSubmit, SubmitSize};
 #[derive(Clone, Copy)]
 pub struct DraftQuery(pub RwSignal<String>);
 
-/// Barre de recherche compacte (page /recherche). Soumet vers `/recherche?q=…`
+/// Barre de recherche compacte (page /decisions). Soumet vers `/decisions?q=…`
 /// en conservant la source et les filtres courants.
 #[component]
 pub fn CompactSearch() -> impl IntoView {
@@ -50,11 +51,20 @@ pub fn CompactSearch() -> impl IntoView {
         .map(|d| d.0)
         .unwrap_or_else(|| RwSignal::new(initial));
     let (ai_mode, set_ai_mode) = use_ai_mode();
-    // Corpus actif par la route (`/textes` vs `/recherche`) : le mode IA
+    // Corpus actif par la route (`/textes` vs `/decisions`) : le mode IA
     // (rerank + résumés) n'existe que pour les décisions — toggle masqué et
     // jamais soumis côté textes ; le placeholder suit.
     let is_textes = Signal::derive(query_state::on_textes_path);
     let show_ai = Signal::derive(move || !is_textes.get());
+    // Autocomplétion (ADR 0216) : le mode suit le corpus de la route.
+    let suggest_mode = Signal::derive(move || {
+        if is_textes.get() {
+            "textes"
+        } else {
+            "jurisprudence"
+        }
+    });
+    let suggest = SuggestController::new(query, suggest_mode);
 
     // Re-sync `q` (back/forward). `Memo` sur le SEUL param `q` : ne notifie qu'au
     // changement effectif de `q`. Une mutation de filtre (le rail navigue en
@@ -101,7 +111,7 @@ pub fn CompactSearch() -> impl IntoView {
 
     view! {
         <form on:submit=on_submit class="flex w-full items-center gap-2">
-            <div class="group flex h-11 w-full min-w-0 flex-1 items-center gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 transition-colors has-[:focus-visible]:border-[var(--color-ink)]">
+            <div class="group relative flex h-11 w-full min-w-0 flex-1 items-center gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 transition-colors has-[:focus-visible]:border-[var(--color-ink)]">
                 <span class="text-[var(--color-ink-subtle)]" aria-hidden="true">
                     <SearchIcon />
                 </span>
@@ -109,6 +119,7 @@ pub fn CompactSearch() -> impl IntoView {
                     aria-label="Rechercher"
                     name="q"
                     size="1"
+                    autocomplete="off"
                     placeholder=move || {
                         if is_textes.get() {
                             "Rechercher dans les codes et lois…"
@@ -118,8 +129,12 @@ pub fn CompactSearch() -> impl IntoView {
                     }
                     prop:value=move || query.get()
                     on:input=move |ev| query.set(event_target_value(&ev))
+                    on:keydown=suggest.on_keydown()
+                    on:focus=suggest.on_focus()
+                    on:blur=suggest.on_blur()
                     class="h-full min-w-0 flex-1 bg-transparent text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-subtle)]"
                 />
+                <SuggestPanel ctrl=suggest />
                 <Show when=move || !query.get().is_empty()>
                     <span class="text-[var(--color-ink-subtle)]">
                         <button
@@ -159,7 +174,7 @@ fn ClearIcon() -> impl IntoView {
 }
 
 #[component]
-fn SearchIcon() -> impl IntoView {
+pub(crate) fn SearchIcon() -> impl IntoView {
     view! {
         <svg aria-hidden="true" viewBox="0 0 20 20" class="h-4 w-4">
             <circle cx="9" cy="9" r="6" fill="none" stroke="currentColor" stroke-width="1.6" />

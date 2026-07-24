@@ -53,17 +53,18 @@ pub fn scroll_lock_ref() -> NodeRef<leptos::html::Div> {
 /// Clés de filtre décisions (parité `FILTER_KEYS`).
 pub fn filter_keys() -> Vec<&'static str> {
     vec![
-        "jur",
+        "jurisdictionType",
         "office",
-        "jcode",
-        "domaine",
+        "jurisdictionCode",
+        "chamber",
+        "legalDomain",
         "solution",
-        "portee",
+        "significance",
         "publication",
-        "li",
-        "la",
-        "from",
-        "to",
+        "legalInstrument",
+        "legalArticle",
+        "dateFrom",
+        "dateTo",
     ]
 }
 
@@ -85,15 +86,6 @@ pub fn build_tree(choices: &[FacetChoice]) -> Vec<(FacetChoice, Vec<FacetChoice>
         }
     }
     roots
-}
-
-/// Valeur de toggle (clé d'URL `jur`) d'une racine juridiction :
-/// `juridiction:TJ` → `TJ`.
-pub fn juridiction_root_value(uid: &str) -> String {
-    match uid.split_once(':') {
-        Some((_, suffix)) => suffix.to_string(),
-        None => uid.to_string(),
-    }
 }
 
 type NavFn = Box<dyn Fn(&str, NavigateOptions) + Send + Sync>;
@@ -251,7 +243,7 @@ pub fn FilterSearchInput(
 
 // ── TreeRow ───────────────────────────────────────────────────────────────────
 
-/// Ligne racine d'un arbre 2 niveaux (Juridiction, Domaine) : chevron +
+/// Ligne racine d'un arbre 2 niveaux (Juridiction, Domain) : chevron +
 /// checkbox racine, enfants `FacetChoice` dépliables (lazy-mount, auto-dépli
 /// quand un enfant est sélectionné).
 #[component]

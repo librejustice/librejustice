@@ -67,7 +67,7 @@ pub fn publication_badge(codes: &[String]) -> Option<String> {
 }
 
 /// Groupes de portée, du rang le plus fort au plus faible — miroir de
-/// `portee_codes` de lj-core (ADR 0167), même servitude de duplication que
+/// `significance_codes` de lj-core (ADR 0167), même servitude de duplication que
 /// `PUBLICATION_LABELS` (lj-web ne dépend pas de lj-core).
 const PORTEE_GROUPS: &[(&str, &[&str])] = &[
     ("Majeure", &["r", "A"]),
@@ -77,7 +77,7 @@ const PORTEE_GROUPS: &[(&str, &[&str])] = &[
 
 /// Libellé de portée au rang le plus fort (`{b,r}` → « Majeure »). `None` =
 /// indéterminée (aucun code classant) — on ne l'affiche pas.
-pub fn portee_label(codes: &[String]) -> Option<&'static str> {
+pub fn significance_label(codes: &[String]) -> Option<&'static str> {
     PORTEE_GROUPS.iter().find_map(|(label, group)| {
         codes
             .iter()
@@ -89,8 +89,8 @@ pub fn portee_label(codes: &[String]) -> Option<&'static str> {
 /// Badge de portée des cartes résultat : majeure/importante seulement (la
 /// portée limitée, 85 % du corpus classé, serait du bruit) — remplace l'ancien
 /// badge publication brut, dont il est la lecture normalisée inter-ordres.
-pub fn portee_badge(codes: &[String]) -> Option<String> {
-    portee_label(codes)
+pub fn significance_badge(codes: &[String]) -> Option<String> {
+    significance_label(codes)
         .filter(|l| *l != "Limitée")
         .map(|l| format!("Portée {}", l.to_lowercase()))
 }
@@ -126,18 +126,21 @@ mod tests {
     }
 
     #[test]
-    fn portee_takes_strongest_rank_and_badge_hides_limitee() {
+    fn significance_takes_strongest_rank_and_badge_hides_limitee() {
         let c = |v: &[&str]| v.iter().map(|s| s.to_string()).collect::<Vec<_>>();
-        assert_eq!(portee_label(&c(&["b", "r"])), Some("Majeure"));
-        assert_eq!(portee_label(&c(&["l"])), Some("Importante"));
-        assert_eq!(portee_label(&c(&["n"])), Some("Limitée"));
-        assert_eq!(portee_label(&[]), None);
-        assert_eq!(portee_badge(&c(&["A"])).as_deref(), Some("Portée majeure"));
+        assert_eq!(significance_label(&c(&["b", "r"])), Some("Majeure"));
+        assert_eq!(significance_label(&c(&["l"])), Some("Importante"));
+        assert_eq!(significance_label(&c(&["n"])), Some("Limitée"));
+        assert_eq!(significance_label(&[]), None);
         assert_eq!(
-            portee_badge(&c(&["B"])).as_deref(),
+            significance_badge(&c(&["A"])).as_deref(),
+            Some("Portée majeure")
+        );
+        assert_eq!(
+            significance_badge(&c(&["B"])).as_deref(),
             Some("Portée importante")
         );
-        assert_eq!(portee_badge(&c(&["C", "D"])), None);
-        assert_eq!(portee_badge(&[]), None);
+        assert_eq!(significance_badge(&c(&["C", "D"])), None);
+        assert_eq!(significance_badge(&[]), None);
     }
 }

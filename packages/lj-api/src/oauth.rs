@@ -97,6 +97,10 @@ pub struct TokenForm {
     pub client_id: Option<String>,
     #[serde(default)]
     pub redirect_uri: Option<String>,
+    // Grant `refresh_token` (RFC 6749 §6) : seul champ requis en plus de
+    // `grant_type` / `client_id` pour ce flow.
+    #[serde(default)]
+    pub refresh_token: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -104,6 +108,7 @@ pub struct TokenResponse {
     pub access_token: String,
     pub token_type: String,
     pub expires_in: i64,
+    pub refresh_token: String,
 }
 
 // ── Routeur OAuth (préfixe `/oauth`) ────────────────────────────────────────
@@ -142,6 +147,7 @@ pub fn well_known_router() -> Router<AppState> {
             "/.well-known/openai-apps-challenge",
             get(openai_apps_challenge),
         )
+        .route("/.well-known/glama.json", get(glama_manifest))
 }
 
 /// Sert le token de vérification de propriété du domaine pour le catalogue d'apps
@@ -150,6 +156,20 @@ pub fn well_known_router() -> Router<AppState> {
 async fn openai_apps_challenge(State(state): State<AppState>) -> Response {
     match state.settings.openai_apps_challenge_token.as_deref() {
         Some(token) => token.to_owned().into_response(),
+        None => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+/// Manifeste de claim du connecteur pour l'annuaire Glama (glama.ai/mcp) :
+/// `maintainers` doit matcher le compte Glama du mainteneur. Lu depuis les
+/// `Settings` (`LIBREJUSTICE_API_GLAMA_MAINTAINER`) ; non configuré → 404.
+async fn glama_manifest(State(state): State<AppState>) -> Response {
+    match state.settings.glama_maintainer.as_deref() {
+        Some(maintainer) => Json(serde_json::json!({
+            "$schema": "https://glama.ai/mcp/schemas/server.json",
+            "maintainers": [maintainer],
+        }))
+        .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),
     }
 }
@@ -202,7 +222,10 @@ async fn register(
         client_id_issued_at: Utc::now().timestamp(),
         redirect_uris: body.redirect_uris,
         client_name: body.client_name,
-        grant_types: vec!["authorization_code".to_string()],
+        grant_types: vec![
+            "authorization_code".to_string(),
+            "refresh_token".to_string(),
+        ],
         response_types: vec!["code".to_string()],
         token_endpoint_auth_method: "none".to_string(),
     };
@@ -287,25 +310,36 @@ async fn approve(
     ))
 }
 
-/// Échange un code contre un access token MCP (30 jours).
+/// Point d'entrée `POST /oauth/token` : dispatch sur `grant_type`.
 ///
-/// RFC 6749 §4.1.3 — corps en `application/x-www-form-urlencoded`. Claude.ai et
-/// ChatGPT envoient strictement ce format.
+/// RFC 6749 §4.1.3 / §6 — corps en `application/x-www-form-urlencoded`.
+/// Claude.ai et ChatGPT envoient strictement ce format. Deux grants supportés :
+/// `authorization_code` (échange du code + PKCE) et `refresh_token` (rotation).
 async fn token(State(state): State<AppState>, Form(body): Form<TokenForm>) -> Result<Response> {
+    let missing = |f: &'static str| ApiError::Unprocessable(validation::missing(&["body", f]));
+    let grant_type = body
+        .grant_type
+        .clone()
+        .ok_or_else(|| missing("grant_type"))?;
+    match grant_type.as_str() {
+        "authorization_code" => token_authorization_code(&state, body).await,
+        "refresh_token" => token_refresh(&state, body).await,
+        _ => Err(ApiError::BadRequest("unsupported_grant_type".into())),
+    }
+}
+
+/// Grant `authorization_code` : échange un code (+ PKCE S256) contre une paire
+/// access token (30 j) + refresh token (90 j).
+async fn token_authorization_code(state: &AppState, body: TokenForm) -> Result<Response> {
     // Champs `Form()` requis, dans l'ordre de déclaration FastAPI : un manquant
     // → 422 `{type:"missing", loc:["body", <champ>]}` (un seul rapporté).
     let missing = |f: &'static str| ApiError::Unprocessable(validation::missing(&["body", f]));
-    let grant_type = body.grant_type.ok_or_else(|| missing("grant_type"))?;
     let code = body.code.ok_or_else(|| missing("code"))?;
     let code_verifier = body.code_verifier.ok_or_else(|| missing("code_verifier"))?;
     let client_id = body.client_id.ok_or_else(|| missing("client_id"))?;
     let redirect_uri = body.redirect_uri.ok_or_else(|| missing("redirect_uri"))?;
 
-    if grant_type != "authorization_code" {
-        return Err(ApiError::BadRequest("unsupported_grant_type".into()));
-    }
-
-    let conn = pool_conn(&state).await?;
+    let conn = pool_conn(state).await?;
     let row = conn
         .query_opt(
             "SELECT code, user_id, client_id, code_challenge, redirect_uri \
@@ -334,25 +368,78 @@ async fn token(State(state): State<AppState>, Form(body): Form<TokenForm>) -> Re
         return Err(ApiError::BadRequest("invalid_code_verifier".into()));
     }
 
-    let access_token = token_urlsafe(32);
-    let expires_at = Utc::now() + Duration::days(30);
     conn.execute("DELETE FROM mcp_auth_codes WHERE code = $1", &[&code])
         .await
         .map_err(store_err)?;
+
+    let resp = issue_token_pair(&conn, &db_user_id, &db_client_id).await?;
+    Ok(Json(resp).into_response())
+}
+
+/// Grant `refresh_token` (RFC 6749 §6) avec **rotation** : consomme l'ancien
+/// refresh token et en émet un neuf, pour un client public (pas de secret, la
+/// rotation est la contre-mesure OAuth 2.1 contre le rejeu d'un token volé).
+async fn token_refresh(state: &AppState, body: TokenForm) -> Result<Response> {
+    let missing = |f: &'static str| ApiError::Unprocessable(validation::missing(&["body", f]));
+    let refresh_token = body.refresh_token.ok_or_else(|| missing("refresh_token"))?;
+    let client_id = body.client_id.ok_or_else(|| missing("client_id"))?;
+
+    // Rotation atomique : le DELETE ... RETURNING consomme le token (rejeu
+    // impossible) et ne rend une ligne que s'il était valide et non expiré.
+    let conn = pool_conn(state).await?;
+    let row = conn
+        .query_opt(
+            "DELETE FROM mcp_refresh_tokens \
+             WHERE refresh_token = $1 AND client_id = $2 AND expires_at > now() \
+             RETURNING user_id, client_id",
+            &[&refresh_token, &client_id],
+        )
+        .await
+        .map_err(store_err)?;
+
+    let Some(row) = row else {
+        return Err(ApiError::BadRequest("invalid_grant".into()));
+    };
+    let db_user_id: String = row.get(0);
+    let db_client_id: String = row.get(1);
+
+    let resp = issue_token_pair(&conn, &db_user_id, &db_client_id).await?;
+    Ok(Json(resp).into_response())
+}
+
+/// Émet et persiste une paire access token (30 j) + refresh token (90 j) pour un
+/// couple (utilisateur, client). Partagé par les deux grants.
+async fn issue_token_pair(
+    conn: &deadpool_postgres::Object,
+    user_id: &str,
+    client_id: &str,
+) -> Result<TokenResponse> {
+    let access_token = token_urlsafe(32);
+    let refresh_token = token_urlsafe(32);
+    let access_expires = Utc::now() + Duration::days(30);
+    let refresh_expires = Utc::now() + Duration::days(90);
+
     conn.execute(
         "INSERT INTO mcp_tokens (access_token, user_id, client_id, expires_at) \
          VALUES ($1, $2, $3, $4)",
-        &[&access_token, &db_user_id, &db_client_id, &expires_at],
+        &[&access_token, &user_id, &client_id, &access_expires],
+    )
+    .await
+    .map_err(store_err)?;
+    conn.execute(
+        "INSERT INTO mcp_refresh_tokens (refresh_token, user_id, client_id, expires_at) \
+         VALUES ($1, $2, $3, $4)",
+        &[&refresh_token, &user_id, &client_id, &refresh_expires],
     )
     .await
     .map_err(store_err)?;
 
-    let resp = TokenResponse {
+    Ok(TokenResponse {
         access_token,
         token_type: "bearer".to_string(),
         expires_in: 2_592_000, // 30 jours
-    };
-    Ok(Json(resp).into_response())
+        refresh_token,
+    })
 }
 
 async fn oauth_as_metadata(
@@ -367,7 +454,7 @@ async fn oauth_as_metadata(
         "token_endpoint": format!("{base}/oauth/token"),
         "registration_endpoint": format!("{base}/oauth/register"),
         "response_types_supported": ["code"],
-        "grant_types_supported": ["authorization_code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
         "code_challenge_methods_supported": ["S256"],
         "token_endpoint_auth_methods_supported": ["none"],
         "scopes_supported": ["mcp"],

@@ -747,6 +747,10 @@ static RE_INSTR_NUM_DATE: LazyLock<Regex> = LazyLock::new(|| {
 // Tiret de numéro détaché par une espace (« n° 2018 -1021 »).
 static RE_INSTR_NUM_SPACED_DASH: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\b(n°\s*\d{2,4})\s+-\s*(\d)").unwrap());
+// Token NOR (majuscules officielles, graphie collée « NORINTK1207286C »
+// incluse), parenthèses appariées absorbées.
+static RE_INSTR_NOR: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\(?\s*\bNOR\s*:?\s*[A-Z]{4}\d{7}[A-Z]\b\s*\)?").unwrap());
 
 /// `_normalize_instrument`. Strip article défini, title-case 1er mot, applique
 /// l'arbre de canonicalisation figé (alias, snap, formes spéciales).
@@ -796,6 +800,20 @@ pub fn normalize_instrument(raw: &str) -> String {
     raw = RE_INSTR_NUM_SPACED_DASH
         .replace_all(&raw, "$1-$2")
         .into_owned();
+    // NOR embarqué (« Circulaire NOR JUSK1140023C du 14 avril 2011 »,
+    // « Décret NOR : DEVT0766271D du … », graphie collée incluse) : retiré
+    // quand une identité chiffrée survit — la forme datée fusionne avec les
+    // citations sans NOR. Mention à NOR seul : gardé, c'est l'identité.
+    if raw.contains("NOR") {
+        let stripped: String = RE_INSTR_NOR
+            .replace_all(&raw, " ")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if stripped.contains(|c: char| c.is_ascii_digit()) {
+            raw = stripped;
+        }
+    }
     raw = RE_INSTR_ET_NUM.replace(&raw, "").into_owned();
     raw = RE_INSTR_GLUED_YEAR.replace(&raw, "$1").into_owned();
     raw = RE_INSTR_VERB_TAIL2.replace(&raw, "").trim().to_string();

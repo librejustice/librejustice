@@ -187,7 +187,7 @@ pub fn reflow_cnda_pdf_text(raw: &str) -> String {
 // texte est extrait en amont.
 //
 // La CNDA est absente de Judilibre/opendata (audit `cnda.md`) : juridiction neuve
-// `juridiction_type = "CNDA"`, ECLI **fabriqué** `ECLI:FR:CNDA:{année}:{numero}`
+// `jurisdiction_type = "CNDA"`, ECLI **fabriqué** `ECLI:FR:CNDA:{année}:{numero}`
 // (la Cour n'en émet aucun), date indexée = date de **lecture** du PDF (jamais la
 // date de mise en ligne de la fiche, piège audit §43/85).
 // ─────────────────────────────────────────────────────────────────────────────
@@ -595,7 +595,7 @@ impl Decision {
 /// = métadonnées de la fiche HTML désérialisées. `numero` = numéro de décision
 /// (clé robuste, triple source : slug PDF / en-tête / `/Title`). PUR.
 ///
-/// `juridiction_type` = `"CNDA"` (posé explicitement). `ecli` =
+/// `jurisdiction_type` = `"CNDA"` (posé explicitement). `ecli` =
 /// `ECLI:FR:CNDA:{année}:{numero}` (année dérivée de la date de **lecture**, la
 /// Cour n'émet aucun ECLI). `date_lecture` résolue par [`cnda_resolve_lecture`]
 /// (marqueur de prononcé du texte OCR, sinon date du slug éditorial).
@@ -685,10 +685,12 @@ pub fn parse_cnda(pdf_text: &str, fiche: &Value, numero: &str) -> crate::error::
             source_uid: format!("cnda/{numero}"),
             member_name: numero.to_string(),
             ecli: Some(format!("ECLI:FR:CNDA:{year}:{numero}")),
-            juridiction_code: None,
-            juridiction_nom: Some("Cour nationale du droit d'asile".to_string()),
-            juridiction_type: Some("CNDA".to_string()),
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: Some("Cour nationale du droit d'asile".to_string()),
+            jurisdiction_type: Some("CNDA".to_string()),
+            jurisdiction_location: None,
             numero_dossier: Some(numero.to_string()),
             numero_dossiers: Some(vec![numero.to_string()]),
             numero_role: None,
@@ -756,10 +758,12 @@ pub fn parse_cnda(pdf_text: &str, fiche: &Value, numero: &str) -> crate::error::
             source_uid: format!("cnda/{numero}"),
             member_name: numero.to_string(),
             ecli: Some(format!("ECLI:FR:CNDA:{year}:{numero}")),
-            juridiction_code: None,
-            juridiction_nom: Some("Cour nationale du droit d'asile".to_string()),
-            juridiction_type: Some("CNDA".to_string()),
-            juridiction_location: None,
+            jurisdiction_source_code: None,
+            chamber: None,
+            nac: None,
+            jurisdiction_name: Some("Cour nationale du droit d'asile".to_string()),
+            jurisdiction_type: Some("CNDA".to_string()),
+            jurisdiction_location: None,
             numero_dossier: Some(numero.to_string()),
             numero_dossiers: Some(vec![numero.to_string()]),
             numero_role: None,
@@ -1022,9 +1026,9 @@ mod tests {
 
         assert_eq!(d.source_uid, "cnda/26006334");
         assert_eq!(d.member_name, "26006334");
-        assert_eq!(d.juridiction_type.as_deref(), Some("CNDA"));
+        assert_eq!(d.jurisdiction_type.as_deref(), Some("CNDA"));
         assert_eq!(
-            d.juridiction_nom.as_deref(),
+            d.jurisdiction_name.as_deref(),
             Some("Cour nationale du droit d'asile")
         );
         // ECLI fabriqué : année dérivée de la date de LECTURE (2026), pas de la

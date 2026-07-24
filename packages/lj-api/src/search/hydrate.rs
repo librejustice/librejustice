@@ -16,10 +16,9 @@ use crate::error::{ApiError, Result};
 use crate::referential::{uid_suffix, Referential};
 use crate::snippets;
 use crate::snippets::highlight;
-use crate::titles::decision_title;
 
 use lj_dtos::{
-    BestChunk, FacetChoice, FacetTag, JuridictionType, LegalInstrumentFacet, SearchFacets,
+    BestChunk, FacetChoice, FacetTag, JurisdictionType, LegalInstrumentFacet, SearchFacets,
     SearchHit,
 };
 
@@ -30,21 +29,7 @@ const TITLE_SNIPPET_CHARS: usize = 500;
 const LEGAL_INSTRUMENT_FACET_LIMIT: usize = 30;
 const LEGAL_ARTICLE_FACET_LIMIT: usize = 20;
 
-// ── Facettes + procédure ───────────────────────────────────────────────────
-
-include!("procedural_denylist.rs");
-
-/// `true` si `(instrument, article)` est de la pure procédure (denylist ADR 0058).
-pub fn is_procedural_article(instrument: &str, article: Option<&str>) -> bool {
-    let Some(article) = article else {
-        return false;
-    };
-    PROCEDURAL_ARTICLE_DENYLIST
-        .iter()
-        .find(|(i, _)| *i == instrument)
-        .map(|(_, arts)| arts.contains(&article))
-        .unwrap_or(false)
-}
+// ── Facettes ─────────────────────────────────────────────────────────────
 
 /// Tri d'un compteur en `(clé, count)` : count décroissant, tie-break par clé.
 fn ranked(counter: &HashMap<String, i64>) -> Vec<(String, i64)> {
@@ -72,17 +57,23 @@ fn uid_choices(counter: &HashMap<String, i64>, refs: &Referential) -> Vec<FacetC
 #[derive(Clone, Default)]
 pub(crate) struct DecisionMeta {
     pub(crate) public_id: String,
-    pub(crate) juridiction_type: String,
+    pub(crate) jurisdiction_type: String,
     pub(crate) jurisdiction_code: Option<String>,
     pub(crate) date_lecture: Option<String>,
     pub(crate) solution_uid: Option<String>,
-    pub(crate) voie_uid: Option<String>,
+    pub(crate) procedure_uid: Option<String>,
     pub(crate) office_uid: Option<String>,
     pub(crate) legal_domain_uid: Option<String>,
     pub(crate) publication_codes: Vec<String>,
     pub(crate) docket_numbers: Option<Vec<String>>,
     pub(crate) summary: Option<String>,
     pub(crate) chars: Option<i64>,
+    /// Axes formation (ADR 0170) : position recomposée + type de formation,
+    /// pour le siège du titre des hits.
+    pub(crate) chamber_position: Option<String>,
+    pub(crate) formation_uid: Option<String>,
+    pub(crate) chamber_uid: Option<String>,
+    pub(crate) publication_uid: Option<String>,
 }
 
 pub(crate) async fn fetch_pub_ids_and_facets(
@@ -95,9 +86,10 @@ pub(crate) async fn fetch_pub_ids_and_facets(
     }
     let rows = conn
         .query(
-            "SELECT d.id, d.public_id, d.juridiction_type, d.jurisdiction_code, \
+            "SELECT d.id, d.public_id, d.jurisdiction_type, d.jurisdiction_code, \
              d.office_uid, d.legal_domain_uid, d.solution_uid, d.publication_uid, \
-             EXTRACT(YEAR FROM d.date_lecture)::int AS y, d.publication_codes \
+             EXTRACT(YEAR FROM d.date_lecture)::int AS y, d.publication_codes, \
+             d.chamber_uid \
              FROM decisions d WHERE d.id = ANY($1)",
             &[&decision_ids],
         )
@@ -110,27 +102,29 @@ pub(crate) async fn fetch_pub_ids_and_facets(
     // 2026-06-30 : on ne filtre pas vers ce qui ne mène nulle part).
     let refs_rows = conn
         .query(
-            "SELECT lc.ref_text_uid, lt.title, lc.ref_num_key, \
-             COUNT(DISTINCT lc.decision_id) AS n \
+            "SELECT el->>2, lt.title, el->>3, \
+             COUNT(DISTINCT lc.decision_id) AS n, lt.slug \
              FROM legal_citation lc \
-             JOIN legal_text lt ON lt.text_uid = lc.ref_text_uid \
+             CROSS JOIN LATERAL jsonb_array_elements(lc.spans) AS el \
+             JOIN legal_text lt ON lt.text_uid = el->>2 \
              WHERE lc.decision_id = ANY($1) \
-             GROUP BY lc.ref_text_uid, lt.title, lc.ref_num_key",
+             GROUP BY el->>2, lt.title, el->>3, lt.slug",
             &[&decision_ids],
         )
         .await?;
 
     let mut pub_ids: HashMap<i64, String> = HashMap::new();
-    // Facette juridiction (ADR 0163) : niveau 1 = types (`juridiction:TJ`),
-    // niveau 2 = codes `jurisdiction` (`parent` = uid racine du type). L'office
+    // Facette juridiction (ADR 0163) : niveau 1 = tokens `jurisdiction_type`
+    // (`TJ`), niveau 2 = codes `jurisdiction` (`parent` = token du type). L'office
     // est un axe séparé (`office:*`), en miroir du filtrage (`office_uid`) —
     // chaque décision compte sous son tribunal ET sous son office éventuel.
     let mut jur_roots: HashMap<String, i64> = HashMap::new();
     let mut jur_children: HashMap<(String, String), i64> = HashMap::new();
+    let mut chamber_counter: HashMap<String, i64> = HashMap::new();
     let mut office_counter: HashMap<String, i64> = HashMap::new();
     let mut domain_counter: HashMap<String, i64> = HashMap::new();
     let mut solution_counter: HashMap<String, i64> = HashMap::new();
-    let mut portee_counter: HashMap<String, i64> = HashMap::new();
+    let mut significance_counter: HashMap<String, i64> = HashMap::new();
     let mut publication_counter: HashMap<String, i64> = HashMap::new();
     let mut year_counter: HashMap<String, i64> = HashMap::new();
 
@@ -148,19 +142,21 @@ pub(crate) async fn fetch_pub_ids_and_facets(
         let publication: Option<String> = row.get(7);
         let year: Option<i32> = row.get(8);
         let publication_codes: Vec<String> = row.get(9);
+        let chamber: Option<String> = row.get(10);
+        if let Some(uid) = chamber {
+            *chamber_counter.entry(uid).or_insert(0) += 1;
+        }
         // Portée dérivée des codes (mapping total, ADR 0167) — pas de colonne.
-        *portee_counter
+        *significance_counter
             .entry(format!(
-                "portee:{}",
-                lj_core::publication::portee_key(&publication_codes)
+                "significance:{}",
+                lj_core::publication::significance_key(&publication_codes)
             ))
             .or_insert(0) += 1;
-        *jur_roots.entry(format!("juridiction:{jt}")).or_insert(0) += 1;
         if let Some(code) = code {
-            *jur_children
-                .entry((format!("juridiction:{jt}"), code))
-                .or_insert(0) += 1;
+            *jur_children.entry((jt.clone(), code)).or_insert(0) += 1;
         }
+        *jur_roots.entry(jt).or_insert(0) += 1;
         for (counter, val) in [
             (&mut office_counter, office),
             (&mut domain_counter, domain),
@@ -181,19 +177,17 @@ pub(crate) async fn fetch_pub_ids_and_facets(
     // (titre) accompagne le token pour l'affichage.
     let mut li_counter: HashMap<String, i64> = HashMap::new();
     let mut li_labels: HashMap<String, String> = HashMap::new();
+    let mut li_slugs: HashMap<String, Option<String>> = HashMap::new();
     let mut li_article_counter: HashMap<String, HashMap<String, i64>> = HashMap::new();
     for row in &refs_rows {
         let uid: String = row.get(0);
         let title: String = row.get(1);
         let num_key: Option<String> = row.get(2);
         let n: i64 = row.get(3);
-        if let Some(k) = &num_key {
-            if is_procedural_article(&title, Some(k)) {
-                continue;
-            }
-        }
+        let slug: Option<String> = row.get(4);
         *li_counter.entry(uid.clone()).or_insert(0) += n;
         li_labels.entry(uid.clone()).or_insert(title);
+        li_slugs.entry(uid.clone()).or_insert(slug);
         if let Some(k) = num_key {
             *li_article_counter
                 .entry(uid)
@@ -223,9 +217,11 @@ pub(crate) async fn fetch_pub_ids_and_facets(
                     })
                     .unwrap_or_default();
                 let label = li_labels.get(&uid).cloned().unwrap_or_else(|| uid.clone());
+                let slug = li_slugs.get(&uid).cloned().flatten();
                 LegalInstrumentFacet {
                     value: uid,
                     label,
+                    slug,
                     count,
                     articles,
                 }
@@ -233,11 +229,12 @@ pub(crate) async fn fetch_pub_ids_and_facets(
             .collect();
 
     let facets = SearchFacets {
-        juridiction: juridiction_choices(&jur_roots, &jur_children, refs),
+        jurisdiction: jurisdiction_choices(&jur_roots, &jur_children, refs),
+        chamber: uid_choices(&chamber_counter, refs),
         office: uid_choices(&office_counter, refs),
         legal_domain: domain_choices(&domain_counter, refs),
         solution: uid_choices(&solution_counter, refs),
-        portee: uid_choices(&portee_counter, refs),
+        significance: uid_choices(&significance_counter, refs),
         publication: uid_choices(&publication_counter, refs),
         date_lecture_year: ranked(&year_counter)
             .into_iter()
@@ -253,19 +250,22 @@ pub(crate) async fn fetch_pub_ids_and_facets(
     Ok((pub_ids, facets))
 }
 
-/// Facette juridiction : racines (uids complets `juridiction:*`) triées par
-/// count, puis enfants (`value` = code `jurisdiction`, `parent` = uid racine)
-/// — le front reconstruit l'arbre par `parent`.
-fn juridiction_choices(
+/// Facette juridiction : racines (tokens `jurisdiction_type`, `TA`/`CC`…)
+/// triées par count, puis enfants (`value` = code `jurisdiction`, `parent` =
+/// token racine) — le front reconstruit l'arbre par `parent`.
+fn jurisdiction_choices(
     roots: &HashMap<String, i64>,
     children: &HashMap<(String, String), i64>,
     refs: &Referential,
 ) -> Vec<FacetChoice> {
     let mut out: Vec<FacetChoice> = ranked(roots)
         .into_iter()
-        .map(|(uid, count)| FacetChoice {
-            label: refs.label(&uid).to_string(),
-            value: uid,
+        .map(|(token, count)| FacetChoice {
+            label: refs
+                .jurisdiction_type_label(&token)
+                .unwrap_or(&token)
+                .to_string(),
+            value: token,
             count,
             parent: None,
         })
@@ -273,7 +273,7 @@ fn juridiction_choices(
     let mut kids: Vec<((String, String), i64)> =
         children.iter().map(|(k, v)| (k.clone(), *v)).collect();
     kids.sort_by(|a, b| b.1.cmp(&a.1).then(a.0 .1.cmp(&b.0 .1)));
-    out.extend(kids.into_iter().map(|((root_uid, code), count)| {
+    out.extend(kids.into_iter().map(|((root_token, code), count)| {
         let label = refs
             .jurisdiction(&code)
             .map(|j| j.label.clone())
@@ -282,7 +282,7 @@ fn juridiction_choices(
             value: code,
             label,
             count,
-            parent: Some(root_uid),
+            parent: Some(root_token),
         }
     }));
     out
@@ -344,10 +344,11 @@ pub(crate) async fn hydrate_decisions(
     }
     let rows = conn
         .query(
-            "SELECT d.id, d.public_id, d.juridiction_type, d.jurisdiction_code, \
-             d.date_lecture, d.solution_uid, d.voie_uid, d.office_uid, \
+            "SELECT d.id, d.public_id, d.jurisdiction_type, d.jurisdiction_code, \
+             d.date_lecture, d.solution_uid, d.procedure_uid, d.office_uid, \
              d.legal_domain_uid, d.publication_codes, \
-             d.docket_numbers, d.summary, c.chars \
+             d.docket_numbers, d.summary, c.chars, \
+             d.chamber_position, d.formation_uid, d.chamber_uid, d.publication_uid \
              FROM decisions d \
              LEFT JOIN LATERAL (SELECT max(char_end) AS chars FROM decision_chunks \
                WHERE decision_id = d.id) c ON true \
@@ -367,17 +368,21 @@ pub(crate) async fn hydrate_decisions(
             r.get::<_, i64>(0),
             DecisionMeta {
                 public_id,
-                juridiction_type: r.get(2),
+                jurisdiction_type: r.get(2),
                 jurisdiction_code: r.get(3),
                 date_lecture: date_raw.map(|d| d.to_string()),
                 solution_uid: r.get(5),
-                voie_uid: r.get(6),
+                procedure_uid: r.get(6),
                 office_uid: r.get(7),
                 legal_domain_uid: r.get(8),
                 publication_codes: r.try_get(9).unwrap_or_default(),
                 docket_numbers: r.try_get(10).ok(),
                 summary: r.get(11),
                 chars: chars.map(|c| c as i64),
+                chamber_position: r.get(13),
+                formation_uid: r.get(14),
+                chamber_uid: r.get(15),
+                publication_uid: r.get(16),
             },
         );
     }
@@ -443,20 +448,21 @@ fn make_snippet(text: &str) -> String {
     s
 }
 
-fn jt_from_str(code: &str) -> Option<JuridictionType> {
+fn jt_from_str(code: &str) -> Option<JurisdictionType> {
     match code {
-        "TA" => Some(JuridictionType::Ta),
-        "CAA" => Some(JuridictionType::Caa),
-        "CE" => Some(JuridictionType::Ce),
-        "CONSTIT" => Some(JuridictionType::Constit),
-        "TC" => Some(JuridictionType::Tc),
-        "CC" => Some(JuridictionType::Cc),
-        "CA" => Some(JuridictionType::Ca),
-        "TJ" => Some(JuridictionType::Tj),
-        "TCOM" => Some(JuridictionType::Tcom),
-        "CEDH" => Some(JuridictionType::Cedh),
-        "CJUE" => Some(JuridictionType::Cjue),
-        "CNDA" => Some(JuridictionType::Cnda),
+        "TA" => Some(JurisdictionType::Ta),
+        "CAA" => Some(JurisdictionType::Caa),
+        "CE" => Some(JurisdictionType::Ce),
+        "CONSTIT" => Some(JurisdictionType::Constit),
+        "TC" => Some(JurisdictionType::Tc),
+        "CC" => Some(JurisdictionType::Cc),
+        "CA" => Some(JurisdictionType::Ca),
+        "TJ" => Some(JurisdictionType::Tj),
+        "TCOM" => Some(JurisdictionType::Tcom),
+        "CEDH" => Some(JurisdictionType::Cedh),
+        "CJUE" => Some(JurisdictionType::Cjue),
+        "CNDA" => Some(JurisdictionType::Cnda),
+        "CNIL" => Some(JurisdictionType::Cnil),
         _ => None,
     }
 }
@@ -466,24 +472,46 @@ fn opt_tag(uid: &Option<String>, refs: &Referential) -> Option<FacetTag> {
     uid.as_deref().map(|u| refs.tag(u))
 }
 
-/// Titre d'affichage composé depuis les référentiels (ADR 0146 §4) :
-/// « <juridiction résolue>, <date FR>, <n°> ». La colonne `search_title` reste
-/// le champ **indexé** BM25 (elle porte la formation source pour le rappel) mais
-/// n'est plus affichée : sa formation brute (« JCP- juge ctx protection ») est
-/// du bruit source.
-pub(crate) fn display_title(m: &DecisionMeta, refs: &Referential) -> String {
+/// Juridiction résolue d'une décision (nom réel assaini sinon libellé du type).
+fn display_jurisdiction(m: &DecisionMeta, refs: &Referential) -> String {
     let jurisdiction_name = m
         .jurisdiction_code
         .as_deref()
         .and_then(|c| refs.jurisdiction(c))
         .map(|j| j.label.as_str());
-    decision_title(
-        refs.juridiction_type_label(&m.juridiction_type)
-            .unwrap_or(&m.juridiction_type),
+    crate::titles::decision_jurisdiction(
+        refs.jurisdiction_type_label(&m.jurisdiction_type)
+            .unwrap_or(&m.jurisdiction_type),
         jurisdiction_name,
+    )
+}
+
+/// Titre d'affichage des cartes/topbar (ADR 0170) : « <juridiction résolue>,
+/// <date FR>, <n°> » — **sans** le siège (rendu à part, [`display_seat`], en 2ᵉ
+/// ligne). Une seule ligne, ne wrappe pas. Le titre BM25 (`search_title`), lui,
+/// garde le siège pour le matching.
+pub(crate) fn display_title(m: &DecisionMeta, refs: &Referential) -> String {
+    let jur_display = display_jurisdiction(m, refs);
+    lj_core::titles::decision_title(
+        &jur_display,
         None,
         m.date_lecture.as_deref(),
-        m.docket_numbers.as_deref(),
+        m.docket_numbers
+            .as_deref()
+            .and_then(|d| d.first())
+            .map(String::as_str),
+    )
+}
+
+/// Siège recomposé depuis les axes structurés (chambre · formation/office),
+/// rendu en 2ᵉ ligne sous le titre. `None` si aucun axe.
+pub(crate) fn display_seat(m: &DecisionMeta, refs: &Referential) -> Option<String> {
+    let jur_display = display_jurisdiction(m, refs);
+    crate::titles::decision_seat(
+        &jur_display,
+        m.chamber_position.as_deref(),
+        m.formation_uid.as_deref(),
+        m.office_uid.as_deref(),
     )
 }
 
@@ -497,20 +525,24 @@ fn make_hit(
 ) -> SearchHit {
     SearchHit {
         id: m.public_id.clone(),
-        juridiction_type: jt_from_str(&m.juridiction_type).unwrap_or(JuridictionType::Ta),
+        jurisdiction_type: jt_from_str(&m.jurisdiction_type).unwrap_or(JurisdictionType::Ta),
+        jurisdiction_code: m.jurisdiction_code.clone(),
         jurisdiction_name: m
             .jurisdiction_code
             .as_deref()
             .and_then(|c| refs.jurisdiction(c))
             .map(|j| j.label.clone()),
         title_html,
+        seat: display_seat(m, refs),
         score,
         date_lecture: m.date_lecture.clone(),
         docket_numbers: m.docket_numbers.clone(),
         solution: opt_tag(&m.solution_uid, refs),
-        voie: opt_tag(&m.voie_uid, refs),
+        procedure: opt_tag(&m.procedure_uid, refs),
         office: opt_tag(&m.office_uid, refs),
         legal_domain: opt_tag(&m.legal_domain_uid, refs),
+        chamber: opt_tag(&m.chamber_uid, refs),
+        publication: opt_tag(&m.publication_uid, refs),
         publication_codes: m.publication_codes.clone(),
         best_chunk: BestChunk {
             chunk_index: chunk.chunk_index,
@@ -658,25 +690,6 @@ mod tests {
     use lj_store::repository::FacetValueRow;
 
     #[test]
-    fn procedural_article_denylisted() {
-        assert!(is_procedural_article(
-            "Code de procédure civile",
-            Some("700")
-        ));
-        assert!(is_procedural_article(
-            "Code de justice administrative",
-            Some("L. 761-1")
-        ));
-        // Principe directeur du procès : INCLUS (non procédural).
-        assert!(!is_procedural_article(
-            "Code de procédure civile",
-            Some("16")
-        ));
-        assert!(!is_procedural_article("Code civil", Some("1240")));
-        assert!(!is_procedural_article("Code de procédure civile", None));
-    }
-
-    #[test]
     fn snippet_truncation_adds_ellipsis() {
         let long = "a".repeat(400);
         let s = make_snippet(&long);
@@ -699,20 +712,20 @@ mod tests {
     fn domain_facet_aggregates_leaves_under_root() {
         let refs = Referential::new(
             vec![
-                fv("domaine:CIVIL", "Civil", None),
+                fv("legal_domain:CIVIL", "Civil", None),
                 fv(
-                    "domaine:CIVIL_DROIT_LOCATIF",
+                    "legal_domain:CIVIL_DROIT_LOCATIF",
                     "Droit locatif",
-                    Some("domaine:CIVIL"),
+                    Some("legal_domain:CIVIL"),
                 ),
-                fv("domaine:FISCAL", "Fiscal", None),
+                fv("legal_domain:FISCAL", "Fiscal", None),
             ],
             Vec::new(),
         );
         let counter = HashMap::from([
-            ("domaine:CIVIL_DROIT_LOCATIF".to_string(), 3i64),
-            ("domaine:CIVIL".to_string(), 1),
-            ("domaine:FISCAL".to_string(), 2),
+            ("legal_domain:CIVIL_DROIT_LOCATIF".to_string(), 3i64),
+            ("legal_domain:CIVIL".to_string(), 1),
+            ("legal_domain:FISCAL".to_string(), 2),
         ]);
         let choices = domain_choices(&counter, &refs);
         // Racines d'abord (count agrégé), feuilles ensuite (parent = suffixe racine).
@@ -733,24 +746,24 @@ mod tests {
     #[test]
     fn juridiction_facet_nests_codes_under_types() {
         let refs = Referential::new(
-            vec![fv("juridiction:TJ", "Tribunal judiciaire", None)],
+            vec![fv("jurisdiction_type:TJ", "Tribunal judiciaire", None)],
             vec![lj_store::repository::JurisdictionRow {
-                code: "tj76351".to_string(),
-                juridiction_type: "TJ".to_string(),
+                code: "tj_le_havre".to_string(),
+                source_code: "tj76351".to_string(),
+                jurisdiction_type: "TJ".to_string(),
                 city: Some("Le Havre".to_string()),
                 label: "Tribunal judiciaire du Havre".to_string(),
             }],
         );
-        let roots = HashMap::from([("juridiction:TJ".to_string(), 5i64)]);
-        let children =
-            HashMap::from([(("juridiction:TJ".to_string(), "tj76351".to_string()), 4i64)]);
-        let choices = juridiction_choices(&roots, &children, &refs);
-        // Racine : uid complet, label résolu.
-        assert_eq!(choices[0].value, "juridiction:TJ");
+        let roots = HashMap::from([("TJ".to_string(), 5i64)]);
+        let children = HashMap::from([(("TJ".to_string(), "tj_le_havre".to_string()), 4i64)]);
+        let choices = jurisdiction_choices(&roots, &children, &refs);
+        // Racine : token `jurisdiction_type`, label résolu.
+        assert_eq!(choices[0].value, "TJ");
         assert_eq!(choices[0].label, "Tribunal judiciaire");
-        // Enfant : code `jurisdiction`, parent = uid racine.
-        let child = choices.iter().find(|c| c.value == "tj76351").unwrap();
-        assert_eq!(child.parent.as_deref(), Some("juridiction:TJ"));
+        // Enfant : code `jurisdiction`, parent = token racine.
+        let child = choices.iter().find(|c| c.value == "tj_le_havre").unwrap();
+        assert_eq!(child.parent.as_deref(), Some("TJ"));
         assert_eq!(child.label, "Tribunal judiciaire du Havre");
     }
 }

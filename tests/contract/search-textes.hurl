@@ -3,7 +3,7 @@
 # ----------------------------------------------------------------------------
 # Asserts HTTP status + JSON STRUCTURAL invariants only.
 # Variable: {{base}} = host root (e.g. http://localhost:8300).
-# Route publique, sans auth. `q` vide ⇒ réponse vide 200 (pas d'erreur).
+# Route publique, sans auth. `q` vide ⇒ 4xx (même frontière que /api/search).
 # ============================================================================
 
 # ── 1. Baseline : recherche plein-texte d'articles ────────────────────────────
@@ -14,7 +14,8 @@ header "Content-Type" contains "application/json"
 jsonpath "$.total" isInteger
 jsonpath "$.total" >= 0
 jsonpath "$.hits" isCollection
-# facets propres aux articles : jurisdiction / nature / source
+# facets propres aux articles : code / jurisdiction / nature / source
+jsonpath "$.facets.code" isCollection
 jsonpath "$.facets.jurisdiction" isCollection
 jsonpath "$.facets.nature" isCollection
 jsonpath "$.facets.source" isCollection
@@ -33,12 +34,12 @@ jsonpath "$.hits[0].snippet" isString
 jsonpath "$.hits[0].source" isString
 
 
-# ── 3. q vide ⇒ réponse vide 200 (court-circuit sans DB) ─────────────────────
+# ── 3. q vide ⇒ 4xx (même frontière de validation que /api/search) ──────────
 GET {{base}}/api/search-textes?q=
-HTTP 200
+HTTP *
 [Asserts]
-jsonpath "$.total" == 0
-jsonpath "$.hits" count == 0
+status >= 400
+status < 500
 
 
 # ── 4. Filtre jurisdiction (FRANCE / UE / INTL) ──────────────────────────────

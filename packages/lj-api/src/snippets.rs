@@ -117,7 +117,12 @@ static ENGINE: LazyLock<SnippetEngine> = LazyLock::new(|| {
         TEXT.set_indexing_options(
             TextFieldIndexing::default()
                 .set_tokenizer(TOKENIZER_NAME)
-                .set_index_option(IndexRecordOption::Basic),
+                // Positions nécessaires : `parse_query` REJETTE une phrase multi-mots
+                // (`"Nicolas Berkouk"`) si le champ n'indexe pas les positions →
+                // `highlight` retournerait `{}` (aucun `<mark>`). L'index est un
+                // squelette sans doc ; enregistrer les positions ne coûte rien et
+                // laisse le parser accepter les phrases (le vrai bm25 les indexe aussi).
+                .set_index_option(IndexRecordOption::WithFreqsAndPositions),
         ),
     );
     let index = Index::create_in_ram(schema_builder.build());
@@ -339,6 +344,18 @@ mod tests {
         let docs = vec![(1i64, "congés payés".to_string())];
         let out = highlight(&docs, "expulsion", DEFAULT_MAX_CHARS);
         assert!(!out.contains_key(&1));
+    }
+
+    #[test]
+    fn multi_word_phrase_query_highlights_each_term() {
+        // Régression : une phrase entre guillemets de ≥2 mots (`"Nicolas Berkouk"`)
+        // doit surligner ses termes. Avec un champ sans positions, `parse_query`
+        // rejetait la phrase → `{}` → aucun `<mark>` (bug prod 2026-07-09).
+        let docs = vec![(1i64, "La cour considère le moyen sérieux".to_string())];
+        let out = highlight(&docs, "\"considère sérieux\"", DEFAULT_MAX_CHARS);
+        let html = out.get(&1).expect("phrase multi-mots doit surligner");
+        assert!(html.contains("<mark>considère</mark>"), "got: {html}");
+        assert!(html.contains("<mark>sérieux</mark>"), "got: {html}");
     }
 
     #[test]

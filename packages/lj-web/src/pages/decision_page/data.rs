@@ -2,7 +2,7 @@
 //! `decisionLoader` / `deferSimilar`.
 
 use leptos::prelude::*;
-use lj_dtos::{DecisionDetail, SimilarDecisionHit};
+use lj_dtos::{DecisionDetail, DecisionPartyDto, SimilarDecisionHit};
 use serde::{Deserialize, Serialize};
 
 use crate::api::{ApiClient, ApiError};
@@ -67,6 +67,35 @@ pub async fn fetch_similar(id: String) -> SimilarResult {
         },
         Err(err) => SimilarResult {
             hits: Vec::new(),
+            error: Some(err.message),
+        },
+    }
+}
+
+/// Acteurs (parties + conseils) d'une décision, encart « Parties » (ADR 0189).
+/// Non bloquant, streamé ; ne rejette jamais — erreur repliée en `error`. Encart
+/// masqué si la liste est vide.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PartiesResult {
+    pub parties: Vec<DecisionPartyDto>,
+    pub error: Option<String>,
+}
+
+/// Charge les parties (streamé via `<Suspense>`). Erreur repliée en `error`.
+pub async fn fetch_parties(id: String) -> PartiesResult {
+    if id.trim().is_empty() {
+        return PartiesResult {
+            parties: Vec::new(),
+            error: None,
+        };
+    }
+    match client().fetch_decision_parties(&id).await {
+        Ok(response) => PartiesResult {
+            parties: response.parties,
+            error: None,
+        },
+        Err(err) => PartiesResult {
+            parties: Vec::new(),
             error: Some(err.message),
         },
     }

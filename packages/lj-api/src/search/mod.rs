@@ -32,11 +32,14 @@ mod filters;
 mod hydrate;
 mod legs;
 mod query;
+pub mod suggest;
 
 use std::collections::HashMap;
 
 use deadpool_postgres::Client;
 use lj_llm::backend::Embedder;
+use lj_llm::mistral::{key_fingerprint, MistralClient};
+use lj_store::repository::DecisionRepository;
 
 use crate::error::{ApiError, Result};
 use crate::referential::referential;
@@ -60,7 +63,6 @@ use legs::{
 use query::{detect_query_mode, is_boolean_query, query_lacks_searchable_terms, translate_boolean};
 
 pub(crate) use dates::{parse_search_date, DateError, DATE_GE, DATE_LE};
-pub use hydrate::is_procedural_article;
 pub use query::{body_query_for_arm, BodyArm};
 
 // ── API bancs offline (lj-bench rank-arms / arm-latency / rank-bsweep) ────────
@@ -309,6 +311,31 @@ async fn client(state: &AppState) -> Result<Client> {
         .map_err(|e| ApiError::Internal(format!("pool: {e}")))
 }
 
+/// Hydrate des `SearchHit` complets pour une liste **ordonnée** d'ids de
+/// décisions, SANS requête de recherche (score 0, snippet = tête du texte) —
+/// chemin partagé des listes de décisions hors recherche (fiche entité ADR
+/// 0189…), même assemblage que les pages de résultats ([`assemble_page`]).
+/// Renvoie `(decision_id, hit)` dans l'ordre d'entrée ; les ids sans metadata
+/// affichable (public_id absent) sont silencieusement omis.
+pub(crate) async fn hits_for_decision_ids(
+    conn: &Client,
+    decision_ids: &[i64],
+    refs: &crate::referential::Referential,
+) -> Result<Vec<(i64, SearchHit)>> {
+    let meta = hydrate_decisions(conn, decision_ids)
+        .await
+        .map_err(ApiError::Store)?;
+    let page: Vec<(i64, f64, LegHit)> = decision_ids
+        .iter()
+        .filter(|id| meta.contains_key(id))
+        .map(|id| (*id, 0.0, LegHit::synthetic_title_only(*id)))
+        .collect();
+    let hits = assemble_page(conn, &page, &meta, "", refs).await?;
+    // `assemble_page` préserve l'ordre de `page` (déjà filtrée sur la metadata
+    // présente) : le zip id ↔ hit est positionnel.
+    Ok(page.iter().map(|(id, _, _)| *id).zip(hits).collect())
+}
+
 /// Ordre relevance → ordre d'affichage : trie une vue de la liste fused par date
 /// (date_desc/asc) via la metadata hydratée, sans tie-break. `sort_by` stable +
 /// `order` déjà en pertinence ⇒ égalité de date = ordre de pertinence préservé
@@ -501,6 +528,30 @@ async fn reranked_order(
         );
         return Ok(None);
     }
+    // Écarte les clés désactivées (`mistral_key_status`). Connexion courte,
+    // relâchée avant les appels LLM.
+    let live_keys: Vec<String> = {
+        let conn = state
+            .pool
+            .get()
+            .await
+            .map_err(|e| ApiError::Internal(format!("checkout connexion: {e}")))?;
+        let disabled = DecisionRepository::new(&conn)
+            .disabled_mistral_key_fingerprints()
+            .await
+            .map_err(ApiError::Store)?;
+        mistral_api_keys
+            .iter()
+            .filter(|k| !disabled.contains(&key_fingerprint(k)))
+            .cloned()
+            .collect()
+    };
+    if live_keys.is_empty() {
+        tracing::warn!(
+            "toutes les clés Mistral sont désactivées (mistral_key_status) — skipping rerank"
+        );
+        return Ok(None);
+    }
 
     let head_len = RERANK_K.min(bundle.fused.len());
     let top_ids: Vec<i64> = bundle.fused[..head_len]
@@ -533,14 +584,33 @@ async fn reranked_order(
         return Ok(None);
     }
 
-    let new_ids = match rerank_shortlist(
-        items,
-        &req.query,
-        mistral_api_keys.clone(),
-        &state.settings.mistral_model,
-    )
-    .await
-    {
+    // Client par requête ; un span HTTP par appel (TracingMiddleware) pour Tempo.
+    let client = std::sync::Arc::new(
+        MistralClient::new(live_keys, state.settings.mistral_model.clone())
+            .map_err(|e| ApiError::Internal(format!("rerank mistral client: {e}")))?,
+    );
+    let result = rerank_shortlist(items, &req.query, std::sync::Arc::clone(&client)).await;
+
+    // Persiste les clés mortes découvertes — best-effort, un échec de marquage
+    // ne casse pas la recherche.
+    let spent = client.spent_fingerprints();
+    if !spent.is_empty() {
+        match state.pool.get().await {
+            Ok(conn) => {
+                let repo = DecisionRepository::new(&conn);
+                for fp in &spent {
+                    if let Err(err) = repo.mark_mistral_key_disabled(fp, 401, "rerank").await {
+                        tracing::warn!(fingerprint = %fp, error = %err, "mark_mistral_key_disabled failed");
+                    }
+                }
+            }
+            Err(err) => {
+                tracing::warn!(error = %err, "checkout connexion pour mark_mistral_key_disabled")
+            }
+        }
+    }
+
+    let new_ids = match result {
         Ok(ids) => ids,
         Err(err) => {
             tracing::warn!(error = %err, "rerank_shortlist failed — falling back to retrieval order");
@@ -626,11 +696,11 @@ fn meta_weight(m: &DecisionMeta) -> usize {
     }
     std::mem::size_of::<DecisionMeta>()
         + m.public_id.len()
-        + m.juridiction_type.len()
+        + m.jurisdiction_type.len()
         + opt(&m.jurisdiction_code)
         + opt(&m.date_lecture)
         + opt(&m.solution_uid)
-        + opt(&m.voie_uid)
+        + opt(&m.procedure_uid)
         + opt(&m.office_uid)
         + opt(&m.legal_domain_uid)
         + vec_s(&m.publication_codes)
@@ -650,10 +720,10 @@ fn facets_weight(f: &SearchFacets) -> usize {
             })
             .sum()
     }
-    choices(&f.juridiction)
+    choices(&f.jurisdiction)
         + choices(&f.legal_domain)
         + choices(&f.solution)
-        + choices(&f.portee)
+        + choices(&f.significance)
         + choices(&f.publication)
         + choices(&f.date_lecture_year)
         + f.legal_instrument
@@ -869,22 +939,45 @@ async fn ranked_results_cached(
 /// par-dessus. Chaque appel ne fait plus que trier + slicer puis highlighter la
 /// page (≤ `limit` docs, mémoïsée) — zéro DB sur hit, zéro Mistral sur hit rerank.
 ///
-/// Port de `annotate_search_span` : pose `librejustice.search.{query,mode}` sur
-/// le span courant AVANT l'exécution, puis `.results_count` APRÈS. `.source` et
-/// `.user` restent `Empty` ici (l'info vit côté handler HTTP/MCP, comme
-/// `annotate_search_span("http"/"mcp", req, user_id)` côté Python). Ces noms
-/// littéraux `librejustice.search.*` survivent au scrub des attributs.
+/// Pose `librejustice.search.{source,authenticated,query,mode,context}` sur le
+/// span courant AVANT l'exécution, puis `.results_count` APRÈS. `source`
+/// (web/mcp) et `authenticated` viennent du handler appelant : on ne met
+/// **jamais** l'identité de l'utilisateur dans les traces (RGPD / ADR 0039),
+/// seulement un booléen connecté/anonyme — assez pour séparer l'anonyme du
+/// connecté côté Tempo. `context` (`user`/`teaser`) distingue les recherches
+/// posées par l'utilisateur des fetchs machine des ponts croisés (ADR 0251) —
+/// exclure `teaser` de tout comptage d'usage. Ces noms littéraux
+/// `librejustice.search.*` survivent au scrub des attributs.
 #[tracing::instrument(skip(state, req), fields(
     librejustice.search.source = tracing::field::Empty,
     librejustice.search.query = tracing::field::Empty,
     librejustice.search.mode = tracing::field::Empty,
-    librejustice.search.user = tracing::field::Empty,
+    librejustice.search.authenticated = tracing::field::Empty,
+    librejustice.search.context = tracing::field::Empty,
     librejustice.search.results_count = tracing::field::Empty,
 ))]
-pub async fn search(state: &AppState, req: &SearchRequest) -> Result<SearchResponse> {
+pub async fn search(
+    state: &AppState,
+    req: &SearchRequest,
+    source: lj_dtos::ActivitySource,
+    authenticated: bool,
+    context: lj_dtos::SearchContext,
+) -> Result<SearchResponse> {
     let span = tracing::Span::current();
+    span.record(
+        "librejustice.search.source",
+        crate::search_history::source_value(source),
+    );
+    span.record("librejustice.search.authenticated", authenticated);
     span.record("librejustice.search.query", req.query.as_str());
     span.record("librejustice.search.mode", tracing::field::debug(req.mode));
+    span.record(
+        "librejustice.search.context",
+        match context {
+            lj_dtos::SearchContext::User => "user",
+            lj_dtos::SearchContext::Teaser => "teaser",
+        },
+    );
 
     let leg_limit = state.settings.leg_limit as i64;
     let vchord_probes = state.settings.vchord_probes;
