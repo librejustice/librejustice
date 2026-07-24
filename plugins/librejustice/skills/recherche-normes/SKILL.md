@@ -18,6 +18,10 @@ countries, collective agreements, BOFiP. Map and counts:
 [references/traps.md](references/traps.md). Foreign and international
 law: [references/foreign-law.md](references/foreign-law.md).
 
+The tools come from the LibreJustice MCP server; if `get_legal_text`
+is missing from your session, connect it first:
+[references/install-mcp.md](references/install-mcp.md).
+
 ## Iron rules
 
 1. **Never quote a provision from memory.** Fetch it with

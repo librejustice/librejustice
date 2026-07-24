@@ -440,9 +440,9 @@ pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
         );
     }
     // Titre du texte dénormalisé → `search_title` (ADR 0114).
-    repo.refresh_article_code_titles()
+    repo.refresh_article_denorm()
         .await
-        .map_err(|e| anyhow!("refresh_article_code_titles: {e}"))?;
+        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     // Slugs des textes nouveaux (ADR 0162).
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
     tracing::info!(slugged, "legal corpus slugs");

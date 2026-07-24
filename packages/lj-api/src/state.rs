@@ -79,6 +79,14 @@ pub struct AppState {
     /// l'ingest quotidien, donc un recalcul 2×/jour suffit. Accès via
     /// `stats::corpus_stats`.
     pub corpus_stats_cache: Cache<(), Arc<CorpusStatsResponse>>,
+    /// Cache mono-entrée du catalogue des juridictions (`/api/juridictions`,
+    /// ADR 0253), TTL 12 h : l'agrégat compte 3,7 M de lignes, jamais par
+    /// requête. Accès via `jurisdiction_hubs::catalogue`.
+    pub jurisdiction_catalogue_cache: Cache<(), Arc<lj_dtos::JurisdictionCatalogueResponse>>,
+    /// Cache mono-entrée du catalogue des normes (`/api/normes`, ADR 0255),
+    /// TTL 12 h : l'agrégat compte 1 M de lignes, jamais par requête. Accès
+    /// via `norm_hubs::catalogue`.
+    pub norm_catalogue_cache: Cache<(), Arc<lj_dtos::NormCatalogueResponse>>,
     /// Borne le nombre de recherches qui tapent la DB en même temps à
     /// `pool_max / PEAK_CONNS_PER_SEARCH`. Garantit que toute recherche admise
     /// peut acquérir TOUTES ses connexions (admises × pic ≤ pool) : le
@@ -139,6 +147,17 @@ impl AppState {
             .max_capacity(1)
             .time_to_live(Duration::from_secs(12 * 3600))
             .build();
+        // Catalogue des juridictions (ADR 0253) : même profil que les
+        // compteurs corpus — agrégat lourd, corpus mû par l'ingest quotidien.
+        let jurisdiction_catalogue_cache = Cache::builder()
+            .max_capacity(1)
+            .time_to_live(Duration::from_secs(12 * 3600))
+            .build();
+        // Catalogue des normes (ADR 0255) : même profil.
+        let norm_catalogue_cache = Cache::builder()
+            .max_capacity(1)
+            .time_to_live(Duration::from_secs(12 * 3600))
+            .build();
         // Au moins 1 permit même si pool_max < PEAK (config exotique) : la
         // recherche reste possible, juste sérialisée.
         let search_permits = Arc::new(tokio::sync::Semaphore::new(
@@ -171,6 +190,8 @@ impl AppState {
             rerank_cache,
             referential_cache,
             corpus_stats_cache,
+            jurisdiction_catalogue_cache,
+            norm_catalogue_cache,
             search_permits,
             registre_cache,
             registre_http,

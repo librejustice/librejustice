@@ -348,7 +348,26 @@ fn ScopeDropdown(scope: RwSignal<Scope>) -> impl IntoView {
                 on:click=move |_| open.update(|o| *o = !*o)
                 class="flex h-full cursor-pointer items-center gap-1.5 text-sm text-[var(--color-ink)] transition-colors hover:text-[var(--color-accent)]"
             >
-                <span>{move || scope.get().label()}</span>
+                // Libellés empilés dans une grille, seul le courant visible :
+                // le bouton garde la largeur du plus long quel que soit le
+                // sélectionné (le panneau, calé sur ses bords, ne coupe
+                // jamais une option).
+                <span class="grid text-left">
+                    {SCOPES
+                        .iter()
+                        .map(|s| {
+                            let this = *s;
+                            view! {
+                                <span
+                                    class="col-start-1 row-start-1"
+                                    class:invisible=move || scope.get() != this
+                                >
+                                    {this.label()}
+                                </span>
+                            }
+                        })
+                        .collect_view()}
+                </span>
                 <svg
                     viewBox="0 0 12 8"
                     class=move || {

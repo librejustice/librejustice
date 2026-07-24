@@ -61,7 +61,29 @@ podman compose -f infra/docker-compose.yml up -d --no-recreate postgres
 [tasks.dev]
 description = "lj-server fusionné (API + MCP + SSR Leptos, :3000) via cargo-leptos watch ; DB = LIBREJUSTICE_DB_URL (.env → prod)"
 env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "dev" }
+depends = ["build-skill-zips"]
 run = "cargo leptos watch --project librejustice-dev"
+
+# Zips des skills du plugin servis par /mcp-guide (upload claude.ai :
+# le zip contient le dossier de la skill à sa racine). Générés au build,
+# gitignorés — la source de vérité reste plugins/librejustice/skills/.
+[tasks.build-skill-zips]
+description = "Zippe plugins/librejustice/skills/* vers packages/lj-web/public/skills/ (téléchargement /mcp-guide)."
+run = """
+python3 - <<'EOF'
+import pathlib, zipfile
+src = pathlib.Path('plugins/librejustice/skills')
+out = pathlib.Path('packages/lj-web/public/skills')
+out.mkdir(parents=True, exist_ok=True)
+for skill in sorted(p for p in src.iterdir() if p.is_dir()):
+    zpath = out / f'{skill.name}.zip'
+    with zipfile.ZipFile(zpath, 'w', zipfile.ZIP_DEFLATED) as z:
+        for f in sorted(skill.rglob('*')):
+            if f.is_file():
+                z.write(f, f.relative_to(src))
+    print(zpath)
+EOF
+"""
 
 [tasks.deploy-staging]
 env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "staging", LIBREJUSTICE_API_DB_APPLICATION_NAME = "librejustice-api-staging" }
@@ -101,6 +123,7 @@ podman image prune -f
 # cargo/rustup hors tools mise → PATH explicite.
 [tasks.build-app]
 description = "Compile lj-server + lj-ingest + assets SSR (release, hôte) et précompresse — artefacts pour l'image fine (infra/Dockerfile.app, ADR 0065)."
+depends = ["build-skill-zips"]
 run = """
 export PATH="$HOME/.cargo/bin:$HOME/.local/bin:$PATH"
 rustup target add wasm32-unknown-unknown

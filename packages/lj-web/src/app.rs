@@ -8,9 +8,10 @@ use leptos_router::{ParamSegment, SsrMode, StaticSegment};
 use crate::components::AppShell;
 use crate::pages::{
     ActivityPage, AnnuaireDirectoryPage, AnnuairePage, AuthorizeMcpPage, CodeCataloguePage,
-    Confidentialite, DecisionPage, EntityPage, Landing, LawArticlePage, LawCodePage,
-    LawComparePage, LawSectionPage, LoginPage, McpGuide, MentionsLegales, NotFound, ProfilePage,
-    ResetPasswordPage, SearchPage, SourcesPage, TextesPage,
+    Confidentialite, DecisionPage, EntityPage, JuridictionHubPage, JuridictionYearPage,
+    JuridictionsPage, Landing, LawArticlePage, LawCodePage, LawComparePage, LawSectionPage,
+    LoginPage, McpGuide, MentionsLegales, NormFondPage, NormYearPage, NormesPage, NotFound,
+    ProfilePage, ResetPasswordPage, SearchPage, SourcesPage, TextesPage,
 };
 use crate::seo::site_default;
 
@@ -160,6 +161,39 @@ pub fn App() -> impl IntoView {
                         path=(StaticSegment("annuaire"), ParamSegment("kind"))
                         view=AnnuaireDirectoryPage
                         ssr=SsrMode::PartiallyBlocked
+                    />
+                    // ── Hubs juridiction (ADR 0253) : l'arborescence navigable
+                    // vers les décisions — catalogue par famille, hub d'une
+                    // juridiction (années), liste paginée d'une année. Pages
+                    // SSR bloquantes (contenu = liens crawlables, SEO). ──
+                    <Route path=StaticSegment("juridictions") view=JuridictionsPage />
+                    <Route
+                        path=(StaticSegment("juridiction"), ParamSegment("code"))
+                        view=JuridictionHubPage
+                    />
+                    <Route
+                        path=(
+                            StaticSegment("juridiction"),
+                            ParamSegment("code"),
+                            ParamSegment("annee"),
+                        )
+                        view=JuridictionYearPage
+                    />
+                    // ── Hubs normes (ADR 0255) : même arborescence vers les
+                    // textes — catalogue par fond, hub d'un fond (années),
+                    // liste paginée d'une année (ou `sans-date`). ──
+                    <Route path=StaticSegment("normes") view=NormesPage />
+                    <Route
+                        path=(StaticSegment("normes"), ParamSegment("fond"))
+                        view=NormFondPage
+                    />
+                    <Route
+                        path=(
+                            StaticSegment("normes"),
+                            ParamSegment("fond"),
+                            ParamSegment("annee"),
+                        )
+                        view=NormYearPage
                     />
                     // ── Référentiel LEGI (ADR 0092) : sommaire de code, article
                     // en vigueur, article à une date. L'article (en-tête/méta/

@@ -1,8 +1,9 @@
 # LibreJustice
 
-**[librejustice.fr](https://librejustice.fr)** — moteur de recherche libre sur
-le droit français et européen, en web, en API et en **MCP** pour les
-assistants IA.
+**[librejustice.fr](https://librejustice.fr)** : moteur de recherche libre
+sur le droit français et européen. Jurisprudence des deux ordres et textes
+consolidés, reliés entre eux et interrogeables en langage naturel, sur le
+web comme depuis les assistants IA (**MCP**).
 
 ## Ce qu'on y cherche
 
@@ -18,6 +19,22 @@ assistants IA.
 
 Corpus mis à jour quotidiennement depuis les sources ouvertes (Judilibre,
 DILA/Légifrance, EUR-Lex…).
+
+## Ce que les sources officielles n'offrent pas
+
+Les bases publiques sont des silos (Judilibre = ordre judiciaire seul, JADE =
+ZIP XML sans moteur, Légifrance = consultation document par document).
+LibreJustice les consolide et ajoute la couche qui manque :
+
+- **recherche en langage naturel** (hybride lexicale + sémantique) avec
+  rerank IA, facettes dynamiques et décisions similaires ;
+- **le graphe** : citations extraites et résolues — d'une décision vers les
+  articles exacts qu'elle cite (à la bonne version), et d'un article vers
+  les décisions qui le citent ;
+- **dédoublonnage inter-sources** (une décision, une fiche) et récupération
+  de décisions absentes des canaux officiels ;
+- **résumés IA** par décision, toujours distingués des extraits verbatim ;
+- **un accès MCP remote** pour les assistants IA.
 
 ## Utiliser LibreJustice depuis un assistant IA
 

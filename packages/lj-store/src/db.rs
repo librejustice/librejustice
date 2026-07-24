@@ -7,8 +7,8 @@
 //! lookup du nom de type au moment de la requête (`ty.name() == "vector"`) —
 //! il n'y a donc pas d'enregistrement runtime à faire (cf.
 //! [`register_extension_types`]). Le DSN libpq porte lui-même
-//! `application_name` ; `build_pool` y ajoute `statement_timeout` (paramètre
-//! `options`) et arme un `wait_timeout` sur le pool (parité `db.py`).
+//! `application_name` ; `build_pool` y ajoute les options de session
+//! ([`SESSION_OPTIONS`]) et arme un `wait_timeout` sur le pool (parité `db.py`).
 
 use crate::error::{Result, StoreError};
 use deadpool_postgres::{Manager, ManagerConfig, Object, RecyclingMethod, Runtime};
@@ -32,12 +32,19 @@ pub type Connection = Object;
 /// gel) pour tout autre consommateur du pool.
 const POOL_WAIT_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// `statement_timeout` posé côté serveur sur chaque connexion via le paramètre
-/// de démarrage libpq `options`. Borne la durée qu'une requête (donc la
-/// rétention de sa connexion) peut atteindre : au-delà, Postgres annule la
-/// requête → la connexion retourne au pool. Parité directe du
-/// `options="-c statement_timeout=30s"` de `db.py`.
-const STATEMENT_TIMEOUT_OPTION: &str = "-c statement_timeout=30s";
+/// Options de session posées côté serveur sur chaque connexion via le
+/// paramètre de démarrage libpq `options`.
+///
+/// - `statement_timeout=30s` : borne la durée qu'une requête (donc la
+///   rétention de sa connexion) peut atteindre : au-delà, Postgres annule la
+///   requête → la connexion retourne au pool. Parité directe du
+///   `options="-c statement_timeout=30s"` de `db.py`.
+/// - `jit=off` : le JIT LLVM se déclenche au coût estimé (`jit_above_cost`)
+///   et compile les expressions **par worker parallèle** ; sur la requête de
+///   recherche d'articles (5 CTEs, expressions `searchqueryinput` massives),
+///   mesuré à 70 s de compilation contre 2 s d'exécution réelle. Charge
+///   OLTP/recherche : le JIT n'est jamais rentable ici.
+const SESSION_OPTIONS: &str = "-c statement_timeout=30s -c jit=off";
 
 /// Construit un pool deadpool depuis une DSN Postgres (forme libpq
 /// `postgresql://user:pass@host:port/db?application_name=...`).
@@ -62,12 +69,12 @@ pub fn build_pool(dsn: &str, pool_max: usize) -> Result<Pool> {
     let mut pg_config = tokio_postgres::Config::from_str(dsn)
         .map_err(|e| StoreError::Pool(format!("DSN invalide: {e}")))?;
 
-    // `statement_timeout` côté serveur (parité `db.py`). On préserve d'éventuelles
+    // Options de session côté serveur (parité `db.py`). On préserve d'éventuelles
     // `options` déjà portées par la DSN en les concaténant (syntaxe libpq : flags
     // séparés par une espace) plutôt que de les écraser.
     let options = match pg_config.get_options() {
-        Some(existing) => format!("{existing} {STATEMENT_TIMEOUT_OPTION}"),
-        None => STATEMENT_TIMEOUT_OPTION.to_string(),
+        Some(existing) => format!("{existing} {SESSION_OPTIONS}"),
+        None => SESSION_OPTIONS.to_string(),
     };
     pg_config.options(&options);
 

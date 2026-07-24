@@ -1263,6 +1263,8 @@ struct LoadedSitemapSource {
     referential: Vec<(String, String, chrono::NaiveDate)>,
     entities: Vec<(String, String, chrono::NaiveDate)>,
     codes: Vec<(String, chrono::NaiveDate)>,
+    jurisdiction_hubs: Vec<(String, Vec<i32>)>,
+    norm_hubs: Vec<(String, Vec<String>)>,
 }
 
 impl sitemap::SitemapSource for LoadedSitemapSource {
@@ -1278,6 +1280,12 @@ impl sitemap::SitemapSource for LoadedSitemapSource {
     fn iter_codes_for_sitemap(&self) -> Result<Vec<(String, chrono::NaiveDate)>> {
         Ok(self.codes.clone())
     }
+    fn iter_jurisdiction_hubs_for_sitemap(&self) -> Result<Vec<(String, Vec<i32>)>> {
+        Ok(self.jurisdiction_hubs.clone())
+    }
+    fn iter_norm_hubs_for_sitemap(&self) -> Result<Vec<(String, Vec<String>)>> {
+        Ok(self.norm_hubs.clone())
+    }
 }
 
 /// Génère les sitemaps et les publie en base (ADR 0064).
@@ -1290,7 +1298,7 @@ async fn cmd_sitemap(dry_run: bool) -> Result<()> {
 
     tracing::info!("=== build sitemaps ===");
     let pool = pool_with_migrations(&settings).await?;
-    let (decisions, referential, entities, codes) = {
+    let (decisions, referential, entities, codes, jurisdiction_hubs, norm_hubs) = {
         let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
         let repo = lj_store::repository::DecisionRepository::new(&conn);
         let decisions = repo
@@ -1309,13 +1317,30 @@ async fn cmd_sitemap(dry_run: bool) -> Result<()> {
             .iter_codes_for_sitemap()
             .await
             .map_err(|e| anyhow!("iter_codes_for_sitemap: {e}"))?;
-        (decisions, referential, entities, codes)
+        let jurisdiction_hubs = repo
+            .iter_jurisdiction_hubs_for_sitemap()
+            .await
+            .map_err(|e| anyhow!("iter_jurisdiction_hubs_for_sitemap: {e}"))?;
+        let norm_hubs = repo
+            .iter_norm_hubs_for_sitemap()
+            .await
+            .map_err(|e| anyhow!("iter_norm_hubs_for_sitemap: {e}"))?;
+        (
+            decisions,
+            referential,
+            entities,
+            codes,
+            jurisdiction_hubs,
+            norm_hubs,
+        )
     };
     let source = LoadedSitemapSource {
         decisions,
         referential,
         entities,
         codes,
+        jurisdiction_hubs,
+        norm_hubs,
     };
     let files = sitemap::build_sitemaps(&source, chrono::Utc::now().date_naive())?;
 

@@ -821,6 +821,18 @@ pub async fn code_summary(state: &AppState, code: &str) -> Result<LawCodeSummary
             .unwrap_or(scope)
             .to_string()
     });
+    // Maillage retour vers le hub fond×année du catalogue des normes
+    // (ADR 0255) ; `None` pour un acte individuel.
+    let fond_link = repo.norm_fond_of_text(&row.text_uid).await?;
+    let (fond, fond_label, fond_year) = match fond_link {
+        Some((fond, year)) => {
+            let label = lj_core::referential_labels::norm_fond_label(&fond)
+                .unwrap_or(&fond)
+                .to_string();
+            (Some(fond), Some(label), year)
+        }
+        None => (None, None, None),
+    };
     Ok(LawCodeSummary {
         legitext: row.text_uid,
         code: slug,
@@ -834,6 +846,9 @@ pub async fn code_summary(state: &AppState, code: &str) -> Result<LawCodeSummary
         nor: row.nor,
         date_texte: row.date_texte,
         scope,
+        fond,
+        fond_label,
+        fond_year,
     })
 }
 
@@ -847,7 +862,8 @@ const ARTICLE_SNIPPET_MAX: usize = 280;
 /// `jurisdiction`/`nature`/`source` et le `total` sont comptés sous le même
 /// prédicat BM25 + mêmes filtres que la page de hits, en une requête `GROUPING
 /// SETS` lancée **en parallèle** des hits sur sa propre connexion — le prédicat
-/// BM25 (~600 ms plein corpus) est le poste dominant, on ne le paie qu'une fois
+/// BM25 (~1 s plein corpus, ~430 k articles scorés sur une requête à tokens
+/// fréquents) est le poste dominant, on ne le paie qu'une fois
 /// par jambe. Chaque hit reçoit un extrait surligné via
 /// [`crate::snippets::highlight`] (fallback corps tronqué).
 #[instrument(skip(state), fields(db.system = "postgresql", limit, offset))]

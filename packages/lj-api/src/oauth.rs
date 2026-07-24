@@ -161,13 +161,15 @@ async fn openai_apps_challenge(State(state): State<AppState>) -> Response {
 }
 
 /// Manifeste de claim du connecteur pour l'annuaire Glama (glama.ai/mcp) :
-/// `maintainers` doit matcher le compte Glama du mainteneur. Lu depuis les
-/// `Settings` (`LIBREJUSTICE_API_GLAMA_MAINTAINER`) ; non configuré → 404.
+/// schéma `connector.json`, `maintainers` = objets `{"email": …}` dont l'email
+/// doit matcher le compte Glama (vérification automatique par leur crawler).
+/// Lu depuis les `Settings` (`LIBREJUSTICE_API_GLAMA_MAINTAINER`) ; non
+/// configuré → 404.
 async fn glama_manifest(State(state): State<AppState>) -> Response {
     match state.settings.glama_maintainer.as_deref() {
-        Some(maintainer) => Json(serde_json::json!({
-            "$schema": "https://glama.ai/mcp/schemas/server.json",
-            "maintainers": [maintainer],
+        Some(email) => Json(serde_json::json!({
+            "$schema": "https://glama.ai/mcp/schemas/connector.json",
+            "maintainers": [{ "email": email }],
         }))
         .into_response(),
         None => StatusCode::NOT_FOUND.into_response(),

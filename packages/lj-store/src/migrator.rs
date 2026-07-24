@@ -846,6 +846,21 @@ pub fn embedded_migrations() -> Vec<Migration> {
             name: "0163_user_search_history_engine.sql",
             sql: include_str!("../migrations/0163_user_search_history_engine.sql"),
         },
+        Migration {
+            version: 164,
+            name: "0164_decisions_jurisdiction_code_date_index.sql",
+            sql: include_str!("../migrations/0164_decisions_jurisdiction_code_date_index.sql"),
+        },
+        Migration {
+            version: 165,
+            name: "0165_legal_article_denorm_search_columns.sql",
+            sql: include_str!("../migrations/0165_legal_article_denorm_search_columns.sql"),
+        },
+        Migration {
+            version: 166,
+            name: "0166_legal_text_norm_fond_browse_index.sql",
+            sql: include_str!("../migrations/0166_legal_text_norm_fond_browse_index.sql"),
+        },
     ]
 }
 

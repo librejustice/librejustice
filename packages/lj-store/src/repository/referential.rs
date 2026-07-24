@@ -1428,19 +1428,22 @@ impl DecisionRepository<'_> {
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
-    /// Rafraîchit `code_title` (titre du code parent dénormalisé) depuis
-    /// `legal_text` pour les articles dont il diffère (ADR 0114). Appelé en fin
-    /// d'ingest référentiel : LEGI streame articles et codes séparément, l'article
-    /// n'a pas le titre du code au parse → on le pose ici. La colonne générée
-    /// `search_title` (titre formé indexé) est recalculée par Postgres sur les
-    /// lignes touchées. Renvoie le nombre de lignes mises à jour. Idempotent (#7).
-    #[tracing::instrument(name = "db.refresh_article_code_titles", skip(self), fields(db.system = "postgresql"))]
-    pub async fn refresh_article_code_titles(&self) -> Result<u64> {
+    /// Rafraîchit les colonnes dénormalisées de `legal_article` depuis
+    /// `legal_text` pour les articles dont elles diffèrent : `code_title`
+    /// (titre du code parent, ADR 0114) et les colonnes de recherche
+    /// `jurisdiction`/`nature` (upper)/`slug`/`searchable` (ADR 0254). Appelé
+    /// en fin d'ingest référentiel : LEGI streame articles et codes
+    /// séparément, l'article n'a pas les attributs de son texte au parse → on
+    /// les pose ici. La colonne générée `search_title` (titre formé indexé)
+    /// est recalculée par Postgres sur les lignes touchées. Renvoie le nombre
+    /// de lignes mises à jour. Idempotent (#7).
+    #[tracing::instrument(name = "db.refresh_article_denorm", skip(self), fields(db.system = "postgresql"))]
+    pub async fn refresh_article_denorm(&self) -> Result<u64> {
         // `UPDATE` global sur tout `legal_article` (~M lignes) : le scan du join
         // dépasse le `statement_timeout` du pool (30 s) dès que le corpus grossit
         // (observé sur load-legal-corpus). On le lève **localement**, dans une
-        // transaction dédiée — l'UPDATE n'écrit que les lignes dont le titre a
-        // dérivé, reste idempotent (#7).
+        // transaction dédiée — l'UPDATE n'écrit que les lignes dont une colonne
+        // a dérivé, reste idempotent (#7).
         self.conn.batch_execute("BEGIN").await?;
         let updated: Result<u64> = async {
             self.conn
@@ -1449,10 +1452,21 @@ impl DecisionRepository<'_> {
             let n = self
                 .conn
                 .execute(
-                    "UPDATE legal_article a SET code_title = t.title \
+                    "UPDATE legal_article a SET \
+                       code_title = t.title, \
+                       jurisdiction = t.jurisdiction, \
+                       nature = upper(t.nature), \
+                       slug = t.slug, \
+                       searchable = (t.slug IS NOT NULL \
+                         AND t.role NOT IN ('individuel', 'vehicule', 'habilitation')) \
                      FROM legal_text t \
                      WHERE a.text_uid = t.text_uid \
-                       AND a.code_title IS DISTINCT FROM t.title",
+                       AND (a.code_title IS DISTINCT FROM t.title \
+                         OR a.jurisdiction IS DISTINCT FROM t.jurisdiction \
+                         OR a.nature IS DISTINCT FROM upper(t.nature) \
+                         OR a.slug IS DISTINCT FROM t.slug \
+                         OR a.searchable IS DISTINCT FROM (t.slug IS NOT NULL \
+                           AND t.role NOT IN ('individuel', 'vehicule', 'habilitation')))",
                     &[],
                 )
                 .await?;
@@ -1545,26 +1559,31 @@ impl DecisionRepository<'_> {
                     };
                     let s_ph = params.push(Box::new(stripped));
                     (
-                        format!("\n  AND t.jurisdiction <> ALL(${codes_ph})"),
+                        format!("\n  AND a.jurisdiction <> ALL(${codes_ph})"),
+                        // Single-table (ADR 0254) : prédicat 100 % indexé, les
+                        // colonnes d'affichage (dont slug/code_title
+                        // dénormalisés) jointes pour le seul top-K.
                         format!(
                             "
                     ctry AS (
                       SELECT x.*, row_number() OVER (ORDER BY x.score DESC, x.num_key) AS rk
                       FROM (
-                        SELECT a.text_uid, t.slug, t.title, a.num, a.num_key,
-                               a.title_path, a.status, a.source, a.texte,
-                               paradedb.score(a.id) AS score
-                        FROM legal_article a
-                        JOIN legal_text t ON t.text_uid = a.text_uid
-                        WHERE a.id @@@ paradedb.boolean(should => ARRAY[{conj_clause}\
-                              paradedb.boost({ARTICLE_TITLE_OR_BOOST}, paradedb.match('search_title', ${s_ph})), \
-                              paradedb.match('texte', ${s_ph})])
-                          AND a.status = 'VIGUEUR'
-                          AND t.slug IS NOT NULL
-                          AND {TEXT_ROLE_VISIBLE_SQL}
-                          AND t.jurisdiction = ANY(${codes_ph}){art_filters}
-                        ORDER BY paradedb.score(a.id) DESC
-                        LIMIT {ARTICLE_LEG_LIMIT}
+                        SELECT a.text_uid, a.slug, a.code_title AS title, a.num,
+                               a.num_key, a.title_path, a.status, a.source,
+                               a.texte, j.score
+                        FROM (
+                          SELECT a.id, paradedb.score(a.id) AS score
+                          FROM legal_article a
+                          WHERE a.id @@@ paradedb.boolean(should => ARRAY[{conj_clause}\
+                                paradedb.boost({ARTICLE_TITLE_OR_BOOST}, paradedb.match('search_title', ${s_ph})), \
+                                paradedb.match('texte', ${s_ph})])
+                            AND a.status = 'VIGUEUR'
+                            AND a.searchable
+                            AND a.jurisdiction = ANY(${codes_ph}){art_filters}
+                          ORDER BY paradedb.score(a.id) DESC
+                          LIMIT {ARTICLE_LEG_LIMIT}
+                        ) j
+                        JOIN legal_article a ON a.id = j.id
                       ) x
                     ),"
                         ),
@@ -1606,6 +1625,11 @@ impl DecisionRepository<'_> {
                     many => format!("paradedb.boolean(should => ARRAY[{}])", many.join(", ")),
                 };
                 (
+                    // Fence `OFFSET 0` : seuls le match titre et la juridiction
+                    // (fast fields) descendent dans le scan ParadeDB — les
+                    // filtres non indexables (`nature ILIKE`…) redescendus en
+                    // heap filter forçaient un parcours de toute `legal_text`
+                    // (~1,6 s pour souvent 0 ligne).
                     format!(
                         "
                     cont AS (
@@ -1614,18 +1638,24 @@ impl DecisionRepository<'_> {
                         SELECT t.text_uid, t.slug, t.title,
                                coalesce(t.status, 'VIGUEUR') AS status,
                                lower(t.nature) AS source,
-                               paradedb.score(t.id) AS score
-                        FROM legal_text t
-                        WHERE t.id @@@ {cont_match}
-                          AND t.body IS NULL
+                               t.score
+                        FROM (
+                          SELECT t.text_uid, t.slug, t.title, t.status, t.nature,
+                                 t.role, t.jurisdiction, (t.body IS NULL) AS no_body,
+                                 paradedb.score(t.id) AS score
+                          FROM legal_text t
+                          WHERE t.id @@@ {cont_match}
+                            AND t.jurisdiction = ANY(${prim_ph})
+                          OFFSET 0
+                        ) t
+                        WHERE t.no_body
                           AND coalesce(t.status, 'VIGUEUR') = 'VIGUEUR'
                           AND t.slug IS NOT NULL
                           AND {NAVIGABLE_TEXT_NATURES_SQL} AND {TEXT_ROLE_VISIBLE_SQL}
                           AND EXISTS (SELECT 1 FROM legal_article a
                                       WHERE a.text_uid = t.text_uid
-                                        AND a.status = 'VIGUEUR')
-                          AND t.jurisdiction = ANY(${prim_ph}){txt_filters}
-                        ORDER BY paradedb.score(t.id) DESC
+                                        AND a.status = 'VIGUEUR'){txt_filters}
+                        ORDER BY t.score DESC
                         LIMIT {ARTICLE_LEG_LIMIT}
                       ) z
                     ),"
@@ -1653,27 +1683,30 @@ impl DecisionRepository<'_> {
         } else {
             let g_ph = params.push(Box::new(lj_core::usage::usage_grams(query)));
             (
+                // Le filtre navigable + visible et l'affichage (slug,
+                // code_title) viennent des colonnes dénormalisées de l'article
+                // résolu par le LATERAL (ADR 0254) — plus de join legal_text.
                 format!(
                     "
                     us AS (
                       SELECT x.*, row_number() OVER (ORDER BY x.score DESC, x.num_key) AS rk
                       FROM (
-                        SELECT a.text_uid, t.slug, t.title, a.num, a.num_key,
-                               a.title_path, a.status, a.source, a.texte,
-                               paradedb.score(u.id) AS score
+                        SELECT a.text_uid, a.slug, a.code_title AS title, a.num,
+                               a.num_key, a.title_path, a.status, a.source,
+                               a.texte, paradedb.score(u.id) AS score
                         FROM legal_article_usage u
-                        JOIN legal_text t ON t.text_uid = u.text_uid
                         JOIN LATERAL (
-                          SELECT a2.text_uid, a2.num, a2.num_key, a2.title_path,
-                                 a2.status, a2.source, a2.texte
+                          SELECT a2.text_uid, a2.slug, a2.code_title, a2.num,
+                                 a2.num_key, a2.title_path, a2.status,
+                                 a2.source, a2.texte, a2.searchable,
+                                 a2.jurisdiction, a2.nature
                           FROM legal_article a2
                           WHERE a2.text_uid = u.text_uid AND a2.num_key = u.num_key
                             AND a2.status = 'VIGUEUR'
                           ORDER BY a2.date_debut DESC LIMIT 1
                         ) a ON true
                         WHERE u.id @@@ paradedb.match('terms', ${g_ph})
-                          AND t.slug IS NOT NULL
-                          AND {TEXT_ROLE_VISIBLE_SQL}{art_filters}
+                          AND a.searchable{art_filters}
                         ORDER BY paradedb.score(u.id) DESC
                         LIMIT {ARTICLE_LEG_LIMIT}
                       ) x
@@ -1691,49 +1724,60 @@ impl DecisionRepository<'_> {
         };
         let limit_ph = params.push(Box::new(limit));
         let offset_ph = params.push(Box::new(offset));
-        // Chaque jambe est classée seule (ORDER BY score seul dans la
-        // sous-requête pour garder le Top-K scan ParadeDB ; le `row_number`
-        // re-trie avec un tiebreak déterministe), puis fusion par rang.
-        // Tiebreak final par `leg` : conteneur, pays nommé, articles
-        // domestiques, textes à corps, articles étrangers. La pagination
-        // porte sur la fusion (≤ 5 × leg_limit docs atteignables — sans
-        // effet : le front pagine par 10-20, le MCP plafonne limit à 20).
-        let rows = self
-            .conn
-            .query(
-                &format!(
-                    "
+        // Jambes articles domestique et étrangère : deux scans ParadeDB
+        // **single-table TopK** (ADR 0254) — prédicat et filtres 100 % indexés
+        // (searchable/jurisdiction dénormalisés) + `ORDER BY score LIMIT`
+        // directement dans le scan, donc élagage WAND de bout en bout, y
+        // compris sur le boolean+boost (mesuré : 110 ms + 87 ms contre
+        // 1,05 s pour un scan partagé sans coupe qui score les ~415 k docs
+        // du filet corps). Les colonnes d'affichage (texte, title_path,
+        // slug/code_title dénormalisés…) ne sont jointes que pour les
+        // ≤ leg_limit lignes retenues. La coupe du top-K se fait par score
+        // seul (le tiebreak `num_key` du `row_number` n'intervient qu'après
+        // la coupe), puis fusion par rang. Tiebreak final par `leg` :
+        // conteneur, pays nommé, articles domestiques, textes à corps,
+        // articles étrangers. La pagination porte sur la fusion
+        // (≤ 5 × leg_limit docs atteignables — sans effet : le front pagine
+        // par 10-20, le MCP plafonne limit à 20).
+        let sql = format!(
+            "
                     WITH{cont_cte}{ctry_cte}{us_cte}
                     art AS (
                       SELECT x.*, row_number() OVER (ORDER BY x.score DESC, x.num_key) AS rk
                       FROM (
-                        SELECT a.text_uid, t.slug, t.title, a.num, a.num_key,
-                               a.title_path, a.status, a.source, a.texte,
-                               paradedb.score(a.id) AS score
-                        FROM legal_article a
-                        JOIN legal_text t ON t.text_uid = a.text_uid
-                        WHERE {art_pred}
-                          AND a.status = 'VIGUEUR'
-                          AND t.slug IS NOT NULL
-                          AND t.jurisdiction = ANY(${prim_ph}){art_ctry_excl}{art_filters}
-                        ORDER BY paradedb.score(a.id) DESC
-                        LIMIT {ARTICLE_LEG_LIMIT}
+                        SELECT a.text_uid, a.slug, a.code_title AS title, a.num,
+                               a.num_key, a.title_path, a.status, a.source,
+                               a.texte, j.score
+                        FROM (
+                          SELECT a.id, paradedb.score(a.id) AS score
+                          FROM legal_article a
+                          WHERE {art_pred}
+                            AND a.status = 'VIGUEUR'
+                            AND a.searchable
+                            AND a.jurisdiction = ANY(${prim_ph}){art_ctry_excl}{art_filters}
+                          ORDER BY paradedb.score(a.id) DESC
+                          LIMIT {ARTICLE_LEG_LIMIT}
+                        ) j
+                        JOIN legal_article a ON a.id = j.id
                       ) x
                     ),
                     art_f AS (
                       SELECT x.*, row_number() OVER (ORDER BY x.score DESC, x.num_key) AS rk
                       FROM (
-                        SELECT a.text_uid, t.slug, t.title, a.num, a.num_key,
-                               a.title_path, a.status, a.source, a.texte,
-                               paradedb.score(a.id) AS score
-                        FROM legal_article a
-                        JOIN legal_text t ON t.text_uid = a.text_uid
-                        WHERE {art_pred}
-                          AND a.status = 'VIGUEUR'
-                          AND t.slug IS NOT NULL
-                          AND t.jurisdiction <> ALL(${prim_ph}){art_filters}
-                        ORDER BY paradedb.score(a.id) DESC
-                        LIMIT {ARTICLE_LEG_LIMIT}
+                        SELECT a.text_uid, a.slug, a.code_title AS title, a.num,
+                               a.num_key, a.title_path, a.status, a.source,
+                               a.texte, j.score
+                        FROM (
+                          SELECT a.id, paradedb.score(a.id) AS score
+                          FROM legal_article a
+                          WHERE {art_pred}
+                            AND a.status = 'VIGUEUR'
+                            AND a.searchable
+                            AND NOT (a.jurisdiction = ANY(${prim_ph})){art_ctry_excl}{art_filters}
+                          ORDER BY paradedb.score(a.id) DESC
+                          LIMIT {ARTICLE_LEG_LIMIT}
+                        ) j
+                        JOIN legal_article a ON a.id = j.id
                       ) x
                     ),
                     txt AS (
@@ -1775,10 +1819,8 @@ impl DecisionRepository<'_> {
                     ORDER BY sum(u.rrf) DESC, min(u.leg), u.num_key
                     LIMIT ${limit_ph} OFFSET ${offset_ph}
                     "
-                ),
-                &params.refs(),
-            )
-            .await?;
+        );
+        let rows = self.conn.query(&sql, &params.refs()).await?;
         Ok(rows
             .iter()
             .map(|r| ArticleSearchRow {
@@ -1798,7 +1840,7 @@ impl DecisionRepository<'_> {
 
     /// Total exact + les quatre facettes de la recherche d'articles (ADR 0114) en
     /// **une** requête `GROUPING SETS`, sous le même prédicat BM25 + filtres que
-    /// [`Self::search_articles`] : le prédicat (le poste dominant, ~600 ms sur le
+    /// [`Self::search_articles`] : le prédicat (le poste dominant, ~1 s sur le
     /// corpus complet) ne s'exécute qu'une fois au lieu de quatre. Les comptes
     /// restent ceux du prédicat complet (filtres inclus) : l'UI montre la
     /// composition du résultat courant, pas un univers non filtré. Chaque axe est
@@ -1850,21 +1892,29 @@ impl DecisionRepository<'_> {
                     many => format!("paradedb.boolean(should => ARRAY[{}])", many.join(", ")),
                 };
                 let prim_ph = params.push(Box::new(primary_jurisdictions(query)));
+                // Même fence `OFFSET 0` que la jambe conteneurs des hits :
+                // seuls le match titre et la juridiction descendent dans le
+                // scan, les filtres non indexables restent côté SQL.
                 format!(
                     "
                       UNION ALL
                       SELECT t.slug, t.jurisdiction, upper(t.nature) AS nature,
                              lower(t.nature) AS source
-                      FROM legal_text t
-                      WHERE t.id @@@ {cont_match}
-                        AND t.body IS NULL
+                      FROM (
+                        SELECT t.text_uid, t.slug, t.jurisdiction, t.nature,
+                               t.status, t.role, (t.body IS NULL) AS no_body
+                        FROM legal_text t
+                        WHERE t.id @@@ {cont_match}
+                          AND t.jurisdiction = ANY(${prim_ph})
+                        OFFSET 0
+                      ) t
+                      WHERE t.no_body
                         AND coalesce(t.status, 'VIGUEUR') = 'VIGUEUR'
                         AND t.slug IS NOT NULL
                         AND {NAVIGABLE_TEXT_NATURES_SQL} AND {TEXT_ROLE_VISIBLE_SQL}
                         AND EXISTS (SELECT 1 FROM legal_article a
                                     WHERE a.text_uid = t.text_uid
-                                      AND a.status = 'VIGUEUR')
-                        AND t.jurisdiction = ANY(${prim_ph}){txt_filters}"
+                                      AND a.status = 'VIGUEUR'){txt_filters}"
                 )
             }
             [] => String::new(),
@@ -1882,12 +1932,11 @@ impl DecisionRepository<'_> {
                     SELECT GROUPING(u.slug, u.jurisdiction, u.nature, u.source) AS gset,
                            u.slug, u.jurisdiction, u.nature, u.source, count(*) AS n
                     FROM (
-                      SELECT t.slug, t.jurisdiction, upper(t.nature) AS nature, a.source
+                      SELECT a.slug, a.jurisdiction, a.nature, a.source
                       FROM legal_article a
-                      JOIN legal_text t ON t.text_uid = a.text_uid
                       WHERE {art_pred}
                         AND a.status = 'VIGUEUR'
-                        AND t.slug IS NOT NULL{art_filters}
+                        AND a.searchable{art_filters}
                       UNION ALL
                       SELECT t.slug, t.jurisdiction, upper(t.nature) AS nature,
                              lower(t.nature) AS source
@@ -2875,9 +2924,11 @@ fn article_search_predicates(
         format!("paradedb.boost({ARTICLE_TITLE_CONJ_BOOST}, {conj}), {or}")
     };
     let concept_phs = push_concept_expansions(params, query);
+    // Jambe articles : prédicat 100 % indexé (`a.` seul) — le filtre de
+    // visibilité `t.role` s'applique côté join `legal_text` chez les
+    // consommateurs, pour que le scan ParadeDB reste sans heap filter.
     let art = format!(
-        "a.id @@@ paradedb.boolean(should => ARRAY[{}, paradedb.match('texte', $2){}]) \
-         AND {TEXT_ROLE_VISIBLE_SQL}",
+        "a.id @@@ paradedb.boolean(should => ARRAY[{}, paradedb.match('texte', $2){}])",
         title_clauses("search_title"),
         concept_body_clause("texte", &concept_phs)
     );
@@ -2951,12 +3002,16 @@ impl ArticleSearchParams {
     /// Pousse les filtres présents et renvoie les DEUX clauses SQL `AND …`
     /// (chaînes vides si aucun filtre) : une pour la jambe articles, une pour la
     /// jambe textes à corps (ADR 0196) — mêmes placeholders, colonnes propres à
-    /// chaque jambe. `nature` se compare en `upper()` des deux côtés ; `source`
-    /// vaut `a.source` côté articles et `lower(t.nature)` côté textes à corps
-    /// (pas de diffuseur par ligne sur `legal_text` — la famille tient lieu de
-    /// jeton). `nature_set` (sur-facette portée, valeurs upper) filtre les deux
-    /// jambes : `(liste, true)` = nature DANS la liste, `(liste, false)` = nature
-    /// HORS liste (le complément « norme » est un ensemble ouvert).
+    /// chaque jambe. Côté articles, toutes les colonnes vivent sur
+    /// `legal_article` (dénormalisées, ADR 0254) et sont des champs de l'index
+    /// BM25 : les filtres s'appliquent dans le scan, le prédicat reste 100 %
+    /// indexé. `a.nature` est stockée en upper (le corpus curé mélange les
+    /// casses) ; `source` vaut `a.source` côté articles et `lower(t.nature)`
+    /// côté textes à corps (pas de diffuseur par ligne sur `legal_text` — la
+    /// famille tient lieu de jeton). `nature_set` (sur-facette portée, valeurs
+    /// upper) filtre les deux jambes : `(liste, true)` = nature DANS la liste,
+    /// `(liste, false)` = nature HORS liste (le complément « norme » est un
+    /// ensemble ouvert).
     fn push_filters(
         &mut self,
         text_uid: Option<&str>,
@@ -2969,9 +3024,9 @@ impl ArticleSearchParams {
         let mut txt = String::new();
         for (art_col, txt_col, value) in [
             ("a.text_uid", "t.text_uid", text_uid),
-            ("t.jurisdiction", "t.jurisdiction", jurisdiction),
+            ("a.jurisdiction", "t.jurisdiction", jurisdiction),
             (
-                "upper(t.nature)",
+                "a.nature",
                 "upper(t.nature)",
                 nature.map(str::to_uppercase).as_deref(),
             ),
@@ -2986,7 +3041,7 @@ impl ArticleSearchParams {
         if let Some((natures, include)) = nature_set.filter(|(n, _)| !n.is_empty()) {
             let ph = self.push(Box::new(natures.to_vec()));
             let op = if include { "= ANY" } else { "<> ALL" };
-            art.push_str(&format!("\n  AND upper(t.nature) {op}(${ph})"));
+            art.push_str(&format!("\n  AND a.nature {op}(${ph})"));
             txt.push_str(&format!("\n  AND upper(t.nature) {op}(${ph})"));
         }
         (art, txt)

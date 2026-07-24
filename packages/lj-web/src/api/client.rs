@@ -17,7 +17,9 @@ use lj_dtos::{
     CodeCatalogueResponse, CodeTocResponse, CorpusStatsResponse, DecisionDetail,
     DecisionPartiesResponse, DecisionViewsResponse, EntityDecisionsResponse,
     EntityDirectoryResponse, EntityPageResponse, EntityRegistreResponse, EntitySearchResponse,
-    LawArticleResponse, LawCodeSummary, LawCompareResponse, LawSectionResponse, SearchContext,
+    JurisdictionCatalogueResponse, JurisdictionHubResponse, JurisdictionYearResponse,
+    LawArticleResponse, LawCodeSummary, LawCompareResponse, LawSectionResponse,
+    NormCatalogueResponse, NormFondResponse, NormYearResponse, SearchContext,
     SearchHistoryResponse, SearchRequest, SearchResponse, SimilarDecisionsResponse,
     SuggestResponse,
 };
@@ -224,6 +226,63 @@ impl ApiClient {
     /// familles de tête (codes, constitutions) — le SSR de la page.
     pub async fn fetch_codes_catalogue(&self, head_only: bool) -> ApiResult<CodeCatalogueResponse> {
         lj_api::legi::code_catalogue(&self.state, head_only)
+            .await
+            .map_err(map_service_error)
+    }
+
+    /// Catalogue des juridictions groupé par famille (hubs ADR 0253). Servi
+    /// depuis le cache process-local 12 h.
+    pub async fn fetch_juridictions(&self) -> ApiResult<JurisdictionCatalogueResponse> {
+        lj_api::jurisdiction_hubs::catalogue(&self.state)
+            .await
+            .map(|r| (*r).clone())
+            .map_err(map_service_error)
+    }
+
+    /// Hub d'une juridiction : années couvertes + volume (ADR 0253).
+    pub async fn fetch_juridiction_hub(&self, code: &str) -> ApiResult<JurisdictionHubResponse> {
+        lj_api::jurisdiction_hubs::hub(&self.state, code)
+            .await
+            .map_err(map_service_error)
+    }
+
+    /// Page paginée des décisions d'une juridiction×année (ADR 0253).
+    pub async fn fetch_juridiction_year(
+        &self,
+        code: &str,
+        year: i32,
+        page: u32,
+    ) -> ApiResult<JurisdictionYearResponse> {
+        lj_api::jurisdiction_hubs::year_page(&self.state, code, year, page)
+            .await
+            .map_err(map_service_error)
+    }
+
+    /// Catalogue des normes par fond (hubs ADR 0255). Servi depuis le cache
+    /// process-local 12 h.
+    pub async fn fetch_normes(&self) -> ApiResult<NormCatalogueResponse> {
+        lj_api::norm_hubs::catalogue(&self.state)
+            .await
+            .map(|r| (*r).clone())
+            .map_err(map_service_error)
+    }
+
+    /// Hub d'un fond de normes : années couvertes + volume (ADR 0255).
+    pub async fn fetch_norm_fond(&self, fond: &str) -> ApiResult<NormFondResponse> {
+        lj_api::norm_hubs::hub(&self.state, fond)
+            .await
+            .map_err(map_service_error)
+    }
+
+    /// Page paginée des textes d'un fond×année (ADR 0255, `year = None` =
+    /// bucket sans date).
+    pub async fn fetch_norm_year(
+        &self,
+        fond: &str,
+        year: Option<i32>,
+        page: u32,
+    ) -> ApiResult<NormYearResponse> {
+        lj_api::norm_hubs::year_page(&self.state, fond, year, page)
             .await
             .map_err(map_service_error)
     }
@@ -663,6 +722,67 @@ impl ApiClient {
         };
         let builder = self.request(Method::GET, path).await;
         self.send_json(builder, "codes catalogue fetch failed", None)
+            .await
+    }
+
+    /// Catalogue des juridictions groupé par famille (hubs ADR 0253).
+    pub async fn fetch_juridictions(&self) -> ApiResult<JurisdictionCatalogueResponse> {
+        let builder = self.request(Method::GET, "/juridictions").await;
+        self.send_json(builder, "juridictions catalogue fetch failed", None)
+            .await
+    }
+
+    /// Hub d'une juridiction : années couvertes + volume (ADR 0253).
+    pub async fn fetch_juridiction_hub(&self, code: &str) -> ApiResult<JurisdictionHubResponse> {
+        let path = format!("/juridictions/{code}");
+        let builder = self.request(Method::GET, &path).await;
+        self.send_json(builder, "juridiction hub fetch failed", None)
+            .await
+    }
+
+    /// Page paginée des décisions d'une juridiction×année (ADR 0253).
+    pub async fn fetch_juridiction_year(
+        &self,
+        code: &str,
+        year: i32,
+        page: u32,
+    ) -> ApiResult<JurisdictionYearResponse> {
+        let path = format!("/juridictions/{code}/{year}?page={page}");
+        let builder = self.request(Method::GET, &path).await;
+        self.send_json(builder, "juridiction year fetch failed", None)
+            .await
+    }
+
+    /// Catalogue des normes par fond (hubs ADR 0255).
+    pub async fn fetch_normes(&self) -> ApiResult<NormCatalogueResponse> {
+        let builder = self.request(Method::GET, "/normes").await;
+        self.send_json(builder, "normes catalogue fetch failed", None)
+            .await
+    }
+
+    /// Hub d'un fond de normes : années couvertes + volume (ADR 0255).
+    pub async fn fetch_norm_fond(&self, fond: &str) -> ApiResult<NormFondResponse> {
+        let path = format!("/normes/{fond}");
+        let builder = self.request(Method::GET, &path).await;
+        self.send_json(builder, "norm fond fetch failed", None)
+            .await
+    }
+
+    /// Page paginée des textes d'un fond×année (ADR 0255, `year = None` =
+    /// bucket sans date).
+    pub async fn fetch_norm_year(
+        &self,
+        fond: &str,
+        year: Option<i32>,
+        page: u32,
+    ) -> ApiResult<NormYearResponse> {
+        let annee = match year {
+            Some(y) => y.to_string(),
+            None => "sans-date".to_string(),
+        };
+        let path = format!("/normes/{fond}/{annee}?page={page}");
+        let builder = self.request(Method::GET, &path).await;
+        self.send_json(builder, "norm year fetch failed", None)
             .await
     }
 

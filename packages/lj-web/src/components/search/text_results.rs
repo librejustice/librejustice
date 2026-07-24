@@ -105,8 +105,11 @@ async fn fetch_textes(state: TextesQuery) -> Result<Option<ArticleSearchResponse
 }
 
 /// Corps « Lois et règlements », anatomie `/decisions` : rail de synthèse à
-/// gauche (volumétrie + facettes cliquables), colonne contenu à droite (barre,
-/// filtres, chips, liste). Les facettes et la volumétrie alimentent rail et
+/// gauche (volumétrie + facettes cliquables), colonne contenu au centre (barre,
+/// filtres, chips, liste), colonne DROITE (pont croisé « Dans les décisions » +
+/// aide à la recherche) — premier bloc sacrifié : visible seulement à partir de
+/// 88rem, largeur où tout tient à pleine mesure, jamais de compression du
+/// contenu pour la loger. Les facettes et la volumétrie alimentent rail et
 /// barre par `Effect` (mises à jour sur réponse seulement — pendant un refetch
 /// ils gardent les précédentes, interactifs). Sans requête, ni filtres ni
 /// résultats — juste l'invite.
@@ -126,7 +129,7 @@ pub fn TextesView() -> impl IntoView {
     });
 
     view! {
-        <div class="grid grid-cols-1 gap-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-12">
+        <div class="grid grid-cols-1 gap-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-12 min-[88rem]:grid-cols-[240px_minmax(0,1fr)_240px]">
             <aside
                 aria-label="Synthèse des résultats"
                 class="hidden min-w-0 lg:sticky lg:top-20 lg:block lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto"
@@ -144,7 +147,11 @@ pub fn TextesView() -> impl IntoView {
                         <p class="text-xs leading-snug text-[var(--color-ink-subtle)]">
                             "Codes, lois et règlements, conventions collectives, doctrine administrative (BOFiP, circulaires)."
                         </p>
-                        <SyntaxHint corpus=HelpCorpus::Textes />
+                        // Sauf quand la colonne droite — qui porte alors
+                        // l'aide — est affichée (requête non vide, ≥ 88rem).
+                        <span class=("min-[88rem]:hidden", move || !query.get().is_empty())>
+                            <SyntaxHint corpus=HelpCorpus::Textes />
+                        </span>
                     </div>
                 </div>
                 <Show
@@ -199,6 +206,24 @@ pub fn TextesView() -> impl IntoView {
                     </div>
                 </Show>
             </div>
+            // Colonne droite : pont croisé vers le moteur décisions + aide à la
+            // recherche. Sous 88rem elle disparaît (le contenu garde sa pleine
+            // mesure) ; l'aide retombe alors sur la ligne de périmètre.
+            <aside
+                aria-label="Voir aussi"
+                class="hidden min-w-0 min-[88rem]:sticky min-[88rem]:top-20 min-[88rem]:block min-[88rem]:max-h-[calc(100dvh-6rem)] min-[88rem]:self-start min-[88rem]:overflow-y-auto"
+            >
+                <Show when=move || !query.get().is_empty()>
+                    <div class="flex flex-col gap-4">
+                        <div class="border-t border-[var(--color-rule)] pt-4">
+                            <SyntaxHint corpus=HelpCorpus::Textes />
+                        </div>
+                        // Pont croisé : la même requête posée au moteur
+                        // décisions.
+                        <DecisionsTeaser query=query />
+                    </div>
+                </Show>
+            </aside>
         </div>
     }
 }
@@ -303,14 +328,12 @@ fn TextesRail(
                 {natures}
                 {jurisdictions}
                 {sources}
-                // Pont croisé : la même requête posée au moteur décisions.
-                <DecisionsTeaser query=query />
                 <div class="border-t border-[var(--color-rule)] pt-4">
                     <A
-                        href="/codes"
+                        href="/normes"
                         attr:class="text-[13px] text-[var(--color-ink-muted)] underline-offset-2 transition-colors hover:text-[var(--color-accent)] hover:underline"
                     >
-                        "Parcourir le catalogue des codes"
+                        "Parcourir le catalogue des normes"
                     </A>
                 </div>
             </div>
@@ -907,10 +930,10 @@ fn TextSearchPrompt() -> impl IntoView {
                 "plus pertinents s'affichent, avec un lien vers leur page versionnée."
             </p>
             <A
-                href="/codes"
+                href="/normes"
                 attr:class="text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
             >
-                "Parcourir le catalogue des codes"
+                "Parcourir le catalogue des normes"
             </A>
         </div>
     }

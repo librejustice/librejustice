@@ -374,9 +374,91 @@ impl JurisdictionType {
     ];
 }
 
+/// Abréviations de citation : tête de nom de juridiction (minuscules) →
+/// abréviation doctrinale. Couvre tous les libellés du référentiel
+/// `jurisdiction` (y compris les « Tribunal des activités économiques » issus
+/// de la réforme 2025, rattachés au type TCOM). Les préfixes emboîtés sont
+/// classés du plus long au plus court (« cour administrative d'appel » avant
+/// « cour d'appel »).
+const JURISDICTION_ABBREVIATIONS: [(&str, &str); 15] = [
+    ("cour administrative d'appel", "CAA"),
+    ("cour nationale du droit d'asile", "CNDA"),
+    ("cour européenne des droits de l'homme", "CEDH"),
+    ("cour de justice de l'union européenne", "CJUE"),
+    ("cour de cassation", "Cass."),
+    ("cour d'appel", "CA"),
+    ("tribunal administratif", "TA"),
+    ("tribunal des activités économiques", "TAE"),
+    ("tribunal de commerce", "T. com."),
+    ("tribunal des conflits", "T. confl."),
+    ("tribunal judiciaire", "TJ"),
+    ("conseil d'état", "CE"),
+    ("conseil d'etat", "CE"),
+    ("conseil constitutionnel", "Cons. const."),
+    (
+        "commission nationale de l'informatique et des libertés",
+        "CNIL",
+    ),
+];
+
+/// Nom de juridiction abrégé pour une citation : la tête du nom est remplacée
+/// par son abréviation doctrinale, le reste (ville) est conservé — « Tribunal
+/// judiciaire de Nanterre » → « TJ de Nanterre », « Cour de cassation » →
+/// « Cass. ». Nom hors table rendu tel quel. Consommée par la référence courte
+/// (`lj-web` : citation copiée, nom de PDF, topbar) et le nom de fichier
+/// d'export (`lj-api`).
+pub fn abbreviate_jurisdiction_name(name: &str) -> String {
+    let lower = name.to_lowercase();
+    for (head, abbr) in JURISDICTION_ABBREVIATIONS {
+        // `to_lowercase` préserve la longueur en octets sur ces alphabets
+        // (é/É : 2 octets) — le slice sur `name` reste aligné sur `head`.
+        if lower.starts_with(head) {
+            return format!("{abbr}{}", &name[head.len()..]);
+        }
+    }
+    name.to_string()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn abbreviate_all_corpus_jurisdictions() {
+        // Un cas par tête de nom du référentiel `jurisdiction` de prod.
+        for (name, expected) in [
+            ("Tribunal administratif de Caen", "TA de Caen"),
+            ("Cour administrative d'appel de Bordeaux", "CAA de Bordeaux"),
+            ("Conseil d'État", "CE"),
+            ("Cour d'appel d'Aix-en-Provence", "CA d'Aix-en-Provence"),
+            ("Cour de cassation", "Cass."),
+            ("Tribunal judiciaire du Mans", "TJ du Mans"),
+            ("Tribunal de commerce d'Agen", "T. com. d'Agen"),
+            (
+                "Tribunal des activités économiques de Nanterre",
+                "TAE de Nanterre",
+            ),
+            ("Tribunal des conflits", "T. confl."),
+            ("Conseil constitutionnel", "Cons. const."),
+            ("Cour nationale du droit d'asile", "CNDA"),
+            ("Cour européenne des droits de l'homme", "CEDH"),
+            ("Cour de justice de l'Union européenne", "CJUE"),
+            (
+                "Commission nationale de l'informatique et des libertés",
+                "CNIL",
+            ),
+        ] {
+            assert_eq!(abbreviate_jurisdiction_name(name), expected, "{name}");
+        }
+    }
+
+    #[test]
+    fn abbreviate_unknown_name_passthrough() {
+        assert_eq!(
+            abbreviate_jurisdiction_name("Juridiction nationale des activités foraines"),
+            "Juridiction nationale des activités foraines"
+        );
+    }
 
     fn ser<T: Serialize>(v: &T) -> String {
         serde_json::to_value(v)

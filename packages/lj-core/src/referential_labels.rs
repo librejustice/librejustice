@@ -161,6 +161,41 @@ pub fn source_label(source: &str) -> Option<&'static str> {
     })
 }
 
+/// Fonds du catalogue des normes (ADR 0255, `/normes`), dans l'ordre
+/// d'affichage. `codes` renvoie vers le catalogue `/codes` existant ; les
+/// autres fonds ont des hubs année (`/normes/{fond}/{annee}`). L'affectation
+/// nature → fond vit dans le fragment SQL de `lj-store::norm_hubs` (seule
+/// source, utilisée par l'index d'expression de la migration 0166).
+pub const NORM_FONDS: &[&str] = &[
+    "codes",
+    "lois",
+    "decrets",
+    "arretes",
+    "conventions-collectives",
+    "textes-ue",
+    "traites",
+    "circulaires",
+    "bofip",
+    "autres",
+];
+
+/// Libellé FR d'un fond du catalogue des normes.
+pub fn norm_fond_label(fond: &str) -> Option<&'static str> {
+    Some(match fond {
+        "codes" => "Codes",
+        "lois" => "Lois et ordonnances",
+        "decrets" => "Décrets",
+        "arretes" => "Arrêtés",
+        "conventions-collectives" => "Conventions collectives",
+        "textes-ue" => "Textes de l'Union européenne",
+        "traites" => "Traités et accords internationaux",
+        "circulaires" => "Circulaires et instructions",
+        "bofip" => "BOFiP (doctrine fiscale)",
+        "autres" => "Autres publications officielles",
+        _ => return None,
+    })
+}
+
 /// Natures « doctrine administrative » (ADR 0196) : interprétations officielles
 /// de la norme par l'administration (opposables/invocables dans leurs régimes),
 /// par opposition aux normes elles-mêmes. Pilote la sur-facette `scope` du

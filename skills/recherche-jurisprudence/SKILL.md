@@ -9,6 +9,10 @@ The user is typically a litigator: they need decisions whose reasoning
 states a precise proposition, applicable to their configuration, with
 an excerpt quotable in a brief.
 
+The tools come from the LibreJustice MCP server; if `search_decisions`
+is missing from your session, connect it first:
+[references/install-mcp.md](references/install-mcp.md).
+
 Five rules dominate everything:
 
 1. **No decision appears in the answer — as support, contrary

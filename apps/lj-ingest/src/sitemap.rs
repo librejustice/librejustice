@@ -61,6 +61,15 @@ pub trait SitemapSource {
     /// Itère `(slug, lastmod)` pour les codes navigables (pages TDM
     /// `/texte/{slug}`, ADR 0237).
     fn iter_codes_for_sitemap(&self) -> Result<Vec<(String, NaiveDate)>>;
+
+    /// Itère `(code, années)` pour les hubs juridiction (pages
+    /// `/juridiction/{code}` + `/juridiction/{code}/{annee}`, ADR 0253).
+    fn iter_jurisdiction_hubs_for_sitemap(&self) -> Result<Vec<(String, Vec<i32>)>>;
+
+    /// Itère `(fond, tokens année)` pour les hubs du catalogue des normes
+    /// (pages `/normes/{fond}` + `/normes/{fond}/{annee}`, ADR 0255) —
+    /// `annee` = année ou `sans-date`.
+    fn iter_norm_hubs_for_sitemap(&self) -> Result<Vec<(String, Vec<String>)>>;
 }
 
 /// Pages statiques indexables, servies en SSR mais absentes des tables (donc
@@ -75,6 +84,8 @@ const STATIC_PATHS: &[&str] = &[
     "/textes",
     "/sources",
     "/codes",
+    "/juridictions",
+    "/normes",
     "/annuaire",
     "/annuaire/entreprises",
     "/annuaire/personnes-publiques",
@@ -138,78 +149,70 @@ fn gzip_bytes(payload: &[u8]) -> Result<Vec<u8>> {
     encoder.finish().context("sitemap: gzip finish")
 }
 
-/// Construit `sitemap-{n}.xml.gz` + `sitemap-index.xml` en mémoire.
+/// Construit `sitemap-{section}-{n}.xml.gz` + `sitemap-index.xml` en mémoire.
 ///
-/// Retourne la liste des fichiers (index en dernier). L'index réfère les
-/// sub-sitemaps via leur URL publique finale (`BASE_URL/sitemaps/sitemap-{n}.xml.gz`),
-/// comme l'exige sitemaps.org § sitemap index (URLs absolues).
+/// Les fichiers sont nommés **par fond** (`pages`, `juridictions`, `textes`,
+/// `entites`, `decisions`, ADR 0253) : Search Console expose alors
+/// l'indexation par fond au lieu d'une numérotation opaque. Retourne la
+/// liste des fichiers (index en dernier). L'index réfère les sub-sitemaps
+/// via leur URL publique finale, comme l'exige sitemaps.org § sitemap index
+/// (URLs absolues).
 pub fn build_sitemaps<S: SitemapSource>(repo: &S, today: NaiveDate) -> Result<Vec<SitemapFile>> {
     let mut files: Vec<SitemapFile> = Vec::new();
-    let mut current_entries: Vec<String> = Vec::new();
-    let mut current_max_lastmod: Option<NaiveDate> = None;
 
     // Pages statiques indexables (landing, hubs annuaire…), `lastmod` = run.
-    // En tête : elles atterrissent dans `sitemap-1` (lisible par un humain).
+    let mut pages = SectionWriter::new("pages");
     for path in STATIC_PATHS {
-        push_entry(
-            &mut files,
-            &mut current_entries,
-            &mut current_max_lastmod,
-            &static_url(path),
-            today,
-        )?;
+        pages.push(&static_url(path), today)?;
     }
+    files.extend(pages.finish()?);
 
-    // Codes navigables : pages TDM `/texte/{slug}` (ADR 0237).
-    let codes = repo.iter_codes_for_sitemap()?;
-    for (slug, lastmod) in codes {
-        push_entry(
-            &mut files,
-            &mut current_entries,
-            &mut current_max_lastmod,
-            &code_url(&slug),
-            lastmod,
-        )?;
+    // Hubs juridiction `/juridiction/{code}` + `/juridiction/{code}/{annee}`
+    // (ADR 0253) — `lastmod` = run : leurs listes bougent à l'ingest quotidien.
+    let mut hubs = SectionWriter::new("juridictions");
+    for (code, years) in repo.iter_jurisdiction_hubs_for_sitemap()? {
+        hubs.push(&format!("{BASE_URL}/juridiction/{code}"), today)?;
+        for year in years {
+            hubs.push(&format!("{BASE_URL}/juridiction/{code}/{year}"), today)?;
+        }
     }
+    files.extend(hubs.finish()?);
+
+    // Hubs du catalogue des normes `/normes/{fond}` + `/normes/{fond}/{annee}`
+    // (ADR 0255, `annee` = année ou `sans-date`) — même profil.
+    let mut normes = SectionWriter::new("normes");
+    for (fond, tokens) in repo.iter_norm_hubs_for_sitemap()? {
+        normes.push(&format!("{BASE_URL}/normes/{fond}"), today)?;
+        for token in tokens {
+            normes.push(&format!("{BASE_URL}/normes/{fond}/{token}"), today)?;
+        }
+    }
+    files.extend(normes.finish()?);
+
+    // Textes : pages TDM `/texte/{slug}` (ADR 0237) + articles
+    // `/texte/{slug}/{num}` (ADR 0097).
+    let mut textes = SectionWriter::new("textes");
+    for (slug, lastmod) in repo.iter_codes_for_sitemap()? {
+        textes.push(&code_url(&slug), lastmod)?;
+    }
+    for (slug, num, lastmod) in repo.iter_referential_for_sitemap()? {
+        textes.push(&law_url(&slug, &num), lastmod)?;
+    }
+    files.extend(textes.finish()?);
 
     // Fiches d'entités de l'annuaire `/entite/{ns}/{id}` (ADR 0237, avocats
     // exclus côté SQL).
-    let entities = repo.iter_entities_for_sitemap()?;
-    for (ns, id, lastmod) in entities {
-        push_entry(
-            &mut files,
-            &mut current_entries,
-            &mut current_max_lastmod,
-            &entity_url(&ns, &id),
-            lastmod,
-        )?;
+    let mut entites = SectionWriter::new("entites");
+    for (ns, id, lastmod) in repo.iter_entities_for_sitemap()? {
+        entites.push(&entity_url(&ns, &id), lastmod)?;
     }
+    files.extend(entites.finish()?);
 
-    let decisions = repo.iter_decisions_for_sitemap()?;
-    for (public_id, lastmod) in decisions {
-        push_entry(
-            &mut files,
-            &mut current_entries,
-            &mut current_max_lastmod,
-            &decision_url(&public_id),
-            lastmod,
-        )?;
+    let mut decisions = SectionWriter::new("decisions");
+    for (public_id, lastmod) in repo.iter_decisions_for_sitemap()? {
+        decisions.push(&decision_url(&public_id), lastmod)?;
     }
-
-    // Pages /texte/{slug}/{num} : articles de référentiel (ADR 0097). Même
-    // pagination + max lastmod que les décisions ; la page courante poursuit
-    // celle des décisions plutôt que d'en ouvrir une vide.
-    let articles = repo.iter_referential_for_sitemap()?;
-    for (slug, num, lastmod) in articles {
-        push_entry(
-            &mut files,
-            &mut current_entries,
-            &mut current_max_lastmod,
-            &law_url(&slug, &num),
-            lastmod,
-        )?;
-    }
-    flush(&mut files, &mut current_entries, &mut current_max_lastmod)?;
+    files.extend(decisions.finish()?);
 
     // Sitemap index — URLs publiques absolues (Google refuse le relatif).
     let mut index_entries = String::new();
@@ -239,54 +242,66 @@ pub fn build_sitemaps<S: SitemapSource>(repo: &S, today: NaiveDate) -> Result<Ve
     Ok(files)
 }
 
-/// Pousse un bloc `<url>` dans le sub-sitemap courant, tient à jour son max
-/// `lastmod` (= `lastmod` de la ligne d'index correspondante, permet à Google
-/// de ne re-crawler que les subs modifiés) et flushe dès `MAX_URLS_PER_SITEMAP`
-/// atteint.
-fn push_entry(
-    files: &mut Vec<SitemapFile>,
-    current_entries: &mut Vec<String>,
-    current_max_lastmod: &mut Option<NaiveDate>,
-    loc: &str,
-    lastmod: NaiveDate,
-) -> Result<()> {
-    current_entries.push(format_url_entry(loc, lastmod));
-    if current_max_lastmod.is_none_or(|m| lastmod > m) {
-        *current_max_lastmod = Some(lastmod);
-    }
-    if current_entries.len() >= MAX_URLS_PER_SITEMAP {
-        flush(files, current_entries, current_max_lastmod)?;
-    }
-    Ok(())
+/// Accumule les blocs `<url>` d'une **section** (un fond : `pages`,
+/// `decisions`…) et découpe en fichiers `sitemap-{section}-{n}.xml.gz` de
+/// [`MAX_URLS_PER_SITEMAP`] au plus. Tient le max `lastmod` par fichier
+/// (= `lastmod` de la ligne d'index correspondante, permet à Google de ne
+/// re-crawler que les subs modifiés).
+struct SectionWriter {
+    section: &'static str,
+    files: Vec<SitemapFile>,
+    entries: Vec<String>,
+    max_lastmod: Option<NaiveDate>,
 }
 
-/// Construit le sub-sitemap courant et l'ajoute à `files`.
-fn flush(
-    files: &mut Vec<SitemapFile>,
-    current_entries: &mut Vec<String>,
-    current_max_lastmod: &mut Option<NaiveDate>,
-) -> Result<()> {
-    let Some(max_lastmod) = *current_max_lastmod else {
-        return Ok(());
-    };
-    if current_entries.is_empty() {
-        return Ok(());
+impl SectionWriter {
+    fn new(section: &'static str) -> Self {
+        Self {
+            section,
+            files: Vec::new(),
+            entries: Vec::new(),
+            max_lastmod: None,
+        }
     }
-    let filename = format!("sitemap-{}.xml.gz", files.len() + 1);
-    let body = format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
-         <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">{}</urlset>",
-        current_entries.concat()
-    );
-    files.push(SitemapFile {
-        filename,
-        content_type: "application/gzip",
-        body: gzip_bytes(body.as_bytes())?,
-        lastmod: max_lastmod,
-    });
-    current_entries.clear();
-    *current_max_lastmod = None;
-    Ok(())
+
+    fn push(&mut self, loc: &str, lastmod: NaiveDate) -> Result<()> {
+        self.entries.push(format_url_entry(loc, lastmod));
+        if self.max_lastmod.is_none_or(|m| lastmod > m) {
+            self.max_lastmod = Some(lastmod);
+        }
+        if self.entries.len() >= MAX_URLS_PER_SITEMAP {
+            self.flush()?;
+        }
+        Ok(())
+    }
+
+    fn flush(&mut self) -> Result<()> {
+        if self.entries.is_empty() {
+            return Ok(());
+        }
+        let max_lastmod = self.max_lastmod.take().expect("entrées sans lastmod");
+        let filename = format!("sitemap-{}-{}.xml.gz", self.section, self.files.len() + 1);
+        let body = format!(
+            "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\
+             <urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\">{}</urlset>",
+            self.entries.concat()
+        );
+        self.files.push(SitemapFile {
+            filename,
+            content_type: "application/gzip",
+            body: gzip_bytes(body.as_bytes())?,
+            lastmod: max_lastmod,
+        });
+        self.entries.clear();
+        Ok(())
+    }
+
+    /// Flushe le reliquat et rend les fichiers de la section (vide si la
+    /// section n'a reçu aucune URL).
+    fn finish(mut self) -> Result<Vec<SitemapFile>> {
+        self.flush()?;
+        Ok(self.files)
+    }
 }
 
 #[cfg(test)]
@@ -300,6 +315,8 @@ mod tests {
         referential: Vec<(String, String, NaiveDate)>,
         entities: Vec<(String, String, NaiveDate)>,
         codes: Vec<(String, NaiveDate)>,
+        jurisdiction_hubs: Vec<(String, Vec<i32>)>,
+        norm_hubs: Vec<(String, Vec<String>)>,
     }
     impl SitemapSource for FakeSource {
         fn iter_decisions_for_sitemap(&self) -> Result<Vec<(String, NaiveDate)>> {
@@ -313,6 +330,12 @@ mod tests {
         }
         fn iter_codes_for_sitemap(&self) -> Result<Vec<(String, NaiveDate)>> {
             Ok(self.codes.clone())
+        }
+        fn iter_jurisdiction_hubs_for_sitemap(&self) -> Result<Vec<(String, Vec<i32>)>> {
+            Ok(self.jurisdiction_hubs.clone())
+        }
+        fn iter_norm_hubs_for_sitemap(&self) -> Result<Vec<(String, Vec<String>)>> {
+            Ok(self.norm_hubs.clone())
         }
     }
 
@@ -355,7 +378,8 @@ mod tests {
         assert_eq!(&a[4..8], &[0, 0, 0, 0]);
     }
 
-    // Spec : build_sitemaps produit N sub + index ; l'index référence les sub
+    // Spec : build_sitemaps produit un sub PAR SECTION alimentée (nommé
+    // sitemap-{section}-{n}, ADR 0253) + index ; l'index référence les sub
     // par URL absolue avec leur max lastmod ; les sub décompressent en urlset.
     #[test]
     fn builds_index_and_subs() {
@@ -363,23 +387,24 @@ mod tests {
             decisions: vec![("a".into(), d("2026-01-01")), ("b".into(), d("2026-03-15"))],
             ..Default::default()
         };
-        // `today` ancien → le max lastmod reste celui des décisions.
         let files = build_sitemaps(&source, d("2000-01-01")).unwrap();
-        // 1 sub + index.
-        assert_eq!(files.len(), 2);
-        assert_eq!(files[0].filename, "sitemap-1.xml.gz");
-        assert_eq!(files[0].content_type, "application/gzip");
-        assert_eq!(files[1].filename, SITEMAP_INDEX_NAME);
-        assert_eq!(files[1].content_type, "application/xml");
+        // Sections alimentées : pages (statiques) + decisions, puis l'index.
+        assert_eq!(files.len(), 3);
+        assert_eq!(files[0].filename, "sitemap-pages-1.xml.gz");
+        assert_eq!(files[1].filename, "sitemap-decisions-1.xml.gz");
+        assert_eq!(files[1].content_type, "application/gzip");
+        assert_eq!(files[2].filename, SITEMAP_INDEX_NAME);
+        assert_eq!(files[2].content_type, "application/xml");
 
-        let index = String::from_utf8(files[1].body.clone()).unwrap();
-        assert!(index.contains("<loc>https://librejustice.fr/sitemaps/sitemap-1.xml.gz</loc>"));
-        // Max lastmod du sub.
+        let index = String::from_utf8(files[2].body.clone()).unwrap();
+        assert!(index
+            .contains("<loc>https://librejustice.fr/sitemaps/sitemap-decisions-1.xml.gz</loc>"));
+        // Max lastmod du sub décisions (`today` ancien → celui des décisions).
         assert!(index.contains("<lastmod>2026-03-15</lastmod>"));
-        assert_eq!(files[1].lastmod, d("2026-03-15"));
+        assert_eq!(files[2].lastmod, d("2026-03-15"));
 
-        // Le sub décompresse en un urlset contenant les deux décisions.
-        let mut decoder = flate2::read::GzDecoder::new(&files[0].body[..]);
+        // Le sub décisions décompresse en un urlset contenant les deux décisions.
+        let mut decoder = flate2::read::GzDecoder::new(&files[1].body[..]);
         let mut body = String::new();
         decoder.read_to_string(&mut body).unwrap();
         assert!(body.contains("https://librejustice.fr/decision/a"));
@@ -396,10 +421,47 @@ mod tests {
             ..Default::default()
         };
         let files = build_sitemaps(&source, d("2026-01-01")).unwrap();
-        let mut decoder = flate2::read::GzDecoder::new(&files[0].body[..]);
-        let mut body = String::new();
-        decoder.read_to_string(&mut body).unwrap();
+        let body = decompress_subs(&files);
         assert!(body.contains("https://librejustice.fr/texte/code-civil/1240"));
+    }
+
+    // Spec : les hubs juridiction (ADR 0253) produisent une section dédiée
+    // sitemap-juridictions-N avec le hub du code et une URL par année.
+    #[test]
+    fn includes_jurisdiction_hub_urls() {
+        let source = FakeSource {
+            jurisdiction_hubs: vec![("ca_paris".into(), vec![2026, 2025])],
+            ..Default::default()
+        };
+        let files = build_sitemaps(&source, d("2026-05-01")).unwrap();
+        assert!(files
+            .iter()
+            .any(|f| f.filename == "sitemap-juridictions-1.xml.gz"));
+        let body = decompress_subs(&files);
+        assert!(body.contains("<loc>https://librejustice.fr/juridictions</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/juridiction/ca_paris</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/juridiction/ca_paris/2026</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/juridiction/ca_paris/2025</loc>"));
+    }
+
+    // Spec : les hubs normes (ADR 0255) produisent une section dédiée
+    // sitemap-normes-N avec le hub du fond et une URL par token d'année
+    // (année ou sans-date).
+    #[test]
+    fn includes_norm_hub_urls() {
+        let source = FakeSource {
+            norm_hubs: vec![("lois".into(), vec!["2026".into(), "sans-date".into()])],
+            ..Default::default()
+        };
+        let files = build_sitemaps(&source, d("2026-05-01")).unwrap();
+        assert!(files
+            .iter()
+            .any(|f| f.filename == "sitemap-normes-1.xml.gz"));
+        let body = decompress_subs(&files);
+        assert!(body.contains("<loc>https://librejustice.fr/normes</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/normes/lois</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/normes/lois/2026</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/normes/lois/sans-date</loc>"));
     }
 
     /// Décompresse tous les sub-sitemaps `.xml.gz` en une seule chaîne.

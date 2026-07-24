@@ -140,9 +140,9 @@ pub async fn ingest_kali(path: &Path) -> Result<()> {
     ingest_kali_tarball(&repo, path).await?;
     // Dénormalise le titre de la convention sur ses articles (search_title, ADR 0114).
     let retitled = repo
-        .refresh_article_code_titles()
+        .refresh_article_denorm()
         .await
-        .map_err(|e| anyhow!("refresh_article_code_titles: {e}"))?;
+        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     // Slugs des textes nouveaux (ADR 0162).
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
     tracing::info!(retitled, slugged, "ingest_kali refresh code_title");
@@ -387,9 +387,9 @@ pub async fn sync_kali() -> Result<()> {
     let retitled = if downloaded.is_empty() {
         0
     } else {
-        repo.refresh_article_code_titles()
+        repo.refresh_article_denorm()
             .await
-            .map_err(|e| anyhow!("refresh_article_code_titles: {e}"))?
+            .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?
     };
 
     // Slugs des textes nouveaux (ADR 0162).

@@ -18,8 +18,8 @@ use crate::cache::{CachePolicy, CACHE_DECISION, CACHE_SEARCH};
 use crate::error::{validation, ApiError, Result};
 use crate::state::AppState;
 use crate::{
-    bookmarks, decision_views, decisions, docx_export, entities, legi, mcp, me, oauth, pdf_export,
-    redirect, registre, search, search_history, sitemap, stats,
+    bookmarks, decision_views, decisions, docx_export, entities, jurisdiction_hubs, legi, mcp, me,
+    norm_hubs, oauth, pdf_export, redirect, registre, search, search_history, sitemap, stats,
 };
 use axum::extract::{Path, Query, RawQuery, Request, State};
 use axum::http::{header, HeaderValue, StatusCode};
@@ -59,6 +59,13 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         // Compteurs globaux du corpus (page d'accueil) : estimation décisions +
         // nombre de codes, servis depuis un cache process-local (TTL 12 h).
         .route("/corpus-stats", get(corpus_stats))
+        // Hubs juridiction (ADR 0253) : catalogue, hub d'un code, page année.
+        .route("/juridictions", get(jurisdictions_catalogue))
+        .route("/juridictions/{code}", get(jurisdiction_hub))
+        .route("/juridictions/{code}/{annee}", get(jurisdiction_year))
+        .route("/normes", get(normes_catalogue))
+        .route("/normes/{fond}", get(norm_hub))
+        .route("/normes/{fond}/{annee}", get(norm_year))
         .route("/decision/{decision_id}", get(decision))
         .route("/decision/{decision_id}/similar", get(decision_similar))
         .route("/decision/{decision_id}/preview", get(decision_preview))
@@ -960,7 +967,7 @@ fn decision_filename(detail: &lj_dtos::DecisionDetail) -> String {
             .and_then(|v| v.as_str().map(str::to_string))
             .unwrap_or_default()
     });
-    let jur = abbreviate_jurisdiction(&raw);
+    let jur = lj_dtos::abbreviate_jurisdiction_name(&raw);
 
     const MONTHS: [&str; 12] = [
         "janvier",
@@ -1007,28 +1014,10 @@ fn decision_filename(detail: &lj_dtos::DecisionDetail) -> String {
     if parts.is_empty() {
         format!("decision-{}", detail.id)
     } else {
-        parts.join(" ")
+        // Les n° RG judiciaires contiennent un `/` (« 25/01119 ») — interdit
+        // dans un nom de fichier.
+        parts.join(" ").replace('/', "_")
     }
-}
-
-/// Abrège les noms de juridiction (parité des `re.sub` de `_decision_filename`).
-fn abbreviate_jurisdiction(jur: &str) -> String {
-    let lower = jur.to_lowercase();
-    if let Some(rest) = strip_prefix_ci(jur, &lower, "tribunal administratif") {
-        format!("TA{rest}")
-    } else if let Some(rest) = strip_prefix_ci(jur, &lower, "cour administrative d'appel") {
-        format!("CAA{rest}")
-    } else if let Some(rest) = strip_prefix_ci(jur, &lower, "conseil d'etat")
-        .or_else(|| strip_prefix_ci(jur, &lower, "conseil d'état"))
-    {
-        format!("CE{rest}")
-    } else {
-        jur.to_string()
-    }
-}
-
-fn strip_prefix_ci<'a>(orig: &'a str, lower: &str, prefix: &str) -> Option<&'a str> {
-    lower.strip_prefix(prefix).map(|_| &orig[prefix.len()..])
 }
 
 async fn decision_download_docx(
@@ -1324,6 +1313,68 @@ async fn codes_catalogue(
 /// immuables (bougent à l'ingest quotidien) → cache décision, 24 h CDN.
 async fn corpus_stats(State(state): State<AppState>) -> Result<Response> {
     let body = stats::corpus_stats(&state).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Catalogue des juridictions groupé par famille (`GET /api/juridictions`,
+/// ADR 0253). Réponse stable (ingest quotidien) → cache décision.
+async fn jurisdictions_catalogue(State(state): State<AppState>) -> Result<Response> {
+    let body = jurisdiction_hubs::catalogue(&state).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Hub d'une juridiction : années couvertes (`GET /api/juridictions/{code}`).
+async fn jurisdiction_hub(
+    State(state): State<AppState>,
+    Path(code): Path<String>,
+) -> Result<Response> {
+    let body = jurisdiction_hubs::hub(&state, &code).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Query `/api/juridictions/{code}/{annee}` : `page` ≥ 1 (défaut 1).
+#[derive(Deserialize)]
+struct JurisdictionYearQuery {
+    #[serde(default)]
+    page: Option<u32>,
+}
+
+/// Page paginée des décisions d'une juridiction×année
+/// (`GET /api/juridictions/{code}/{annee}?page=N`).
+async fn jurisdiction_year(
+    State(state): State<AppState>,
+    Path((code, annee)): Path<(String, i32)>,
+    Query(p): Query<JurisdictionYearQuery>,
+) -> Result<Response> {
+    let body = jurisdiction_hubs::year_page(&state, &code, annee, p.page.unwrap_or(1)).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Catalogue des normes par fond (`GET /api/normes`, ADR 0255). Réponse
+/// stable (ingest quotidien) → cache décision.
+async fn normes_catalogue(State(state): State<AppState>) -> Result<Response> {
+    let body = norm_hubs::catalogue(&state).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Hub d'un fond : années couvertes (`GET /api/normes/{fond}`).
+async fn norm_hub(State(state): State<AppState>, Path(fond): Path<String>) -> Result<Response> {
+    let body = norm_hubs::hub(&state, &fond).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Page paginée des textes d'un fond×année
+/// (`GET /api/normes/{fond}/{annee}?page=N`, `annee` = année ou `sans-date`).
+async fn norm_year(
+    State(state): State<AppState>,
+    Path((fond, annee)): Path<(String, String)>,
+    Query(p): Query<JurisdictionYearQuery>,
+) -> Result<Response> {
+    let year = match annee.as_str() {
+        norm_hubs::UNDATED_TOKEN => None,
+        y => Some(y.parse::<i32>().map_err(|_| ApiError::NotFound)?),
+    };
+    let body = norm_hubs::year_page(&state, &fond, year, p.page.unwrap_or(1)).await?;
     Ok(with_cache(CACHE_DECISION, body))
 }
 

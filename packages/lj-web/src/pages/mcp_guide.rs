@@ -6,6 +6,22 @@ use leptos_meta::Title;
 
 use crate::seo::CANONICAL_BASE;
 
+/// Install plugin Claude Code : connecteur MCP + skills ensemble.
+const CLAUDE_CODE_INSTALL: &str =
+    "/plugin marketplace add librejustice/librejustice\n/plugin install librejustice@librejustice";
+
+/// Install plugin Codex CLI : connecteur MCP + skills ensemble.
+const CODEX_INSTALL: &str = "codex plugin marketplace add librejustice/librejustice\ncodex plugin add librejustice@librejustice";
+
+/// Skills seules, agents compatibles skills.sh.
+const SKILLS_ADD: &str = "npx skills add librejustice/librejustice";
+
+/// Prompt d'installation pour les agents à shell (Claude Code, Codex,
+/// Cursor…) : une ligne pointant vers le guide agent `llms-install.md`
+/// du dépôt public (convention popularisée par Cline, suivie par le
+/// catalogue MCP de Microsoft, Magic MCP, Firebase MCP…).
+const UNIVERSAL_PROMPT: &str = "Installe LibreJustice (MCP + skills) en suivant ce guide : https://github.com/librejustice/librejustice/blob/main/llms-install.md";
+
 /// Prompts d'exemple a copier dans un client IA (verbatim `TEST_PROMPTS`).
 const TEST_PROMPTS: [&str; 4] = [
     "Trouve 5 décisions sur l'annulation d'un permis de construire.",
@@ -202,6 +218,86 @@ pub fn McpGuide() -> impl IntoView {
                 </ClientHowto>
             </section>
 
+            // Skills : la méthode de recherche, en plus du connecteur
+            <section class="flex flex-col gap-8">
+                <SectionLabel>"Skills"</SectionLabel>
+                <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                    "Deux skills accompagnent le connecteur : "
+                    <strong>"recherche-jurisprudence"</strong>
+                    " et "
+                    <strong>"recherche-normes"</strong>
+                    ". Une skill est un mode d'emploi que votre agent lit avant de chercher : lire une décision en intégralité avant de la citer, viser la version d'un texte à la date du litige, éviter les pièges du corpus. Le connecteur fonctionne sans, mais les réponses sont nettement plus fiables avec."
+                </p>
+
+                <ClientHowto title="Claude Code">
+                    <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        "Le plugin installe le connecteur MCP et les deux skills d'un coup :"
+                    </p>
+                    <CopyBlock text=CLAUDE_CODE_INSTALL label="Dans Claude Code" />
+                </ClientHowto>
+
+                <ClientHowto title="Codex CLI">
+                    <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        "Même plugin, même contenu :"
+                    </p>
+                    <CopyBlock text=CODEX_INSTALL label="Dans un terminal" />
+                </ClientHowto>
+
+                <ClientHowto title="Autres agents (Cursor, Windsurf…)">
+                    <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        "Les skills seules, dans tout agent compatible skills — chaque skill embarque la marche à suivre pour connecter le MCP :"
+                    </p>
+                    <CopyBlock text=SKILLS_ADD label="Dans un terminal" />
+                </ClientHowto>
+
+                <ClientHowto title="claude.ai">
+                    <Step n=1>
+                        "Téléchargez la skill : "
+                        <a
+                            href="/skills/recherche-jurisprudence.zip"
+                            download
+                            class="underline underline-offset-2"
+                        >
+                            "recherche-jurisprudence.zip"
+                        </a>
+                        " ou "
+                        <a
+                            href="/skills/recherche-normes.zip"
+                            download
+                            class="underline underline-offset-2"
+                        >
+                            "recherche-normes.zip"
+                        </a>
+                        "."
+                    </Step>
+                    <Step n=2>
+                        "Sur claude.ai : avatar en bas à gauche → "
+                        <strong>"Paramètres → Personnaliser → Skills"</strong>
+                        " (tous les plans)."
+                    </Step>
+                    <Step n=3>
+                        <strong>"Upload skill"</strong>
+                        " et sélectionnez le zip. La skill s'active dans vos conversations — avec le connecteur MCP ajouté ci-dessus."
+                    </Step>
+                </ClientHowto>
+
+                <ClientHowto title="Agents en ligne de commande, par prompt">
+                    <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        "Un agent qui a accès au shell (Claude Code, Codex, Cursor…) peut s'installer LibreJustice lui-même : collez-lui ce prompt, il suit le guide "
+                        <a
+                            href="https://github.com/librejustice/librejustice/blob/main/llms-install.md"
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="underline underline-offset-2"
+                        >
+                            "llms-install.md"
+                        </a>
+                        " du dépôt. Dans les applications de chat (claude.ai, ChatGPT…), l'installation passe par les réglages, sections ci-dessus."
+                    </p>
+                    <CopyBlock text=UNIVERSAL_PROMPT label="Prompt d'installation" />
+                </ClientHowto>
+            </section>
+
             // Prompts de test
             <section class="flex flex-col gap-4">
                 <SectionLabel>"Exemples de requêtes"</SectionLabel>
@@ -261,6 +357,47 @@ fn CopyEndpoint(url: String) -> impl IntoView {
             >
                 {move || if copied.get() { "Copié ✓" } else { "Copier" }}
             </button>
+        </div>
+    }
+}
+
+/// Bloc de texte copiable (commandes, prompt). Statique au SSR ; le bouton
+/// copie via l'API clipboard après hydratation (même pattern que `CopyEndpoint`).
+#[component]
+fn CopyBlock(text: &'static str, label: &'static str) -> impl IntoView {
+    let copied = RwSignal::new(false);
+
+    let on_copy = move |_| {
+        #[cfg(feature = "hydrate")]
+        {
+            leptos::task::spawn_local(async move {
+                if crate::dom::copy_text(text).await {
+                    copied.set(true);
+                    leptos::prelude::set_timeout(
+                        move || copied.set(false),
+                        std::time::Duration::from_millis(2000),
+                    );
+                }
+            });
+        }
+    };
+
+    view! {
+        <div class="overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)]">
+            <div class="flex items-center justify-between gap-2 border-b border-[var(--color-rule)] px-4 py-2">
+                <span class="text-xs uppercase tracking-[0.15em] text-[var(--color-ink-subtle)]">
+                    {label}
+                </span>
+                <button
+                    type="button"
+                    on:click=on_copy
+                    aria-label="Copier"
+                    class="shrink-0 rounded px-2 py-1 text-xs text-[var(--color-ink-subtle)] transition-colors hover:bg-[var(--color-rule)] hover:text-[var(--color-ink)]"
+                >
+                    {move || if copied.get() { "Copié ✓" } else { "Copier" }}
+                </button>
+            </div>
+            <pre class="overflow-x-auto whitespace-pre-wrap px-4 py-3 font-mono text-sm leading-relaxed text-[var(--color-ink)]">{text}</pre>
         </div>
     }
 }

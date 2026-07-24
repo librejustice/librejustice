@@ -53,9 +53,9 @@ pub async fn ingest_bofip(path: &Path) -> Result<()> {
 
     // Titre du document dénormalisé sur ses § (`search_title`, ADR 0114).
     let retitled = repo
-        .refresh_article_code_titles()
+        .refresh_article_denorm()
         .await
-        .map_err(|e| anyhow!("refresh_article_code_titles: {e}"))?;
+        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     // Slugs des textes nouveaux (ADR 0162).
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
 

@@ -17,10 +17,12 @@ mod citations;
 mod decisions;
 mod entities;
 mod identity;
+mod jurisdiction_hubs;
 mod legal_links;
 mod legal_toc;
 mod links;
 mod llm_keys;
+mod norm_hubs;
 mod parties;
 mod referential;
 mod rekey;
@@ -46,11 +48,11 @@ pub use types::{
     DecisionPartyReadRow, DecisionPartyRow, EntityContentieuxCounts, EntityCounselRow,
     EntityDecisionRow, EntityDenominationReadRow, EntityDirectoryRow, EntityHeaderRow,
     EntityJurisdictionCountRow, EntityYearCountRow, ExistingDecisionState, ExtractedFields,
-    FacetCount, FacetValueRow, GtDoc, JurisdictionRow, LawCodeSummaryRow, LawVersionRow,
-    LegalArticleRow, LegalLinkOwner, LegalLinkRow, LegalTextCatalogRow, LegalTextMeta,
-    LegalTextRow, MissingSummaryRow, ResolvedLegalLink, SitemapRow, SlugSourceRow,
-    TextCaseCitationRow, TextLegalCitationRow, TocArticleRow, TocEdgeRow, TocOwner, TocReadingRow,
-    TocTreeRow, UpsertResult, UpsertStatus,
+    FacetCount, FacetValueRow, GtDoc, HubDecisionRow, JurisdictionHubRow, JurisdictionRow,
+    LawCodeSummaryRow, LawVersionRow, LegalArticleRow, LegalLinkOwner, LegalLinkRow,
+    LegalTextCatalogRow, LegalTextMeta, LegalTextRow, MissingSummaryRow, NormTextRow,
+    ResolvedLegalLink, SitemapRow, SlugSourceRow, TextCaseCitationRow, TextLegalCitationRow,
+    TocArticleRow, TocEdgeRow, TocOwner, TocReadingRow, TocTreeRow, UpsertResult, UpsertStatus,
 };
 
 pub use support::REEXTRACTABLE_FIELDS;

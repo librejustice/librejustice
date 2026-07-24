@@ -154,6 +154,43 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
         "legislationIdentifier": summary.legitext,
     });
     let jsonld = serde_json::to_string(&json).unwrap_or_else(|_| "{}".to_string());
+    // Fil d'Ariane structuré vers le catalogue des normes (ADR 0255) — absent
+    // si le texte est hors catalogue (acte individuel). Le fond `codes` pointe
+    // sur son catalogue dédié `/codes`.
+    let fond_hub = summary.fond.clone().map(|fond| {
+        let label = summary.fond_label.clone().unwrap_or_else(|| fond.clone());
+        let href = if fond == "codes" {
+            "/codes".to_string()
+        } else {
+            format!("/normes/{fond}")
+        };
+        let year_href = (fond != "codes").then(|| {
+            let token = match summary.fond_year {
+                Some(y) => y.to_string(),
+                None => "sans-date".to_string(),
+            };
+            (
+                match summary.fond_year {
+                    Some(y) => format!("année {y}"),
+                    None => "sans date".to_string(),
+                },
+                format!("/normes/{fond}/{token}"),
+            )
+        });
+        (label, href, year_href)
+    });
+    let breadcrumb = fond_hub.as_ref().map(|(label, href, year_href)| {
+        let mut items = vec![
+            ("Accueil", "https://librejustice.fr/".to_string()),
+            ("Normes", "https://librejustice.fr/normes".to_string()),
+            (label.as_str(), format!("https://librejustice.fr{href}")),
+        ];
+        if let Some((ylabel, yhref)) = year_href {
+            items.push((ylabel.as_str(), format!("https://librejustice.fr{yhref}")));
+        }
+        items.push((summary.titre.as_str(), url.clone()));
+        crate::pages::juridictions_page::breadcrumb_jsonld(&items)
+    });
 
     // Provenance : seuls les textes LEGI portent l'attribution DILA et leur
     // identifiant LEGITEXT ; les textes curés (étrangers, traduits) renvoient
@@ -289,6 +326,8 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
         <Meta property="og:image" content=OG_IMAGE />
         <Link rel="canonical" href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
+        {breadcrumb
+            .map(|bc| view! { <leptos_meta::Script type_="application/ld+json">{bc}</leptos_meta::Script> })}
 
         <div class="mx-auto w-full max-w-[92rem] flex-1 px-4 py-8 sm:px-6 lg:px-8">
             // Gabarit commun /decisions · /textes · /decision : conteneur 92rem,
@@ -334,6 +373,30 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
                     {has_articles.then(|| view! {
                         <CodeTocSection toc=toc code=code.clone() />
                     })}
+                    // Maillage retour vers l'arborescence des normes (ADR 0255).
+                    {fond_hub
+                        .map(|(label, href, year_href)| {
+                            view! {
+                                <nav
+                                    aria-label="Autres textes"
+                                    class="border-t border-[var(--color-rule)] pt-4 text-sm text-[var(--color-ink-muted)]"
+                                >
+                                    "Autres textes : "
+                                    <A href=href attr:class="text-[var(--color-accent)] hover:underline">
+                                        {label}
+                                    </A>
+                                    {year_href
+                                        .map(|(ylabel, yhref)| {
+                                            view! {
+                                                " · "
+                                                <A href=yhref attr:class="text-[var(--color-accent)] hover:underline">
+                                                    {ylabel}
+                                                </A>
+                                            }
+                                        })}
+                                </nav>
+                            }
+                        })}
                 </div>
             </div>
         </div>

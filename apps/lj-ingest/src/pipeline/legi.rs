@@ -515,9 +515,9 @@ async fn ingest_legi_tarball(
     // ADR 0114) sur les articles dont il diffère : LEGI streame articles et codes
     // séparément, l'article n'a pas le titre du code au parse.
     let retitled = repo
-        .refresh_article_code_titles()
+        .refresh_article_denorm()
         .await
-        .map_err(|e| anyhow!("refresh_article_code_titles: {e}"))?;
+        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
 
     tracing::info!(
         source = %path.display(),

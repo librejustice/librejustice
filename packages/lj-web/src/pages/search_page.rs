@@ -7,14 +7,18 @@
 //! Anatomie alignée sur la page décision : même conteneur `max-w-[92rem]` et
 //! même colonne gauche (240px, gouttière 48) que le sommaire d'une décision —
 //! elle porte le rail de synthèse (`SearchRail`). La colonne de contenu
-//! (barre, filtres, liste) prend le reste et se borne à `max-w-3xl` ; pas de
-//! colonne droite fantôme qui compresserait le contenu pour rien.
+//! (barre, filtres, liste) prend le reste et se borne à `max-w-3xl`. Une
+//! colonne DROITE (240px) porte le pont croisé « Dans les textes » et l'aide à
+//! la recherche — c'est le premier bloc sacrifié : elle n'apparaît qu'à partir
+//! de 88rem (240 + 48 + 768 + 48 + 240 + padding), largeur où tout tient à
+//! pleine mesure — jamais de compression du contenu pour la loger.
 //!
 //! `<Title>` dynamique reflétant la requête `q` de l'URL (l'onglet lit la
 //! recherche en cours) ; hérite de la description racine.
 
 use leptos::prelude::*;
 use leptos_meta::Title;
+use leptos_router::components::A;
 use leptos_router::hooks::use_query_map;
 use lj_dtos::{QueryMode, SearchResponse};
 
@@ -28,7 +32,7 @@ use crate::components::search::compact_search::search_state::{
 use crate::components::search::compact_search::DraftQuery;
 use crate::components::search::{
     ActiveFilterChips, CompactSearch, DecisionsFilterBar, Pagination, ResultEmpty, ResultError,
-    ResultList, ResultSkeleton, SearchRail, SortSelect, SyntaxHint,
+    ResultList, ResultSkeleton, SearchRail, SortSelect, SyntaxHint, TextesTeaser,
 };
 use crate::helpers::{format_results_count, total_pages};
 
@@ -138,7 +142,7 @@ fn DecisionsView() -> impl IntoView {
         Signal::derive(move || is_loading.get() && cached_search(&key.get()).is_none());
 
     view! {
-        <div class="grid grid-cols-1 gap-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-12">
+        <div class="grid grid-cols-1 gap-8 lg:grid-cols-[240px_minmax(0,1fr)] lg:gap-12 min-[88rem]:grid-cols-[240px_minmax(0,1fr)_240px]">
             <aside
                 aria-label="Synthèse des résultats"
                 class="hidden min-w-0 lg:sticky lg:top-20 lg:block lg:max-h-[calc(100dvh-6rem)] lg:self-start lg:overflow-y-auto"
@@ -148,11 +152,11 @@ fn DecisionsView() -> impl IntoView {
             <div class="flex w-full min-w-0 max-w-3xl flex-col gap-6">
                 <div class="flex flex-col gap-3">
                     <CompactSearch />
-                    // Sous la barre sur mobile toujours, et sur desktop tant que la
-                    // requête est vide (le rail — qui la porte alors — est masqué).
+                    // Sous la barre, sauf quand la colonne droite — qui porte
+                    // alors l'aide — est affichée (requête non vide, ≥ 88rem).
                     <div
                         class="flex self-start"
-                        class=("lg:hidden", move || !query.get().is_empty())
+                        class=("min-[88rem]:hidden", move || !query.get().is_empty())
                     >
                         <SyntaxHint />
                     </div>
@@ -174,6 +178,24 @@ fn DecisionsView() -> impl IntoView {
                     </div>
                 </Show>
             </div>
+            // Colonne droite : pont croisé vers le moteur textes + aide à la
+            // recherche. Sous 88rem elle disparaît (le contenu garde sa pleine
+            // mesure) ; l'aide retombe alors sous la barre.
+            <aside
+                aria-label="Voir aussi"
+                class="hidden min-w-0 min-[88rem]:sticky min-[88rem]:top-20 min-[88rem]:block min-[88rem]:max-h-[calc(100dvh-6rem)] min-[88rem]:self-start min-[88rem]:overflow-y-auto"
+            >
+                <Show when=move || !query.get().is_empty()>
+                    <div class="flex flex-col gap-4">
+                        <div class="border-t border-[var(--color-rule)] pt-4">
+                            <SyntaxHint />
+                        </div>
+                        // Pont croisé : la même requête posée au moteur textes —
+                        // un utilisateur qui cherche une norme ici est rattrapé.
+                        <TextesTeaser query=query />
+                    </div>
+                </Show>
+            </aside>
         </div>
     }
 }
@@ -405,6 +427,12 @@ fn PromptEmpty() -> impl IntoView {
             <p class="max-w-prose text-[var(--color-ink-muted)]">
                 "La recherche fonctionne en langage naturel ou avec des opérateurs booléens. La detection du mode est automatique."
             </p>
+            <A
+                href="/juridictions"
+                attr:class="text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
+            >
+                "Parcourir le catalogue des décisions"
+            </A>
         </div>
     }
 }

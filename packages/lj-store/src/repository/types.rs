@@ -656,6 +656,36 @@ pub struct DecisionLinkRow {
     pub target_ref: String,
 }
 
+/// Une juridiction du catalogue hub `/juridictions` (ADR 0253) : ligne du
+/// référentiel + volume de décisions actives.
+#[derive(Debug, Clone)]
+pub struct JurisdictionHubRow {
+    pub code: String,
+    pub jurisdiction_type: String,
+    pub label: String,
+    pub decision_count: i64,
+}
+
+/// Une décision d'une page hub juridiction×année (ADR 0253) : le strict
+/// nécessaire pour un lien crawlable (`search_title` = ancre).
+#[derive(Debug, Clone)]
+pub struct HubDecisionRow {
+    pub public_id: String,
+    pub title: String,
+    pub date_lecture: String,
+}
+
+/// Un texte d'une page hub fond×année du catalogue des normes (ADR 0255) :
+/// le strict nécessaire pour un lien crawlable (`title` = ancre).
+#[derive(Debug, Clone)]
+pub struct NormTextRow {
+    pub slug: String,
+    pub title: String,
+    /// Date de parcours (`date_texte` valide, sinon `date_publi` valide) —
+    /// absente sur les pages « sans date ».
+    pub date: Option<String>,
+}
+
 /// Ligne du référentiel `jurisdiction` (ADR 0146). Miroir store de
 /// `lj_extract::facets::JurisdictionRef` (lj-store ne tire pas lj-extract).
 /// `code` = code canonique user-facing (`tj_paris`) ; `source_code` = code de

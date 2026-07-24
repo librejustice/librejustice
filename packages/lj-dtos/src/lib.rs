@@ -22,7 +22,8 @@ use serde::{Deserialize, Serialize};
 pub mod schema;
 
 pub use schema::{
-    Domain, JurisdictionLevel, JurisdictionType, Office, Procedure, Significance, Solution,
+    abbreviate_jurisdiction_name, Domain, JurisdictionLevel, JurisdictionType, Office, Procedure,
+    Significance, Solution,
 };
 
 // ── Enums propres à l'API (canal, mode de recherche, tri) ────────────────────
@@ -915,6 +916,17 @@ pub struct LawCodeSummary {
     /// (ADR 0196) ; absent pour les normes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// Fond du catalogue des normes (ADR 0255) — maillage retour vers
+    /// `/normes/{fond}` ; absent pour un acte individuel.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fond: Option<String>,
+    /// Libellé du fond (« Lois et ordonnances »).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fond_label: Option<String>,
+    /// Année de parcours du texte dans son fond (`/normes/{fond}/{annee}`) ;
+    /// absente = bucket `sans-date`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fond_year: Option<i32>,
 }
 
 /// Décision citant un article LEGI (ADR 0092), via `legal_citation` (ADR 0145).
@@ -1021,6 +1033,143 @@ impl CodeCatalogueEntry {
 pub struct CodeCatalogueResponse {
     pub entries: Vec<CodeCatalogueEntry>,
     pub total: u64,
+}
+
+/// Une juridiction du catalogue hub (`/api/juridictions`, ADR 0253).
+/// `code` = clé d'URL (`/juridiction/{code}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JurisdictionHubEntry {
+    pub code: String,
+    pub label: String,
+    pub decision_count: i64,
+}
+
+/// Une famille de juridictions du catalogue (`CA` → « Cours d'appel »),
+/// dans l'ordre éditorial des hubs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JurisdictionTypeGroup {
+    pub jurisdiction_type: String,
+    pub label: String,
+    pub jurisdictions: Vec<JurisdictionHubEntry>,
+}
+
+/// Réponse de `/api/juridictions` : catalogue groupé par famille.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JurisdictionCatalogueResponse {
+    pub groups: Vec<JurisdictionTypeGroup>,
+}
+
+/// Compteur d'une année d'un hub juridiction.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JurisdictionYearCount {
+    pub year: i32,
+    pub count: i64,
+}
+
+/// Réponse de `/api/juridictions/{code}` : hub d'une juridiction — années
+/// couvertes (plus récente en tête) et volume total.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JurisdictionHubResponse {
+    pub code: String,
+    pub label: String,
+    pub jurisdiction_type: String,
+    pub type_label: String,
+    pub decision_count: i64,
+    pub years: Vec<JurisdictionYearCount>,
+}
+
+/// Une décision d'une page hub juridiction×année : le lien crawlable
+/// (`title` = ancre, `publicId` → `/decision/{publicId}`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JurisdictionHubDecision {
+    pub public_id: String,
+    pub title: String,
+    pub date_lecture: String,
+}
+
+/// Réponse de `/api/juridictions/{code}/{annee}` : page paginée des décisions
+/// d'une année (`total` = décisions de l'année, pagination par `page`).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct JurisdictionYearResponse {
+    pub code: String,
+    pub label: String,
+    pub year: i32,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+    pub decisions: Vec<JurisdictionHubDecision>,
+}
+
+/// Un fond du catalogue des normes (`/api/normes`, ADR 0255). `fond` = clé
+/// d'URL (`/normes/{fond}`) ; le fond `codes` renvoie vers le catalogue
+/// `/codes` existant (pas de hub année).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormFondEntry {
+    pub fond: String,
+    pub label: String,
+    pub text_count: i64,
+}
+
+/// Réponse de `/api/normes` : catalogue des fonds, dans l'ordre éditorial.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormCatalogueResponse {
+    pub fonds: Vec<NormFondEntry>,
+}
+
+/// Compteur d'une année d'un hub fond. `year = None` = bucket « sans date »
+/// (URL `/normes/{fond}/sans-date`), toujours en dernier.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormYearCount {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    pub count: i64,
+}
+
+/// Réponse de `/api/normes/{fond}` : hub d'un fond — années couvertes (plus
+/// récente en tête, bucket sans date en queue) et volume total.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormFondResponse {
+    pub fond: String,
+    pub label: String,
+    pub text_count: i64,
+    pub years: Vec<NormYearCount>,
+}
+
+/// Un texte d'une page hub fond×année : le lien crawlable (`title` = ancre,
+/// `slug` → `/texte/{slug}`). `date` absente sur le bucket sans date.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormHubText {
+    pub slug: String,
+    pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub date: Option<String>,
+}
+
+/// Réponse de `/api/normes/{fond}/{annee}` : page paginée des textes d'une
+/// année (`year = None` = bucket « sans date », `total` = textes du bucket).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct NormYearResponse {
+    pub fond: String,
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub year: Option<i32>,
+    pub total: i64,
+    pub page: u32,
+    pub page_size: u32,
+    pub texts: Vec<NormHubText>,
 }
 
 /// Entrée de la table des matières d'un code. `numKey` = clé canonique, `num` =

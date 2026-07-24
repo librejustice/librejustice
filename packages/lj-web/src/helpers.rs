@@ -22,25 +22,6 @@ pub fn cn<'a, I: IntoIterator<Item = &'a str>>(classes: I) -> String {
         .join(" ")
 }
 
-/// Sigle court d'un ordre de juridiction (port de `JURISDICTION_SHORT`).
-pub fn juridiction_short(jur: JurisdictionType) -> &'static str {
-    match jur {
-        JurisdictionType::Ta => "TA",
-        JurisdictionType::Caa => "CAA",
-        JurisdictionType::Ce => "CE",
-        JurisdictionType::Constit => "Cons. const.",
-        JurisdictionType::Tc => "TC",
-        JurisdictionType::Cc => "CC",
-        JurisdictionType::Ca => "CA",
-        JurisdictionType::Tj => "TJ",
-        JurisdictionType::Tcom => "TCOM",
-        JurisdictionType::Cedh => "CEDH",
-        JurisdictionType::Cjue => "CJUE",
-        JurisdictionType::Cnda => "CNDA",
-        JurisdictionType::Cnil => "CNIL",
-    }
-}
-
 /// Libelle long d'un ordre de juridiction (port de `JURISDICTION_TYPE_LABELS` /
 /// `formatJuridiction`).
 pub fn format_juridiction(jur: JurisdictionType) -> &'static str {
@@ -158,24 +139,12 @@ pub fn format_decision_jurisdiction(jur: JurisdictionType, name: Option<&str>) -
     sanitize_jurisdiction_name(name).unwrap_or_else(|| format_juridiction(jur).to_string())
 }
 
-/// Variante courte : nom nettoye avec abreviations TA/CAA/CE en tete, sinon le
-/// sigle. Port de `formatShortDecisionJurisdiction`.
+/// Variante courte : nom nettoye (sinon libelle long du type) abrege par la
+/// table de citation partagee (`lj_dtos::abbreviate_jurisdiction_name`).
 pub fn format_short_decision_jurisdiction(jur: JurisdictionType, name: Option<&str>) -> String {
-    match sanitize_jurisdiction_name(name) {
-        None => juridiction_short(jur).to_string(),
-        Some(name) => {
-            let lower = name.to_lowercase();
-            if lower.starts_with("tribunal administratif") {
-                format!("TA{}", &name["Tribunal administratif".len()..])
-            } else if lower.starts_with("cour administrative d'appel") {
-                format!("CAA{}", &name["Cour administrative d'appel".len()..])
-            } else if lower.starts_with("conseil d'état") {
-                format!("CE{}", &name["Conseil d'État".len()..])
-            } else {
-                name
-            }
-        }
-    }
+    let name =
+        sanitize_jurisdiction_name(name).unwrap_or_else(|| format_juridiction(jur).to_string());
+    lj_dtos::abbreviate_jurisdiction_name(&name)
 }
 
 /// Décompose un uid d'entité namespacé (`siren:552043002`) en

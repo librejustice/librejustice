@@ -139,11 +139,13 @@ fn decision_route_head_matches_react_meta_contract() {
     let description = meta_description(&detail, &title);
     let url = canonical_url(&detail.id);
 
-    // Title : `{title} — LibreJustice` (parité ligne 50 de decision-page.tsx).
-    let page_title = format!("{title} — LibreJustice");
+    // Title : `{titre canonique} - LibreJustice` — complet, même au-delà des
+    // ~60 caractères affichés par les moteurs (troncature SERP acceptée, cf.
+    // working-note 2026-07-24).
+    let page_title = format!("{title} - LibreJustice");
     assert_eq!(
         page_title,
-        "Conseil d'État, 12 mars 2024, n° 470537 — LibreJustice"
+        "Conseil d'État, 12 mars 2024, n° 470537 - LibreJustice"
     );
 
     // Description : phrase 1 du summary, tronquée au mot (≤ 160 c).

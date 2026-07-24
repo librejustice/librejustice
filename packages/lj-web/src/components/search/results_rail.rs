@@ -1,8 +1,9 @@
 //! Rail gauche de `/decisions` : volumétrie + synthèse cliquable des résultats
-//! (histogramme des années, textes les plus cités, juridictions, dispositif) +
-//! aide à la recherche. Desktop uniquement — le conteneur `aside` de la page
-//! est `hidden lg:block` ; sur mobile la volumétrie vit dans la rangée tri de
-//! la colonne résultats.
+//! (histogramme des années, textes les plus cités, juridictions, dispositif).
+//! Desktop uniquement — le conteneur `aside` de la page est `hidden lg:block` ;
+//! sur mobile la volumétrie vit dans la rangée tri de la colonne résultats.
+//! Le pont croisé et l'aide à la recherche vivent dans la colonne DROITE de la
+//! page (`search_page.rs`).
 //!
 //! Chaque clic passe par la MÊME mutation d'URL que les dropdowns de la barre
 //! de filtres (`query_state` + `Nav`) : chip active, nettoyage par la chip ou
@@ -11,6 +12,7 @@
 //! affichés et interactifs, comme la barre de filtres.
 
 use leptos::prelude::*;
+use leptos_router::components::A;
 use leptos_router::hooks::use_query_map;
 use leptos_router::params::ParamsMap;
 use lj_dtos::{QueryMode, SearchFacets};
@@ -18,9 +20,7 @@ use lj_dtos::{QueryMode, SearchFacets};
 use crate::helpers::{format_results_count, group_thousands};
 
 use super::compact_search::{query_state, DraftQuery};
-use super::cross_teaser::TextesTeaser;
 use super::facet_widgets::Nav;
-use super::syntax_hint::SyntaxHint;
 
 /// Lignes par bloc de facettes.
 const ROWS: usize = 5;
@@ -240,11 +240,13 @@ pub fn SearchRail(
                 {cited}
                 {jurisdictions}
                 {solutions}
-                // Pont croisé : la même requête posée au moteur textes — un
-                // utilisateur qui cherche une norme ici est rattrapé.
-                <TextesTeaser query=query />
                 <div class="border-t border-[var(--color-rule)] pt-4">
-                    <SyntaxHint />
+                    <A
+                        href="/juridictions"
+                        attr:class="text-[13px] text-[var(--color-ink-muted)] underline-offset-2 transition-colors hover:text-[var(--color-accent)] hover:underline"
+                    >
+                        "Parcourir le catalogue des décisions"
+                    </A>
                 </div>
             </div>
         </Show>

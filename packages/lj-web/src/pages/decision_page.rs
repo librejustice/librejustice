@@ -19,6 +19,7 @@ pub mod toc_spy;
 use leptos::either::Either;
 use leptos::prelude::*;
 use leptos_meta::{Link, Meta, Script, Title};
+use leptos_router::components::A;
 
 use crate::components::decision::{
     DecisionBody, DecisionCommentaires, DecisionHeader, DecisionLayout, DecisionMeta,
@@ -136,7 +137,43 @@ fn DecisionLoaded(
     let url = canonical_url(&detail.id);
     let jsonld = serde_json::to_string(&build_json_ld(&detail, &title, &description))
         .unwrap_or_else(|_| "{}".to_string());
+    // Fil d'Ariane structuré vers l'arborescence juridiction (ADR 0253) —
+    // absent si la décision n'a pas de code juridiction résolu.
+    let breadcrumb_jsonld = detail.jurisdiction_code.as_ref().map(|code| {
+        let label = detail
+            .jurisdiction_name
+            .clone()
+            .unwrap_or_else(|| code.clone());
+        let mut items = vec![
+            ("Accueil", "https://librejustice.fr/".to_string()),
+            (
+                "Juridictions",
+                "https://librejustice.fr/juridictions".to_string(),
+            ),
+            (
+                label.as_str(),
+                format!("https://librejustice.fr/juridiction/{code}"),
+            ),
+        ];
+        let year = detail
+            .date_lecture
+            .as_deref()
+            .and_then(|d| d.get(..4))
+            .map(str::to_string);
+        if let Some(y) = &year {
+            items.push((
+                y.as_str(),
+                format!("https://librejustice.fr/juridiction/{code}/{y}"),
+            ));
+        }
+        items.push((title.as_str(), url.clone()));
+        crate::pages::juridictions_page::breadcrumb_jsonld(&items)
+    });
 
+    // `<title>` = titre canonique complet (avec siège). Bing le marque « Title
+    // too long » (> ~60 caractères) : accepté — la norme du secteur (de référence,
+    // , Predictice) est le titre complet, tronqué à l'affichage par le
+    // moteur ; les mots-clés priment sur la borne d'affichage.
     let page_title = format!("{title} - LibreJustice");
     let references_full = build_decision_references(&detail).full;
 
@@ -181,6 +218,7 @@ fn DecisionLoaded(
             <DecisionBody detail=detail_body sections=body_sections />
             <DecisionCommentaires commentaires=detail.commentaires.clone() />
             <DecisionProvenance detail=detail_provenance />
+            <DecisionHubLinks detail=detail.clone() />
         </article>
     }
     .into_any();
@@ -227,6 +265,47 @@ fn DecisionLoaded(
         {(!has_text).then(|| view! { <Meta name="robots" content="noindex" /> })}
         <Link rel="canonical" href=url />
         <Script type_="application/ld+json">{jsonld}</Script>
+        {breadcrumb_jsonld
+            .map(|bc| view! { <Script type_="application/ld+json">{bc}</Script> })}
         <DecisionLayout toc=toc_view main=main_view similar=similar_view />
     }
+}
+
+/// Maillage retour vers l'arborescence navigable (ADR 0253) : la juridiction
+/// de la décision et son année. Rien sans code juridiction résolu.
+#[component]
+fn DecisionHubLinks(detail: lj_dtos::DecisionDetail) -> impl IntoView {
+    detail.jurisdiction_code.clone().map(|code| {
+        let label = detail
+            .jurisdiction_name
+            .clone()
+            .unwrap_or_else(|| code.clone());
+        let year = detail
+            .date_lecture
+            .as_deref()
+            .and_then(|d| d.get(..4))
+            .map(str::to_string);
+        let hub_href = format!("/juridiction/{code}");
+        view! {
+            <nav
+                aria-label="Autres décisions"
+                class="border-t border-[var(--color-rule)] pt-4 text-sm text-[var(--color-ink-muted)]"
+            >
+                "Autres décisions : "
+                <A href=hub_href attr:class="text-[var(--color-accent)] hover:underline">
+                    {label}
+                </A>
+                {year
+                    .map(|y| {
+                        let year_href = format!("/juridiction/{code}/{y}");
+                        view! {
+                            " · "
+                            <A href=year_href attr:class="text-[var(--color-accent)] hover:underline">
+                                {format!("année {y}")}
+                            </A>
+                        }
+                    })}
+            </nav>
+        }
+    })
 }

@@ -273,7 +273,7 @@ impl DecisionRepository<'_> {
     pub async fn resolve_pending_parties(&self) -> Result<u64> {
         // Jointure clés distinctes × 32 M dénominations : dépasse le
         // `statement_timeout` du pool (30 s) — levé localement, transaction
-        // dédiée (précédent `refresh_article_code_titles`). Idempotent (#7).
+        // dédiée (précédent `refresh_article_denorm`). Idempotent (#7).
         self.conn.batch_execute("BEGIN").await?;
         let updated: Result<u64> = async {
             self.conn

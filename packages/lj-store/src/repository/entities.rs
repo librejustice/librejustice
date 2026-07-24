@@ -671,7 +671,7 @@ impl DecisionRepository<'_> {
     /// Le `GROUP BY` sur le join `entity × decision_party × decisions`
     /// dépasse le `statement_timeout` du pool (30 s) sur le corpus de prod :
     /// levé localement dans une transaction dédiée (même pattern que
-    /// `refresh_article_code_titles`). Batch quotidien du cron, pas de chemin
+    /// `refresh_article_denorm`). Batch quotidien du cron, pas de chemin
     /// requête utilisateur.
     #[tracing::instrument(name = "db.iter_entities_for_sitemap", skip(self), fields(db.system = "postgresql"))]
     pub async fn iter_entities_for_sitemap(

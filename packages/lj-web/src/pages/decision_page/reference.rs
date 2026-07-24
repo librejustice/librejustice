@@ -20,7 +20,9 @@ pub struct DecisionReferenceParts {
 /// - `full` = `detail.title` (titre canonique servi par l'API, **avec** siège) ;
 /// - `heading` = `[juridiction complète, date FR, n°]` **sans** siège — titre du
 ///   topbar (le siège figure déjà dans le bloc métadonnées, ADR 0170) ;
-/// - `short`/`filename` = `[juridiction abrégée, date FR, n° dossier]`.
+/// - `short`/`filename` = `[juridiction abrégée, date FR, n° dossier]` ;
+///   `filename` remplace le `/` des n° RG judiciaires (« 25/01119 ») par `_`
+///   — interdit dans un nom de fichier.
 pub fn build_decision_references(detail: &DecisionDetail) -> DecisionReferenceParts {
     let date = detail
         .date_lecture
@@ -51,8 +53,8 @@ pub fn build_decision_references(detail: &DecisionDetail) -> DecisionReferencePa
     DecisionReferenceParts {
         full: detail.title.clone(),
         heading,
-        short: short.clone(),
-        filename: short,
+        filename: short.replace('/', "_"),
+        short,
     }
 }
 

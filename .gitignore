@@ -63,3 +63,6 @@ mise.local.toml
 
 # Archives sources des skills portés dans le plugin (référence locale, hors git)
 /plugins/sources/
+
+# zips des skills servis par /mcp-guide — générés par `mise run build-skill-zips`
+/packages/lj-web/public/skills/

@@ -293,9 +293,9 @@ async fn ingest_jorf_archive(repo: &DecisionRepository<'_>, path: &Path) -> Resu
 async fn finish_jorf(repo: &DecisionRepository<'_>) -> Result<()> {
     // Titre du code dénormalisé → titre formé `search_title` (ADR 0114).
     let retitled = repo
-        .refresh_article_code_titles()
+        .refresh_article_denorm()
         .await
-        .map_err(|e| anyhow!("refresh_article_code_titles: {e}"))?;
+        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
 
     // Slugs des textes nouveaux (ADR 0162, unique écrivain de la colonne).
     let slugged = super::slugs::assign_text_slugs(repo).await?;
