@@ -251,6 +251,15 @@ impl DecisionRepository<'_> {
                 &[&owner_text_uid],
             )
             .await?;
+        let rows: Vec<_> = rows.iter().map(|r| (owner_text_uid, r)).collect();
+        self.copy_text_case_citations(&rows).await
+    }
+
+    /// COPY of `text_case_citation` rows, each beside its owner `text_uid`.
+    pub(super) async fn copy_text_case_citations(
+        &self,
+        rows: &[(&str, &super::types::TextCaseCitationRow)],
+    ) -> Result<()> {
         if rows.is_empty() {
             return Ok(());
         }
@@ -277,7 +286,7 @@ impl DecisionRepository<'_> {
             ],
         );
         tokio::pin!(writer);
-        for r in rows {
+        for (owner_text_uid, r) in rows {
             let (court, docket, date) = address_columns(&r.address);
             writer
                 .as_mut()
@@ -359,10 +368,11 @@ impl DecisionRepository<'_> {
         Ok(resolved)
     }
 
-    /// Décisions dont le texte cite celle-ci, autorité d'abord puis date
-    /// décroissante, comme les citantes d'un article. Une citante qui cite
-    /// plusieurs fois ne sort qu'une fois. `exclues` sort les étapes de la
-    /// chronologie, décision courante comprise. Rend `(total, page de tête)`.
+    /// Decisions whose text cites this one or whose Conseil d'Etat analysis
+    /// refers to it, authority first then latest first, like the citing
+    /// decisions of an article. A decision citing it several times comes out
+    /// once. `exclues` takes out the steps of the chronology, this decision
+    /// included. Returns `(total, head page)`.
     #[tracing::instrument(name = "db.decisions_citing", skip(self, exclues), fields(db.system = "postgresql", exclues = exclues.len()))]
     pub async fn decisions_citing(
         &self,
@@ -376,18 +386,23 @@ impl DecisionRepository<'_> {
             .query(
                 &format!(
                     "WITH citantes AS ( \
-                         SELECT DISTINCT c.decision_id AS id FROM case_citation c \
+                         SELECT c.decision_id AS id FROM case_citation c \
                          WHERE c.target_decision_id = $1 \
+                         UNION \
+                         SELECT r.decision_id FROM decision_renvoi r \
+                         WHERE r.target_decision_id = $1 \
                      ) \
                      SELECT d.id, d.public_id, d.jurisdiction_type, j.label, \
                             d.date_lecture::text, d.docket_numbers, \
-                            d.publication_codes, (SELECT dt.summary FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead), count(*) OVER () \
+                            d.publication_codes, {summary}, count(*) OVER (), \
+                            d.jurisdiction_code \
                      FROM citantes ci \
                      JOIN decisions d ON d.id = ci.id AND d.deleted_at IS NULL \
                      LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code \
                      WHERE NOT (d.id = ANY($2)) \
                      ORDER BY {rank}, d.date_lecture::text DESC NULLS LAST, d.id \
-                     LIMIT $3"
+                     LIMIT $3",
+                    summary = super::pick::text("p.summary", "d")
                 ),
                 &[&decision_id, &exclues, &limite],
             )
@@ -401,6 +416,7 @@ impl DecisionRepository<'_> {
                     public_id: r.get(1),
                     jurisdiction_type: r.get(2),
                     jurisdiction_name: r.get(3),
+                    jurisdiction_code: r.get("jurisdiction_code"),
                     date_lecture: r.get(4),
                     docket_numbers: r.get(5),
                     publication_codes: r.get(6),
@@ -466,10 +482,9 @@ impl DecisionRepository<'_> {
     /// Whether one of `dockets` touches a pending row of `table`, through the
     /// partial GIN index on `lj_docket_keys(ARRAY[target_docket])`.
     ///
-    /// A count and not a `LIMIT 1`: the limit made the planner walk the whole
-    /// pending set hoping for an early hit that almost never comes, 5.8 s
-    /// against 11 ms through the index on `decision_links`. The keys go in as a
-    /// subquery ([`BATCH_KEYS`]).
+    /// A count and not a `LIMIT 1`: the limit makes the planner walk the whole
+    /// pending set hoping for an early hit that almost never comes. The keys go
+    /// in as a subquery ([`BATCH_KEYS`]).
     async fn has_pending_docket(&self, table: &str, dockets: &[String]) -> Result<bool> {
         let row = self
             .conn
@@ -581,7 +596,7 @@ pub(super) fn resolve_case_address_sqls(table: &str, scope: ResolveScope) -> Vec
 ///
 /// A bounded pass materialises `pending` and `resolved`: inlined, the planner
 /// reads the whole pending set through `pending_addr_idx` for a batch that
-/// touches a few rows, 5 s against 15 ms on `decision_links`.
+/// touches a few rows.
 fn resolve_head(table: &str, scope: &str, fence: &str) -> String {
     format!(
         "WITH pending AS{fence} ( \
@@ -596,8 +611,8 @@ fn resolve_head(table: &str, scope: &str, fence: &str) -> String {
 ///
 /// A bounded pass also reaches those occurrences through the GIN, by the keys
 /// of the resolved addresses gathered once: `IS NOT DISTINCT FROM` serves no
-/// index, and the join read the 1.2 M pending rows of `case_citation`, 7.5 s
-/// against 105 ms. An occurrence carries the docket of its address, hence its
+/// index, and the join would read every pending row of `case_citation`. An
+/// occurrence carries the docket of its address, hence its
 /// keys, so the predicate drops none.
 fn resolve_tail(table: &str, bounded: bool) -> String {
     let by_keys = if bounded {
@@ -623,8 +638,8 @@ fn resolve_tail(table: &str, bounded: bool) -> String {
 }
 
 /// The keys of an arriving batch, behind a subquery the planner cannot read: on
-/// the literal array it scales its estimate with the batch, 134 688 rows
-/// guessed for 9 real ones on 500 decisions, and trades the GIN for a seq scan.
+/// the literal array it scales its estimate with the batch, far past the real
+/// rows, and trades the GIN for a seq scan.
 const BATCH_KEYS: &str = "(SELECT lj_docket_keys($1))";
 
 /// The cited number, canonised. `lj_docket_keys` is the function the
@@ -638,8 +653,7 @@ const CITED_KEY: &str = "lj_docket_keys(ARRAY[p.target_docket])";
 /// so a refusal, never a wrong target.
 ///
 /// `OFFSET 0` fences the docket probe from the other two: joined, the planner
-/// drives on the jurisdiction and reads a whole court per address. Measured on
-/// 50 pending administrative keys, 4 ms fenced against more than 120 s unfenced.
+/// drives on the jurisdiction and reads a whole court per address.
 fn resolve_unique(table: &str, bounded: bool) -> String {
     let fence = if bounded { " MATERIALIZED" } else { "" };
     format!(

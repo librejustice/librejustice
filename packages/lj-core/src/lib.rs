@@ -8,6 +8,7 @@
 //! `lj-versions`.
 
 pub mod address;
+pub mod annexes;
 pub mod case_names;
 pub mod chamber;
 pub mod citation;
@@ -15,7 +16,9 @@ pub mod dates;
 pub mod decision;
 pub mod docket_key;
 pub mod error;
+pub mod formation;
 pub mod forme_juridique;
+pub mod identity;
 pub mod normalizer;
 pub mod official_url;
 pub mod outremer;

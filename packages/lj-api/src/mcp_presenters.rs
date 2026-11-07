@@ -25,19 +25,34 @@ fn jurisdiction_type_code(jt: lj_dtos::JurisdictionType) -> &'static str {
         Ca => "CA",
         Tj => "TJ",
         Tcom => "TCOM",
+        Cph => "CPH",
         Cedh => "CEDH",
         Cjue => "CJUE",
         Cnda => "CNDA",
         Cnil => "CNIL",
+        Ddd => "DDD",
+        Adlc => "ADLC",
+        Comeu => "COMEU",
+        CourSupreme => "COUR_SUPREME",
+        CourCassation => "COUR_CASSATION",
+        CourConstitutionnelle => "COUR_CONSTITUTIONNELLE",
+        CourAppel => "COUR_APPEL",
+        CourAdministrative => "COUR_ADMINISTRATIVE",
+        TribunalAdministratif => "TRIBUNAL_ADMINISTRATIF",
+        TribunalPremiereInstance => "TRIBUNAL_PREMIERE_INSTANCE",
+        TribunalCommerce => "TRIBUNAL_COMMERCE",
+        CourCriminelle => "COUR_CRIMINELLE",
+        CourJustice => "COUR_JUSTICE",
+        Ccja => "CCJA",
+        CourDroitsHomme => "COUR_DROITS_HOMME",
     }
 }
 
 // ── MCP output models ────────────────────────────────────────────────────────
 
-/// Exactly one of `aiSummary` (written by an AI, never the court's words) and
-/// `snippet` (verbatim passage) is served per hit.
+/// Exactly one of `ai_summary` (written by an AI), `court_summary` (the court's own)
+/// and `snippet` (verbatim passage) is served per hit.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpSearchHit {
     pub title: String,
     pub url: String,
@@ -46,10 +61,12 @@ pub struct McpSearchHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ai_summary: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub court_summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub snippet: Option<String>,
     pub chars: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub date_lecture: Option<String>,
+    pub date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docket_numbers: Option<Vec<String>>,
     /// Seat path, reusable verbatim as a filter value.
@@ -57,23 +74,21 @@ pub struct McpSearchHit {
     pub seat: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solution: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub office: Option<String>,
+    /// Formation paths, reusable verbatim as filter values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub formation: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub legal_domain: Option<String>,
     /// Empty for a lower court, which carries no publication statement.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub publication: Vec<String>,
-    /// Keyed by `legalInstrument` value, holding `legalArticle` values; the pair
+    /// Keyed by `legal_instrument` value, holding `legal_article` values; the pair
     /// composes `/norm/{juris}/{slug}/{key}`.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub cited_articles: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpSearchResponse {
     pub query: String,
     /// Decisions matched under the current filters, the whole set and not the
@@ -103,16 +118,15 @@ pub struct McpSearchFacets {
     /// then the top courts, then every room a filtered court exposes.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub seat: BTreeMap<String, i64>,
+    /// Formation paths and their counts: the court types, then their formations.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub office: BTreeMap<String, i64>,
+    pub formation: BTreeMap<String, i64>,
     /// Top 10 by count, with no counter of the rest: the vocabulary is already
     /// in the input schema, only the counts are new.
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub legal_domain: BTreeMap<String, i64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub solution: BTreeMap<String, i64>,
-    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
-    pub procedure: BTreeMap<String, i64>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub publication: BTreeMap<String, i64>,
     /// Slugs of the cited texts, top 10 by count.
@@ -125,14 +139,13 @@ pub struct McpSearchFacets {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpDecisionDetail {
     pub title: String,
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub official_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub date_lecture: Option<String>,
+    pub date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub docket_numbers: Option<Vec<String>>,
     pub jurisdiction_type: String,
@@ -143,31 +156,25 @@ pub struct McpDecisionDetail {
     pub seat: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub solution: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub office: Option<String>,
+    /// Formation paths, reusable verbatim as filter values.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub formation: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub legal_domain: Option<String>,
     /// Empty for a lower court, which carries no publication statement.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub publication: Vec<String>,
-    /// Fate of THIS decision before the court that reviewed it, precomputed
-    /// from `case_chronology`. Absent means no recourse known to the corpus,
-    /// which never proves that none exists.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub appellate_fate: Option<String>,
     /// Prior and subsequent decisions of the same case, current one included,
     /// most recent first. A step the corpus does not hold carries no `url`.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub case_chronology: Vec<McpChronologyStep>,
+    /// The court's own summary first, when it published one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub commentaires: Vec<lj_dtos::Commentaire>,
+    pub commentaries: Vec<lj_dtos::Commentaire>,
     pub text: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpChronologyStep {
     /// "Cour d'appel de Paris, 23 juin 2026".
     pub title: String,
@@ -186,18 +193,16 @@ pub struct McpChronologyStep {
 
 /// Status and bounds, without the internal `legiarti` id.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpLawArticleVersion {
-    pub etat: String,
-    pub date_debut: String,
+    pub status: String,
+    pub valid_from: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub date_fin: Option<String>,
+    pub valid_to: Option<String>,
 }
 
 /// The internals of the web DTO (`legiarti`/`legitext`, translation
 /// provenance, publisher authority, reading context) are left out.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpLawArticle {
     pub code: String,
     /// Declared before anything long, so a client that cuts the answer short
@@ -208,21 +213,25 @@ pub struct McpLawArticle {
     /// publication decree): the whole text is then served, `text` carrying its
     /// body and `versions` being empty.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub num: Option<String>,
+    pub number: Option<String>,
     pub title: String,
     pub url: String,
+    /// The text's own date, its signature; an article carries its validity
+    /// instead.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub etat: Option<String>,
+    pub date: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub date_debut: Option<String>,
+    pub status: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub date_fin: Option<String>,
+    pub valid_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_to: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub text: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub nota: Option<String>,
+    pub note: Option<String>,
     /// The division directly enclosing the article, read whole from its `url`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<McpLawSectionRef>,
@@ -235,13 +244,13 @@ pub struct McpLawArticle {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub omitted: Option<usize>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub commentaires: Vec<lj_dtos::Commentaire>,
+    pub commentaries: Vec<lj_dtos::Commentaire>,
     /// Texts that modified this article, each linking to its own page here:
     /// the hop from an article to the law or decree that wrote it.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub modified_by: Vec<lj_dtos::LinkedTextRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub travaux_parlementaires: Vec<lj_dtos::LinkedTextRef>,
+    pub legislative_history: Vec<lj_dtos::LinkedTextRef>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -251,7 +260,6 @@ pub struct McpLawSectionRef {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpLawSearchHit {
     pub title: String,
     pub url: String,
@@ -259,6 +267,10 @@ pub struct McpLawSearchHit {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title_path: Option<String>,
     pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub valid_to: Option<String>,
 }
 
 /// Same contract as [`McpSearchFacets`], each axis capped to its top 10, each
@@ -276,7 +288,6 @@ pub struct McpLawSearchFacets {
 }
 
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpLawSearchResponse {
     pub query: String,
     pub total: i64,
@@ -290,8 +301,8 @@ pub struct McpLawSearchResponse {
 
 /// The preview follows the *resolved* mode (`query_mode`), not the one asked
 /// for: lexical serves `snippet`, the verbatim passage with its `<mark>`
-/// stripped; hybrid serves `aiSummary`, the precomputed `hit.summary`, falling
-/// back on `snippet` when the summary is missing. Reference follows hybrid, its legs
+/// stripped; hybrid serves the precomputed `hit.summary`, as `court_summary` when the
+/// court wrote it and `ai_summary` otherwise, falling back on `snippet` when it is missing. Reference follows hybrid, its legs
 /// matching an identity card rather than a passage.
 pub fn present_search_response(
     response: &SearchResponse,
@@ -306,9 +317,18 @@ pub fn present_search_response(
         .hits
         .iter()
         .map(|hit| {
-            let (ai_summary, snippet) = match (use_summary, hit.summary.as_deref()) {
-                (true, Some(summary)) if !summary.is_empty() => (Some(summary.to_string()), None),
-                _ => (None, Some(strip_marks(&hit.best_chunk.snippet))),
+            let (ai_summary, court_summary, snippet) = match (
+                use_summary,
+                hit.summary.as_deref(),
+                hit.summary_quote.as_ref(),
+            ) {
+                (true, Some(summary), Some(quote)) if !summary.is_empty() => {
+                    (None, Some(lj_dtos::court_words(summary, quote)), None)
+                }
+                (true, Some(summary), None) if !summary.is_empty() => {
+                    (Some(summary.to_string()), None, None)
+                }
+                _ => (None, None, Some(strip_marks(&hit.best_chunk.snippet))),
             };
             McpSearchHit {
                 // The web hit title already carries the composed bench.
@@ -316,14 +336,14 @@ pub fn present_search_response(
                 url: format!("{web_base_url}/decision/{}", hit.id),
                 official_url: hit.official_url.clone(),
                 ai_summary,
+                court_summary,
                 snippet,
                 chars: hit.chars.unwrap_or(0),
-                date_lecture: hit.date_lecture.clone(),
+                date: hit.date_lecture.clone(),
                 docket_numbers: hit.docket_numbers.clone(),
                 seat: tag_key(&hit.seat_path),
                 solution: tag_key(&hit.solution),
-                procedure: tag_key(&hit.procedure),
-                office: tag_key(&hit.office),
+                formation: tag_keys(&hit.formation),
                 legal_domain: tag_key(&hit.legal_domain),
                 publication: publication_keys(&hit.publication_codes),
                 cited_articles: hit.cited_articles.clone(),
@@ -371,13 +391,13 @@ fn present_search_facets(f: &SearchFacets, seats: &[String]) -> Option<McpSearch
             .map(|c| (c.value.clone(), c.count))
             .collect()
     }
-    // The roots, then the rank right below each filtered seat. Several seats are
-    // OR'd, so each opens its own. Serving every depth instead is the
-    // referential: 1 516 keys, 40 kB.
+    // The orders with their court types, then the rank right below each
+    // filtered seat. Several seats are OR'd, so each opens its own. Serving
+    // every depth instead would be the whole referential.
     let depth = |c: &FacetChoice| c.value.split('.').count();
     let mut ranks: BTreeMap<&str, Vec<&FacetChoice>> = BTreeMap::new();
     for c in f.seat.iter().filter(|c| {
-        depth(c) == 1
+        depth(c) <= 2
             || seats.iter().any(|s| {
                 c.value == *s
                     || (c.value.starts_with(s.as_str())
@@ -390,10 +410,9 @@ fn present_search_facets(f: &SearchFacets, seats: &[String]) -> Option<McpSearch
     }
     // A rank is capped against its siblings, never against another rank: a
     // room's count cannot exceed its court's, so one shared cap would serve
-    // courts and never a room. At 20 the 13 types pass whole, 302 of the 307
-    // room ranks too, and the five that spill lose a tail worth 0.2 % of their
-    // mass; only the city lists are really cut (TJ keeps 65.7 % of 151,
-    // measured 06/09/2026), and a path composes without the facet naming it.
+    // courts and never a room. At 20 every order's types and nearly every room
+    // rank pass whole; only the city lists are really cut, and a path composes
+    // without the facet naming it.
     let seat: BTreeMap<String, i64> = ranks
         .into_values()
         .flat_map(|mut rank| {
@@ -421,19 +440,17 @@ fn present_search_facets(f: &SearchFacets, seats: &[String]) -> Option<McpSearch
         .collect();
     let facets = McpSearchFacets {
         seat,
-        office: counts(&f.office),
+        formation: counts(&f.formation),
         legal_domain: top(&f.legal_domain),
         solution: counts(&f.solution),
-        procedure: counts(&f.procedure),
         publication: counts(&f.publication),
         legal_instrument,
         other_instruments,
     };
     let empty = facets.seat.is_empty()
-        && facets.office.is_empty()
+        && facets.formation.is_empty()
         && facets.legal_domain.is_empty()
         && facets.solution.is_empty()
-        && facets.procedure.is_empty()
         && facets.publication.is_empty()
         && facets.legal_instrument.is_empty();
     (!empty).then_some(facets)
@@ -449,6 +466,10 @@ fn type_label(jt: lj_dtos::JurisdictionType, refs: &Referential) -> &str {
 /// accept.
 fn tag_key(tag: &Option<FacetTag>) -> Option<String> {
     tag.as_ref().map(|t| t.key.clone())
+}
+
+fn tag_keys(tags: &[FacetTag]) -> Vec<String> {
+    tags.iter().map(|t| t.key.clone()).collect()
 }
 
 /// Membership is multiple: a decision can carry several publication values.
@@ -499,67 +520,31 @@ pub fn present_decision_detail(
             link_to_next: e.link.clone(),
         })
         .collect();
-    let appellate_fate = appellate_fate(&case_chronology);
-    // The known fate opens and closes the text: LLM consumers read the body and
-    // skip the metadata, and model attention favours the end of a long output.
-    let text = match &appellate_fate {
-        Some(fate) => format!(
-            "[SORT DE CETTE DÉCISION SUR RECOURS : {fate}]\n\n{text}\n\n[RAPPEL — SORT DE CETTE DÉCISION SUR RECOURS : {fate}]"
-        ),
-        None => text,
-    };
-    // The fate marks the title too: that is the field copied when writing a
-    // citation.
-    let title = {
-        let base = decision_title(
-            type_label(detail.jurisdiction_type, refs),
-            detail.jurisdiction_name.as_deref(),
-            detail.seat.as_deref(),
-            detail.date_lecture.as_deref(),
-            detail.case_name.as_deref(),
-            detail.docket_numbers.as_deref(),
-        );
-        match &appellate_fate {
-            Some(fate) => {
-                let solution = fate.split(" — ").next().unwrap_or("RECOURS");
-                format!("{base} [{solution} SUR RECOURS]")
-            }
-            None => base,
-        }
-    };
+    let title = decision_title(
+        type_label(detail.jurisdiction_type, refs),
+        detail.jurisdiction_name.as_deref(),
+        detail.seat.as_deref(),
+        detail.date_lecture.as_deref(),
+        detail.case_name.as_deref(),
+        detail.docket_numbers.as_deref(),
+    );
     McpDecisionDetail {
         title,
         url: format!("{web_base_url}/decision/{}", detail.id),
         official_url: detail.official_url.clone(),
-        date_lecture: detail.date_lecture.clone(),
+        date: detail.date_lecture.clone(),
         docket_numbers: detail.docket_numbers.clone(),
         jurisdiction_type: jurisdiction_type_code(detail.jurisdiction_type).to_string(),
         jurisdiction_code: detail.jurisdiction_code.clone(),
         seat: tag_key(&detail.seat_path),
         solution: tag_key(&detail.solution),
-        procedure: tag_key(&detail.procedure),
-        office: tag_key(&detail.office),
+        formation: tag_keys(&detail.formation),
         legal_domain: tag_key(&detail.legal_domain),
         publication: publication_keys(&detail.publication_codes),
-        appellate_fate,
         case_chronology,
-        commentaires: detail.commentaires.clone(),
+        commentaries: detail.commentaires.clone(),
         text,
     }
-}
-
-/// The step directly above the current decision in the chain, which is ordered
-/// most recent first, summed up in one line.
-fn appellate_fate(chronology: &[McpChronologyStep]) -> Option<String> {
-    let idx = chronology.iter().position(|s| s.current)?;
-    let above = chronology.get(idx.checked_sub(1)?)?;
-    above.link_to_next.as_ref()?;
-    Some(format!(
-        "{} — {} ({})",
-        above.solution.as_deref().unwrap_or("RECOURS"),
-        above.title,
-        above.url.as_deref()?
-    ))
 }
 
 /// Wraps every resolved citation into a `[text](url)` markdown link, without
@@ -608,13 +593,23 @@ fn paragraph_with_links(text: &str, spans: &[CitationSpan], web_base_url: &str) 
 
 /// "Article {num} du/de la/de l'{codeTitle}", the contraction coming from
 /// [`lj_dtos::instrument_with_de`], falling back on "Article {num}" when the
-/// code title is missing.
+/// code title is missing. A whole text has no number, and its title is its own.
 fn law_article_title(num: &str, code_title: Option<&str>) -> String {
     match code_title {
+        Some(t) if num.is_empty() => t.to_string(),
         Some(t) if !t.is_empty() => {
             format!("Article {num} {}", lj_dtos::instrument_with_de(t))
         }
         _ => format!("Article {num}"),
+    }
+}
+
+/// The page of an article, or of the whole text when `num_key` is empty.
+fn law_url(web_base_url: &str, jurisdiction: &str, code: &str, num_key: &str) -> String {
+    let text = lj_vocab::norm_path(jurisdiction, code);
+    match num_key {
+        "" => format!("{web_base_url}{text}"),
+        key => format!("{web_base_url}{text}/{key}"),
     }
 }
 
@@ -630,16 +625,17 @@ pub fn present_law_article(article: &LawArticleResponse, web_base_url: &str) -> 
             article.num_key
         ),
         code: article.code.clone(),
-        num: Some(article.num.clone()),
-        etat: Some(article.etat.clone()),
-        date_debut: Some(article.date_debut.clone()),
-        date_fin: article.date_fin.clone(),
+        number: Some(article.num.clone()),
+        date: None,
+        status: Some(article.etat.clone()),
+        valid_from: Some(article.date_debut.clone()),
+        valid_to: article.date_fin.clone(),
         text: article
             .texte
             .as_ref()
             .map(|t| paragraph_with_links(t, &article.texte_spans, web_base_url)),
         source_url: article.source_url.clone(),
-        nota: article.nota.clone(),
+        note: article.nota.clone(),
         section: article.breadcrumb.last().and_then(|division| {
             Some(McpLawSectionRef {
                 label: division.label.clone(),
@@ -650,22 +646,22 @@ pub fn present_law_article(article: &LawArticleResponse, web_base_url: &str) -> 
             .versions
             .iter()
             .map(|v| McpLawArticleVersion {
-                etat: v.etat.clone(),
-                date_debut: v.date_debut.clone(),
-                date_fin: v.date_fin.clone(),
+                status: v.etat.clone(),
+                valid_from: v.date_debut.clone(),
+                valid_to: v.date_fin.clone(),
             })
             .collect(),
         article_count: None,
         articles: Vec::new(),
         omitted: None,
-        commentaires: article.commentaires.clone(),
+        commentaries: article.commentaires.clone(),
         modified_by: article.modified_by.clone(),
-        travaux_parlementaires: article.travaux_parlementaires.clone(),
+        legislative_history: article.travaux_parlementaires.clone(),
     }
 }
 
-/// A text without articles, 42,563 of the corpus, served in the article shape:
-/// a missing `num` says there is no article to ask for, and `text` carries the
+/// A text without articles, served in the article shape:
+/// a missing `number` says there is no article to ask for, and `text` carries the
 /// monolithic body, the only way to read those.
 pub fn present_law_text(summary: &lj_dtos::LawCodeSummary, web_base_url: &str) -> McpLawArticle {
     McpLawArticle {
@@ -675,32 +671,32 @@ pub fn present_law_text(summary: &lj_dtos::LawCodeSummary, web_base_url: &str) -
             lj_vocab::norm_path(&summary.jurisdiction, &summary.code)
         ),
         code: summary.code.clone(),
-        num: None,
-        etat: summary.status.clone(),
-        date_debut: summary.date_texte.clone(),
-        date_fin: None,
+        number: None,
+        date: summary.date_texte.clone(),
+        status: summary.status.clone(),
+        valid_from: None,
+        valid_to: None,
         text: summary.body.clone(),
         source_url: None,
-        nota: None,
+        note: None,
         section: None,
         versions: Vec::new(),
         article_count: None,
         articles: Vec::new(),
         omitted: None,
-        commentaires: summary.commentaires.clone(),
+        commentaries: summary.commentaires.clone(),
         modified_by: Vec::new(),
-        travaux_parlementaires: Vec::new(),
+        legislative_history: Vec::new(),
     }
 }
 
 /// `url` is passed back to `get_norm`.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpLawTocEntry {
     /// `article` or `section`, both passed back to `get_norm`, a section
     /// serving all of its articles at once.
     pub kind: &'static str,
-    pub num: String,
+    pub number: String,
     pub url: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub section: Option<String>,
@@ -726,10 +722,13 @@ pub fn present_law_text_root(
         match item.num_key.as_deref() {
             Some(num_key) => articles.push(McpLawTocEntry {
                 kind: "article",
-                num: item.label.clone(),
+                number: item.label.clone(),
                 url: link(num_key),
                 section: section.clone(),
-                text: item.texte.clone(),
+                text: item
+                    .texte
+                    .as_deref()
+                    .map(|t| paragraph_with_links(t, &item.texte_spans, web_base_url)),
             }),
             None => section = Some(item.label.clone()),
         }
@@ -742,7 +741,7 @@ pub fn present_law_text_root(
             match (node.num_key.as_deref(), node.path.as_deref()) {
                 (Some(num_key), _) => articles.push(McpLawTocEntry {
                     kind: "article",
-                    num: node.label.clone(),
+                    number: node.label.clone(),
                     url: link(num_key),
                     section: path.clone(),
                     text: None,
@@ -750,7 +749,7 @@ pub fn present_law_text_root(
                 (None, Some(section_path)) => {
                     articles.push(McpLawTocEntry {
                         kind: "section",
-                        num: node.label.clone(),
+                        number: node.label.clone(),
                         url: section_link(section_path),
                         section: path.clone(),
                         text: None,
@@ -764,7 +763,7 @@ pub fn present_law_text_root(
     if articles.is_empty() {
         articles.extend(toc.entries.iter().map(|e| McpLawTocEntry {
             kind: "article",
-            num: e.num.clone(),
+            number: e.num.clone(),
             url: link(&e.num_key),
             section: e.title_path.clone(),
             text: None,
@@ -776,28 +775,29 @@ pub fn present_law_text_root(
     McpLawArticle {
         code: code.clone(),
         article_count: Some(summary.article_count),
-        num: None,
+        number: None,
         title: summary.titre.clone(),
         url: format!("{web_base_url}{text}"),
-        etat: summary.status.clone(),
-        date_debut: summary.date_texte.clone(),
-        date_fin: None,
+        date: summary.date_texte.clone(),
+        status: summary.status.clone(),
+        valid_from: None,
+        valid_to: None,
         text: None,
         source_url: None,
-        nota: None,
+        note: None,
         section: None,
         versions: Vec::new(),
         articles,
         omitted: (omitted > 0).then_some(omitted),
-        commentaires: summary.commentaires.clone(),
+        commentaries: summary.commentaires.clone(),
         modified_by: Vec::new(),
-        travaux_parlementaires: Vec::new(),
+        legislative_history: Vec::new(),
     }
 }
 
 /// The articles of a section in reading order, bodies attached as long as the
 /// section fits the reading bounds, otherwise reduced to their index and
-/// `omitted` says so. Same shape as an article, without `num`.
+/// `omitted` says so. Same shape as an article, without `number`.
 pub fn present_law_section(
     section: &lj_dtos::LawSectionResponse,
     web_base_url: &str,
@@ -814,10 +814,13 @@ pub fn present_law_section(
         match item.num_key.as_deref() {
             Some(num_key) => articles.push(McpLawTocEntry {
                 kind: "article",
-                num: item.label.clone(),
+                number: item.label.clone(),
                 url: format!("{web_base_url}{text}/{num_key}"),
                 section: path.clone(),
-                text: item.texte.clone(),
+                text: item
+                    .texte
+                    .as_deref()
+                    .map(|t| paragraph_with_links(t, &item.texte_spans, web_base_url)),
             }),
             None => path = Some(item.label.clone()),
         }
@@ -825,22 +828,23 @@ pub fn present_law_section(
     McpLawArticle {
         code: code.clone(),
         article_count: Some(articles.len() as i64),
-        num: None,
+        number: None,
         title: section.title.clone(),
         url: format!("{web_base_url}{text}/{}", section.path),
-        etat: None,
-        date_debut: None,
-        date_fin: None,
+        date: None,
+        status: None,
+        valid_from: None,
+        valid_to: None,
         text: None,
         source_url: None,
-        nota: None,
+        note: None,
         section: None,
         versions: Vec::new(),
         articles,
         omitted: section.omitted,
-        commentaires: Vec::new(),
+        commentaries: Vec::new(),
         modified_by: Vec::new(),
-        travaux_parlementaires: Vec::new(),
+        legislative_history: Vec::new(),
     }
 }
 
@@ -869,6 +873,14 @@ pub fn present_law_search(
             .checked_sub(cap)
             .filter(|n| *n > 0)
     };
+    // The orders keep their own cap, the types under them take theirs.
+    let typed: Vec<lj_dtos::FacetChoice> = response
+        .facets
+        .path
+        .iter()
+        .filter(|c| c.value.contains('.'))
+        .cloned()
+        .collect();
     McpLawSearchResponse {
         query: query.to_string(),
         total: response.total,
@@ -877,32 +889,35 @@ pub fn present_law_search(
             .iter()
             .map(|h| McpLawSearchHit {
                 title: law_article_title(&h.num, Some(&h.code_title)),
-                url: format!(
-                    "{web_base_url}{}/{}",
-                    lj_vocab::norm_path(&h.jurisdiction, &h.code),
-                    h.num_key
-                ),
+                url: law_url(web_base_url, &h.jurisdiction, &h.code, &h.num_key),
                 snippet: h.snippet.clone(),
                 title_path: h.titre_path.clone(),
                 source: h.source.clone(),
+                valid_from: h.valid_from.clone(),
+                valid_to: h.valid_to.clone(),
             })
             .collect(),
         facets: McpLawSearchFacets {
             code: counts(&response.facets.code, LAW_FACET_LIMIT),
             other_codes: rest(&response.facets.code, LAW_FACET_LIMIT),
-            jurisdiction: counts(&response.facets.jurisdiction, LAW_FACET_LIMIT),
-            other_jurisdictions: rest(&response.facets.jurisdiction, LAW_FACET_LIMIT),
+            jurisdiction: counts(&response.facets.jurisdiction, LAW_FACET_LIMIT)
+                .into_iter()
+                .chain(counts(&typed, LAW_FACET_LIMIT))
+                .collect(),
+            other_jurisdictions: match (
+                rest(&response.facets.jurisdiction, LAW_FACET_LIMIT),
+                rest(&typed, LAW_FACET_LIMIT),
+            ) {
+                (None, None) => None,
+                (orders, types) => Some(orders.unwrap_or(0) + types.unwrap_or(0)),
+            },
         },
         pinned: response
             .pinned
             .iter()
             .map(|a| McpPinned {
                 title: law_article_title(&a.num, Some(&a.code_title)),
-                url: format!(
-                    "{web_base_url}{}/{}",
-                    lj_vocab::norm_path(&a.jurisdiction, &a.code),
-                    a.num_key
-                ),
+                url: law_url(web_base_url, &a.jurisdiction, &a.code, &a.num_key),
             })
             .collect(),
     }
@@ -911,10 +926,9 @@ pub fn present_law_search(
 // ── Annonces ────────────────────────────────────────────────────────────────
 
 /// Enough to decide whether to go, and where to go: `url` is our page,
-/// `platformUrl` the filing platform. The deep links, tender rules and tender
+/// `platform_url` the filing platform. The deep links, tender rules and tender
 /// documents, stay on the page: an MCP client downloads no tender file.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpAnnonceHit {
     pub title: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -943,7 +957,6 @@ pub struct McpAnnonceHit {
 
 /// The facet tokens are the ones the input filters take.
 #[derive(Debug, Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct McpAnnonceSearchResponse {
     pub total: i64,
     pub hits: Vec<McpAnnonceHit>,
@@ -1072,8 +1085,7 @@ mod tests {
                 key: "REJET".into(),
                 label: "Rejet".into(),
             }),
-            procedure: None,
-            office: None,
+            formation: Vec::new(),
             legal_domain: None,
             seat_path: Some(FacetTag {
                 key: "CC.SOCIALE".into(),
@@ -1082,6 +1094,8 @@ mod tests {
             publication_codes: vec!["b".into()],
             chars: Some(4200),
             summary: Some("Résumé de la décision.".into()),
+            summary_quote: None,
+            summary_body: None,
             official_url: Some(
                 "https://www.courdecassation.fr/decision/6194ba445a317cc1d116fbb9".into(),
             ),
@@ -1110,7 +1124,7 @@ mod tests {
         assert_eq!(hit.title, "Cour de cassation, 29 mai 2026, 24-17.384");
         assert_eq!(hit.url, "https://librejustice.fr/decision/cc-123");
         assert_eq!(hit.chars, 4200);
-        assert_eq!(hit.procedure, None);
+        assert!(hit.formation.is_empty());
         assert_eq!(hit.seat.as_deref(), Some("CC.SOCIALE"));
         assert_eq!(hit.solution.as_deref(), Some("REJET"));
         assert_eq!(hit.publication, vec!["PUBLIE_BULLETIN".to_string()]);
@@ -1135,6 +1149,43 @@ mod tests {
             Some("Résumé de la décision.")
         );
         assert_eq!(out.hits[0].snippet, None);
+    }
+
+    /// A collage serves the court's words alone, a pasted summary whole, its cut marked.
+    #[test]
+    fn hybrid_serves_the_court_s_summary_apart() {
+        let present = |summary: &str, quote: std::ops::Range<usize>| {
+            let mut hit = base_hit();
+            hit.summary = Some(summary.into());
+            hit.summary_quote = Some(quote);
+            let resp = SearchResponse {
+                query: "bail".into(),
+                total: Some(1),
+                hits: vec![hit],
+                query_mode: QueryMode::Hybrid,
+                facets: None,
+                all_hit_paths: vec![],
+                reranked: false,
+                pinned: Vec::new(),
+                pinned_more: false,
+            };
+            let out = present_search_response(&resp, "https://librejustice.fr", &[]);
+            (
+                out.hits[0].ai_summary.clone(),
+                out.hits[0].court_summary.clone(),
+            )
+        };
+        assert_eq!(
+            present(
+                "La Cour juge le litige. Le bail est résilié. Rejet.",
+                24..44
+            ),
+            (None, Some("Le bail est résilié.".into()))
+        );
+        assert_eq!(
+            present("Le bail est résilié. […]", 0..20),
+            (None, Some("Le bail est résilié. […]".into()))
+        );
     }
 
     #[test]
@@ -1166,13 +1217,13 @@ mod tests {
             parent: parent.map(str::to_string),
             hint: None,
         };
-        let mut seat = vec![choice("TA", 74, None)];
+        let mut seat = vec![choice("FR", 74, None), choice("FR.TA", 74, Some("FR"))];
         for i in 0..17 {
-            seat.push(choice(&format!("TA.VILLE{i:02}"), 17 - i, Some("TA")));
+            seat.push(choice(&format!("FR.TA.VILLE{i:02}"), 17 - i, Some("FR.TA")));
         }
-        seat.push(choice("TA.VILLE00.C1", 4, Some("TA.VILLE00")));
-        seat.push(choice("TA.VILLE00.C1.S2", 2, Some("TA.VILLE00.C1")));
-        seat.push(choice("TA.VILLE01.C7", 3, Some("TA.VILLE01")));
+        seat.push(choice("FR.TA.VILLE00.C1", 4, Some("FR.TA.VILLE00")));
+        seat.push(choice("FR.TA.VILLE00.C1.S2", 2, Some("FR.TA.VILLE00.C1")));
+        seat.push(choice("FR.TA.VILLE01.C7", 3, Some("FR.TA.VILLE01")));
         let domaines: Vec<FacetChoice> = (0..13)
             .map(|i| choice(&format!("DOMAINE{i:02}"), 13 - i, None))
             .collect();
@@ -1202,8 +1253,8 @@ mod tests {
         };
         let out = present_search_response(&resp, "https://librejustice.fr", &[]);
         let f = out.facets.expect("facets présentes (total > hits)");
-        assert_eq!(f.seat.get("TA"), Some(&74));
-        assert_eq!(f.seat.len(), 1);
+        assert_eq!(f.seat.get("FR.TA"), Some(&74));
+        assert_eq!(f.seat.len(), 2);
         assert_eq!(f.solution.get("REJET"), Some(&63));
         assert_eq!(f.legal_instrument.get("code-civil"), Some(&657));
         assert_eq!(f.legal_domain.len(), 10);
@@ -1213,30 +1264,31 @@ mod tests {
         let asked = present_search_response(
             &resp,
             "https://librejustice.fr",
-            &["TA.VILLE00".to_string()],
+            &["FR.TA.VILLE00".to_string()],
         );
         let f = asked.facets.expect("facets présentes (total > hits)");
-        assert_eq!(f.seat.get("TA.VILLE00"), Some(&17));
-        assert_eq!(f.seat.get("TA.VILLE00.C1"), Some(&4));
-        assert_eq!(f.seat.get("TA.VILLE00.C1.S2"), None);
-        assert_eq!(f.seat.get("TA.VILLE01"), None);
-        assert_eq!(f.seat.len(), 3);
+        assert_eq!(f.seat.get("FR.TA.VILLE00"), Some(&17));
+        assert_eq!(f.seat.get("FR.TA.VILLE00.C1"), Some(&4));
+        assert_eq!(f.seat.get("FR.TA.VILLE00.C1.S2"), None);
+        assert_eq!(f.seat.get("FR.TA.VILLE01"), None);
+        assert_eq!(f.seat.len(), 4);
 
         let multi = present_search_response(
             &resp,
             "https://librejustice.fr",
-            &["TA.VILLE00.C1".to_string(), "TA.VILLE01".to_string()],
+            &["FR.TA.VILLE00.C1".to_string(), "FR.TA.VILLE01".to_string()],
         );
         let f = multi.facets.expect("facets présentes (total > hits)");
-        assert_eq!(f.seat.get("TA.VILLE00.C1"), Some(&4));
-        assert_eq!(f.seat.get("TA.VILLE00.C1.S2"), Some(&2));
-        assert_eq!(f.seat.get("TA.VILLE01.C7"), Some(&3));
-        assert_eq!(f.seat.len(), 5);
+        assert_eq!(f.seat.get("FR.TA.VILLE00.C1"), Some(&4));
+        assert_eq!(f.seat.get("FR.TA.VILLE00.C1.S2"), Some(&2));
+        assert_eq!(f.seat.get("FR.TA.VILLE01.C7"), Some(&3));
+        assert_eq!(f.seat.len(), 6);
 
-        let racine = present_search_response(&resp, "https://librejustice.fr", &["TA".to_string()]);
+        let racine =
+            present_search_response(&resp, "https://librejustice.fr", &["FR.TA".to_string()]);
         let f = racine.facets.expect("facets présentes (total > hits)");
-        assert_eq!(f.seat.len(), 18);
-        assert_eq!(f.seat.get("TA.VILLE16"), Some(&1));
+        assert_eq!(f.seat.len(), 19);
+        assert_eq!(f.seat.get("FR.TA.VILLE16"), Some(&1));
 
         let resp = SearchResponse {
             query: "bail".into(),
@@ -1262,12 +1314,12 @@ mod tests {
             parent: None,
             hint: None,
         };
-        let mut seat = vec![choice("TA", 74)];
+        let mut seat = vec![choice("FR", 74), choice("FR.TA", 74)];
         for i in 0..24 {
-            seat.push(choice(&format!("TA.VILLE{i:02}"), 24 - i));
+            seat.push(choice(&format!("FR.TA.VILLE{i:02}"), 24 - i));
         }
-        seat.push(choice("TA.VILLE00.C1", 4));
-        seat.push(choice("TA.VILLE00.C9", 2));
+        seat.push(choice("FR.TA.VILLE00.C1", 4));
+        seat.push(choice("FR.TA.VILLE00.C9", 2));
         let resp = SearchResponse {
             query: "bail".into(),
             total: Some(92),
@@ -1285,14 +1337,14 @@ mod tests {
         let out = present_search_response(
             &resp,
             "https://librejustice.fr",
-            &["TA".to_string(), "TA.VILLE00".to_string()],
+            &["FR.TA".to_string(), "FR.TA.VILLE00".to_string()],
         );
         let f = out.facets.expect("facets présentes (total > hits)");
-        assert_eq!(f.seat.get("TA.VILLE19"), Some(&5));
-        assert_eq!(f.seat.get("TA.VILLE20"), None);
+        assert_eq!(f.seat.get("FR.TA.VILLE19"), Some(&5));
+        assert_eq!(f.seat.get("FR.TA.VILLE20"), None);
         // A room thinner than a dropped city stays: its rank has its own cap.
-        assert_eq!(f.seat.get("TA.VILLE00.C9"), Some(&2));
-        assert_eq!(f.seat.len(), 23);
+        assert_eq!(f.seat.get("FR.TA.VILLE00.C9"), Some(&2));
+        assert_eq!(f.seat.len(), 24);
     }
 
     #[test]
@@ -1306,13 +1358,14 @@ mod tests {
             paragraph_spans: Vec::new(),
             sections: None,
             summary: None,
+            summary_quote: None,
+            summary_body: None,
             jurisdiction_code: None,
             jurisdiction_name: None,
             court_place: None,
             date_lecture: Some("2024-08-06".into()),
             solution: None,
-            procedure: None,
-            office: None,
+            formation: Vec::new(),
             legal_domain: None,
             publication_codes: vec![],
             date_audience: None,
@@ -1328,7 +1381,6 @@ mod tests {
             official_url: None,
             chronology: Vec::new(),
             commentaires: vec![],
-            renvoyants: vec![],
             citantes: vec![],
             citantes_total: None,
         };
@@ -1349,13 +1401,14 @@ mod tests {
             paragraph_spans: Vec::new(),
             sections: None,
             summary: None,
+            summary_quote: None,
+            summary_body: None,
             jurisdiction_code: None,
             jurisdiction_name: None,
             court_place: None,
             date_lecture: Some("2025-01-23".into()),
             solution: None,
-            procedure: None,
-            office: None,
+            formation: Vec::new(),
             legal_domain: None,
             publication_codes: vec![],
             date_audience: None,
@@ -1373,6 +1426,7 @@ mod tests {
                 lj_dtos::ChronologyEntry {
                     id: Some("ca-9".into()),
                     jurisdiction_type: Some(lj_dtos::JurisdictionType::Ca),
+                    jurisdiction_code: None,
                     label: "Cour d'appel de Paris".into(),
                     date: Some("2026-06-23".into()),
                     current: false,
@@ -1383,6 +1437,7 @@ mod tests {
                 lj_dtos::ChronologyEntry {
                     id: Some("tj-1".into()),
                     jurisdiction_type: Some(lj_dtos::JurisdictionType::Tj),
+                    jurisdiction_code: None,
                     label: "Tribunal judiciaire de Paris".into(),
                     date: Some("2025-01-23".into()),
                     current: true,
@@ -1392,7 +1447,6 @@ mod tests {
                 },
             ],
             commentaires: vec![],
-            renvoyants: vec![],
             citantes: vec![],
             citantes_total: None,
         };
@@ -1408,23 +1462,6 @@ mod tests {
         assert_eq!(ca.link_to_next.as_deref(), Some("APPEL_DE"));
         assert!(!ca.current);
         assert!(out.case_chronology[1].current);
-        assert_eq!(
-            out.appellate_fate.as_deref(),
-            Some(
-                "INFIRMATION — Cour d'appel de Paris, 23 juin 2026, 25/03815 \
-                 (https://librejustice.fr/decision/ca-9)"
-            )
-        );
-        assert!(out.text.starts_with(
-            "[SORT DE CETTE DÉCISION SUR RECOURS : INFIRMATION — \
-             Cour d'appel de Paris, 23 juin 2026, 25/03815"
-        ));
-        assert!(out.text.ends_with(
-            "[RAPPEL — SORT DE CETTE DÉCISION SUR RECOURS : INFIRMATION — \
-             Cour d'appel de Paris, 23 juin 2026, 25/03815 \
-             (https://librejustice.fr/decision/ca-9)]"
-        ));
-        assert!(out.title.ends_with("[INFIRMATION SUR RECOURS]"));
     }
 
     #[test]
@@ -1448,13 +1485,14 @@ mod tests {
             paragraph_spans: vec![spans, vec![]],
             sections: None,
             summary: None,
+            summary_quote: None,
+            summary_body: None,
             jurisdiction_code: None,
             jurisdiction_name: None,
             court_place: None,
             date_lecture: None,
             solution: None,
-            procedure: None,
-            office: None,
+            formation: Vec::new(),
             legal_domain: None,
             publication_codes: vec![],
             date_audience: None,
@@ -1470,7 +1508,6 @@ mod tests {
             official_url: None,
             chronology: Vec::new(),
             commentaires: vec![],
-            renvoyants: vec![],
             citantes: vec![],
             citantes_total: None,
         };
@@ -1524,6 +1561,7 @@ mod tests {
             legitext: "LEGITEXT000006070721".into(),
             code: "code-civil".into(),
             jurisdiction: "FR".into(),
+            jurisdiction_label: "France".into(),
             code_title: Some("Code civil".into()),
             num: "1240".into(),
             num_key: "1240".into(),
@@ -1581,7 +1619,7 @@ mod tests {
             )
         );
         assert_eq!(out.versions.len(), 1);
-        assert_eq!(out.versions[0].etat, "VIGUEUR");
+        assert_eq!(out.versions[0].status, "VIGUEUR");
         conforms(
             &lj_mcp_tools::get_norm_output_schema(),
             &serde_json::to_value(&out).unwrap(),
@@ -1604,6 +1642,8 @@ mod tests {
                 source: "legifrance".into(),
                 status: Some("VIGUEUR".into()),
                 date_debut: None,
+                valid_from: Some("2020-01-01".into()),
+                valid_to: None,
             }],
             total: 1,
             facets: ArticleSearchFacets {
@@ -1616,8 +1656,8 @@ mod tests {
                     hint: None,
                 }],
                 jurisdiction: vec![],
-                nature: vec![],
                 source: vec![],
+                path: vec![],
             },
             query_mode: lj_dtos::QueryMode::Lexical,
             pinned: Vec::new(),
@@ -1636,6 +1676,68 @@ mod tests {
         );
         assert_eq!(out.facets.code.get("code-de-procedure-civile"), Some(&1));
         assert!(out.facets.jurisdiction.is_empty());
+        conforms(
+            &lj_mcp_tools::search_norms_output_schema(),
+            &serde_json::to_value(&out).unwrap(),
+            "search_norms",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn law_listing_serves_text_roots_dated_and_typed_facets() {
+        let choice = |value: &str, count| lj_dtos::FacetChoice {
+            value: value.into(),
+            label: value.into(),
+            count,
+            parent: None,
+            hint: None,
+        };
+        let response = ArticleSearchResponse {
+            hits: vec![ArticleSearchHit {
+                code: "loi-n-2026-813-du-24-aout-2026".into(),
+                jurisdiction: "FR".into(),
+                code_title: "LOI n° 2026-813 du 24 août 2026".into(),
+                num: String::new(),
+                num_key: String::new(),
+                titre_path: None,
+                snippet: String::new(),
+                source: "loi".into(),
+                status: None,
+                date_debut: None,
+                valid_from: Some("2026-08-26".into()),
+                valid_to: None,
+            }],
+            total: 59,
+            facets: ArticleSearchFacets {
+                scope: Vec::new(),
+                code: Vec::new(),
+                jurisdiction: vec![choice("FR", 59)],
+                source: vec![],
+                path: vec![
+                    choice("FR", 59),
+                    choice("FR.LOI", 59),
+                    choice("FR.LOI.ORGANIQUE", 3),
+                ],
+            },
+            query_mode: lj_dtos::QueryMode::Browse,
+            pinned: Vec::new(),
+            pinned_more: false,
+            jurisdictions: vec!["FR.LOI".into()],
+            reader_place: None,
+        };
+        let out = present_law_search("", &response, "https://librejustice.fr");
+        let hit = &out.hits[0];
+        assert_eq!(hit.title, "LOI n° 2026-813 du 24 août 2026");
+        assert_eq!(
+            hit.url,
+            "https://librejustice.fr/norm/fr/loi-n-2026-813-du-24-aout-2026"
+        );
+        assert_eq!(hit.valid_from.as_deref(), Some("2026-08-26"));
+        assert_eq!(
+            out.facets.jurisdiction.keys().collect::<Vec<_>>(),
+            ["FR", "FR.LOI", "FR.LOI.ORGANIQUE"]
+        );
         conforms(
             &lj_mcp_tools::search_norms_output_schema(),
             &serde_json::to_value(&out).unwrap(),
@@ -1753,11 +1855,13 @@ mod tests {
     fn search_response_conforms_to_its_output_schema() {
         let mut hit = base_hit();
         hit.seat_path = Some(tag("CA.PARIS.C3", "Troisième chambre"));
-        hit.procedure = Some(tag("REFERE", "Référé"));
-        hit.office = Some(tag("PLEIN_CONTENTIEUX", "Plein contentieux"));
+        hit.formation = vec![
+            tag("FR.TJ.JUGE_UNIQUE", "Juge unique"),
+            tag("FR.TJ.JEX", "Juge de l'exécution"),
+        ];
         hit.legal_domain = Some(tag("BAIL", "Baux"));
         let resp = SearchResponse {
-            query: "19-20.312".into(),
+            query: "18-12.345".into(),
             total: Some(1),
             hits: vec![hit],
             query_mode: QueryMode::Lexical,
@@ -1767,10 +1871,11 @@ mod tests {
             pinned: vec![PinnedDecision {
                 id: "cc-1".into(),
                 jurisdiction_type: lj_dtos::JurisdictionType::Cc,
-                title: "Cour de cassation, 12 mars 2020, 19-20.312".into(),
+                jurisdiction_code: Some("cc".into()),
+                title: "Cour de cassation, 12 mars 2020, 18-12.345".into(),
                 seat: None,
                 solution: None,
-                procedure: None,
+                formation: Vec::new(),
             }],
             pinned_more: false,
         };
@@ -1778,12 +1883,16 @@ mod tests {
         let served = serde_json::to_value(&out).unwrap();
         assert!(!out.hits[0].publication.is_empty());
         conforms(&lj_mcp_tools::search_output_schema(), &served, "search").unwrap();
-        // aiSummary and snippet exclude each other, a lexical hit carrying the
-        // snippet; facets declares no property, so there is nothing to cover.
+        // ai_summary, court_summary and snippet exclude each other, a lexical hit
+        // carrying the snippet; facets declares no property, so there is nothing to cover.
         covers(
             &lj_mcp_tools::search_output_schema(),
             &served,
-            &["search.hits[0].aiSummary", "search.facets"],
+            &[
+                "search.hits[0].ai_summary",
+                "search.hits[0].court_summary",
+                "search.facets",
+            ],
             "search",
         )
         .unwrap();
@@ -1800,13 +1909,14 @@ mod tests {
             paragraph_spans: Vec::new(),
             sections: None,
             summary: None,
+            summary_quote: None,
+            summary_body: None,
             jurisdiction_code: Some("cc".into()),
             jurisdiction_name: Some("Cour de cassation".into()),
             court_place: None,
             date_lecture: Some("2026-05-29".into()),
             solution: Some(tag("REJET", "Rejet")),
-            procedure: Some(tag("REFERE", "Référé")),
-            office: Some(tag("PLEIN_CONTENTIEUX", "Plein contentieux")),
+            formation: vec![tag("FR.CC.RESTREINTE", "Formation restreinte (F)")],
             legal_domain: Some(tag("BAIL", "Baux")),
             publication_codes: vec!["b".into()],
             date_audience: None,
@@ -1824,6 +1934,7 @@ mod tests {
                 lj_dtos::ChronologyEntry {
                     id: Some("cc-2".into()),
                     jurisdiction_type: Some(lj_dtos::JurisdictionType::Cc),
+                    jurisdiction_code: None,
                     label: "Cour de cassation".into(),
                     date: Some("2026-05-29".into()),
                     current: false,
@@ -1834,6 +1945,7 @@ mod tests {
                 lj_dtos::ChronologyEntry {
                     id: Some("cc-1".into()),
                     jurisdiction_type: Some(lj_dtos::JurisdictionType::Ca),
+                    jurisdiction_code: None,
                     label: "Cour d'appel de Paris".into(),
                     date: Some("2024-03-14".into()),
                     current: true,
@@ -1851,17 +1963,15 @@ mod tests {
                 volume: Some("134".into()),
                 issue: Some("2".into()),
                 pages: Some("407-422".into()),
-                access: Some("libre".into()),
                 url: Some("https://www.courdecassation.fr/note/abc".into()),
+                body: Some("Rapport annexé.".into()),
             }],
-            renvoyants: Vec::new(),
             citantes: Vec::new(),
             citantes_total: None,
         };
         let out = present_decision_detail(&detail, "https://librejustice.fr", &refs());
         let served = serde_json::to_value(&out).unwrap();
         assert!(!out.publication.is_empty());
-        assert!(out.appellate_fate.is_some());
         conforms(
             &lj_mcp_tools::get_decision_output_schema(),
             &served,
@@ -1897,6 +2007,7 @@ mod tests {
             fond_year: None,
             top_cited: Vec::new(),
             commentaires: Vec::new(),
+            publication: None,
         }
     }
 
@@ -1914,6 +2025,7 @@ mod tests {
             num_key: num_key.map(str::to_string),
             etat: "VIGUEUR".into(),
             texte: num_key.map(|k| format!("Corps de {k}.")),
+            texte_spans: Vec::new(),
             nota: None,
         }
     }
@@ -1934,7 +2046,7 @@ mod tests {
             lecture("Article 2", Some("2")),
         ];
         let out = present_law_text_root(&code_summary(2), &toc, base);
-        assert_eq!(out.num, None);
+        assert_eq!(out.number, None);
         assert_eq!(out.article_count, Some(2));
         assert_eq!(out.omitted, None);
         assert_eq!(out.articles.len(), 2);
@@ -2021,6 +2133,7 @@ mod tests {
         let section = |omitted: Option<usize>, texte: Option<&str>| lj_dtos::LawSectionResponse {
             code: "code-du-travail".into(),
             jurisdiction: "FR".into(),
+            jurisdiction_label: "France".into(),
             code_title: Some("Code du travail".into()),
             path: "partie-legislative/livre-i".into(),
             title: "Sous-section 2 : Dérogations au repos dominical".into(),
@@ -2043,7 +2156,7 @@ mod tests {
         };
 
         let out = present_law_section(&section(None, Some("Le repos peut être suspendu.")), base);
-        assert_eq!(out.num, None);
+        assert_eq!(out.number, None);
         assert_eq!(out.omitted, None);
         assert_eq!(
             out.url,

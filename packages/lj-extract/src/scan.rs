@@ -197,9 +197,18 @@ pub(crate) enum Mk {
     /// « désigné M./Mme X » : formule active de désignation en tête (« le
     /// président de la cour a désigné … pour statuer »).
     ProcMagdesForm,
+    /// « juge/conseiller de la mise en état » : the judge of the mise en état.
+    ProcMee,
     /// Composition à juge unique dite par le texte (« statuant en juge unique »,
     /// « siégeant seul »).
     ProcJugeUnique,
+    /// « la présente ordonnance »: the decision is an order.
+    ProcOrdonnance,
+    /// « la formation prévue à » : before « l'article 567-1-1 », the criminal
+    /// chamber's formation restreinte.
+    ProcRestreinte,
+    /// « siégeaient »: the closing clause names the judges who deliberated.
+    ProcSiege,
     /// « juge des référés » nu.
     ProcJref,
     /// Référé judiciaire dit par le texte : assignation en référé, appel ou
@@ -303,11 +312,11 @@ const COUPE_NOM: &[Mk] = &[
     Mk::Dispositif,
 ];
 
-/// Un conseil tient son côté de la partie qu'il représente : il ne peut pas
-/// être des deux. « Emmanuel Levanti » en demande et « Levanti » en défense
-/// sont le même avocat, la seconde mention étant un écho de la prose. La
-/// graphie la plus complète porte l'arête, donc le côté ; à égalité, la
-/// demande, dont l'en-tête nomme le conseil avec son « représenté par ».
+/// Counsel holds the side of the party it represents and cannot be on both.
+/// « Emmanuel Feuilly » for the claimant and « Feuilly » for the defendant are the
+/// same lawyer, the second mention echoing the prose. The fullest spelling carries
+/// the edge, hence the side; on a tie, the claimant's, whose heading names counsel
+/// with its « représenté par ».
 fn un_seul_cote(apps: &mut Vec<Mention>, defs: &mut Vec<Mention>) {
     if apps.is_empty() || defs.is_empty() {
         return;
@@ -426,6 +435,7 @@ const MARKERS: &[(&str, Mk)] = &[
     ("copie executoire", Mk::Stop),
     // frontières de zone : motifs (fin d'en-tête) et dispositif
     ("considerant ce qui suit", Mk::Motifs), ("considerant que", Mk::Motifs),
+    ("considerant qu'", Mk::Motifs),
     ("expose du litige", Mk::Motifs), ("faits et procedure", Mk::Motifs),
     ("expose des faits", Mk::Motifs), ("motifs de la decision", Mk::Motifs),
     ("expose de la procedure", Mk::Motifs),
@@ -555,8 +565,8 @@ const MARKERS: &[(&str, Mk)] = &[
     ("par deux memoires", Mk::MemIntro), ("par trois memoires", Mk::MemIntro),
     ("par un nouveau memoire", Mk::MemIntro), ("par de nouveaux memoires", Mk::MemIntro),
     ("conclut au rejet", Mk::DefConclu), ("concluent au rejet", Mk::DefConclu),
-    // têtes d'autorité : le vocabulaire des 1 480 défendeurs administratifs
-    // annotés, par poids décroissant
+    // authority heads: the vocabulary of the annotated administrative defendants,
+    // by decreasing weight
     ("ministre", Mk::AutoriteHead), ("ministere", Mk::AutoriteHead),
     ("prefet", Mk::AutoriteHead), ("prefete", Mk::AutoriteHead),
     ("prefecture", Mk::AutoriteHead), ("garde des sceaux", Mk::AutoriteHead),
@@ -770,17 +780,24 @@ const MARKERS: &[(&str, Mk)] = &[
     ("conseiller d'etat designe", Mk::ProcMagdes),
     ("conseillere d'etat designee", Mk::ProcMagdes),
     ("designe mme", Mk::ProcMagdesForm), ("designe m.", Mk::ProcMagdesForm),
-    // magistrat délégué judiciaire : signature en pied des ordonnances de mise en
-    // état ou d'instruction CA-TJ
-    ("juge de la mise en etat", Mk::ProcMagdes),
-    ("magistrat de la mise en etat", Mk::ProcMagdes),
-    ("conseiller de la mise en etat", Mk::ProcMagdes),
-    ("conseillere de la mise en etat", Mk::ProcMagdes),
+    // the judges signing a CA or TJ order: a delegated magistrate instructing the
+    // case, or the judge of the mise en état
     ("magistrat charge d'instruire", Mk::ProcMagdes),
+    ("juge de la mise en etat", Mk::ProcMee),
+    ("magistrat de la mise en etat", Mk::ProcMee),
+    ("conseiller de la mise en etat", Mk::ProcMee),
+    ("conseillere de la mise en etat", Mk::ProcMee),
+    ("charge de la mise en etat", Mk::ProcMee),
+    ("chargee de la mise en etat", Mk::ProcMee),
+    ("ordonnance du juge de la mise en etat", Mk::ProcMee),
     ("juge unique", Mk::ProcJugeUnique),
     ("statuant seul", Mk::ProcJugeUnique), ("statuant seule", Mk::ProcJugeUnique),
     ("siegeant seul", Mk::ProcJugeUnique), ("siegeant seule", Mk::ProcJugeUnique),
     ("magistrat unique", Mk::ProcJugeUnique),
+    ("presente ordonnance", Mk::ProcOrdonnance),
+    // stops short of the article, which the citation lexer reads
+    ("formation prevue a", Mk::ProcRestreinte),
+    ("siegeaient", Mk::ProcSiege),
     // domaines admin par vocabulaire d'en-tête
     ("fonction publique", Mk::ProcDomFp), ("fonctionnaire", Mk::ProcDomFp),
     ("fonctionnaires", Mk::ProcDomFp), ("agent public", Mk::ProcDomFp),
@@ -1105,6 +1122,10 @@ pub struct ProcSignals {
     pub filtrage: bool,
     pub magdes: bool,
     pub magdes_tail: bool,
+    /// The judge of the mise en état signs, or speaks as « Nous, … ».
+    pub mee_signed: bool,
+    /// « ORDONNANCE DU JUGE DE LA MISE EN ÉTAT » in the header.
+    pub mee_banner: bool,
     pub magdes_form_cour: bool,
     pub magdes_form_trib: bool,
     pub jref_demande: bool,
@@ -2223,7 +2244,110 @@ impl DocScan {
             .find(strong)
             .or_else(|| self.toks.iter().find(|t| t.kind == Mk::Dispositif))
             .map(|t| t.s)
+            .or_else(|| self.capital_verb_line())
+            .or_else(|| self.abstract_closing().map(|(s, _)| s))
             .unwrap_or(self.len())
+    }
+
+    /// A line of the second half opening on a ruling verb in capitals
+    /// (« REJETTE le pourvoi ; »), the dispositif of a text that announces it no
+    /// other way.
+    fn capital_verb_line(&self) -> Option<usize> {
+        const VERBS: &[&str] = &[
+            "rejette",
+            "casse",
+            "annule",
+            "confirme",
+            "infirme",
+            "reforme",
+            "condamne",
+            "declare",
+            "dit",
+            "ordonne",
+            "renvoie",
+            "deboute",
+            "constate",
+            "prononce",
+            "donne",
+            "met",
+            "remet",
+            "rabat",
+            "accueille",
+        ];
+        let chars = &self.norm.chars;
+        let mut i = self.len() / 2;
+        while i < self.len() {
+            if i == 0 || self.norm.breaks[i - 1] {
+                let s = (i..self.len()).find(|&j| chars[j] != ' ')?;
+                let e = (s..self.len())
+                    .find(|&j| !chars[j].is_alphabetic())
+                    .unwrap_or(self.len());
+                if e > s + 1
+                    && is_upper_span(chars, s, e)
+                    && VERBS.contains(&fold_chars(&self.text_slice(s, e)).as_str())
+                {
+                    return Some(s);
+                }
+            }
+            i += 1;
+        }
+        None
+    }
+
+    /// The closing of an old Conseil d'État abstract, a run of clauses each opening
+    /// on a noun of the ruling (« ; Rejet avec dépens. », « Annulation ; décharge ;
+    /// remboursement des frais de timbre. »): its start, and the outcome its first
+    /// noun names.
+    fn abstract_closing(&self) -> Option<(usize, &'static str)> {
+        const NOUNS: &[(&str, Option<&str>)] = &[
+            ("rejet", Some("REJET")),
+            ("annulation", Some("ANNULATION")),
+            ("reformation", Some("REFORMATION")),
+            ("non-lieu", Some("NON_LIEU_A_STATUER")),
+            ("non lieu", Some("NON_LIEU_A_STATUER")),
+            ("desistement", Some("DESISTEMENT")),
+            ("decharge", Some("SATISFACTION_TOTALE")),
+            ("reduction", Some("SATISFACTION_PARTIELLE")),
+            ("sursis", Some("AUTRE")),
+            ("expertise", Some("AUTRE")),
+            ("renvoi", Some("AUTRE")),
+            ("depens", None),
+            ("ceux", None),
+            ("remboursement", None),
+            ("frais", None),
+        ];
+        let chars = &self.norm.chars;
+        let n = self.len();
+        let tail = n.saturating_sub(3000);
+        let mut clauses: Vec<(usize, usize)> = Vec::new();
+        let mut start = tail;
+        for i in tail..n {
+            let c = chars[i];
+            let dot_end =
+                c == '.' && (i + 1 == n || chars[i + 1] == ' ') && (i == 0 || chars[i - 1] != '.');
+            if c == ';' || dot_end || self.norm.breaks[i] {
+                clauses.push((start, i));
+                start = i + 1;
+            }
+        }
+        clauses.push((start, n));
+        let mut found: Option<(usize, &'static str)> = None;
+        for &(s, e) in clauses.iter().rev() {
+            let Some(s) = (s..e).find(|&j| !matches!(chars[j], ' ' | '-')) else {
+                continue;
+            };
+            let clause = fold_chars(&self.text_slice(s, e.min(s + 40)));
+            let noun = NOUNS.iter().find(|(w, _)| {
+                clause.starts_with(w)
+                    && !clause[w.len()..].starts_with(|c: char| c.is_alphanumeric())
+            });
+            match noun {
+                Some((_, Some(key))) => found = Some((s, key)),
+                Some((_, None)) => {}
+                None => break,
+            }
+        }
+        found
     }
 
     /// Fin de la zone dispositif : les MOYENS ANNEXÉS d'un arrêt CC le suivent et
@@ -2298,6 +2422,112 @@ impl DocScan {
     pub fn juge_unique_header(&self) -> bool {
         self.find_tok(&[Mk::ProcJugeUnique], 0, self.motifs_start())
             .is_some()
+    }
+
+    /// An order: « la présente ordonnance » in the closing part, or the spaced
+    /// « O R D O N N E » of the operative part.
+    pub fn ordonnance(&self) -> bool {
+        self.toks.iter().any(|t| {
+            (t.kind == Mk::ProcOrdonnance && t.s + 3000 >= self.len())
+                || (t.kind == Mk::Dispositif
+                    && fold_chars(&self.text_slice(t.s, t.e)).starts_with("o r d o"))
+        })
+    }
+
+    /// The Cour de cassation's formation as its decision prints it: the header's
+    /// code (« F-D », « FS-P+B », « FP-B+R »), or the criminal chamber's « formation
+    /// prévue à l'article 567-1-1 ».
+    pub fn cc_formation(&self) -> Option<&'static str> {
+        let header = self.text_slice(0, self.motifs_start().min(2000));
+        let code = header.split_whitespace().find_map(|w| {
+            let (code, marks) = w.trim_matches([',', ';', '(', ')']).split_once('-')?;
+            let printed = !marks.is_empty()
+                && marks
+                    .chars()
+                    .all(|c| matches!(c, 'P' | 'B' | 'R' | 'I' | 'D' | '+'));
+            match code {
+                "F" if printed => Some("formation:RESTREINTE"),
+                "FS" if printed => Some("formation:SECTION"),
+                "FP" if printed => Some("formation:PLENIERE"),
+                _ => None,
+            }
+        });
+        code.or_else(|| {
+            self.toks
+                .iter()
+                .any(|t| t.kind == Mk::ProcRestreinte && self.span_after(t, 30).contains("567-1-1"))
+                .then_some("formation:RESTREINTE")
+        })
+    }
+
+    /// Judges the closing « siégeaient » clause names, the greffier left out. The
+    /// clause runs to the sentence ending its line.
+    pub fn siege_judges(&self) -> Option<usize> {
+        const SINGLE: &[&str] = &["m.", "mme", "mlle", "monsieur", "madame"];
+        const PLURAL: &[&str] = &["mm.", "mmes", "mlles", "messieurs", "mesdames"];
+        let t = self
+            .toks
+            .iter()
+            .rev()
+            .find(|t| t.kind == Mk::ProcSiege && t.s + 2500 >= self.len())?;
+        let end = (t.e + 600).min(self.len());
+        let stop = (t.e..end)
+            .find(|&i| self.norm.chars[i] == '.' && self.norm.breaks.get(i + 1).is_none_or(|b| *b))
+            .unwrap_or(end);
+        let mut clause = fold_chars(&self.text_slice(t.e, stop));
+        for end in [
+            "rendu public",
+            "lu en audience",
+            "le rapporteur",
+            "la rapporteure",
+            "la republique",
+        ] {
+            if let Some(i) = clause.find(end) {
+                clause.truncate(i);
+            }
+        }
+        let words: Vec<&str> = clause.split_whitespace().collect();
+        // « M.D » : a pseudonymised name glued to its civility
+        let civility = |w: &str| {
+            let w = w.trim_start_matches(['-', ':']);
+            let glued =
+                w.len() > 2 && w.starts_with("m.") && w[2..].starts_with(char::is_alphabetic);
+            (SINGLE.contains(&w) || PLURAL.contains(&w) || glued).then(|| PLURAL.contains(&w))
+        };
+        let mut judges = 0;
+        let mut i = 0;
+        while i < words.len() {
+            let Some(plural) = civility(words[i]) else {
+                i += 1;
+                continue;
+            };
+            let named: Vec<&str> = words[i + 1..]
+                .iter()
+                .take_while(|w| civility(w).is_none())
+                .copied()
+                .collect();
+            let segment = named.join(" ");
+            if !segment
+                .chars()
+                .take(40)
+                .collect::<String>()
+                .contains("greff")
+            {
+                judges += if plural {
+                    segment
+                        .split(',')
+                        .next()
+                        .unwrap_or("")
+                        .matches(" et ")
+                        .count()
+                        + 1
+                } else {
+                    1
+                };
+            }
+            i += 1 + named.len();
+        }
+        Some(judges)
     }
 
     /// Votes de termes par domaine, comptés plein texte : familles `ProcDom*`
@@ -2605,6 +2835,9 @@ impl DocScan {
         if from >= self.len() {
             return None;
         }
+        if let Some((_, key)) = self.abstract_closing().filter(|(s, _)| *s == from) {
+            return Some((key, false));
+        }
         if self.disp_has(from, Mk::OutDesist) {
             return Some(("DESISTEMENT", true));
         }
@@ -2738,6 +2971,15 @@ impl DocScan {
                 // ANNULATION (« réformé » → REFORMATION) ; requête rejetée → REJET, sauf
                 // irrecevabilité prononcée (cf. `irrec_pronounced`) ; SATISFACTION_* = plein
                 // contentieux gagné sans annulation (condamnation à payer, décharge).
+                // Only the Cour de cassation « casse », and its rulings without a
+                // pourvoi preamble land here.
+                if self.disp_has(from, Mk::OutCasse) {
+                    return Some(if self.disp_has(from, Mk::OutPartial) {
+                        ("CASSATION_PARTIELLE", false)
+                    } else {
+                        ("CASSATION", false)
+                    });
+                }
                 if self.disp_has(from, Mk::OutAnnule) {
                     return Some(("ANNULATION", false));
                 }
@@ -3165,6 +3407,24 @@ impl DocScan {
                 .toks
                 .iter()
                 .any(|t| t.kind == Mk::ProcMagdes && t.s + 700 >= self.len()),
+            mee_signed: self.toks.iter().any(|t| {
+                t.kind == Mk::ProcMee && {
+                    // « confirme l'ordonnance rendue … par le conseiller de la mise en état » names the order under appeal
+                    let b = self.span_before(t, 24);
+                    let named = b.ends_with("du ")
+                        || b.ends_with("devant le ")
+                        || ((b.ends_with("par le ") || b.ends_with("par la "))
+                            && !b.contains("signe"))
+                        || fold_chars(&self.text_slice(t.s, t.e)).starts_with("ordonnance");
+                    !named
+                        && (t.s + 700 >= self.len() || self.span_before(t, 120).contains("nous,"))
+                }
+            }),
+            mee_banner: self.toks.iter().any(|t| {
+                t.kind == Mk::ProcMee
+                    && t.s < header
+                    && fold_chars(&self.text_slice(t.s, t.e)).starts_with("ordonnance")
+            }),
             magdes_form_cour: magdes_form("de la cour"),
             magdes_form_trib: magdes_form("du tribunal"),
             // « demande(nt) au juge des référés » en tête : la requête est adressée au
@@ -5170,9 +5430,7 @@ fn side_match(party: &str, side: &[String], other: &[String]) -> bool {
 mod tests {
     use super::*;
 
-    /// Jugement du TAE de Paris dont la source a perdu ses `s` : aucun marqueur
-    /// d'ouverture ne tokenise, le bandeau se repliait sur les motifs et lisait
-    /// le pôle de la cour d'appel CITÉE comme sa propre formation.
+    /// With its `s` lost, the banner never reads a cited court's pôle as its own formation.
     #[test]
     fn le_bandeau_sans_marqueur_ne_lit_pas_la_formation_d_une_decision_citee() {
         let doc = "*1DE/06/51/25/41*\n\nCopie : -DGFIP -SAS ALEPH elle-même repré entée par  on \
@@ -5194,8 +5452,8 @@ mod tests {
     /// se retrouver des deux côtés : la graphie complète porte l'arête.
     #[test]
     fn un_avocat_ne_tient_qu_un_cote() {
-        let mut apps = vec![Mention::new(0, 16, "Emmanuel Levanti".into())];
-        let mut defs = vec![Mention::new(90, 97, "Levanti".into())];
+        let mut apps = vec![Mention::new(0, 16, "Emmanuel Feuilly".into())];
+        let mut defs = vec![Mention::new(90, 97, "Feuilly".into())];
         un_seul_cote(&mut apps, &mut defs);
         assert_eq!(apps.len(), 1);
         assert!(defs.is_empty());
@@ -5208,8 +5466,8 @@ mod tests {
         assert_eq!(defs.len(), 1);
 
         // deux avocats distincts restent chacun de son côté
-        let mut apps = vec![Mention::new(0, 6, "Dirou".into())];
-        let mut defs = vec![Mention::new(90, 97, "Thinon".into())];
+        let mut apps = vec![Mention::new(0, 6, "Babet".into())];
+        let mut defs = vec![Mention::new(90, 97, "Bougon".into())];
         un_seul_cote(&mut apps, &mut defs);
         assert_eq!((apps.len(), defs.len()), (1, 1));
     }
@@ -5221,7 +5479,7 @@ mod tests {
     fn lecteur_de_partie_personne_physique() {
         let cas: [(&str, &[&str], &[&str]); 6] = [
             (
-                "Vu la procedure suivante : Par une requete, M. A B, representé par Me Airiau, demande a la cour d'annuler l'arreté.",
+                "Vu la procedure suivante : Par une requete, M. A B, representé par Me Lemaire, demande a la cour d'annuler l'arreté.",
                 &["A B"],
                 &[],
             ),
@@ -5246,7 +5504,7 @@ mod tests {
                 &[],
             ),
             (
-                "Vu la procedure suivante : Procedure contentieuse anterieure : M. A B a demandé au tribunal administratif de Strasbourg d'annuler l'arreté. Procedure devant la cour : Par une requete, M. B, representé par Me Airiau, demande a la cour.",
+                "Vu la procedure suivante : Procedure contentieuse anterieure : M. A B a demandé au tribunal administratif de Strasbourg d'annuler l'arreté. Procedure devant la cour : Par une requete, M. B, representé par Me Lemaire, demande a la cour.",
                 &["A B"],
                 &[],
             ),
@@ -5266,7 +5524,7 @@ mod tests {
     #[test]
     fn mention_span_carries_its_value() {
         let textes = [
-            "Vu la procédure suivante : Par une requête enregistrée le 3 mars 2023, la SAS Alpha Distribution, représentée par Me Bouyssou, demande à la cour : 1°) d'annuler l'arrêté du maire de Saint-Priest ;",
+            "Vu la procédure suivante : Par une requête enregistrée le 3 mars 2023, la SAS Alpha Distribution, représentée par Me Grantaire, demande à la cour : 1°) d'annuler l'arrêté du maire de Saint-Priest ;",
             "APPELANTE : SAS Gondrand, représentée par Me Laura Javert, avocat au barreau de MÂCON INTIMÉE : SA Verrerie du Nord, représentée par la SELARL Brumaire",
             "Sur le pourvoi formé par la société anonyme Crédit Lyonnais, contre l'arrêt rendu par la cour d'appel de Paris, dans le litige l'opposant à la CPAM du Gard, défenderesse à la cassation ;",
         ];
@@ -5307,7 +5565,7 @@ mod tests {
 
     #[test]
     fn admin_single_request_header() {
-        let text = "Vu la procédure suivante : Par une requête et un mémoire, enregistrés les 2 février 2021 et 15 juillet 2021, la SAS Gaillot Distribution, représentée par Me Bouyssou, demande à la cour : 1°) d'annuler l'arrêté du 22 décembre 2020 du maire de Saint-Priest refusant de lui délivrer un permis de construire ;";
+        let text = "Vu la procédure suivante : Par une requête et un mémoire, enregistrés les 2 février 2021 et 15 juillet 2021, la SAS Gaillot Distribution, représentée par Me Grantaire, demande à la cour : 1°) d'annuler l'arrêté du 22 décembre 2020 du maire de Saint-Priest refusant de lui délivrer un permis de construire ;";
         let (apps, defs) = scan(text).companies();
         assert_eq!(apps, vec!["SAS Gaillot Distribution".to_string()]);
         assert!(defs.is_empty());
@@ -5404,10 +5662,10 @@ mod tests {
 
     #[test]
     fn counsel_admin_sides() {
-        let text = "Vu la procédure suivante : Par une requête enregistrée le 3 mars 2023, la SAS Alpha, représentée par Me Bouyssou, demande à la cour d'annuler l'arrêté du maire. Par un mémoire en défense, enregistré le 4 avril 2023, la commune de Machilly, représentée par Me Rotoumba, conclut au rejet de la requête. Considérant ce qui suit : 1. La requête est rejetée.";
+        let text = "Vu la procédure suivante : Par une requête enregistrée le 3 mars 2023, la SAS Alpha, représentée par Me Grantaire, demande à la cour d'annuler l'arrêté du maire. Par un mémoire en défense, enregistré le 4 avril 2023, la commune de Machilly, représentée par Me Prouvaire, conclut au rejet de la requête. Considérant ce qui suit : 1. La requête est rejetée.";
         let out = scan(text).counsel();
-        assert_eq!(out.applicant_names, vec!["Bouyssou".to_string()]);
-        assert_eq!(out.defendant_names, vec!["Rotoumba".to_string()]);
+        assert_eq!(out.applicant_names, vec!["Grantaire".to_string()]);
+        assert_eq!(out.defendant_names, vec!["Prouvaire".to_string()]);
         assert!(out.applicant_firms.is_empty());
         assert!(out.defendant_firms.is_empty());
     }
@@ -5474,7 +5732,7 @@ mod tests {
 
     #[test]
     fn quality_arbitrage_representant_precedes_party() {
-        let text = "Vu la procédure suivante : Par une requête enregistrée le 3 mars 2023, la caisse locale des assurances mutuelles agricoles de Paris demande à la cour d'annuler l'arrêté. Ont été entendues les observations de Me Estene, représentant la caisse locale des assurances mutuelles agricoles de Paris. Considérant ce qui suit : 1. La requête est rejetée.";
+        let text = "Vu la procédure suivante : Par une requête enregistrée le 3 mars 2023, la caisse locale des assurances mutuelles agricoles de Paris demande à la cour d'annuler l'arrêté. Ont été entendues les observations de Me Joly, représentant la caisse locale des assurances mutuelles agricoles de Paris. Considérant ce qui suit : 1. La requête est rejetée.";
         let (apps, _) = scan(text).companies();
         assert_eq!(
             apps,
@@ -5499,7 +5757,7 @@ mod tests {
 
     #[test]
     fn intervenors_prose_admin_et_recase_elision() {
-        let sc = scan("Par une intervention enregistrée le 25 août 2025, la fédération des chasseurs et le club international des chasseurs de bécassines, représentés par Me Bonzy, concluent au rejet.");
+        let sc = scan("Par une intervention enregistrée le 25 août 2025, la fédération des chasseurs et le club international des chasseurs de bécassines, représentés par Me Lesgle, concluent au rejet.");
         assert_eq!(
             sc.intervenors(),
             vec![

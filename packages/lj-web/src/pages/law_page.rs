@@ -30,8 +30,10 @@ use cited_by::CitedBySection;
 use crate::components::decision::DecisionLayout;
 use crate::components::own_page_description;
 use crate::components::search::compact_search::highlight::CitedBlock;
-use crate::components::ui::{GroupedSelect, ProvenanceBlock, SelectGroup, SelectOption};
-use crate::helpers::{format_article_num, format_iso_date};
+use crate::components::ui::{
+    DatePicker, GroupedOption, GroupedSelect, ProvenanceBlock, SelectGroup,
+};
+use crate::helpers::{decision_count, format_article_num, format_iso_date, today_iso};
 use crate::seo::law::{article_canonical_url, article_meta_description, build_article_json_ld};
 use crate::seo::OG_IMAGE;
 
@@ -252,9 +254,8 @@ pub(crate) fn set_cache_control(_status: u16) {}
 
 /// Page d'erreur (référence invalide / 404 / autre). Pose `robots noindex`.
 ///
-/// A dated read that finds nothing has found the article and missed the version,
-/// and 26 % of the dated reads served on 08/09/2026 landed here: « article
-/// introuvable » sends the reader away from a page that exists.
+/// A dated read that finds nothing has found the article and missed the version:
+/// « article introuvable » would send the reader away from a page that exists.
 #[component]
 fn LawError(
     err: PageError,
@@ -265,6 +266,9 @@ fn LawError(
     place: Option<String>,
     frise: Option<LawArticleResponse>,
 ) -> impl IntoView {
+    if err.status == 404 && date.is_none() {
+        crate::pages::not_found::signaler_lien_mort();
+    }
     let suffix = reader_suffix(place.as_deref());
     let text = lj_vocab::norm_path(&juris, &code);
     let eyebrow = if err.status == 404 {
@@ -401,6 +405,114 @@ fn LawSkeleton() -> impl IntoView {
     }
 }
 
+/// Where the article sits, above its title: the enclosing divisions cut to their
+/// number but for the direct one.
+fn article_trail(article: &LawArticleResponse) -> AnyView {
+    let last = article.breadcrumb.len().saturating_sub(1);
+    let divisions = if article.breadcrumb.is_empty() {
+        article
+            .titre_text
+            .clone()
+            .filter(|t| !t.trim().is_empty())
+            .map(|label| TrailDivision {
+                label,
+                href: None,
+                whole: true,
+            })
+            .into_iter()
+            .collect()
+    } else {
+        article
+            .breadcrumb
+            .iter()
+            .enumerate()
+            .map(|(i, seg)| TrailDivision {
+                label: seg.label.clone(),
+                href: seg.href.clone(),
+                whole: i == last,
+            })
+            .collect()
+    };
+    norm_trail(
+        article.jurisdiction_label.clone(),
+        lj_vocab::norm_path(&article.jurisdiction, &article.code),
+        code_display_name(article),
+        divisions,
+    )
+}
+
+/// One division of a [`norm_trail`].
+pub(crate) struct TrailDivision {
+    pub label: String,
+    pub href: Option<String>,
+    /// Shown whole rather than cut to its number.
+    pub whole: bool,
+}
+
+/// The trail above a norm page's title: the jurisdiction, the text, then the
+/// divisions, the full title of a cut one on hover.
+pub(crate) fn norm_trail(
+    jurisdiction: String,
+    code_href: String,
+    code_name: String,
+    divisions: Vec<TrailDivision>,
+) -> AnyView {
+    let sep = || view! { <span aria-hidden="true">"›"</span> };
+    let divisions: Vec<AnyView> = divisions
+        .into_iter()
+        .map(|d| {
+            let label = if d.whole {
+                d.label.clone()
+            } else {
+                division_number(&d.label).to_string()
+            };
+            let full = d.label;
+            let inner = match d.href {
+                Some(href) => view! {
+                    <A
+                        href=href
+                        attr:title=full
+                        attr:class="no-underline underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
+                    >
+                        {label}
+                    </A>
+                }
+                .into_any(),
+                None => view! { <span title=full>{label}</span> }.into_any(),
+            };
+            view! { {sep()} {inner} }.into_any()
+        })
+        .collect();
+    view! {
+        <nav
+            aria-label="Fil d'Ariane"
+            class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-[var(--color-ink-subtle)]"
+        >
+            <span class="font-medium text-[var(--color-ink-muted)]">
+                {jurisdiction}
+            </span>
+            {sep()}
+            <A
+                href=code_href
+                attr:class="font-medium text-[var(--color-ink-muted)] no-underline underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
+            >
+                {code_name}
+            </A>
+            {divisions}
+        </nav>
+    }
+    .into_any()
+}
+
+/// A division's number, its title up to « : » or « - » (« Livre II : Les
+/// tribunaux… » gives « Livre II »).
+fn division_number(label: &str) -> &str {
+    label
+        .find(" : ")
+        .or_else(|| label.find(" - "))
+        .map_or(label, |i| &label[..i])
+}
+
 /// Titre humain d'un article (« Article 1240 du Code civil », « Article 2 de
 /// l'Ordonnance n° 2016-131… »).
 pub(crate) fn article_title(article: &LawArticleResponse) -> String {
@@ -429,11 +541,14 @@ fn LawArticleLoaded(
     citing: Resource<CitingResult>,
     related: Resource<RelatedResult>,
 ) -> impl IntoView {
-    #[cfg(feature = "hydrate")]
-    Effect::new(|_| crate::reads::report(lj_dtos::ReadKind::Article));
     let title = article_title(&article);
     let description = article_meta_description(&article, &title);
     let url = article_canonical_url(&article.jurisdiction, &article.code, &article.num_key);
+    #[cfg(feature = "hydrate")]
+    {
+        let document = url.clone();
+        Effect::new(move |_| crate::reads::report(lj_dtos::ReadKind::Article, &document));
+    }
     let jsonld = serde_json::to_string(&build_article_json_ld(&article, &title, &description))
         .unwrap_or_else(|_| "{}".to_string());
     let page_title = format!("{title} - LibreJustice");
@@ -470,21 +585,30 @@ fn LawArticleLoaded(
             });
     let validity =
         (!withheld && !article.date_debut.is_empty() && !served_is_upcoming).then(|| {
-            let label = if let Some(d) = frozen_on.as_deref() {
-                format!("Rédaction en vigueur le {}", format_iso_date(Some(d)))
+            if let Some(d) = frozen_on.as_deref() {
+                (
+                    false,
+                    format!("Rédaction en vigueur le {}", format_iso_date(Some(d))),
+                )
             } else if reader_holds {
-                format!(
-                    "Rédaction du {}",
-                    format_iso_date(Some(&article.date_debut))
+                (
+                    false,
+                    format!(
+                        "Rédaction du {}",
+                        format_iso_date(Some(&article.date_debut))
+                    ),
+                )
+            } else if article.expired {
+                (
+                    false,
+                    validity_label(&article.date_debut, article.date_fin.as_deref(), true),
                 )
             } else {
-                validity_label(
-                    &article.date_debut,
-                    article.date_fin.as_deref(),
-                    article.expired,
+                (
+                    true,
+                    format!("depuis le {}", format_iso_date(Some(&article.date_debut))),
                 )
-            };
-            view! { <p class="text-sm text-[var(--color-ink-muted)]">{label}</p> }
+            }
         });
     // L'API sert la version en vigueur quand la route ne porte pas de date : une
     // version close en réponse dit alors qu'aucune ne s'applique plus.
@@ -497,9 +621,39 @@ fn LawArticleLoaded(
                 })
             },
         );
-    let applicability = applicability_view(&article, article_key().get_untracked().date.is_some());
-    let code_href = lj_vocab::norm_path(&article.jurisdiction, &article.code);
-    let code_name = code_display_name(&article);
+    let reach = validity
+        .is_some()
+        .then(|| compact_reach(&article))
+        .flatten();
+    let applicability = applicability_view(
+        &article,
+        article_key().get_untracked().date.is_some(),
+        reach.is_some(),
+    );
+    let status = validity.map(|(in_force, label)| {
+        let pill = in_force.then(|| {
+            view! {
+                <span class="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-rule)] px-2 py-0.5 text-xs text-[var(--color-ink)]">
+                    <span aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
+                    "En vigueur"
+                </span>
+            }
+        });
+        let reach = reach.map(|(line, places)| {
+            view! {
+                <span aria-hidden="true">"·"</span>
+                <span title=places>{line}</span>
+            }
+        });
+        view! {
+            <p class="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-[var(--color-ink-muted)]">
+                {pill}
+                <span>{label}</span>
+                {reach}
+            </p>
+        }
+    });
+    let trail = article_trail(&article);
     // Bandeau temporel : une version future de l'article existe. Si la version
     // SERVIE est cette version future, le bandeau dit l'entrée en vigueur, pas une
     // modification.
@@ -532,14 +686,9 @@ fn LawArticleLoaded(
     let main_view = view! {
         <article class="flex flex-col gap-10">
             <header class="flex flex-col gap-2">
-                <A
-                    href=code_href
-                    attr:class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)] underline-offset-4 hover:text-[var(--color-accent)]"
-                >
-                    {code_name}
-                </A>
+                {trail}
                 <h1 class="font-sans text-3xl text-[var(--color-ink)]">{title.clone()}</h1>
-                {validity}
+                {status}
                 {applicability}
                 {expired_notice}
                 {upcoming}
@@ -551,7 +700,6 @@ fn LawArticleLoaded(
             <crate::components::decision::DecisionCommentaires commentaires=article
                 .commentaires
                 .clone() />
-            <ArticleMeta article=article.clone() />
             <ProvenanceBlock rows=article_provenance_rows(&article) />
         </article>
     }
@@ -639,17 +787,30 @@ fn ArticleSideNav(article: LawArticleResponse) -> impl IntoView {
         .as_ref()
         .map(|a| readable_groups(&a.readable))
         .unwrap_or_default();
+    let other_version = article
+        .applicability
+        .as_ref()
+        .map(|a| other_version_places(a, &article.date_debut))
+        .unwrap_or_default();
     view! {
         <div class="flex flex-col gap-6 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:self-start lg:overflow-y-auto">
             <ArticleActions reference=reference />
             <nav aria-label="Versions de l'article" class="flex flex-col gap-8">
                 <ChronoDatePicker base=base.clone() date=requested_date path_segment=true />
-                <PlacePicker base=base groups=places date=requested_date />
+                <PlacePicker
+                    base=base
+                    groups=places
+                    date=requested_date
+                    other_version=other_version
+                />
                 <Timeline article=article />
             </nav>
         </div>
     }
 }
+
+pub(crate) const NORM_FIRST_YEAR: i32 = 1789;
+pub(crate) const NORM_YEARS_AHEAD: i32 = 10;
 
 /// Sélecteur Chronolégi « À la date du … » : navigue vers la même ressource à
 /// la date choisie — segment de path pour l'article (`{base}/{date}`), query
@@ -692,22 +853,23 @@ pub(crate) fn ChronoDatePicker(
             }
         })
     };
+    let on_change = Callback::new(move |picked: String| {
+        navigate(&href_for.get_value()(&picked), Default::default());
+    });
     view! {
         <div class="flex flex-col gap-1.5">
-            <label class="flex flex-col gap-1">
+            <div class="flex flex-col gap-1">
                 <span class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
                     "À la date du"
                 </span>
-                <input
-                    type="date"
-                    prop:value=move || date.get().unwrap_or_default()
-                    class="h-9 w-fit rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-2 text-sm text-[var(--color-ink)]"
-                    on:change=move |ev| {
-                        let picked = event_target_value(&ev);
-                        navigate(&href_for.get_value()(&picked), Default::default());
-                    }
+                <DatePicker
+                    value=Signal::derive(move || date.get().unwrap_or_else(today_iso))
+                    on_change=on_change
+                    aria_label="À la date du"
+                    first_year=NORM_FIRST_YEAR
+                    years_ahead=NORM_YEARS_AHEAD
                 />
-            </label>
+            </div>
             {reset}
         </div>
     }
@@ -750,20 +912,13 @@ pub(crate) fn rail_item(current: bool, body: AnyView) -> AnyView {
     .into_any()
 }
 
-/// (href, libellé) de la section descriptive de la source sur `/sources`.
-/// Ancre par provenance ; fallback page `/sources` sans ancre.
-fn source_descriptor(source: &str) -> (String, &'static str) {
-    let (anchor, label) = match source {
-        "legifrance" => ("dila", "Base LEGI · DILA"),
-        "jorf" => ("dila", "Journal officiel · DILA"),
-        _ => ("", "Données & sources"),
-    };
-    let href = if anchor.is_empty() {
-        "/sources".to_string()
-    } else {
-        format!("/sources#{anchor}")
-    };
-    (href, label)
+/// The dataset a version comes from, when its provenance names one.
+fn source_label(source: &str) -> Option<&'static str> {
+    match source {
+        "legifrance" => Some("Base LEGI · DILA"),
+        "jorf" => Some("Journal officiel · DILA"),
+        _ => None,
+    }
 }
 
 /// Libellé lisible des sources nommées, hôte de `source_url` sinon : les
@@ -791,18 +946,18 @@ fn url_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.strip_prefix("www.").unwrap_or(host).to_string())
 }
 
-fn diffuser_link_label(name: &str) -> String {
-    let elide = name
-        .chars()
-        .next()
-        .is_some_and(|c| "aeiouAEIOUéÉèÈ".contains(c));
-    let de = if elide { "d'" } else { "de " };
-    format!("Voir sur le site {de}{name}")
-}
-
 /// Pendant de [`lj_dtos::provenance_rows`] pour un article.
 fn article_provenance_rows(article: &LawArticleResponse) -> Vec<(&'static str, String)> {
-    let mut rows = vec![("Diffuseur", diffuser_name(article))];
+    let mut rows: Vec<(&'static str, String)> = source_label(&article.source)
+        .map(|l| ("Source", l.to_string()))
+        .into_iter()
+        .collect();
+    rows.push(("Diffuseur", diffuser_name(article)));
+    rows.push(("Identifiant", article.legiarti.clone()));
+    if let Some(asof) = article.source_asof.as_deref() {
+        rows.push(("Fraîcheur de la source", format_iso_date(Some(asof))));
+    }
+    rows.push(("Autorité", article.source_authority.clone()));
     if let Some(url) = article.source_url.as_deref().filter(|u| !u.is_empty()) {
         let label = if article.source_official {
             "Page officielle"
@@ -823,87 +978,6 @@ fn article_provenance_rows(article: &LawArticleResponse) -> Vec<(&'static str, S
         article_canonical_url(&article.jurisdiction, &article.code, &article.num_key),
     ));
     rows
-}
-
-/// Bloc méta : état, dates de validité, identifiant LEGIARTI, lien Légifrance
-/// versionné.
-#[component]
-fn ArticleMeta(article: LawArticleResponse) -> impl IntoView {
-    let date_fin = article
-        .date_fin
-        .as_deref()
-        .map(|d| format_iso_date(Some(d)))
-        .unwrap_or_else(|| "en vigueur".to_string());
-    let (source_href, source_label) = source_descriptor(&article.source);
-    let freshness = article
-        .source_asof
-        .as_deref()
-        .map(|d| format_iso_date(Some(d)));
-    let source_authority = article.source_authority.clone();
-    let diffuser_link = diffuser_link_label(&diffuser_name(&article));
-    let source_url = article.source_url.clone().filter(|u| !u.is_empty());
-    let source_upstream = article
-        .source_upstream_url
-        .clone()
-        .filter(|u| !u.is_empty());
-
-    view! {
-        <section
-            aria-label="Métadonnées"
-            class="rounded-lg border border-[var(--color-rule)] bg-[var(--color-vellum)]/40 p-6"
-        >
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Métadonnées"</h2>
-            <dl class="mt-4 grid grid-cols-1 gap-x-8 gap-y-3 sm:grid-cols-2">
-                <MetaField label="État" value=status_label(&article.etat) mono=false />
-                <MetaField
-                    label="Début de validité"
-                    value=format_iso_date(Some(&article.date_debut))
-                    mono=false
-                />
-                <MetaField label="Fin de validité" value=date_fin mono=false />
-                <MetaField label="Identifiant" value=article.legiarti mono=true />
-                {freshness
-                    .map(|f| view! { <MetaField label="Fraîcheur de la source" value=f mono=false /> })}
-                <MetaField label="Autorité" value=source_authority mono=false />
-            </dl>
-            <div class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 border-t border-[var(--color-rule)] pt-4">
-                {source_url
-                    .map(|u| {
-                        view! {
-                            <a
-                                href=u
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                class="inline-flex items-center gap-1.5 text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)]"
-                            >
-                                {diffuser_link}
-                                <span aria-hidden="true">"↗"</span>
-                            </a>
-                        }
-                    })}
-                {source_upstream
-                    .map(|u| {
-                        view! {
-                            <a
-                                href=u
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                class="inline-flex items-center gap-1.5 text-sm text-[var(--color-ink-subtle)] underline-offset-4 hover:text-[var(--color-accent)]"
-                            >
-                                "Source d'origine"
-                                <span aria-hidden="true">"↗"</span>
-                            </a>
-                        }
-                    })}
-                <A
-                    href=source_href
-                    attr:class="inline-flex items-center gap-1.5 text-sm text-[var(--color-ink-muted)] underline-offset-4 hover:text-[var(--color-accent)]"
-                >
-                    {format!("Source : {source_label}")}
-                </A>
-            </div>
-        </section>
-    }
 }
 
 /// Lecture en contexte : voisins de l'article dans sa division (ou fenêtre),
@@ -944,23 +1018,6 @@ fn context_item(neighbor: ArticleNeighbor, text: &str, suffix: &str) -> AnyView 
     };
     let body = view! { <A href=href attr:class=cls>{label}</A> }.into_any();
     rail_item(false, body)
-}
-
-#[component]
-fn MetaField(label: &'static str, value: String, mono: bool) -> impl IntoView {
-    let dd_class = if mono {
-        "font-mono text-sm text-[var(--color-ink)] break-all"
-    } else {
-        "text-sm text-[var(--color-ink)]"
-    };
-    view! {
-        <div class="flex flex-col gap-1">
-            <dt class="text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                {label}
-            </dt>
-            <dd class=dd_class>{value}</dd>
-        </div>
-    }
 }
 
 /// Corps de l'article : texte principal (+ texte original en accordéon si
@@ -1017,58 +1074,6 @@ fn ArticleBody(article: LawArticleResponse) -> impl IntoView {
                 </details>
             }
         });
-    // Fil d'Ariane : segments TOC cliquables vers la vue-lecture de section quand
-    // la structure est ingérée ; sinon le `titre_text` plat.
-    let fil = if article.breadcrumb.is_empty() {
-        article
-            .titre_text
-            .filter(|t| !t.trim().is_empty())
-            .map(|fil| {
-                view! {
-                    <p class="text-xs text-[var(--color-ink-subtle)]">{fil}</p>
-                }
-                .into_any()
-            })
-    } else {
-        let last = article.breadcrumb.len() - 1;
-        let segments = article
-            .breadcrumb
-            .into_iter()
-            .enumerate()
-            .map(|(i, seg)| {
-                let sep = (i < last).then(|| {
-                    view! { <span aria-hidden="true">"›"</span> }
-                });
-                let inner = match seg.href {
-                    Some(href) => view! {
-                        <A
-                            href=href
-                            attr:class="no-underline underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
-                        >
-                            {seg.label}
-                        </A>
-                    }
-                    .into_any(),
-                    None => view! { <span>{seg.label}</span> }.into_any(),
-                };
-                view! {
-                    {inner}
-                    {sep}
-                }
-            })
-            .collect_view();
-        Some(
-            view! {
-                <nav
-                    aria-label="Fil d'Ariane"
-                    class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-[var(--color-ink-subtle)]"
-                >
-                    {segments}
-                </nav>
-            }
-            .into_any(),
-        )
-    };
     let nota = article
         .nota
         .filter(|t| !t.trim().is_empty())
@@ -1085,25 +1090,27 @@ fn ArticleBody(article: LawArticleResponse) -> impl IntoView {
             }
         });
 
-    // Article modificatif (ordonnance/loi de réforme) : l'API a parsé le résumé de
-    // liens LEGI en groupes liés (`modifications`), rendus au lieu du corps brut.
-    // Corps normal : les renvois du texte sont cliquables.
-    let body = if article.modifications.is_empty() {
-        view! {
+    // A modifying article: its LEGI version is a summary of links, rendered as the
+    // linked groups of `modifications` in its place; its JORF version is the text
+    // as published, read with its links and followed by the groups.
+    let published = article.source == "jorf";
+    let modifications = (!article.modifications.is_empty())
+        .then(|| view! { <ModificationsList groups=article.modifications /> });
+    let body = match (published, modifications) {
+        (false, Some(list)) => list.into_any(),
+        (_, list) => view! {
             <CitedBlock
                 text=texte
                 spans=article.texte_spans
                 class="whitespace-pre-line text-base leading-relaxed text-[var(--color-ink)]"
             />
+            {list}
         }
-        .into_any()
-    } else {
-        view! { <ModificationsList groups=article.modifications /> }.into_any()
+        .into_any(),
     };
 
     view! {
         <article class="flex flex-col gap-4">
-            {fil}
             {badge}
             {body}
             {original}
@@ -1297,7 +1304,7 @@ fn state_links(states: &[StateElsewhere], path: &str, with_version: bool) -> Any
 /// The line under the title that says where the served version applies, or the
 /// banner that says what the reader's place makes of the article. Nothing while
 /// the text has no compiled state.
-fn applicability_view(article: &LawArticleResponse, dated: bool) -> Option<AnyView> {
+fn applicability_view(article: &LawArticleResponse, dated: bool, folded: bool) -> Option<AnyView> {
     let a: &Applicability = article.applicability.as_ref()?;
     let when = if dated {
         "à cette date"
@@ -1317,7 +1324,7 @@ fn applicability_view(article: &LawArticleResponse, dated: bool) -> Option<AnyVi
     let banner_class = "mt-1 w-fit rounded-md border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-sm text-[var(--color-ink)]";
     let from_reader = format!("Lu depuis {} : ", a.reader.label);
     let lead = match a.status {
-        ApplicabilityStatus::Applicable => return Some(applicable_view(a, &path, when)),
+        ApplicabilityStatus::Applicable => return Some(applicable_view(a, &path, when, folded)),
         ApplicabilityStatus::NotApplicable => match a.frozen_on.as_deref() {
             Some(d) => format!(
                 "{from_reader}cet article ne s'y applique pas : il n'était pas en vigueur le {}, jour où la matière est passée à la collectivité.",
@@ -1370,16 +1377,19 @@ fn applicability_view(article: &LawArticleResponse, dated: bool) -> Option<AnyVi
     )
 }
 
-/// The line of an article a state covers where the reader stands, the clause
-/// that dates it, and the other states the source left covering them.
-fn applicable_view(a: &Applicability, path: &str, when: &str) -> AnyView {
+/// The line of an article a state covers where the reader stands, unless the
+/// status line already carries it, the clause that dates it, and the other
+/// states the source left covering them.
+fn applicable_view(a: &Applicability, path: &str, when: &str, folded: bool) -> AnyView {
     let banner_class = "mt-1 w-fit rounded-md border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-sm text-[var(--color-ink)]";
     let from_reader = if a.reader.uid == DEFAULT_READER_PLACE {
         String::new()
     } else {
         format!("Lu depuis {} : ", a.reader.label)
     };
-    let mut line = format!("{from_reader}S'applique en {}", place_summary(&a.places));
+    let mut places: Vec<PlaceRef> = a.places.clone();
+    places.sort_by_key(|p| p.uid != a.reader.uid);
+    let mut line = format!("{from_reader}S'applique en {}", place_summary(&places));
     match a.starts_on.as_deref() {
         Some(d) => line.push_str(&format!(" depuis le {}", format_iso_date(Some(d)))),
         None => line.push_str(" (début non daté par la source)"),
@@ -1416,12 +1426,52 @@ fn applicable_view(a: &Applicability, path: &str, when: &str) -> AnyView {
             </p>
         }
     });
+    let line = (!folded).then(|| {
+        view! { <p class="text-sm text-[var(--color-ink-muted)]" title=all_places>{line}</p> }
+    });
     view! {
-        <p class="text-sm text-[var(--color-ink-muted)]" title=all_places>{line}</p>
+        {line}
         {clause}
         {competing}
     }
     .into_any()
+}
+
+/// Where the served version applies, short enough for the status line: read
+/// from the default place, covering it since the version starts, with no rival
+/// state. The second member lists every place, for the tooltip.
+fn compact_reach(article: &LawArticleResponse) -> Option<(String, String)> {
+    let a = article.applicability.as_ref()?;
+    let folds = a.status == ApplicabilityStatus::Applicable
+        && a.reader.uid == DEFAULT_READER_PLACE
+        && a.starts_on.as_deref() == Some(article.date_debut.as_str())
+        && a.ends_on.is_none()
+        && a.competing.is_empty();
+    if !folds {
+        return None;
+    }
+    let line = match a.places.iter().filter(|p| p.uid != a.reader.uid).count() {
+        0 => format!("s'applique en {}", a.reader.label),
+        1 => "s'applique aussi dans 1 autre lieu".to_string(),
+        n => format!("s'applique aussi dans {n} autres lieux"),
+    };
+    Some((line, place_labels(&a.places)))
+}
+
+/// The readable places whose version is not the reader's, the served one when
+/// no state covers the reader.
+fn other_version_places(a: &Applicability, served: &str) -> Vec<String> {
+    let shown = a
+        .readable
+        .iter()
+        .find(|r| r.place.uid == a.reader.uid)
+        .and_then(|r| r.version.as_deref())
+        .unwrap_or(served);
+    a.readable
+        .iter()
+        .filter(|r| r.version.as_deref().is_some_and(|v| v != shown))
+        .map(|r| r.place.uid.clone())
+        .collect()
 }
 
 /// The heading a place is listed under in « Lu depuis ».
@@ -1457,6 +1507,9 @@ pub fn PlacePicker(
     base: String,
     groups: Vec<(String, Vec<PlaceRef>)>,
     #[prop(into)] date: Signal<Option<String>>,
+    /// Places that read another version than the one shown.
+    #[prop(optional)]
+    other_version: Vec<String>,
 ) -> impl IntoView {
     use leptos_router::hooks::use_navigate;
     if groups.is_empty() {
@@ -1474,7 +1527,8 @@ pub fn PlacePicker(
             label,
             options: members
                 .into_iter()
-                .map(|p| SelectOption {
+                .map(|p| GroupedOption {
+                    note: other_version.contains(&p.uid).then_some("autre version"),
                     value: p.uid,
                     label: p.label,
                 })
@@ -1649,21 +1703,24 @@ fn Timeline(article: LawArticleResponse) -> impl IntoView {
     .into_any()
 }
 
-/// URL du comparateur pour la version courante face à sa voisine (précédente,
-/// sinon suivante — la timeline est triée par `date_debut`). `None` s'il n'y a
-/// qu'une version.
+/// The comparator's URL for the current version against its neighbour, the
+/// previous one or else the next, the timeline being sorted by `date_debut`.
+/// `None` with a single version, or when either has no address.
 fn compare_href(
     versions: &[LawArticleVersion],
     text: &str,
     num: &str,
     current: &str,
 ) -> Option<String> {
+    // An undated version past the first one is an amending article without a
+    // date of its own, which `initiale`, the open lower bound, does not reach.
+    let addressable = |i: usize| i == 0 || !versions[i].date_debut.is_empty();
     let idx = versions.iter().position(|v| v.legiarti == current)?;
-    let other = if idx > 0 {
-        versions.get(idx - 1)
-    } else {
-        versions.get(idx + 1)
-    }?;
+    let other_idx = if idx > 0 { idx - 1 } else { idx + 1 };
+    let other = versions.get(other_idx)?;
+    if !addressable(idx) || !addressable(other_idx) {
+        return None;
+    }
     let (from, to) = if idx > 0 {
         (other, &versions[idx])
     } else {
@@ -1798,8 +1855,12 @@ fn related_view(resolved: RelatedResult) -> AnyView {
         .map(related_item)
         .collect_view();
     view! {
-        <h2 class="font-sans text-base text-[var(--color-ink)]">"Souvent cité avec"</h2>
-        <ul class="flex flex-col gap-2">{items}</ul>
+        <div class="flex flex-col gap-3">
+            <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
+                "Souvent cité avec"
+            </h2>
+            <ul class="flex flex-col gap-3">{items}</ul>
+        </div>
     }
     .into_any()
 }
@@ -1807,21 +1868,28 @@ fn related_view(resolved: RelatedResult) -> AnyView {
 fn related_item(item: CoCitedArticle) -> AnyView {
     use crate::components::hover_preview::{preview_kind, HoverPreview, PreviewKind};
     let label = format!("Article {}", format_article_num(&item.num_key));
+    let decisions = decision_count(item.count);
     let count = view! {
-        <span class="shrink-0 text-xs tabular-nums text-[var(--color-ink-subtle)]">
-            {format!("{} déc.", item.count)}
+        <span
+            class="shrink-0 text-xs tabular-nums text-[var(--color-ink-subtle)]"
+            title=format!("Cités ensemble dans {decisions}")
+        >
+            {decisions.clone()}
         </span>
     };
     let title = view! {
-        <span class="line-clamp-2 text-xs text-[var(--color-ink-subtle)]">
+        <span class="block text-xs leading-snug text-[var(--color-ink-subtle)]">
             {item.text_title}
         </span>
     };
     let Some(href) = item.href else {
         return view! {
-            <li class="flex items-baseline justify-between gap-2">
-                <span class="text-sm text-[var(--color-ink)]">{label} {title}</span>
-                {count}
+            <li class="flex flex-col gap-0.5">
+                <span class="flex items-baseline justify-between gap-2">
+                    <span class="whitespace-nowrap text-sm text-[var(--color-ink)]">{label}</span>
+                    {count}
+                </span>
+                {title}
             </li>
         }
         .into_any();
@@ -1835,18 +1903,20 @@ fn related_item(item: CoCitedArticle) -> AnyView {
     let lien = view! {
         <A
             href=href
-            attr:class="text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
+            attr:class="whitespace-nowrap text-sm text-[var(--color-accent)] no-underline underline-offset-4 hover:underline"
         >
             {label}
         </A>
-        {title}
     };
     let corps = match kind {
         Some(kind) => view! { <HoverPreview kind=kind>{lien}</HoverPreview> }.into_any(),
         None => lien.into_any(),
     };
     view! {
-        <li class="flex items-baseline justify-between gap-2">{corps}{count}</li>
+        <li class="flex flex-col gap-0.5">
+            <span class="flex items-baseline justify-between gap-2">{corps}{count}</span>
+            {title}
+        </li>
     }
     .into_any()
 }

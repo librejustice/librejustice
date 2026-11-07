@@ -2857,8 +2857,8 @@ mod tests {
 
     #[test]
     fn search_handles_multibyte_utf8_characters() {
-        // Text: "café and tea", 'é' is 2 bytes in UTF-8, which used to cause
-        // byte-vs-char offset mismatch in normalized_to_display.
+        // Text: "café and tea", 'é' is 2 bytes in UTF-8, so byte and char
+        // offsets part in normalized_to_display.
         let glyphs: Vec<Glyph> = "café and tea"
             .chars()
             .enumerate()
@@ -2942,11 +2942,10 @@ mod tests {
     #[test]
     fn sub_pt_rows_are_not_merged_by_line_grouper() {
         // Three rows of 6pt Helvetica (bbox.height ≈ 4.8) sitting only
-        // 0.5pt apart in y. The previous heuristic capped y-tolerance at
-        // 1.0pt and merged all three into a single visual line. The
-        // anchor-based check (height_ref * 0.10 = 0.48pt for 6pt glyphs)
-        // keeps each row on its own line, so search for "AB" finds zero
-        // matches (no adjacency) but each single-letter search hits once.
+        // 0.5pt apart in y. The anchor-based check (height_ref * 0.10 =
+        // 0.48pt for 6pt glyphs) keeps each row on its own line, so search
+        // for "AB" finds zero matches (no adjacency) but each single-letter
+        // search hits once.
         let h = 4.8_f64;
         // bbox.y = baseline - 6 * 0.12 = baseline - 0.72
         let row_a_y = 700.0 - 0.72;

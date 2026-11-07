@@ -34,9 +34,7 @@ use super::facet_widgets::{stale_counts, FilterSearchInput, Nav, StaleCounts};
 use super::filter_dropdown::{FilterDropdown, OpenDropdown};
 use super::CompactSearch;
 
-/// Annonces ramenées par page et par fond.
-/// Plafond de pages affichées (le service borne l'offset à 5 000).
-/// Lignes par bloc de facettes du rail.
+/// Rows per facet block of the rail.
 const RAIL_ROWS: usize = 6;
 /// Au-delà de ce nombre de valeurs, un axe ne se lit plus par le poids : sa
 /// liste passe en ordre alphabétique et gagne un champ de filtre (départements,
@@ -967,11 +965,11 @@ mod tests {
             hint: None,
         };
         let rows = rail_choices(vec![
-            choix("nature_marche:TRAVAUX", None, 5529),
-            choix("45", Some("nature_marche:TRAVAUX"), 5467),
-            choix("nature_marche:AUTRES", None, 51),
-            choix("nature_marche:SERVICES", None, 9483),
-            choix("71", Some("nature_marche:SERVICES"), 2357),
+            choix("nature_marche:TRAVAUX", None, 5000),
+            choix("45", Some("nature_marche:TRAVAUX"), 4000),
+            choix("nature_marche:AUTRES", None, 50),
+            choix("nature_marche:SERVICES", None, 9000),
+            choix("71", Some("nature_marche:SERVICES"), 2000),
         ]);
         let vues: Vec<&str> = rows.iter().map(|c| c.value.as_str()).collect();
         assert_eq!(vues, ["45", "71", "nature_marche:AUTRES"]);

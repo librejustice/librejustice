@@ -2,16 +2,16 @@
 
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
+use lj_bucket::key;
 use std::collections::HashSet;
 
-use lj_llm::mistral::{ocr_with_retry, MistralClient};
 use lj_parse::{clean_ocr_markdown, parse_cnda, reflow_cnda_pdf_text, CndaParsed};
 use lj_store::repository::ExtractedFields;
 
 use crate::config::Settings;
+use crate::ocr::Ocr;
 
 use super::batch::drain_batch;
-use super::embed::build_embedder_opt;
 use super::europe::europe_pool;
 use super::{
     content_checksum, generate_public_id, Candidate, IngestCounts, IngestMode, BATCH_SIZE,
@@ -31,7 +31,11 @@ const CNDA_MAX_PAGES: u32 = 200;
 /// l'extracteur générique n'a pas) déborde de `Decision` ; on le pose via
 /// `prebuilt_extracted`, superposé à l'extraction routée complète au prepare
 /// (`merge_prebuilt` : le préconstruit prime, l'extraction fournit le reste).
-fn cnda_candidate(parsed: CndaParsed, raw_source: &[u8], payload_format: &str) -> Candidate {
+pub(super) fn cnda_candidate(
+    parsed: CndaParsed,
+    raw_source: &[u8],
+    payload_format: &str,
+) -> Candidate {
     let extracted = ExtractedFields {
         // `parse_cnda` normalise déjà la date FR (`3 avril 2025`) en ISO
         // `YYYY-MM-DD` sur `Decision.date_lecture`/`date_audience` ; on les parse ici
@@ -63,8 +67,8 @@ fn cnda_candidate(parsed: CndaParsed, raw_source: &[u8], payload_format: &str) -
         raw_payload: Vec::new(),
         payload_format: payload_format.to_string(),
         write_mode: super::WriteMode::Full,
-        dila_fond: None,
         passages: true,
+        distinct: false,
     }
 }
 
@@ -75,12 +79,12 @@ const PDF_TEXT_LAYER_FLOOR: usize = 600;
 
 /// Vrai si l'extraction `pdftotext` a rendu une couche texte exploitable (≠ PDF
 /// scanné/image). Compte les caractères non-blancs.
-fn pdf_has_text_layer(extracted: &str) -> bool {
+pub(super) fn pdf_has_text_layer(extracted: &str) -> bool {
     extracted.chars().filter(|c| !c.is_whitespace()).count() >= PDF_TEXT_LAYER_FLOOR
 }
 
 async fn scanned_ocr_fallback(
-    client: Option<&MistralClient>,
+    client: Option<&Ocr>,
     cache_dir: &std::path::Path,
     numero: &str,
     pdf_bytes: &[u8],
@@ -90,7 +94,7 @@ async fn scanned_ocr_fallback(
         return Some(md);
     }
     let client = client?;
-    match ocr_with_retry(client, pdf_bytes, numero).await {
+    match client.document(pdf_bytes, numero).await {
         Ok(markdown) => {
             if let Err(e) = save_cached_ocr(cache_dir, numero, &markdown) {
                 tracing::warn!(numero = %numero, error = %e, "cnda ocr cache write");
@@ -124,32 +128,17 @@ async fn run_cnda(
     only: Option<HashSet<String>>,
 ) -> Result<()> {
     use lj_sources::cnda::{
-        enumerate_fiche_urls, load_cached_payload, manifest_path, numero_from_slug, parse_fiche,
-        save_cached_payload, CndaClient, CndaManifest, THROTTLE,
+        enumerate_fiche_urls, manifest_path, numero_from_slug, parse_fiche, CndaClient,
+        CndaManifest, THROTTLE,
     };
 
     let settings = Settings::from_env()?;
+    let bucket = settings.bucket()?;
     let pool = europe_pool().await?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
 
-    let (embedder, require_embeddings) = build_embedder_opt(&settings).await?;
     let client = CndaClient::new();
-    // Extraction texte PDF : déterministe par défaut (`pdftotext` + recollage par
-    // règles), sans dépendance cloud sur le chemin chaud. L'OCR Mistral n'est qu'un
-    // repli pour les rares PDF scannés (cache-first). Client dédié sur le pool
-    // standard, donc registre de quota dédié : le seau de `mistral-ocr` n'est pas
-    // celui du chat.
-    let ocr_keys = lj_store::repository::DecisionRepository::new(&conn)
-        .pool_api_keys("mistral")
-        .await?;
-    let ocr_client = if ocr_keys.is_empty() {
-        None
-    } else {
-        Some(MistralClient::new(
-            ocr_keys,
-            "mistral-ocr-latest".to_string(),
-        )?)
-    };
+    let ocr_client = Ocr::from_pool(&lj_store::repository::DecisionRepository::new(&conn)).await?;
     let cache_dir = settings.cache_dir();
     let manifest_path = manifest_path(&cache_dir);
     let mut manifest = CndaManifest::load(&manifest_path).map_err(|e| anyhow!("manifest: {e}"))?;
@@ -229,24 +218,20 @@ async fn run_cnda(
                 break;
             }
 
-            // PDF lié (texte intégral) : cache-first. Le PDF récupéré est persisté
-            // sous `<cache_dir>/cnda/payloads/<numero>.pdf` ; un re-run — ou une
-            // ré-extraction — le relit localement au lieu de re-crawler cnda.fr. Lien
-            // mort (`None`) ⇒ fiche-only (abstract éditorial).
+            // The linked file is read from the bucket first, so that a re-run or a
+            // re-extraction does not crawl cnda.fr again. A dead link (`None`) leaves
+            // the editorial abstract alone.
             let pdf_bytes = match fiche.pdf_url.as_deref() {
-                Some(slug) => match load_cached_payload(&cache_dir, &numero)
-                    .map_err(|e| anyhow!("cnda cache read {numero}: {e}"))?
-                {
-                    Some(cached) => Some(cached),
+                Some(slug) => match bucket.get(&key::cnda(&numero)).await? {
+                    Some(stored) => Some(stored.to_vec()),
                     None => {
                         tokio::time::sleep(THROTTLE).await;
                         let fetched = client
                             .fetch_pdf(slug)
                             .await
                             .map_err(|e| anyhow!("cnda pdf {slug}: {e}"))?;
-                        if let Some(bytes) = fetched.as_deref() {
-                            save_cached_payload(&cache_dir, &numero, bytes)
-                                .map_err(|e| anyhow!("cnda cache write {numero}: {e}"))?;
+                        if let Some(bytes) = &fetched {
+                            bucket.put(&key::cnda(&numero), bytes.clone()).await?;
                         }
                         fetched
                     }
@@ -342,27 +327,11 @@ async fn run_cnda(
 
             if candidates.len() >= BATCH_SIZE {
                 let batch = std::mem::take(&mut candidates);
-                drain_batch(
-                    &conn,
-                    embedder.as_ref(),
-                    batch,
-                    require_embeddings,
-                    mode,
-                    &mut counts,
-                )
-                .await?;
+                drain_batch(&conn, batch, mode, &mut counts).await?;
             }
         }
         if !candidates.is_empty() {
-            drain_batch(
-                &conn,
-                embedder.as_ref(),
-                candidates,
-                require_embeddings,
-                mode,
-                &mut counts,
-            )
-            .await?;
+            drain_batch(&conn, candidates, mode, &mut counts).await?;
         }
 
         last_page = page;

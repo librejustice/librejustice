@@ -70,6 +70,30 @@ fn from_source_fields_json_round_trips_sections() {
 }
 
 #[test]
+fn from_source_fields_reads_a_french_text_in_capitals_recased() {
+    let caps = "ATTENDU QUE LA COUR D'APPEL A RETENU QUE LE BAIL ETAIT RESILIE DE PLEIN DROIT ; \
+                QU'EN STATUANT AINSI, ALORS QUE LE BAILLEUR N'AVAIT DELIVRE AUCUN COMMANDEMENT, \
+                LA COUR D'APPEL A VIOLE LE TEXTE SUSVISE ET PRIVE SA DECISION DE BASE LEGALE AU \
+                REGARD DES ARTICLES 1134 ET 1184 DU CODE CIVIL ;\nPAR CES MOTIFS : CASSE ET ANNULE";
+    let sf = build_source_fields(&json!({ "id": "CCASS_CAPS", "text": caps }), &[]);
+    let read = Decision::from_source_fields(caps, &sf, "judilibre/CCASS_CAPS");
+    assert!(read
+        .texte_integral_clean
+        .starts_with("Attendu que la cour d'appel a retenu que le bail était résilié"));
+    assert!(read
+        .texte_integral_clean
+        .ends_with("PAR CES MOTIFS : CASSE ET ANNULE"));
+
+    let english = "THE COURT HOLDS THAT THERE HAS BEEN A VIOLATION OF ARTICLE 6 OF THE \
+                   CONVENTION, THE APPLICANT HAVING HAD NO ACCESS TO A COURT FOR THE \
+                   DETERMINATION OF HIS CIVIL RIGHTS AND OBLIGATIONS FOR ELEVEN YEARS, AND \
+                   AWARDS HIM FIVE THOUSAND EUROS IN RESPECT OF NON-PECUNIARY DAMAGE.";
+    let cedh_sf = build_source_fields(&json!({ "appno": "1/20", "lang": "eng" }), &[]);
+    let read = Decision::from_source_fields(english, &cedh_sf, "cedh/001-2");
+    assert_eq!(read.texte_integral_clean, english);
+}
+
+#[test]
 fn from_source_fields_xml_round_trips_decision_scalars() {
     // Invariant chemin linéaire XML : XML → (full_text, source_fields) →
     // `Decision::from_source_fields` reproduit les scalaires, le même texte nettoyé et
@@ -196,25 +220,9 @@ fn source_fields_no_sections_key_when_no_real_offsets() {
     assert!(!sf.as_object().unwrap().contains_key("sections"));
 }
 
-/// Reconstruit une section depuis le triplet stocké `{kind,start,end}` — son texte
-/// est la tranche de `full_text`, aucun texte de section n'est stocké.
-fn section_from_stored(full_text: &str, v: &Value) -> DecisionSection {
-    let start = v.get("start").and_then(Value::as_u64).unwrap() as usize;
-    let end = v.get("end").and_then(Value::as_u64).unwrap() as usize;
-    DecisionSection {
-        label: String::new(),
-        kind: v.get("kind").and_then(Value::as_str).unwrap().to_string(),
-        start_char: start,
-        end_char: end,
-        text: char_slice(full_text, start, end),
-    }
-}
-
-/// CERTIFICATION : sur les payloads JSON réels, l'entrée du chunker
-/// (`metadata_header` + `visa_trim` + `texte_integral_clean`) reconstruite depuis
-/// `(full_text, source_fields)` est **identique** à celle produite par le parse
-/// direct du payload. Gate par `LJ_VERIFY_PAYLOADS=<jsonl>`. Un texte par ligne
-/// JSON.
+/// On real JSON payloads, the chunker's input rebuilt from `(full_text,
+/// source_fields)` equals the direct parse's. Gated by `LJ_VERIFY_PAYLOADS=<jsonl>`,
+/// one payload a line.
 #[test]
 fn chunker_input_reconstructible_from_full_text_and_source_fields() {
     let Ok(path) = std::env::var("LJ_VERIFY_PAYLOADS") else {
@@ -222,8 +230,7 @@ fn chunker_input_reconstructible_from_full_text_and_source_fields() {
     };
     let content = std::fs::read_to_string(&path).expect("payloads jsonl");
     let (mut n, mut skipped) = (0usize, 0usize);
-    let (mut mh_bad, mut vt_bad, mut inv_bad) = (0usize, 0usize, 0usize);
-    let mut first_vt: Option<String> = None;
+    let (mut mh_bad, mut inv_bad) = (0usize, 0usize);
 
     for line in content.lines() {
         if line.trim().is_empty() {
@@ -244,32 +251,7 @@ fn chunker_input_reconstructible_from_full_text_and_source_fields() {
             mh_bad += 1;
         }
 
-        // 2. visa_trim reconstruit depuis les sections stockées (texte = tranche de
-        //    full_text).
-        let recon: Vec<DecisionSection> = sf
-            .get("sections")
-            .and_then(Value::as_array)
-            .map(|a| {
-                a.iter()
-                    .map(|v| section_from_stored(full_text, v))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let vt = build_visa_trim(&recon);
-        if vt != d.visa_trim {
-            vt_bad += 1;
-            if first_vt.is_none() {
-                first_vt = Some(format!(
-                    "uid={} | orig_len={} recon_len={}",
-                    d.source_uid,
-                    char_len(&d.visa_trim),
-                    char_len(&vt),
-                ));
-            }
-        }
-
-        // 3. invariant racine : section.text == char_slice(full_text, …) pour
-        //    expose/moyens.
+        // 2. An expose or moyens section's text is its slice of full_text.
         for s in d
             .sections
             .iter()
@@ -283,17 +265,13 @@ fn chunker_input_reconstructible_from_full_text_and_source_fields() {
 
     eprintln!(
         "CERTIF chunker-input : n={n} skipped={skipped} | \
-             metadata_header mismatch={mh_bad} | visa_trim mismatch={vt_bad} | \
+             metadata_header mismatch={mh_bad} | \
              invariant(section.text==slice) violations={inv_bad}"
     );
-    if let Some(ex) = first_vt {
-        eprintln!("  first diverging visa_trim: {ex}");
-    }
     assert_eq!(
         mh_bad, 0,
         "metadata_header non reconstructible à l'identique"
     );
-    assert_eq!(vt_bad, 0, "visa_trim non reconstructible à l'identique");
     assert_eq!(inv_bad, 0, "invariant section.text==slice violé");
 }
 
@@ -349,18 +327,16 @@ fn metadata_header_xml_reconstructs_from_source_fields() {
     assert!(direct.contains("CAA de Nantes | 2023-01-12"));
 }
 
-/// CERTIFICATION XML : pendant de la certif JSON pour les payloads opendata. Sur
-/// des XML réels (dossier `LJ_VERIFY_XML_DIR`, *.xml), l'entrée chunker
-/// reconstruite depuis `(full_text, source_fields_xml)` est identique au parse
-/// direct : `metadata_header` via `build_metadata_header_xml_from_fields`,
-/// `visa_trim` via `extract_sections_xml(full_text)` (recalcul, pas de stockage).
+/// The XML counterpart for the opendata payloads, on the `*.xml` of
+/// `LJ_VERIFY_XML_DIR`: `metadata_header` rebuilt from `source_fields_xml` equals
+/// the direct parse's.
 #[test]
 fn xml_chunker_input_reconstructible_from_full_text_and_source_fields() {
     let Ok(dir) = std::env::var("LJ_VERIFY_XML_DIR") else {
         return;
     };
     let (mut n, mut skipped) = (0usize, 0usize);
-    let (mut mh_bad, mut vt_bad) = (0usize, 0usize);
+    let mut mh_bad = 0usize;
     let mut first_bad: Option<String> = None;
 
     for entry in std::fs::read_dir(&dir).expect("xml dir") {
@@ -375,7 +351,6 @@ fn xml_chunker_input_reconstructible_from_full_text_and_source_fields() {
             continue;
         }
         n += 1;
-        let full_text = &d.texte_integral_clean;
         let sf = build_source_fields_xml(&raw);
 
         // 1. metadata_header reconstruit depuis source_fields.
@@ -383,18 +358,11 @@ fn xml_chunker_input_reconstructible_from_full_text_and_source_fields() {
             mh_bad += 1;
             first_bad.get_or_insert_with(|| format!("metadata_header diverge : {path:?}"));
         }
-
-        // 2. visa_trim : sections recalculées sur full_text (pas de stockage).
-        let recon_sections = extract_sections_xml(full_text);
-        if build_visa_trim_xml(&recon_sections) != d.visa_trim {
-            vt_bad += 1;
-            first_bad.get_or_insert_with(|| format!("visa_trim diverge : {path:?}"));
-        }
     }
 
     eprintln!(
         "CERTIF XML chunker-input : n={n} skipped={skipped} | \
-             metadata_header mismatch={mh_bad} | visa_trim mismatch={vt_bad}"
+             metadata_header mismatch={mh_bad}"
     );
     if let Some(ex) = first_bad {
         eprintln!("  first divergent: {ex}");
@@ -403,7 +371,6 @@ fn xml_chunker_input_reconstructible_from_full_text_and_source_fields() {
         mh_bad, 0,
         "metadata_header XML non reconstructible à l'identique"
     );
-    assert_eq!(vt_bad, 0, "visa_trim XML non reconstructible à l'identique");
 }
 
 #[test]
@@ -444,6 +411,10 @@ fn vocab_known_and_fallback() {
 
     assert_eq!(vocab::jurisdiction_type(Some("zzz")), None);
     assert_eq!(vocab::jurisdiction_type(Some("tj")).as_deref(), Some("TJ"));
+    assert_eq!(
+        vocab::jurisdiction_type(Some("cph")).as_deref(),
+        Some("CPH")
+    );
 
     assert_eq!(
         vocab::formation_label(Some("fs")).as_deref(),
@@ -484,12 +455,6 @@ fn char_helpers_are_codepoint_based() {
     assert_eq!(char_take(s, 4), "éàç-");
     assert_eq!(char_find_from(s, "xyz", 0), Some(4));
     assert_eq!(char_find_from(s, "xyz", 5), None);
-}
-
-#[test]
-fn rfind_double_newline() {
-    assert_eq!(char_rfind_double_newline("a\n\nb\n\nc"), Some(4));
-    assert_eq!(char_rfind_double_newline("abc"), None);
 }
 
 // ── metadata header ──────────────────────────────────────────────────────
@@ -617,9 +582,6 @@ fn sections_from_zones_and_visa() {
     assert!(kinds.contains(&"expose"));
     assert!(kinds.contains(&"moyens"));
     assert!(kinds.contains(&"motivations"));
-
-    assert!(d.visa_trim.contains("Exposé du litige"));
-    assert!(d.visa_trim.contains("moyens du pourvoi"));
 }
 
 #[test]
@@ -744,6 +706,47 @@ fn xml_itertext_aggregates_nested_text() {
 }
 
 #[test]
+fn html_text_starts_a_line_at_each_break_paragraph_and_row() {
+    let article = br#"<CONTENU>
+<p>
+<br/>est ainsi r&#233;dig&#233; :</p>
+<p>
+<br/>&#171; mentionn&#233; &#224; l'article L. 6113-6.<br/>&#171; Les actions &#187;</p>
+<div>
+
+<table border="1">
+<tr>
+<th>
+<br/>GRADES</th>
+<th>
+<br/>DUR&#201;E</th>
+</tr>
+<tr>
+<td align="center">
+<br/>6e &#233;chelon</td>
+<td align="left"/>
+<td align="center">
+<br/>3 ans</td>
+</tr>
+</table>
+</div>
+<p>Fin.</p>
+</CONTENU>"#;
+    let text = build_tree(article).unwrap().html_text().unwrap();
+    assert_eq!(
+        clean_texte(&text),
+        "est ainsi rédigé :\n\n« mentionné à l'article L. 6113-6.\n« Les actions »\n\nGRADES | DURÉE\n6e échelon | 3 ans\n\nFin."
+    );
+
+    let decision = b"<CONTENU>Vu la proc\xc3\xa9dure suivante :<br/>\n<br/>\n       Proc\xc3\xa9dure ant\xc3\xa9rieure :<br/>\nM. A...</CONTENU>";
+    let text = build_tree(decision).unwrap().html_text().unwrap();
+    assert_eq!(
+        clean_texte(&text),
+        "Vu la procédure suivante :\n\nProcédure antérieure :\nM. A..."
+    );
+}
+
+#[test]
 fn xml_extract_sections_reads_the_older_motifs_marker() {
     let cleaned = "Vu la requête enregistrée le 3 mars 2011.\n\nVu les autres pièces du dossier ;\n\nSur les conclusions à fin d'annulation : Considérant qu'il résulte de l'instruction que le préjudice est établi ;\n\nDECIDE :\n\nArticle 1er : la requête est rejetée.";
     let sections = extract_sections_xml(cleaned);
@@ -751,6 +754,20 @@ fn xml_extract_sections_reads_the_older_motifs_marker() {
     assert_eq!(kinds, vec!["preamble", "visa", "motivations", "dispositif"]);
     let motifs = sections.iter().find(|s| s.kind == "motivations").unwrap();
     assert!(motifs.text.starts_with("Sur les conclusions"));
+}
+
+/// The texts a decision applies open its visa whatever the case it is printed
+/// in, inside the single line of the older Conseil d'État as well.
+#[test]
+fn xml_extract_sections_reads_the_applied_texts_as_the_visa() {
+    let cleaned = "Requête du sieur X... tendant à l'annulation d'un jugement ;\nVu le code rural ; la loi du 7 mars 1963 ;\nConsidérant que la requête manque en fait ;\nRejet.";
+    let sections = extract_sections_xml(cleaned);
+    let kinds: Vec<&str> = sections.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(kinds, vec!["preamble", "visa", "motivations"]);
+    let cleaned = "Vu la requête présentée pour la société Foullon ; Vu le code général des impôts ;\nConsidérant que la société soutient ;";
+    let sections = extract_sections_xml(cleaned);
+    assert_eq!(sections[1].kind, "visa");
+    assert!(sections[1].text.starts_with("Vu le code"));
 }
 
 #[test]
@@ -861,4 +878,172 @@ fn xml_extract_sections_partitions_text() {
     assert_eq!(kinds, vec!["preamble", "visa", "motivations", "dispositif"]);
     assert_eq!(sections[0].start_char, 0);
     assert_eq!(sections.last().unwrap().end_char, char_len(cleaned));
+}
+
+fn kinds_and_openings(sections: &[DecisionSection]) -> Vec<(&str, String)> {
+    sections
+        .iter()
+        .map(|s| (s.kind.as_str(), s.text.chars().take(24).collect()))
+        .collect()
+}
+
+/// A cassation the source zoned nothing of: the header, then each paragraph by
+/// its opening, the grief and its branches as moyens, the Court's answer as
+/// motivations. Rebuilt from storage, it gives the same sections back.
+#[test]
+fn judilibre_unzoned_cassation_is_cut_by_its_attendus() {
+    let text = "LA COUR DE CASSATION, CHAMBRE SOCIALE, a rendu l'arrêt suivant :\n\nSur le pourvoi formé par la société Alpha, en cassation d'un arrêt rendu le 3 mars 1998 par la cour d'appel de Rouen ;\n\nSur le moyen unique :\n\nAttendu, selon l'arrêt attaqué (Rouen, 3 mars 1998), que M. X..., engagé en 1989, a été licencié pour faute grave ;\n\nAttendu que la société fait grief à l'arrêt de l'avoir condamnée à payer une indemnité, alors, selon le moyen :\n\n1°/ que l'abandon de poste caractérise la faute grave ;\n\nMais attendu que la cour d'appel, qui a constaté que le salarié avait été mis en demeure, a légalement justifié sa décision ;\n\nPAR CES MOTIFS :\n\nREJETTE le pourvoi ;";
+    let payload = json!({ "id": "CCASS_LEAD", "jurisdiction": "cc", "text": text });
+    let d = parse_judilibre(&payload, Some("judilibre/CCASS_LEAD"));
+    assert_eq!(
+        kinds_and_openings(&d.sections),
+        vec![
+            ("preamble", "LA COUR DE CASSATION, CH".to_string()),
+            ("moyens", "Sur le moyen unique :".to_string()),
+            ("expose", "Attendu, selon l'arrêt a".to_string()),
+            ("moyens", "Attendu que la société f".to_string()),
+            ("motivations", "Mais attendu que la cour".to_string()),
+            ("dispositif", "PAR CES MOTIFS :\n\nREJETT".to_string()),
+        ]
+    );
+
+    let sf = build_source_fields(&payload, &d.sections);
+    let rebuilt = Decision::from_source_fields(text, &sf, "judilibre/CCASS_LEAD");
+    assert_eq!(rebuilt.sections, d.sections);
+}
+
+/// A cour d'appel the source zoned nothing of is cut at its headings, and an
+/// exposé without one opens on the first act of the procedure.
+#[test]
+fn judilibre_unzoned_appeal_is_cut_at_its_headings() {
+    let text = "COUR D'APPEL DE BASTIA\n\nCHAMBRE CIVILE\n\nAPPELANT :\n\nM. Charles X..., assisté de Me Y..., avocat au barreau d'Ajaccio\n\nCOMPOSITION DE LA COUR :\n\nMme Martin, président de chambre\n\nPar jugement du 4 juillet 1997, la mise sous curatelle de M. X... a été prononcée par le juge des tutelles.\n\nM. X... a relevé appel de cette décision.\n\nSUR CE :\n\nAttendu qu'il apparaît indispensable d'ordonner une nouvelle expertise ;\n\nPAR CES MOTIFS,\n\nLA COUR, avant dire droit, ordonne une expertise.";
+    let payload = json!({ "id": "CA_LEAD", "jurisdiction": "ca", "text": text });
+    let d = parse_judilibre(&payload, Some("judilibre/CA_LEAD"));
+    assert_eq!(
+        kinds_and_openings(&d.sections),
+        vec![
+            ("preamble", "COUR D'APPEL DE BASTIA\n\n".to_string()),
+            ("expose", "Par jugement du 4 juille".to_string()),
+            ("motivations", "SUR CE :\n\nAttendu qu'il ".to_string()),
+            ("dispositif", "PAR CES MOTIFS,\n\nLA COUR".to_string()),
+        ]
+    );
+
+    let sf = build_source_fields(&payload, &d.sections);
+    let rebuilt = Decision::from_source_fields(text, &sf, "judilibre/CA_LEAD");
+    assert_eq!(rebuilt.sections, d.sections);
+}
+
+/// Without a dispositif, the whole text is cut, and left whole when the cut
+/// finds a single part.
+#[test]
+fn judilibre_unzoned_text_without_dispositif_is_cut_only_into_parts() {
+    let text = "COUR D'APPEL DE BASTIA\n\nAPPELANT :\n\nM. Charles X..., assisté de Me Y..., avocat\n\nEXPOSÉ DU LITIGE :\n\nPar jugement du 4 juillet 1997, la mise sous curatelle de M. X... a été prononcée.\n\nMOTIFS :\n\nAttendu qu'il apparaît indispensable d'ordonner une nouvelle expertise ;";
+    let payload = json!({ "id": "CA_NODISP", "jurisdiction": "ca", "text": text });
+    let d = parse_judilibre(&payload, Some("judilibre/CA_NODISP"));
+    let kinds: Vec<&str> = d.sections.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(kinds, ["preamble", "expose", "motivations"]);
+
+    let header = "COUR D'APPEL DE BASTIA\n\nAPPELANT :\n\nM. Charles X..., assisté de Me Y..., avocat au barreau d'Ajaccio, demeurant à Bastia, représenté par son curateur, Mme Z..., demeurant à Ajaccio, intimée, le ministère public, partie jointe, et la caisse d'allocations familiales";
+    let payload = json!({ "id": "CA_HEADER", "jurisdiction": "ca", "text": header });
+    assert!(parse_judilibre(&payload, Some("judilibre/CA_HEADER"))
+        .sections
+        .is_empty());
+}
+
+/// The chapeaux carved at ingest come back when the decision is rebuilt from
+/// storage.
+#[test]
+fn judilibre_chapeau_survives_storage() {
+    let text = "Exposé du litige.\n\nRéponse de la Cour\n\nVu l'article 1240 du code civil :\n\n5. Il résulte de ce texte que la faute engage son auteur.\n\n6. Pour rejeter la demande, l'arrêt retient que le préjudice est incertain.\n\n7. En statuant ainsi, la cour d'appel a violé le texte susvisé.\n\nPAR CES MOTIFS, la Cour CASSE l'arrêt.";
+    let payload = json!({
+        "id": "CCASS_STORED",
+        "jurisdiction": "cc",
+        "text": text,
+        "zones": {
+            "expose": [{ "start": 0, "end": 17 }],
+            "motivations": [{ "start": 19, "end": 273 }],
+            "dispositif": [{ "start": 275, "end": text.chars().count() }],
+        },
+    });
+    let d = parse_judilibre(&payload, Some("judilibre/CCASS_STORED"));
+    let kinds: Vec<&str> = d.sections.iter().map(|s| s.kind.as_str()).collect();
+    assert_eq!(
+        kinds,
+        vec![
+            "expose",
+            "motivations",
+            "chapeau",
+            "motivations",
+            "dispositif"
+        ]
+    );
+
+    let sf = build_source_fields(&payload, &d.sections);
+    let rebuilt = Decision::from_source_fields(text, &sf, "judilibre/CCASS_STORED");
+    assert_eq!(rebuilt.sections, d.sections);
+}
+
+/// The moyens annexés leave the dispositif at their heading, whether the source
+/// zoned the dispositif over them or zoned nothing, and a « PAR CES MOTIFS » the
+/// annexes quote from the attacked decision opens no dispositif.
+#[test]
+fn judilibre_annexes_close_the_dispositif_at_their_heading() {
+    let text = "Sur le moyen unique :\n\nMais attendu que la cour d'appel a légalement justifié sa décision ;\n\nREJETTE le pourvoi ;\n\nMOYENS ANNEXES au présent arrêt\n\nMoyen produit par Me X, avocat aux Conseils.\n\nAUX MOTIFS QUE ; PAR CES MOTIFS, confirme le jugement.";
+    let at = |needle: &str| text[..text.find(needle).unwrap()].chars().count();
+    let annexes = at("MOYENS ANNEXES");
+    let zoned = json!({
+        "id": "CCASS_ANNEXED",
+        "jurisdiction": "cc",
+        "text": text,
+        "zones": { "dispositif": [{ "start": at("REJETTE"), "end": text.chars().count() }] },
+    });
+    let unzoned = json!({ "id": "CCASS_ANNEXED", "jurisdiction": "cc", "text": text });
+    for payload in [zoned, unzoned] {
+        let d = parse_judilibre(&payload, Some("judilibre/CCASS_ANNEXED"));
+        let dispositif = d.get_section("dispositif").unwrap();
+        assert!(
+            dispositif.text.starts_with("REJETTE"),
+            "{}",
+            dispositif.text
+        );
+        assert!(dispositif.end_char <= annexes);
+        let tail = d.sections.last().unwrap();
+        assert_eq!((tail.kind.as_str(), tail.start_char), ("annexes", annexes));
+        assert_eq!(tail.end_char, text.chars().count());
+
+        let sf = build_source_fields(&payload, &d.sections);
+        let rebuilt = Decision::from_source_fields(text, &sf, "judilibre/CCASS_ANNEXED");
+        assert_eq!(rebuilt.sections, d.sections);
+    }
+}
+
+#[test]
+fn cnil_deliberations_are_cut_at_their_own_drafting() {
+    let kinds = |text: &str| -> Vec<String> {
+        extract_sections_cnil(text)
+            .into_iter()
+            .map(|s| s.kind)
+            .collect()
+    };
+    let authorisation = "(Demande d'autorisation n° 1673651)\nLa Commission nationale de l'informatique et des libertés,\nVu la loi n° 78-17 du 6 janvier 1978 ;\nSur la proposition de M. X, commissaire ;\nFormule les observations suivantes :\nSur la finalité du traitement :\nLe traitement a pour finalité la gestion du personnel.\nAutorise, conformément à la présente délibération, la société X à mettre en œuvre le traitement.";
+    assert_eq!(
+        kinds(authorisation),
+        ["preamble", "visa", "motivations", "dispositif"]
+    );
+    let sanction = "La Commission nationale de l'informatique et des libertés, réunie en sa formation restreinte,\nVu le règlement (UE) 2016/679 ;\nVu les autres pièces du dossier ;\nLa formation restreinte a adopté la décision suivante :\nI. Faits et procédure\n1. La société X exploite un site web.\nII. Motifs de la décision\n2. La formation restreinte relève un manquement.\nPAR CES MOTIFS\nLa formation restreinte de la CNIL décide de prononcer une amende.";
+    assert_eq!(
+        kinds(sanction),
+        ["preamble", "visa", "expose", "motivations", "dispositif"]
+    );
+}
+
+#[test]
+fn conseil_etat_in_capitals_is_cut_without_its_accents() {
+    let text = "VU LA REQUETE, ENREGISTREE AU SECRETARIAT DU CONTENTIEUX LE 15 NOVEMBRE 1980 ;\nCONSIDERANT QU'AUX TERMES DE L'ARTICLE 63 DE LA LOI DU 13 JUILLET 1972, LE TEMPS PASSE COMPTE ;\nCONS. QUE LA REQUETE N'EST PAS FONDEE ;\nDECIDE ARTICLE 1ER : LA REQUETE DE M. X... EST REJETEE.";
+    let kinds: Vec<String> = extract_sections_xml(text)
+        .into_iter()
+        .map(|s| s.kind)
+        .collect();
+    assert_eq!(kinds, ["visa", "motivations", "dispositif"]);
 }

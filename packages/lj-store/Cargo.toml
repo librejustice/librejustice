@@ -9,13 +9,17 @@ license.workspace = true
 # @@@ / <=> en SQL brut. Runner de migrations (44 .sql sous migrations/).
 [dependencies]
 lj-core = { workspace = true }
+lj-pg = { workspace = true }
 lj-norm = { workspace = true }
 lj-textsearch = { workspace = true }
 lj-versions = { workspace = true }
 lj-fold = { workspace = true }
 lj-vocab = { workspace = true }
+lj-gazette = { workspace = true }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
+bytes = { workspace = true }
+futures = { workspace = true }
 deadpool-postgres = { workspace = true }
 pgvector = { workspace = true }
 serde_json = { workspace = true }

@@ -7,10 +7,9 @@ use crate::components::layout::{GRID_3COL, SHELL};
 /// colonne : le sommaire est sticky, la colonne similaires défile avec la
 /// page.
 ///
-/// Sur mobile (colonnes empilées), les rails desktop disparaissent : le
-/// sommaire et les actions sont ré-injectés DANS le flux principal par la page
-/// (entre « Parties » et le texte), et les décisions similaires suivent le
-/// contenu — l'ordre de lecture mobile est linéaire.
+/// On mobile (stacked columns) the desktop rails go: the page reinjects what the
+/// left one carries into the main flow, and the similar decisions follow the
+/// content, so the mobile reading order is linear.
 ///
 /// La colonne centrale est bornée à `max-w-3xl` en grille 3 colonnes — la même
 /// mesure de lecture que `CONTENT_COL` des pages de recherche. Sous `lg`

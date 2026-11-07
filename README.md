@@ -2,11 +2,11 @@
 
 **[librejustice.fr](https://librejustice.fr)**: a free search engine for French-language and European law, plus current public notices. It links case law from France's administrative and judicial courts to consolidated legal texts and makes them searchable in plain language on the web and through **MCP**.
 
-Free and open source. **~3.8 million decisions and ~3.9 million legal articles** in one database, linked article by article, resynchronised daily. That is the whole point: texts and case law live together, so there is no second server to plug in for the codes and no third one for the citation graph.
+Free and open source. **~3.9 million decisions, ~2.1 million legal articles in force and ~1.8 million historical versions** in one database, linked article by article, resynchronised daily. That is the whole point: texts and case law live together, so there is no second server to plug in for the codes and no third one for the citation graph.
 
 ## What you search
 
-- **Case law**: Conseil d'État, Cour de cassation, cours d'appel, administrative and judicial first-instance courts, Conseil constitutionnel, CNIL, CNDA (publicly released decisions only), Tribunal des conflits, ECHR, CJEU. Filters by court, date, outcome and cited articles.
+- **Case law**: Conseil d'État, Cour de cassation, cours d'appel, administrative and judicial first-instance courts, Conseil constitutionnel, CNIL, CNDA (publicly released decisions only), Défenseur des droits, Autorité de la concurrence, Tribunal des conflits, ECHR, CJEU, European Commission competition decisions. Filters by court, date, outcome and cited articles.
 - **Legal texts**: codes and statutes **as they stood on any date** (consolidated versions with per-article history), the full Journal officiel, EU law, treaties and bilateral accords, collective agreements, BOFiP, circulaires, and the codes of 59 foreign countries.
 - **Public notices**: open public procurement opportunities from BOAMP and buyer platforms, deduplicated with submission links and deadlines.
 - **Directory**: lawyers, companies and courts, linked to their litigation.
@@ -44,14 +44,14 @@ On claude.ai, LibreJustice is listed in the [connector directory](https://claude
 
 ## Using LibreJustice from your own code
 
-The same corpus in REST, described by [`openapi.json`](https://librejustice.fr/openapi.json) (OpenAPI 3.1). The key is free: create an account, then a key from your profile. Guide at [librejustice.fr/api-guide](https://librejustice.fr/api-guide).
+The same corpus in REST, in beta, described by [`openapi.json`](https://librejustice.fr/openapi.json) (OpenAPI 3.1). The key is free: create an account, then a key from your profile. Guide at [librejustice.fr/api-guide](https://librejustice.fr/api-guide).
 
 ```bash
 curl -H 'Authorization: Bearer ljk_your_key' \
-  'https://librejustice.fr/api/search?q=trouble+anormal+de+voisinage&limit=3'
+  'https://librejustice.fr/api/search?query=trouble+anormal+de+voisinage&limit=3'
 ```
 
-Five routes: `/api/search`, `/api/search-textes`, `/api/decision/{id}`, `/api/texte/{code}/{article}` and the same with a trailing `/{date}` for the version in force that day.
+Six routes: `/api/search`, `/api/search-textes`, `/api/decision/{id}`, `/api/norm/{jurisdiction}/{code}`, `/api/norm/{jurisdiction}/{code}/{article}` and `/api/article/{uid}`, the article routes taking `?as_of=` for the version in force that day. Parameters and fields carry the names of the MCP tools' arguments and outputs.
 
 ## Stack
 

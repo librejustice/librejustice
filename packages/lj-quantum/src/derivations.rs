@@ -2,8 +2,8 @@
 //!
 //! One table of derivations, read by the spreadsheet that closes the account and
 //! by the bench that scores a reader. Without it the same relation would live in
-//! two places and drift: a DFP quantity the spreadsheet already took from the
-//! victim's rate was counted 86 times as a value the reader invented.
+//! two places and drift: the bench would count a DFP quantity the spreadsheet
+//! already took from the victim's rate as a value the reader invented.
 
 use super::{product, Poste, Unite, Victime};
 
@@ -34,8 +34,8 @@ pub fn priced_sum(p: &Poste) -> Option<f64> {
 }
 
 /// The unit price the product imposes when the sum and the quantity are known.
-/// Measured over the gold, it lands on the referential cell of the permanent
-/// deficit as often as the price the court writes out.
+/// It lands on the referential cell of the permanent deficit as often as the
+/// price the court writes out.
 pub fn implied_unit_value(v: &Victime, p: &Poste) -> Option<f64> {
     let (sum, points) = (priced_sum(p)?, points_of(v, p)?);
     let divisor = points * p.taux_pct.unwrap_or(100.0) / 100.0;

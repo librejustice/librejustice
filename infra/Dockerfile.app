@@ -12,7 +12,7 @@ ENV LEPTOS_SITE_ROOT=/app/site
 # certificats sortants, et supercronic. reqwest est en rustls et tokio-postgres
 # est pur Rust, donc ni libssl ni postgresql-client.
 ARG SUPERCRONIC_VERSION=v0.2.45
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl poppler-utils \
+RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates curl poppler-utils qpdf \
     && curl -fsSL "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-$(dpkg --print-architecture)" \
        -o /usr/local/bin/supercronic \
     && chmod +x /usr/local/bin/supercronic \

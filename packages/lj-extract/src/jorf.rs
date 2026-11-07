@@ -15,9 +15,12 @@
 //!   (détection des traités) et le graphe de liens `LIENS/LIEN` (rattachement
 //!   avenant→accord initial).
 
+use std::collections::BTreeMap;
+
 use crate::legi::{clean_contenu, collect_titre_tm, date_or_none, find_anywhere};
 use lj_core::error::CoreError;
-use lj_parse::{build_tree, node_text};
+use lj_parse::{build_tree, node_text, XmlNode};
+use serde::{Deserialize, Serialize};
 
 /// Une version d'article du fond JORF (`JORFARTI*.xml`, racine `<ARTICLE>`).
 /// Calque [`crate::legi::LegiArticle`] mais `num`/`num_key`/`date_debut` sont
@@ -188,53 +191,339 @@ fn collect_liens(root: &lj_parse::XmlNode) -> Vec<JorfLien> {
         .unwrap_or_default()
 }
 
-/// Une entrée `STRUCT/LIEN_ART` : l'article et, s'il est numéroté, sa clé
-/// d'identité.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct JorfStructArt {
-    pub id: String,
-    pub num_key: Option<String>,
+/// An item of a JORF text or of one of its sections, in published order: an
+/// article with its `NUM` when it has one, or a section with the title and
+/// level its parent gives it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JorfItem {
+    Article {
+        article: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        num: Option<String>,
+    },
+    Section {
+        section: String,
+        title: String,
+        level: u8,
+    },
 }
 
-/// Le **dispositif propre** d'un `texte/struct/JORFTEXT*.xml` (racine
-/// `<TEXTELR>`) : le cid chronique et ses `STRUCT/LIEN_ART` dans l'ordre du
-/// fichier, qui est l'ordre du document au JO (les ids `JORFARTI`, eux, ne
-/// suivent PAS cet ordre). La `STRUCT` ne descend pas dans les sections : les
-/// articles d'une annexe sont déclarés par sa `section_ta/JORFSCTA*.xml`, et
-/// c'est ce qui départage les deux séries d'un texte dont l'annexe renumérote
-/// à partir de 1.
+/// The `LIEN_ART` and `LIEN_SECTION_TA` children of a `STRUCT` or a
+/// `STRUCTURE_TA`, in document order.
+fn collect_items(node: Option<&XmlNode>) -> Result<Vec<JorfItem>, CoreError> {
+    let Some(node) = node else {
+        return Ok(Vec::new());
+    };
+    let mut items = Vec::new();
+    for c in &node.children {
+        match c.tag.as_str() {
+            "LIEN_ART" => {
+                let Some(id) = non_empty(c.attr("id")) else {
+                    continue;
+                };
+                items.push(JorfItem::Article {
+                    article: id,
+                    num: non_empty(c.attr("num")),
+                });
+            }
+            "LIEN_SECTION_TA" => {
+                let section = non_empty(c.attr("id"))
+                    .ok_or_else(|| CoreError::Xml("LIEN_SECTION_TA without id".into()))?;
+                let level = level(c, &section)?;
+                items.push(JorfItem::Section {
+                    section,
+                    title: c.text().unwrap_or_default(),
+                    level,
+                });
+            }
+            _ => {}
+        }
+    }
+    Ok(items)
+}
+
+fn level(node: &XmlNode, owner: &str) -> Result<u8, CoreError> {
+    node.attr("niv")
+        .and_then(|v| v.trim().parse().ok())
+        .ok_or_else(|| CoreError::Xml(format!("{owner}: niv missing or not a level")))
+}
+
+fn non_empty(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|v| !v.is_empty())
+        .map(str::to_string)
+}
+
+/// A `texte/struct/JORFTEXT*.xml` (root `<TEXTELR>`): the text's own items in
+/// published order, which the `JORFARTI` ids do not follow. A section declares
+/// its own articles in its `JORFSCTA`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JorfStructOrder {
     pub jorftext: String,
-    pub articles: Vec<JorfStructArt>,
+    pub items: Vec<JorfItem>,
 }
 
-/// Parse un `texte/struct/JORFTEXT*.xml` en [`JorfStructOrder`]. Erreur franche
-/// si le CID chronique manque ; `STRUCT` vide ou absente → liste vide (texte
-/// pré-numérisation, contenu en fac-similé seulement).
+impl JorfStructOrder {
+    /// The text's own articles, outside its sections: `(JORFARTI, NUM)`.
+    pub fn articles(&self) -> impl Iterator<Item = (&str, Option<&str>)> {
+        self.items.iter().filter_map(|i| match i {
+            JorfItem::Article { article, num } => Some((article.as_str(), num.as_deref())),
+            JorfItem::Section { .. } => None,
+        })
+    }
+}
+
+/// Parses a `texte/struct/JORFTEXT*.xml`. An empty or absent `STRUCT` gives no
+/// item: a text of the scanned era, published as a facsimile only.
 pub fn parse_jorf_struct(raw: &[u8]) -> Result<JorfStructOrder, CoreError> {
     let root =
         build_tree(raw).ok_or_else(|| CoreError::Xml("TEXTELR JORF: XML illisible".into()))?;
     let jorftext = node_text(find_anywhere(&root, "META_TEXTE_CHRONICLE/CID"))
         .ok_or_else(|| CoreError::Xml("TEXTELR JORF: META_TEXTE_CHRONICLE/CID manquant".into()))?;
-    let articles = find_anywhere(&root, "STRUCT")
-        .map(|s| {
-            s.children
-                .iter()
-                .filter(|c| c.tag == "LIEN_ART")
-                .filter_map(|c| {
-                    Some(JorfStructArt {
-                        id: c.attr("id").filter(|v| !v.is_empty())?.to_string(),
-                        num_key: c
-                            .attr("num")
-                            .filter(|v| !v.is_empty())
-                            .map(lj_norm::article_key::identity_key),
-                    })
-                })
-                .collect()
+    let items = collect_items(find_anywhere(&root, "STRUCT"))?;
+    Ok(JorfStructOrder { jorftext, items })
+}
+
+/// What a section holds, stored under its `JORFSCTA`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JorfSectionBody {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comment: Option<String>,
+    pub items: Vec<JorfItem>,
+}
+
+/// A `section_ta/JORFSCTA*.xml` (root `<SECTION_TA>`) and the text it belongs to.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JorfSection {
+    pub id: String,
+    pub jorftext: String,
+    pub body: JorfSectionBody,
+}
+
+pub fn parse_jorf_section(raw: &[u8]) -> Result<JorfSection, CoreError> {
+    let root =
+        build_tree(raw).ok_or_else(|| CoreError::Xml("SECTION_TA JORF: unreadable XML".into()))?;
+    let id = node_text(find_anywhere(&root, "SECTION_TA/ID"))
+        .ok_or_else(|| CoreError::Xml("SECTION_TA JORF: ID missing".into()))?;
+    let jorftext = find_anywhere(&root, "CONTEXTE/TEXTE")
+        .and_then(|t| non_empty(t.attr("cid")))
+        .ok_or_else(|| {
+            CoreError::Xml(format!("SECTION_TA JORF {id}: CONTEXTE/TEXTE@cid missing"))
+        })?;
+    let body = JorfSectionBody {
+        title: node_text(find_anywhere(&root, "SECTION_TA/TITRE_TA")),
+        comment: find_anywhere(&root, "SECTION_TA/COMMENTAIRE").and_then(XmlNode::html_text),
+        items: collect_items(find_anywhere(&root, "SECTION_TA/STRUCTURE_TA"))?,
+    };
+    Ok(JorfSection { id, jorftext, body })
+}
+
+/// The text and nota of an article as published, stored under its `JORFARTI`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JorfArticleText {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub text: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nota: Option<String>,
+}
+
+impl JorfArticle {
+    /// `None` for an empty article.
+    pub fn published_text(&self) -> Option<JorfArticleText> {
+        (self.texte.is_some() || self.nota.is_some()).then(|| JorfArticleText {
+            text: self.texte.clone(),
+            nota: self.nota.clone(),
         })
-        .unwrap_or_default();
-    Ok(JorfStructOrder { jorftext, articles })
+    }
+}
+
+/// A node of an issue's table of contents: a heading with its level and what
+/// it holds, or an entry naming a text with the title the issue printed.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum JorfTocNode {
+    Heading {
+        heading: String,
+        level: u8,
+        items: Vec<JorfTocNode>,
+    },
+    Entry {
+        text: String,
+        title: String,
+    },
+}
+
+/// A JO issue, `conteneur/JORF/CONT/…/JORFCONT*.xml` (root `<JO>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JorfIssue {
+    pub issue_uid: String,
+    pub num: Option<String>,
+    pub date_publi: Option<String>,
+    pub eli: Option<String>,
+    pub title: String,
+    pub toc: Vec<JorfTocNode>,
+}
+
+impl JorfIssue {
+    /// The texts the table of contents lists, in its order.
+    pub fn texts(&self) -> Vec<&str> {
+        fn walk<'a>(nodes: &'a [JorfTocNode], out: &mut Vec<&'a str>) {
+            for n in nodes {
+                match n {
+                    JorfTocNode::Heading { items, .. } => walk(items, out),
+                    JorfTocNode::Entry { text, .. } => out.push(text),
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(&self.toc, &mut out);
+        out
+    }
+}
+
+fn toc_nodes(node: &XmlNode) -> Result<Vec<JorfTocNode>, CoreError> {
+    let mut nodes = Vec::new();
+    for c in &node.children {
+        match c.tag.as_str() {
+            "TM" => nodes.push(JorfTocNode::Heading {
+                heading: node_text(c.find("TITRE_TM")).unwrap_or_default(),
+                level: level(c, "TM")?,
+                items: toc_nodes(c)?,
+            }),
+            "LIEN_TXT" => nodes.push(JorfTocNode::Entry {
+                text: non_empty(c.attr("idtxt"))
+                    .ok_or_else(|| CoreError::Xml("LIEN_TXT without idtxt".into()))?,
+                title: c.attr("titretxt").unwrap_or_default().trim().to_string(),
+            }),
+            _ => {}
+        }
+    }
+    Ok(nodes)
+}
+
+pub fn parse_jorf_conteneur(raw: &[u8]) -> Result<JorfIssue, CoreError> {
+    let root = build_tree(raw).ok_or_else(|| CoreError::Xml("JO JORF: unreadable XML".into()))?;
+    let issue_uid = node_text(find_anywhere(&root, "META_COMMUN/ID"))
+        .ok_or_else(|| CoreError::Xml("JO JORF: META_COMMUN/ID missing".into()))?;
+    let title = node_text(find_anywhere(&root, "META_CONTENEUR/TITRE"))
+        .ok_or_else(|| CoreError::Xml(format!("JO JORF {issue_uid}: TITRE missing")))?;
+    let toc = match find_anywhere(&root, "STRUCTURE_TXT") {
+        Some(s) => toc_nodes(s).map_err(|e| CoreError::Xml(format!("JO JORF {issue_uid}: {e}")))?,
+        None => Vec::new(),
+    };
+    Ok(JorfIssue {
+        num: node_text(find_anywhere(&root, "META_CONTENEUR/NUM")),
+        date_publi: date_or_none(node_text(find_anywhere(&root, "META_CONTENEUR/DATE_PUBLI"))),
+        eli: node_text(find_anywhere(&root, "META_COMMUN/ID_ELI")),
+        issue_uid,
+        title,
+        toc,
+    })
+}
+
+/// A text's `ENTREPRISE` block, when it is marked as concerning companies.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JorfEnterprise {
+    pub dates: Vec<String>,
+    pub domains: Vec<String>,
+}
+
+/// The blocks of a `TEXTE_VERSION` around its articles, and the key each is
+/// stored under.
+const BLOCKS: [(&str, &str); 7] = [
+    ("NOTICE", "notice"),
+    ("VISAS", "visas"),
+    ("SIGNATAIRES", "signataires"),
+    ("TP", "tp"),
+    ("ABRO", "abro"),
+    ("RECT", "rect"),
+    ("SM", "sm"),
+];
+
+/// What a `TEXTE_VERSION` publishes beyond what `legal_text` keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JorfPublication {
+    pub jorftext: String,
+    pub num_parution: Option<String>,
+    pub num_sequence: Option<i32>,
+    pub origine_publi: Option<String>,
+    pub date_publi: Option<String>,
+    pub eli: Option<String>,
+    pub page_deb: Option<i32>,
+    pub page_fin: Option<i32>,
+    pub ministere: Option<String>,
+    pub autorite: Option<String>,
+    pub title: Option<String>,
+    pub title_full: Option<String>,
+    pub keywords: Vec<String>,
+    pub enterprise: Option<JorfEnterprise>,
+    pub blocks: BTreeMap<String, String>,
+}
+
+/// A hard error when the id is missing, or when a sequence or a page is not a
+/// number.
+pub fn parse_jorf_publication(raw: &[u8]) -> Result<JorfPublication, CoreError> {
+    let root = build_tree(raw)
+        .ok_or_else(|| CoreError::Xml("TEXTE_VERSION JORF: unreadable XML".into()))?;
+    let jorftext = node_text(find_anywhere(&root, "META_COMMUN/ID"))
+        .ok_or_else(|| CoreError::Xml("TEXTE_VERSION JORF: META_COMMUN/ID missing".into()))?;
+    let chronicle =
+        |tag: &str| node_text(find_anywhere(&root, &format!("META_TEXTE_CHRONICLE/{tag}")));
+    let version = |tag: &str| node_text(find_anywhere(&root, &format!("META_TEXTE_VERSION/{tag}")));
+    let number = |tag: &str| -> Result<Option<i32>, CoreError> {
+        chronicle(tag)
+            .map(|v| {
+                v.parse().map_err(|_| {
+                    CoreError::Xml(format!("TEXTE_VERSION JORF {jorftext}: {tag} {v:?}"))
+                })
+            })
+            .transpose()
+    };
+    let children = |path: &str, tag: &str| -> Vec<String> {
+        find_anywhere(&root, path)
+            .map(|n| {
+                n.children
+                    .iter()
+                    .filter(|c| c.tag == tag)
+                    .filter_map(XmlNode::text)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let enterprise = find_anywhere(&root, "TEXTE_VERSION/ENTREPRISE")
+        .filter(|e| e.attr("texte_entreprise") == Some("oui"))
+        .map(|_| JorfEnterprise {
+            dates: children("ENTREPRISE/DATES_EFFET", "DATE_EFFET"),
+            domains: children("ENTREPRISE/DOMAINES", "DOMAINE"),
+        });
+    let blocks = BLOCKS
+        .iter()
+        .filter_map(|(tag, key)| {
+            let path = format!("TEXTE_VERSION/{tag}/CONTENU");
+            Some((key.to_string(), clean_contenu(find_anywhere(&root, &path))?))
+        })
+        .collect();
+    Ok(JorfPublication {
+        num_parution: chronicle("NUM_PARUTION"),
+        num_sequence: number("NUM_SEQUENCE")?,
+        origine_publi: chronicle("ORIGINE_PUBLI"),
+        date_publi: date_or_none(chronicle("DATE_PUBLI")),
+        eli: node_text(find_anywhere(&root, "META_COMMUN/ID_ELI")),
+        page_deb: number("PAGE_DEB_PUBLI")?,
+        page_fin: number("PAGE_FIN_PUBLI")?,
+        ministere: version("MINISTERE"),
+        autorite: version("AUTORITE"),
+        title: version("TITRE"),
+        title_full: version("TITREFULL"),
+        keywords: children("META_TEXTE_VERSION/MCS_TXT", "MC"),
+        enterprise,
+        blocks,
+        jorftext,
+    })
 }
 
 #[cfg(test)]
@@ -405,19 +694,12 @@ mod tests {
         let s = parse_jorf_struct(xml.as_bytes()).expect("struct");
         assert_eq!(s.jorftext, "JORFTEXT000000209787");
         assert_eq!(
-            s.articles.iter().map(|a| a.id.as_str()).collect::<Vec<_>>(),
+            s.articles().collect::<Vec<_>>(),
             vec![
-                "JORFARTI000001045162",
-                "JORFARTI000002207442",
-                "JORFARTI000001817636"
+                ("JORFARTI000001045162", None),
+                ("JORFARTI000002207442", None),
+                ("JORFARTI000001817636", Some("Annexe"))
             ]
-        );
-        assert_eq!(
-            s.articles
-                .iter()
-                .map(|a| a.num_key.as_deref())
-                .collect::<Vec<_>>(),
-            vec![None, None, Some("annexe")]
         );
     }
 
@@ -436,11 +718,16 @@ mod tests {
 </TEXTELR>"#;
         let s = parse_jorf_struct(xml.as_bytes()).expect("struct");
         assert_eq!(
-            s.articles
-                .iter()
-                .map(|a| a.num_key.as_deref())
-                .collect::<Vec<_>>(),
+            s.articles().map(|(_, num)| num).collect::<Vec<_>>(),
             vec![Some("1"), Some("6")]
+        );
+        assert_eq!(
+            s.items.last(),
+            Some(&JorfItem::Section {
+                section: "JORFSCTA000054750173".into(),
+                title: "Annexe".into(),
+                level: 1,
+            })
         );
     }
 
@@ -452,7 +739,7 @@ mod tests {
 <STRUCT/>
 </TEXTELR>"#;
         let s = parse_jorf_struct(xml.as_bytes()).expect("struct");
-        assert!(s.articles.is_empty());
+        assert!(s.items.is_empty());
     }
 
     #[test]
@@ -467,5 +754,117 @@ mod tests {
         let xml = br#"<ARTICLE><META_COMMUN><ID>JORFARTI000000000001</ID></META_COMMUN>
 <CONTEXTE><TEXTE/></CONTEXTE></ARTICLE>"#;
         assert!(matches!(parse_jorf_article(xml), Err(CoreError::Xml(_))));
+    }
+
+    // A real JORFCONT, JO n° 0235 of 8 October 2026, cut to two headings.
+    const JO_0235: &str = r#"<JO>
+<META><META_COMMUN><ID>JORFCONT000054960866</ID><ID_ELI>https://www.legifrance.gouv.fr/eli/jo/2026/10/8/0235</ID_ELI><NATURE>JO</NATURE></META_COMMUN>
+<META_SPEC><META_CONTENEUR><TITRE>JORF n°0235 du 8 octobre 2026</TITRE><NUM>0235</NUM><DATE_PUBLI>2026-10-08</DATE_PUBLI></META_CONTENEUR></META_SPEC></META>
+<STRUCTURE_TXT>
+<TM niv="1"><TITRE_TM>Journal officiel "Lois et Décrets"</TITRE_TM>
+<TM niv="2"><TITRE_TM>Décrets, arrêtés, circulaires</TITRE_TM>
+<TM niv="3"><TITRE_TM>Textes généraux</TITRE_TM>
+<TM niv="4"><TITRE_TM>Ministère de l'intérieur</TITRE_TM>
+<LIEN_TXT idtxt="JORFTEXT000054960879" titretxt="Arrêté du 24 septembre 2026 modifiant l'arrêté du 4 février 2015"/>
+<LIEN_TXT idtxt="JORFTEXT000054960887" titretxt="Décision du 5 octobre 2026 portant délégation de signature"/>
+</TM></TM></TM>
+<TM niv="2"><TITRE_TM>Annonces</TITRE_TM>
+<LIEN_TXT idtxt="JORFTEXT000054961483" titretxt="Demandes de changement de nom (Accès protégé textes 58 à 78)"/>
+</TM></TM>
+</STRUCTURE_TXT>
+</JO>"#;
+
+    #[test]
+    fn an_issue_keeps_its_headings_and_the_order_of_its_texts() {
+        let issue = parse_jorf_conteneur(JO_0235.as_bytes()).expect("issue");
+        assert_eq!(issue.issue_uid, "JORFCONT000054960866");
+        assert_eq!(issue.num.as_deref(), Some("0235"));
+        assert_eq!(issue.date_publi.as_deref(), Some("2026-10-08"));
+        assert_eq!(
+            issue.texts(),
+            [
+                "JORFTEXT000054960879",
+                "JORFTEXT000054960887",
+                "JORFTEXT000054961483"
+            ]
+        );
+        let JorfTocNode::Heading { heading, items, .. } = &issue.toc[0] else {
+            panic!("a heading first");
+        };
+        assert_eq!(heading, "Journal officiel \"Lois et Décrets\"");
+        assert!(
+            matches!(&items[1], JorfTocNode::Heading { heading, level: 2, .. } if heading == "Annonces")
+        );
+    }
+
+    // A real TEXTE_VERSION, arrêté of 16 September 2026 (JORFTEXT000054960871),
+    // cut; its note (1) sits inside SIGNATAIRES.
+    const ARRETE_CYBER: &str = r#"<TEXTE_VERSION>
+<META><META_COMMUN><ID>JORFTEXT000054960871</ID><ID_ELI>https://www.legifrance.gouv.fr/eli/arrete/2026/9/16/PRMI2623428A/jo/texte</ID_ELI><NATURE>ARRETE</NATURE></META_COMMUN>
+<META_SPEC><META_TEXTE_CHRONICLE><CID>JORFTEXT000054960871</CID><NUM/><NUM_PARUTION>0235</NUM_PARUTION><NUM_SEQUENCE>1</NUM_SEQUENCE><NOR>PRMI2623428A</NOR><DATE_PUBLI>2026-10-08</DATE_PUBLI><DATE_TEXTE>2026-09-16</DATE_TEXTE><ORIGINE_PUBLI>JORF n°0235 du 8 octobre 2026</ORIGINE_PUBLI><PAGE_DEB_PUBLI/><PAGE_FIN_PUBLI/></META_TEXTE_CHRONICLE>
+<META_TEXTE_VERSION><TITRE>Arrêté du 16 septembre 2026</TITRE><TITREFULL>Arrêté du 16 septembre 2026 relatif à l'approbation du cahier des charges</TITREFULL><AUTORITE/><MINISTERE>Premier ministre</MINISTERE><MCS_TXT/></META_TEXTE_VERSION></META_SPEC></META>
+<NOTICE><CONTENU/></NOTICE>
+<VISAS><CONTENU><p align="left"><br/>Le Premier ministre,<br/>Vu la loi n° 2010-237 du 9 mars 2010 ;<br/>Arrête :</p></CONTENU></VISAS>
+<SIGNATAIRES><CONTENU><div align="left"><p>Fait le 16 septembre 2026.</p></div><div align="left"><p>B. BONNELL</p></div><p>(1) Le cahier des charges est consultable sur les sites internet de Bpifrance.</p></CONTENU></SIGNATAIRES>
+<TP><CONTENU/></TP><ABRO><CONTENU/></ABRO><RECT><CONTENU/></RECT><SM><CONTENU/></SM>
+<ENTREPRISE texte_entreprise="oui"><DATES_EFFET><DATE_EFFET>2016-08-12</DATE_EFFET></DATES_EFFET><DOMAINES><DOMAINE>Economie et finances</DOMAINE></DOMAINES></ENTREPRISE>
+</TEXTE_VERSION>"#;
+
+    #[test]
+    fn a_publication_keeps_its_place_in_the_issue_and_its_blocks() {
+        let p = parse_jorf_publication(ARRETE_CYBER.as_bytes()).expect("publication");
+        assert_eq!(p.num_parution.as_deref(), Some("0235"));
+        assert_eq!(p.num_sequence, Some(1));
+        assert_eq!(p.page_deb, None);
+        assert_eq!(p.ministere.as_deref(), Some("Premier ministre"));
+        assert_eq!(p.autorite, None);
+        assert_eq!(p.title.as_deref(), Some("Arrêté du 16 septembre 2026"));
+        assert_eq!(
+            p.blocks.keys().map(String::as_str).collect::<Vec<_>>(),
+            ["signataires", "visas"]
+        );
+        assert_eq!(
+            p.blocks["visas"],
+            "Le Premier ministre,\nVu la loi n° 2010-237 du 9 mars 2010 ;\nArrête :"
+        );
+        assert!(p.blocks["signataires"].ends_with(
+            "(1) Le cahier des charges est consultable sur les sites internet de Bpifrance."
+        ));
+        assert_eq!(
+            p.enterprise,
+            Some(JorfEnterprise {
+                dates: vec!["2016-08-12".into()],
+                domains: vec!["Economie et finances".into()],
+            })
+        );
+    }
+
+    #[test]
+    fn a_section_holds_its_subsections_and_articles_in_order() {
+        // A real SECTION_TA (JORFSCTA000054297716), one subsection and one article kept.
+        let xml = r#"<SECTION_TA><ID>JORFSCTA000054297716</ID><TITRE_TA>Titre 1ER : DISPOSITIONS GÉNÉRALES</TITRE_TA><COMMENTAIRE/>
+<STRUCTURE_TA>
+<LIEN_SECTION_TA cid="JORFSCTA000054297718" id="JORFSCTA000054297718" niv="3">Chapitre A Règles générales</LIEN_SECTION_TA>
+<LIEN_ART id="JORFARTI000054297730" num=""/>
+</STRUCTURE_TA>
+<CONTEXTE><TEXTE cid="JORFTEXT000054297670" nature="ARRETE"><TITRE_TXT>Arrêté du 8 juin 2026</TITRE_TXT></TEXTE></CONTEXTE>
+</SECTION_TA>"#;
+        let s = parse_jorf_section(xml.as_bytes()).expect("section");
+        assert_eq!(s.jorftext, "JORFTEXT000054297670");
+        assert_eq!(
+            s.body.title.as_deref(),
+            Some("Titre 1ER : DISPOSITIONS GÉNÉRALES")
+        );
+        assert_eq!(s.body.comment, None);
+        assert_eq!(
+            serde_json::to_value(&s.body.items).unwrap(),
+            serde_json::json!([
+                {"section": "JORFSCTA000054297718", "title": "Chapitre A Règles générales", "level": 3},
+                {"article": "JORFARTI000054297730"}
+            ])
+        );
+        let back: Vec<JorfItem> =
+            serde_json::from_value(serde_json::to_value(&s.body.items).unwrap()).unwrap();
+        assert_eq!(back, s.body.items);
     }
 }

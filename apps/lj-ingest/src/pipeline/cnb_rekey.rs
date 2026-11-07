@@ -15,7 +15,7 @@ use anyhow::{anyhow, Result};
 
 use lj_store::repository::{CnbEntityState, CnbEntityUpdate, DecisionRepository, EntityWriteItem};
 
-use super::registries::{fetch_avocat_rows, AvocatRow};
+use super::registries::{fetch_avocat_rows, AvocatRow, CnbRows};
 use crate::config::Settings;
 
 /// Plan de re-key, calculé à froid (pur, testé) puis appliqué en une
@@ -74,11 +74,11 @@ impl Bridge {
             exact
                 .entry((r.barreau_slug.clone(), np.clone()))
                 .and_modify(|v| *v = None)
-                .or_insert(Some(r.cnbf.clone()));
+                .or_insert(Some(r.uid.clone()));
             by_name
                 .entry(np)
                 .and_modify(|v| *v = None)
-                .or_insert(Some(r.cnbf.clone()));
+                .or_insert(Some(r.uid.clone()));
         }
         Self { exact, by_name }
     }
@@ -118,8 +118,8 @@ fn rekey_plan(
             continue;
         }
         match bridge.map(barreau, nomprenom) {
-            Some(cnbf) => {
-                let target = format!("cnb:{cnbf}");
+            Some(target) => {
+                let target = target.to_string();
                 if existing_uids.contains(target.as_str()) || !claimed.insert(target.clone()) {
                     plan.merges.push((state.uid.clone(), target));
                 } else {
@@ -159,9 +159,7 @@ fn rekey_plan(
             continue;
         };
         match bridge.map(barreau, nomprenom) {
-            Some(cnbf) => plan
-                .dangling_remaps
-                .push((uid.clone(), format!("cnb:{cnbf}"))),
+            Some(target) => plan.dangling_remaps.push((uid.clone(), target.to_string())),
             None => plan.rehydrate.push(EntityWriteItem {
                 uid: uid.clone(),
                 nature: "physique",
@@ -189,18 +187,18 @@ pub async fn rekey_cnb(apply: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let dir = settings.cache_dir().join("registries");
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
         .map_err(|e| anyhow!("migrations: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 
-    let (rows, snapshot) = fetch_avocat_rows(&dir)
-        .await?
-        .ok_or_else(|| anyhow!("current cnb snapshot carries no avCnbfCode"))?;
+    let (CnbRows::Coded(rows), snapshot) = fetch_avocat_rows(&dir).await? else {
+        anyhow::bail!("current cnb snapshot carries no avCnbfCode");
+    };
     let existing = repo.entity_cnb_states().await?;
-    let dangling = repo.dangling_cnb_party_uids().await?;
+    let dangling = repo.dangling_cnb_actor_uids().await?;
     let plan = rekey_plan(&rows, &existing, &dangling, snapshot);
 
     println!(
@@ -229,13 +227,11 @@ pub async fn rekey_cnb(apply: bool) -> Result<()> {
 
     conn.batch_execute("BEGIN; SET LOCAL statement_timeout = 0")
         .await?;
-    let unlinked = repo.decision_party_unlink_uids(&plan.bogus).await?;
+    let unlinked = repo.actor_unlink_uids(&plan.bogus).await?;
     let bogus_deleted = repo.entity_delete_bulk(&plan.bogus).await?;
     let renamed = repo.entity_rename_bulk(&plan.renames).await?;
     // Renames purs : les compteurs suivent la ligne d'entité, pas de recount.
-    let (rename_links, _) = repo
-        .decision_party_remap_entity(&plan.renames, false)
-        .await?;
+    let (rename_links, _) = repo.actor_remap_entities(&plan.renames, false).await?;
     // Fusions + danglants : les cibles GAGNENT des liens → recount scopé.
     let merge_pairs: Vec<(String, String)> = plan
         .merges
@@ -243,8 +239,7 @@ pub async fn rekey_cnb(apply: bool) -> Result<()> {
         .chain(plan.dangling_remaps.iter())
         .cloned()
         .collect();
-    let (merge_links, touched_decisions) =
-        repo.decision_party_remap_entity(&merge_pairs, true).await?;
+    let (merge_links, touched_decisions) = repo.actor_remap_entities(&merge_pairs, true).await?;
     let merged_deleted = repo
         .entity_delete_bulk(&plan.merges.iter().map(|m| m.0.clone()).collect::<Vec<_>>())
         .await?;
@@ -287,7 +282,7 @@ mod tests {
 
     fn row(cnbf: &str, barreau_slug: &str, nom: &str, prenom: &str) -> AvocatRow {
         AvocatRow {
-            cnbf: cnbf.to_string(),
+            uid: format!("cnb:{cnbf}"),
             barreau: barreau_slug.to_uppercase(),
             barreau_slug: barreau_slug.to_string(),
             nom: nom.to_string(),
@@ -314,7 +309,7 @@ mod tests {
     fn rekey_plan_spec() {
         let snapshot = d("2026-07-17");
         let rows = [
-            row("300730", "agen", "AZZOUZ", "Dahab"),
+            row("900001", "agen", "BERTIN", "Louise"),
             row("111111", "lyon", "MARTIN", "Sophie"),
             // Homonymes nationaux : nom-prenom non unique → pas de pont nom seul.
             row("222222", "paris", "DUPONT", "Jean"),
@@ -322,13 +317,13 @@ mod tests {
         ];
 
         // Pont exact (barreau, nom-prenom) → rename.
-        let existing = [state("cnb:agen:azzouz-dahab", "Dahab Azzouz")];
+        let existing = [state("cnb:agen:bertin-louise", "Louise Bertin")];
         let plan = rekey_plan(&rows, &existing, &[], snapshot);
         assert_eq!(
             plan.renames,
             vec![(
-                "cnb:agen:azzouz-dahab".to_string(),
-                "cnb:300730".to_string()
+                "cnb:agen:bertin-louise".to_string(),
+                "cnb:900001".to_string()
             )]
         );
 
@@ -368,18 +363,18 @@ mod tests {
         // Doublon d'une même personne sous deux barreaux : un rename (exact),
         // l'autre fusionne.
         let existing = [
-            state("cnb:agen:azzouz-dahab", "Dahab Azzouz"),
-            state("cnb:albi:azzouz-dahab", "Dahab Azzouz"),
+            state("cnb:agen:bertin-louise", "Louise Bertin"),
+            state("cnb:albi:bertin-louise", "Louise Bertin"),
         ];
         let plan = rekey_plan(&rows, &existing, &[], snapshot);
         assert_eq!(plan.renames.len(), 1);
         assert_eq!(plan.merges.len(), 1);
-        assert_eq!(plan.merges[0].1, "cnb:300730");
+        assert_eq!(plan.merges[0].1, "cnb:900001");
 
         // Pied de fichier → purge, jamais ponté.
-        let existing = [state("cnb:agen:20260615-945", "945 20260615")];
+        let existing = [state("cnb:agen:20260101-100", "100 20260101")];
         let plan = rekey_plan(&rows, &existing, &[], snapshot);
-        assert_eq!(plan.bogus, vec!["cnb:agen:20260615-945"]);
+        assert_eq!(plan.bogus, vec!["cnb:agen:20260101-100"]);
         assert!(plan.renames.is_empty() && plan.deactivate.is_empty());
 
         // Danglants : ponté → remap des liens ; sans pont → réhydraté inactif.
@@ -408,16 +403,16 @@ mod tests {
 
         // Cible déjà au format CNBF en base (run partiel antérieur) → merge.
         let existing = [
-            state("cnb:300730", "Dahab Azzouz"),
-            state("cnb:agen:azzouz-dahab", "Dahab Azzouz"),
+            state("cnb:900001", "Louise Bertin"),
+            state("cnb:agen:bertin-louise", "Louise Bertin"),
         ];
         let plan = rekey_plan(&rows, &existing, &[], snapshot);
         assert!(plan.renames.is_empty());
         assert_eq!(
             plan.merges,
             vec![(
-                "cnb:agen:azzouz-dahab".to_string(),
-                "cnb:300730".to_string()
+                "cnb:agen:bertin-louise".to_string(),
+                "cnb:900001".to_string()
             )]
         );
     }

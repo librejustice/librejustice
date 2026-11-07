@@ -14,8 +14,8 @@ use lj_sources::error::Result;
 const BASE: &str = "https://www.xmarches.fr/entreprise";
 const MAX_PAGES: u64 = 80;
 const FICHES_PARALLELES: usize = 10;
-/// Relectures de la liste au plus. Quatre suffisent à ramasser les 296
-/// consultations du 27/08 (271, puis 288, 295, 296) ; la sixième est la marge.
+/// Rereads of the list at most: the listing settles within a few, the rest is
+/// margin.
 const PASSES_MAX: u32 = 6;
 
 fn parse_page(html: &str) -> Vec<AnnonceBrute> {
@@ -210,8 +210,8 @@ fn champs_fiche(html: &str) -> DetailAnnonce {
 
 /// Downloadable piece of a card, behind a `data-url` the page turns into a
 /// download on click. Only a document names a postal address, and the notice is
-/// the lightest: 57 Ko against the 1,7 Mo of a consultation rulebook, which a
-/// fifth of the cards leave as the only one on offer.
+/// far lighter than a consultation rulebook, which some cards leave as the only
+/// one on offer.
 fn lien_piece(html: &str, quoi: &str) -> Option<String> {
     let motif = Regex::new(&format!(r#"data-url="([^"]*telequoi={quoi}[^"]*)""#)).ok()?;
     let brut = motif.captures(html)?[1].replace("&amp;", "&");

@@ -37,7 +37,7 @@ fn words_only(title: &str) -> String {
 pub async fn refile_union_texts() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
     let pile = repo
@@ -50,7 +50,7 @@ pub async fn refile_union_texts() -> Result<()> {
         if !enacted_by_the_union(&title) {
             continue;
         }
-        repo.set_text_jurisdiction(&text_uid, "UE")
+        repo.set_text_jurisdiction(&text_uid, "EU")
             .await
             .map_err(|e| anyhow!("set_text_jurisdiction({text_uid}): {e}"))?;
         filed += 1;

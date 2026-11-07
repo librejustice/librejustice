@@ -28,21 +28,21 @@ use lj_store::repository::{
 };
 
 use super::registries::{
-    fetch_avocat_rows, field, parse_yyyymmdd, slug, snapshot_date_from_title, surname_key,
+    fetch_avocat_rows, field, parse_yyyymmdd, slug, snapshot_date_from_title, surname_key, CnbRows,
 };
 use crate::config::Settings;
 
 /// Identité observée à un snapshot : ce que le schéma maigre en dit.
-struct HistRow {
-    barreau: String,
-    barreau_slug: String,
-    nom: String,
-    prenom: String,
+pub(super) struct HistRow {
+    pub(super) barreau: String,
+    pub(super) barreau_slug: String,
+    pub(super) nom: String,
+    pub(super) prenom: String,
     /// `acDateSerment` — entrée dans la profession, déclarée et
     /// rétroactivement valide (présente dès le snapshot de 2022).
-    serment: Option<chrono::NaiveDate>,
+    pub(super) serment: Option<chrono::NaiveDate>,
     /// `cbSiretSiren` — structure d'exercice au moment du snapshot.
-    siren: Option<String>,
+    pub(super) siren: Option<String>,
 }
 
 /// Une période continue de présence, en indices de snapshots.
@@ -77,7 +77,7 @@ fn col(headers: &[String], names: &[&str]) -> Result<usize, SourceError> {
         .ok_or_else(|| SourceError::Invalid(format!("aucune colonne {names:?} dans {headers:?}")))
 }
 
-fn parse_snapshot(path: &std::path::Path) -> Result<Vec<HistRow>> {
+pub(super) fn parse_snapshot(path: &std::path::Path) -> Result<Vec<HistRow>> {
     let mut rows = Vec::new();
     for_each_csv_record(path, b';', |headers, rec| {
         let barreau = col(headers, &["Barreau", "NomBarreau"])?;
@@ -290,8 +290,8 @@ impl Bridge {
             exact
                 .entry((r.barreau_slug.clone(), np.clone()))
                 .and_modify(|v| *v = None)
-                .or_insert(Some(r.cnbf.clone()));
-            let porte = (!multi_porteurs.contains(&np)).then(|| r.cnbf.clone());
+                .or_insert(Some(r.uid.clone()));
+            let porte = (!multi_porteurs.contains(&np)).then(|| r.uid.clone());
             by_name.entry(np).and_modify(|v| *v = None).or_insert(porte);
         }
         Self { exact, by_name }
@@ -301,14 +301,14 @@ impl Bridge {
     /// sinon le schéma legacy `cnb:{barreau}:{nom}-{prenom}` (le même que
     /// celui des danglants réhydratés : les évidences se rejoignent).
     fn uid(&self, barreau_slug: &str, nomprenom: &str) -> String {
-        if let Some(Some(c)) = self
+        if let Some(Some(uid)) = self
             .exact
             .get(&(barreau_slug.to_string(), nomprenom.to_string()))
         {
-            return format!("cnb:{c}");
+            return uid.clone();
         }
-        if let Some(Some(c)) = self.by_name.get(nomprenom) {
-            return format!("cnb:{c}");
+        if let Some(Some(uid)) = self.by_name.get(nomprenom) {
+            return uid.clone();
         }
         format!("cnb:{barreau_slug}:{nomprenom}")
     }
@@ -353,13 +353,13 @@ pub async fn replay_cnb_history(apply: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let dir = settings.cache_dir().join("registries");
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 
-    let (current, _) = fetch_avocat_rows(&dir)
-        .await?
-        .ok_or_else(|| anyhow!("current cnb snapshot carries no avCnbfCode"))?;
+    let (CnbRows::Coded(current), _) = fetch_avocat_rows(&dir).await? else {
+        anyhow::bail!("current cnb snapshot carries no avCnbfCode");
+    };
 
     let resources: Vec<RegistryResource> = tokio::task::spawn_blocking(|| {
         datagouv_resources(

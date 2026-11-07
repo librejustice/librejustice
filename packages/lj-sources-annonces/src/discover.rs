@@ -297,8 +297,7 @@ fn liens(base: &str, html: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The platform a buyer's own site leads to: 16 of the 50 unclassified hosts of
-/// the open stock resolve one link deeper (11/09). Only the landing domain
+/// The platform a buyer's own site leads to, one link deeper. Only the landing domain
 /// rules, never the words of a page the buyer wrote, a mention being no proof of
 /// where one deposits.
 async fn moteur_derriere_le_site(
@@ -344,8 +343,7 @@ const ALIAS_HOTE: [(&str, &str); 72] = [
     // Portails dont la MPE Atexo vit sous `marches.<hôte>` ; l'avis cite tantôt
     // l'apex, tantôt la MPE.
     ("departement13.fr", "marches.departement13.fr"),
-    // 175 consultations served here on 22/09/2026, none ever collected: the apex
-    // is an Umbraco site and nothing on it redirects to the MPE.
+    // The apex is an Umbraco site and nothing on it redirects to the MPE.
     (
         "alsacemarchespublics.eu",
         "plateforme.alsacemarchespublics.eu",
@@ -544,8 +542,7 @@ pub const MOTEURS_CONNECTES: [&str; 12] = [
 const DATAGOUV: &str = "https://www.data.gouv.fr/api/1/datasets/";
 /// Le tag sous lequel une déclaration de profil d'acheteur est publiée.
 const TAG_PROFIL: &str = "profil-acheteur";
-/// Garde-fou : le tag en portait 33 le 15/08/2026. Au-delà de deux pages, c'est
-/// le tag qui a changé de sens.
+/// Guard: past two pages, the tag has changed meaning.
 const PAGES_DATAGOUV: usize = 5;
 const PAR_PAGE_DATAGOUV: usize = 100;
 

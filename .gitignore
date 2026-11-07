@@ -48,3 +48,7 @@ mise.local.toml
 # cargo-leptos.
 packages/lj-web/public/redactor/
 packages/lj-web/public/ocr/
+
+# The crates' own licence files, copied from the cargo registry by
+# `mise run open-source-libraries`: their copyright lines name their authors.
+packages/lj-web/public/licenses/crates/

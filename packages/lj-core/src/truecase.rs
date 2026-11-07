@@ -210,6 +210,23 @@ const DES_DET: &[&str] = &[
 /// portillon : on ne recasse QUE ces documents, jamais un texte déjà en casse
 /// mixte.
 pub fn is_caps_lock(text: &str) -> bool {
+    is_caps_lock_over(text, 200)
+}
+
+/// A French decision text in capitals, recased; `None` when it is not.
+pub fn recased_text(text: &str) -> Option<String> {
+    is_caps_lock(text).then(|| truecase(text))
+}
+
+/// A court's summary published in capitals, recased; `None` when it is not.
+pub fn recased_summary(text: &str) -> Option<String> {
+    // Court summaries split cleanly around the capitals threshold, and the letter
+    // floor sits under the shortest titrage in capitals.
+    is_caps_lock_over(text, 15)
+        .then(|| with_drafting_conventions(text, &truecase_lines(text), false))
+}
+
+fn is_caps_lock_over(text: &str, min_letters: usize) -> bool {
     let mut upper = 0usize;
     let mut letters = 0usize;
     for c in text.chars() {
@@ -220,15 +237,131 @@ pub fn is_caps_lock(text: &str) -> bool {
             }
         }
     }
-    letters >= 200 && (upper as f64) / (letters as f64) >= 0.85
+    letters >= min_letters && (upper as f64) / (letters as f64) >= 0.85
 }
 
 /// Recasse un texte caps-lock (multi-lignes). À n'appeler qu'après `is_caps_lock`.
 pub fn truecase(text: &str) -> String {
+    with_drafting_conventions(text, &truecase_lines(text), true)
+}
+
+fn truecase_lines(text: &str) -> String {
     text.split('\n')
         .map(truecase_line)
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+/// The operative part as a recent decision prints it: « PAR CES MOTIFS », the verb
+/// that opens each of its lines and « DECIDE : » keep their capitals.
+static STRUCTURE_CAPITALS: LazyLock<regex::Regex> = LazyLock::new(|| {
+    const VERBS: &str = r"CASSE\ ET\ ANNULE|DONNE\ ACTE|MET\ HORS\ DE\ CAUSE|CASSE|ANNULE|REJETTE
+        |DECLARE|DIT|CONDAMNE|RENVOIE|REMET|ORDONNE|CONSTATE|PRONONCE|INFIRME|CONFIRME
+        |REFORME|DECIDE|RECOIT|DEBOUTE|STATUANT|FIXE|ACCORDE|SURSOIT|ACCUEILLE|RABAT";
+    regex::Regex::new(&format!(
+        r"(?xm)
+        (?P<motifs>\bPAR\ CES\ MOTIFS\b)
+        (?:[\s:,;.\-]*(?:LA\ COUR|LE\ CONSEIL\ D'ETAT|LE\ TRIBUNAL)?[\s:,;.\-]*(?P<verb>{VERBS})\b)?
+        |^[\ \t]*(?:(?:LE\ TRIBUNAL|LA\ COUR|LE\ CONSEIL\ D'ETAT)[\ ,]+)?(?P<line_verb>{VERBS})\b
+        |^[\ \t]*(?P<line_decide>ORDONNE|ARRETE)\s*:
+        |(?P<decide>\bDECIDE\b)\s*(?::|ARTICLE\b)
+        |^[\ \t*]*(?P<label>(?:DEMANDEUR|DEFENDEUR|DEFENDERESSE|APPELANTE?|INTIMEE?|INTERVENANTE?
+            |REPRESENTANT|PRESIDENTE?|JUGE|ASSESSEUR|GREFFIERE?)S?(?:\s*\(\s*S\s*\))?
+            |MINISTERE\ PUBLIC|COMPOSITION\ DU\ TRIBUNAL[^:\n]{{0,60}})\s*:
+        |^[\ \t*]*(?P<hearing>DEBATS|DELIBERE)\b"
+    ))
+    .expect("structure capitals")
+});
+
+/// What opens a paragraph in a recent decision: a « considérant » opening its
+/// clause, and the articles of the operative part with the ruling each begins.
+static CLAUSE_INITIALS: LazyLock<regex::Regex> = LazyLock::new(|| {
+    regex::Regex::new(
+        r"(?m)(?:^|[;:]\s*(?:-\s*)?)(CONSIDERANT)\b|(?:\bDECIDE\s*:?\s*(A)|^A|\.\s+A)RTICLE\s+\d+\s*(?:ER)?(?:\s*[:.\-]+\s*(\pL))?",
+    )
+    .expect("clause initials")
+});
+
+/// A pseudonymisation placeholder (« [Adresse 1] », « [H] ») keeps its own case, or
+/// capitalises its words when it came in capitals with the text.
+static PLACEHOLDERS: LazyLock<regex::Regex> =
+    LazyLock::new(|| regex::Regex::new(r"\[[^\[\]\n]{1,40}\]").expect("placeholders"));
+
+#[derive(Clone, Copy)]
+enum Overlay {
+    Upper,
+    Original,
+}
+
+/// The recased text with what a recent decision prints otherwise than in sentence
+/// case put back, one character for one. A summary has no `operative` part: its
+/// « STATUANT SUR » opens a sentence.
+fn with_drafting_conventions(text: &str, cased: &str, operative: bool) -> String {
+    let byte_starts: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+    let char_at = |byte: usize| byte_starts.partition_point(|&b| b < byte);
+    let mut overlay: Vec<(std::ops::Range<usize>, Overlay)> = Vec::new();
+    if operative {
+        for caps in STRUCTURE_CAPITALS.captures_iter(text) {
+            for name in [
+                "motifs",
+                "verb",
+                "line_verb",
+                "line_decide",
+                "decide",
+                "label",
+                "hearing",
+            ] {
+                if let Some(m) = caps.name(name) {
+                    overlay.push((char_at(m.start())..char_at(m.end()), Overlay::Upper));
+                }
+            }
+        }
+    }
+    for caps in CLAUSE_INITIALS.captures_iter(text) {
+        for m in caps.iter().skip(1).flatten() {
+            let at = char_at(m.start());
+            overlay.push((at..at + 1, Overlay::Upper));
+        }
+    }
+    for m in PLACEHOLDERS.find_iter(text) {
+        let start = char_at(m.start());
+        if m.as_str().chars().any(char::is_lowercase) {
+            overlay.push((start..char_at(m.end()), Overlay::Original));
+            continue;
+        }
+        let mut prev_letter = false;
+        for (i, c) in m.as_str().chars().enumerate() {
+            if c.is_alphabetic() && !prev_letter {
+                overlay.push((start + i..start + i + 1, Overlay::Upper));
+            }
+            prev_letter = c.is_alphabetic();
+        }
+    }
+    if overlay.is_empty() {
+        return cased.to_string();
+    }
+    let mut marks: Vec<Option<Overlay>> = vec![None; byte_starts.len()];
+    for (range, kind) in overlay {
+        for mark in &mut marks[range] {
+            *mark = Some(kind);
+        }
+    }
+    cased
+        .chars()
+        .zip(text.chars())
+        .zip(marks)
+        .map(|((c, original), mark)| match mark {
+            Some(Overlay::Upper) => {
+                let mut upper = c.to_uppercase();
+                match upper.len() {
+                    1 => upper.next().unwrap_or(c),
+                    _ => c,
+                }
+            }
+            Some(Overlay::Original) => original,
+            None => c,
+        })
+        .collect()
 }
 
 fn is_word_char(c: char) -> bool {
@@ -257,14 +390,17 @@ fn truecase_line(line: &str) -> String {
             let next_dot = chars.get(i) == Some(&'.');
             let prev = wi.checked_sub(1).map(|p| folded[p].as_str());
             let next = folded.get(wi + 1).map(String::as_str);
-            out.push_str(&case_word(
-                &word,
-                sentence_start,
-                followed_by_ellipsis,
-                next_dot,
-                prev,
-                next,
-            ));
+            match reference_form(&word, &chars, start, i, prev, next) {
+                Some(form) => out.push_str(&form),
+                None => out.push_str(&case_word(
+                    &word,
+                    sentence_start,
+                    followed_by_ellipsis,
+                    next_dot,
+                    prev,
+                    next,
+                )),
+            }
             sentence_start = false;
             wi += 1;
         } else {
@@ -309,7 +445,8 @@ fn is_sentence_boundary(run: &[char]) -> bool {
     if run.contains(&'!') || run.contains(&'?') {
         return true;
     }
-    // Un point, sauf s'il fait partie d'une ellipse (≥ 2 points consécutifs).
+    // A dot, unless it belongs to an ellipsis or a number follows it (« art. 1382
+    // du code », « L. 761-1 et »).
     let mut has_dot = false;
     let mut prev_dot = false;
     let mut in_ellipsis = false;
@@ -321,10 +458,103 @@ fn is_sentence_boundary(run: &[char]) -> bool {
             has_dot = true;
             prev_dot = true;
         } else {
+            if c.is_ascii_digit() {
+                has_dot = false;
+            }
             prev_dot = false;
         }
     }
     has_dot && !in_ellipsis
+}
+
+const LATIN_ORDINALS: &[&str] = &[
+    "bis",
+    "ter",
+    "quater",
+    "quinquies",
+    "sexies",
+    "septies",
+    "octies",
+    "nonies",
+    "decies",
+];
+
+/// How a recent decision prints the pieces of an article reference: the code
+/// prefix (« L. 761-1 »), the letter after a number (« 35 A »), the Latin ordinal,
+/// the number of a book or title (« livre Ier ») and the Constitution.
+fn reference_form(
+    word: &str,
+    chars: &[char],
+    start: usize,
+    end: usize,
+    prev: Option<&str>,
+    next: Option<&str>,
+) -> Option<String> {
+    let key = lj_fold::fold_chars(&word.to_lowercase());
+    let number_at = |from: usize| {
+        let mut j = from;
+        if chars.get(j) == Some(&'.') {
+            j += 1;
+        }
+        while chars.get(j) == Some(&' ') {
+            j += 1;
+        }
+        chars.get(j).is_some_and(char::is_ascii_digit)
+    };
+    if matches!(key.as_str(), "l" | "r" | "d" | "lo") && number_at(end) {
+        return Some(word.to_uppercase());
+    }
+    if LATIN_ORDINALS.contains(&key.as_str()) {
+        return Some(key);
+    }
+    let after_number = start >= 2
+        && chars[start - 1] == ' '
+        && (chars[start - 2].is_ascii_digit() || prev.is_some_and(|p| LATIN_ORDINALS.contains(&p)));
+    let suffix_letter = word.chars().count() == 1
+        && key != "y"
+        && !matches!(chars.get(end), Some('\'' | '\u{2019}'))
+        && (key != "a"
+            || matches!(
+                next,
+                None | Some("du" | "de" | "des" | "et" | "ou" | "bis" | "ter")
+            ));
+    if after_number && suffix_letter {
+        return Some(word.to_uppercase());
+    }
+    if prev.is_some_and(|p| {
+        matches!(
+            p,
+            "livre" | "titre" | "chapitre" | "section" | "annexe" | "tome"
+        )
+    }) && (key == "ier" || key.chars().all(|c| matches!(c, 'i' | 'v' | 'x')))
+    {
+        return Some(if key == "ier" {
+            capitalize_first(&word.to_lowercase())
+        } else {
+            word.to_uppercase()
+        });
+    }
+    if key == "constitution" && prev == Some("la") {
+        let dated = || {
+            let mut j = end;
+            while chars.get(j).is_some_and(|c| !is_word_char(*c)) {
+                j += 1;
+            }
+            while chars.get(j).is_some_and(|c| is_word_char(*c)) {
+                j += 1;
+            }
+            number_at(j)
+        };
+        let named = match next {
+            Some("de" | "d" | "des") => false,
+            Some("du") => dated(),
+            _ => true,
+        };
+        if named {
+            return Some(capitalize_first(&word.to_lowercase()));
+        }
+    }
+    None
 }
 
 fn case_word(
@@ -512,6 +742,8 @@ mod tests {
         let mixed = "Statuant sur le pourvoi de la société. ".repeat(20);
         assert!(!is_caps_lock(&mixed));
         assert!(!is_caps_lock("TROP COURT"));
+        assert!(recased_summary(":\nPROFESSIONS MEDECINS").is_some());
+        assert!(recased_summary("CEDH, art. 6").is_none());
     }
 
     #[test]
@@ -561,7 +793,51 @@ mod tests {
     fn preserves_anonymized_initials_and_acronyms() {
         assert_eq!(
             truecase("CONDAMNE LA SARL ET X..."),
-            "Condamne la SARL et X..."
+            "CONDAMNE la SARL et X..."
+        );
+    }
+
+    #[test]
+    fn keeps_the_capitals_of_the_operative_part() {
+        assert_eq!(
+            truecase("PAR CES MOTIFS : REJETTE LE POURVOI ;\nDECLARE LA DEMANDE IRRECEVABLE ;"),
+            "PAR CES MOTIFS : REJETTE le pourvoi ;\nDÉCLARE la demande irrecevable ;"
+        );
+        assert_eq!(
+            truecase("SUR LA LEGALITE DE L'ARRETE : CONSIDERANT QU'IL DECIDE : ARTICLE 1ER"),
+            "Sur la légalité de l'arrêté : Considérant qu'il DÉCIDE : Article 1er"
+        );
+        assert_eq!(
+            truecase("DECIDE : ARTICLE 1ER : LA REQUETE EST REJETEE. ARTICLE 2 - LES DEPENS"),
+            "DÉCIDE : Article 1er : La requête est rejetée. Article 2 - Les dépens"
+        );
+        assert_eq!(
+            truecase("DEMANDEUR (S) : SOCIETE [H] (SARL)\nLE TRIBUNAL ORDONNE LA JONCTION"),
+            "DEMANDEUR (S) : société [H] (SARL)\nLe tribunal ORDONNE la jonction"
+        );
+        assert_eq!(
+            truecase("LA SOCIETE DONT LE SIEGE EST [Adresse 1] ; CONSIDERANT QUE"),
+            "La société dont le siège est [Adresse 1] ; Considérant que"
+        );
+        assert_eq!(
+            truecase("LE BIEN SITUE [ADRESSE 8], CADASTRE [CADASTRE 5] ; CONSIDERANT QUE"),
+            "Le bien situé [Adresse 8], cadastré [Cadastre 5] ; Considérant que"
+        );
+    }
+
+    #[test]
+    fn prints_article_references_as_recent_decisions_do() {
+        assert_eq!(
+            truecase("ARTICLE L. 761-1 ET R. 222-1 ; ART. 1382 DU CODE CIVIL"),
+            "Article L. 761-1 et R. 222-1 ; art. 1382 du code civil"
+        );
+        assert_eq!(
+            truecase("ARTICLE 35 A ET 1649 QUINQUIES E ; ARTICLE 29 K DU LIVRE IER"),
+            "Article 35 A et 1649 quinquies E ; article 29 K du livre Ier"
+        );
+        assert_eq!(
+            truecase("VU LA CONSTITUTION DU 4 OCTOBRE 1958 ; LA CONSTITUTION DE PARTIE CIVILE"),
+            "Vu la Constitution du 4 octobre 1958 ; la constitution de partie civile"
         );
     }
 
@@ -577,15 +853,15 @@ mod tests {
     fn disambiguates_a_preposition_vs_auxiliary() {
         assert_eq!(
             truecase("CONDAMNE A PAYER LA SOMME"),
-            "Condamne à payer la somme"
+            "CONDAMNE à payer la somme"
         );
         assert_eq!(
             truecase("RENVOIE A LA COUR D'APPEL"),
-            "Renvoie à la cour d'appel"
+            "RENVOIE à la cour d'appel"
         );
         assert_eq!(
             truecase("FIXE A COMPTER DU JUGEMENT"),
-            "Fixe à compter du jugement"
+            "FIXE à compter du jugement"
         );
         assert_eq!(
             truecase("LA COUR D'APPEL A STATUE"),
@@ -599,7 +875,7 @@ mod tests {
         assert_eq!(truecase("IL A LA FACULTE"), "Il a la faculté");
         assert_eq!(
             truecase("CONDAMNE A PAYER A M. DUPONT LA SOMME"),
-            "Condamne à payer à M. Dupont la somme"
+            "CONDAMNE à payer à M. Dupont la somme"
         );
     }
 
@@ -636,7 +912,7 @@ mod tests {
         );
         assert_eq!(
             truecase("LE TRIBUNAL CONDAMNE LA SOCIETE"),
-            "Le tribunal condamne la société"
+            "Le tribunal CONDAMNE la société"
         );
         assert_eq!(
             truecase("IL A ETE CONDAMNE PAR LE JUGEMENT"),

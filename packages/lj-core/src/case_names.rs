@@ -1,45 +1,15 @@
-//! Noms d'usage d'arrêts : « Danthony », « Duvignères », « Tropic ». Le nom est
-//! absent du texte de sa propre décision, la pseudonymisation le retirant ; il
-//! est porté par `decisions.case_name`. Ce module tient ce qui reste PUR : le
-//! pliage qui sert de clé, les n-grammes qu'une requête offre au catalogue, et
-//! le canon que les renvois ne donnent pas. La résolution, elle, est une
-//! lecture en base (`decision_by_case_name`).
+//! Usage names of decisions, « Danthony », « Duvignères », which pseudonymisation strips from the
+//! decision's own text: the pure part, the fold that keys them and the n-grams a query offers.
 
-use std::sync::LazyLock;
-
-use serde::Deserialize;
+use std::collections::HashMap;
 
 use crate::text::normalize_spaces;
 use lj_fold::fold;
 
-const CASE_NAMES_JSON: &str = include_str!("../data/case_names.json");
-
-/// A name the renvois do not give: the canon before 1965, which the Conseil
-/// d'État no longer cites, and the shortcut no generic head derives (« Tropic »
-/// for « Société Tropic Travaux Signalisation »). Anchored against the corpus.
-#[derive(Debug, Clone, Deserialize)]
-pub struct CanonicalCaseName {
-    /// Le nom tel qu'il s'écrit ; sa clé se calcule par [`case_name_key`].
-    pub nom: String,
-    pub jurisdiction: String,
-    /// Date de lecture, ISO.
-    pub date: String,
-    pub dockets: Vec<String>,
-}
-
-static CANON: LazyLock<Vec<CanonicalCaseName>> = LazyLock::new(|| {
-    serde_json::from_str(CASE_NAMES_JSON).expect("case_names.json embarqué valide")
-});
-
-/// Les noms écrits à la main, à unir aux noms élus par la projection.
-pub fn canon() -> &'static [CanonicalCaseName] {
-    &CANON
-}
-
 /// Le nom d'usage le plus long qu'une requête puisse porter, en mots :
 /// « Section française de l'Observatoire international des prisons » en fait
 /// sept.
-const MAX_NAME_WORDS: usize = 8;
+pub const MAX_NAME_WORDS: usize = 8;
 
 /// Clé de comparaison d'un nom d'usage : accents, casse et ponctuation repliés,
 /// pour que « Association AC ! » et « Association AC! » soient un seul nom. La
@@ -52,9 +22,12 @@ pub fn case_name_key(nom: &str) -> String {
     normalize_spaces(&sans_ponctuation).trim().to_string()
 }
 
+/// Rarity threshold of a short key, a place or a company written far more than
+/// cited.
+pub const SHORT_NAME_RARITY: i64 = 20_000;
+
 /// The heads a named party carries before what distinguishes it. The corpus
-/// cites the remainder alone: « jurisprudence Béziers » 12 times against 6 for
-/// « jurisprudence Commune de Béziers », « Béziers II » 36 times.
+/// cites the remainder alone more often: « jurisprudence Béziers », « Béziers II ».
 const GENERIC_HEADS: &[&str] = &[
     "commune",
     "ville",
@@ -84,10 +57,8 @@ pub fn short_case_name_key(key: &str) -> Option<String> {
     (short.chars().count() >= 3).then_some(short)
 }
 
-/// Contexte qu'un nom supporte autour de lui, en mots. Mesuré sur le trafic
-/// externe : une requête qui nomme son arrêt va jusqu'à quinze mots de contexte,
-/// au-delà de vingt ce sont des paragraphes collés. Le budget de la référence
-/// numérotée, dix mots, coupait les premières.
+/// Context a name supports around it, in words: a query naming its decision
+/// asks a question around it, past twenty words it is a pasted paragraph.
 const MAX_CONTEXT_WORDS: usize = 20;
 
 /// Les clés que la requête peut désigner, la plus longue d'abord : tous ses
@@ -111,17 +82,111 @@ pub fn candidate_keys(query: &str) -> Vec<String> {
     cles
 }
 
+/// How many decisions a name may designate by its words; the card shows the most cited.
+/// « Simmenthal » names 7 decisions of the CJUE, « Bosman » 3.
+pub const NAME_BEARERS_MAX: usize = 10;
+
+/// The words of the named decisions' keys, each to the named decisions whose keys hold it. A
+/// named decision is its rank in the order the index was built from.
+#[derive(Debug, Default, Clone)]
+pub struct NameIndex {
+    words: HashMap<String, Vec<u32>>,
+    keys: Vec<Vec<String>>,
+}
+
+impl NameIndex {
+    pub fn new(named: impl IntoIterator<Item = Vec<String>>) -> Self {
+        let mut index = NameIndex::default();
+        for keys in named {
+            let rank = index.keys.len() as u32;
+            let mut words: Vec<&str> = keys
+                .iter()
+                .flat_map(|k| k.split(' '))
+                .filter(|w| !w.is_empty())
+                .collect();
+            words.sort_unstable();
+            words.dedup();
+            for word in words {
+                index.words.entry(word.to_string()).or_default().push(rank);
+            }
+            index.keys.push(keys);
+        }
+        index
+    }
+
+    pub fn keys(&self, rank: usize) -> &[String] {
+        &self.keys[rank]
+    }
+
+    /// The named decisions whose keys hold every word.
+    pub fn holding(&self, words: &[&str]) -> Vec<usize> {
+        let mut lists: Vec<&Vec<u32>> = Vec::with_capacity(words.len());
+        for word in words {
+            match self.words.get(*word) {
+                Some(ranks) => lists.push(ranks),
+                None => return Vec::new(),
+            }
+        }
+        lists.sort_unstable_by_key(|ranks| ranks.len());
+        let Some((first, rest)) = lists.split_first() else {
+            return Vec::new();
+        };
+        first
+            .iter()
+            .filter(|rank| rest.iter().all(|ranks| ranks.binary_search(rank).is_ok()))
+            .map(|&rank| rank as usize)
+            .collect()
+    }
+
+    /// The named decisions whose keys hold every word, or only those whose key the words
+    /// write whole when some do: « Nicolo » is not Nicolò Santilli's name. Empty past `max`.
+    pub fn bearers(&self, words: &[&str], max: usize) -> Vec<usize> {
+        let holding = self.holding(words);
+        let whole: Vec<usize> = holding
+            .iter()
+            .copied()
+            .filter(|&rank| {
+                self.keys[rank].iter().any(|k| {
+                    crate::citation::name_words(k)
+                        .iter()
+                        .all(|w| words.contains(w))
+                })
+            })
+            .collect();
+        let bearers = match whole.is_empty() {
+            true => holding,
+            false => whole,
+        };
+        match bearers.len() <= max {
+            true => bearers,
+            false => Vec::new(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn le_canon_est_coherent() {
-        for a in canon() {
-            assert!(!a.dockets.is_empty(), "{:?} sans numéro", a.nom);
-            assert_eq!(a.date.len(), 10, "{:?} sans date ISO", a.nom);
-            assert!(!case_name_key(&a.nom).is_empty(), "{:?} sans clé", a.nom);
-        }
+    fn a_name_bears_every_word_and_too_many_bearers_name_nothing() {
+        let index = NameIndex::new(
+            [
+                "Commune de Cassis",
+                "Rewe-Zentral AG c. Bundesmonopolverwaltung (Cassis de Dijon)",
+                "Commune de Dijon",
+                "Nicolo",
+                "Nicolò Santilli c. Italie",
+            ]
+            .map(|name| vec![case_name_key(name)]),
+        );
+        assert_eq!(index.bearers(&["cassis", "dijon"], 10), vec![1]);
+        assert_eq!(index.bearers(&["commune"], 10), vec![0, 2]);
+        assert!(index.bearers(&["commune"], 1).is_empty());
+        assert!(index.bearers(&["cassis", "blanco"], 10).is_empty());
+        assert!(index.bearers(&[], 10).is_empty());
+        assert_eq!(index.bearers(&["nicolo"], 10), vec![3]);
+        assert_eq!(index.bearers(&["santilli"], 10), vec![4]);
     }
 
     #[test]
@@ -158,7 +223,7 @@ mod tests {
         for q in [
             "danthony",
             "arrêt Danthony",
-            "CE 2011 Danthony vice de procédure",
+            "CE 2011 Danthony consultation irrégulière",
         ] {
             assert!(
                 candidate_keys(q).contains(&"danthony".to_string()),
@@ -167,21 +232,22 @@ mod tests {
         }
     }
 
-    /// Trois requêtes du trafic externe, vérifiées en prod sans nom résolu quand
-    /// le budget valait dix mots.
     #[test]
     fn le_nom_survit_a_une_question_de_quinze_mots() {
         for (q, nom) in [
             (
-                "jurisprudence Danthony vice de procédure influence sur le sens de la décision privation d'une garantie",
+                "jurisprudence Danthony irrégularité de la consultation préalable effet sur le \
+                 sens de la décision prise",
                 "danthony",
             ),
             (
-                "délai raisonnable Czabaj inapplicable recours indemnitaire mise en jeu de la responsabilité personne publique prescription quadriennale",
+                "Czabaj recours contre une décision individuelle sans mention des voies de \
+                 recours délai d'un an opposable",
                 "czabaj",
             ),
             (
-                "GISTI documents de portée générale effets notables droits situation autres personnes agents chargés mettre en oeuvre",
+                "GISTI circulaire impérative interprétation du droit positif recours pour \
+                 excès de pouvoir recevabilité contre les lignes directrices",
                 "gisti",
             ),
         ] {
@@ -196,7 +262,10 @@ mod tests {
     /// y est de passage.
     #[test]
     fn le_paragraphe_colle_ne_nomme_rien() {
-        let colle = "l'intégrité physique ou psychique supérieure à 25 % ainsi que les décès provoqués par ces infections, l'ONIAM étant seul tenu d'indemniser les victimes au titre de la solidarité nationale";
+        let colle = "le juge des référés peut ordonner toutes mesures utiles sans faire obstacle \
+                     à l'exécution d'aucune décision administrative, lorsque la demande \
+                     présente un caractère d'urgence et que la mesure sollicitée est utile au \
+                     litige principal";
         assert!(candidate_keys(colle).is_empty());
     }
 
@@ -207,14 +276,14 @@ mod tests {
         assert!(rang("societe tropic travaux signalisation") < rang("tropic"));
     }
 
-    /// Le patronyme courant noyé dans une question concourt désormais, et ce
-    /// n'est plus la longueur qui l'écarte : « Marie » sort dans plus de 20 000
-    /// décisions, donc la projection ne lui laisse aucune clé à désigner.
+    /// A common surname inside a question competes, and length does not rule it
+    /// out: « Marie » is in so many decisions that the projection leaves it no key
+    /// to designate.
     #[test]
     fn le_patronyme_courant_reste_a_la_projection() {
         assert!(candidate_keys(
-            "un détenu nommé Marie conteste une sanction disciplinaire prise par le \
-             chef d'établissement sans que la commission ait été consultée"
+            "un détenu nommé Marie conteste la sanction disciplinaire que le directeur \
+             lui a infligée sans consulter la commission"
         )
         .contains(&"marie".to_string()));
     }

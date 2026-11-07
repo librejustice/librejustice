@@ -60,6 +60,23 @@ fn parse_watchdog_secs(raw: Option<String>) -> Result<u64> {
         .map_err(|_| anyhow::anyhow!("LIBREJUSTICE_INGEST_WATCHDOG_SECS invalide : {raw:?}"))
 }
 
+fn bucket_config() -> Result<Option<lj_bucket::Config>> {
+    let Some(endpoint) = env_opt("LIBREJUSTICE_S3_ENDPOINT") else {
+        return Ok(None);
+    };
+    let required = |key: &str| {
+        env_opt(key)
+            .ok_or_else(|| anyhow::anyhow!("{key} is unset while LIBREJUSTICE_S3_ENDPOINT is set"))
+    };
+    Ok(Some(lj_bucket::Config {
+        endpoint,
+        region: required("LIBREJUSTICE_S3_REGION")?,
+        bucket: required("LIBREJUSTICE_S3_BUCKET")?,
+        access_key_id: required("LIBREJUSTICE_S3_ACCESS_KEY_ID")?,
+        secret_access_key: required("LIBREJUSTICE_S3_SECRET_ACCESS_KEY")?,
+    }))
+}
+
 /// Paramètres runtime du pipeline d'ingestion.
 ///
 /// Source : variables d'environnement préfixées `LIBREJUSTICE_`.
@@ -70,8 +87,8 @@ pub struct Settings {
     pub piste_client_id: Option<String>,
     pub piste_client_secret: Option<String>,
     pub embed_backend: String,
-    /// Local hosts in priority order, never empty.
-    pub embed_hosts: Vec<lj_llm::hosts::EmbedHost>,
+    /// The embedding chain in priority order, never empty.
+    pub embed_chain: Vec<lj_llm::hosts::Entry>,
     pub cloudflare_account_id: Option<String>,
     pub cloudflare_backend_token: Option<String>,
     /// Budget neurons Workers AI par run (cap dur côté embedder Cloudflare).
@@ -92,6 +109,10 @@ pub struct Settings {
     pub watchdog_secs: u64,
     /// `http://`, `socks5://`, or empty for the host's own address.
     pub egress_proxy: String,
+    /// The page gateway's `http://` base, for the hosts read through it.
+    pub page_gateway: String,
+    /// `None` when `LIBREJUSTICE_S3_ENDPOINT` is unset.
+    pub bucket: Option<lj_bucket::Config>,
 }
 
 impl Settings {
@@ -112,7 +133,7 @@ impl Settings {
             piste_client_id: env_opt("LIBREJUSTICE_PISTE_CLIENT_ID"),
             piste_client_secret: env_opt("LIBREJUSTICE_PISTE_CLIENT_SECRET"),
             embed_backend: env_or("LIBREJUSTICE_EMBED_BACKEND", "auto"),
-            embed_hosts: lj_llm::hosts::parse_hosts(
+            embed_chain: lj_llm::hosts::parse_chain(
                 &env_or("LIBREJUSTICE_EMBED_URL", lj_llm::hosts::DEFAULT_URL),
                 env_opt("LIBREJUSTICE_EMBED_API_KEY").as_deref(),
             )
@@ -132,7 +153,18 @@ impl Settings {
             container_name: env_opt("LIBREJUSTICE_CONTAINER_NAME"),
             watchdog_secs: parse_watchdog_secs(env_opt("LIBREJUSTICE_INGEST_WATCHDOG_SECS"))?,
             egress_proxy: env_or("LIBREJUSTICE_EGRESS_PROXY", ""),
+            page_gateway: env_or("LIBREJUSTICE_PAGE_GATEWAY", ""),
+            bucket: bucket_config()?,
         })
+    }
+
+    /// The bucket the files no query reads live in.
+    pub fn bucket(&self) -> Result<lj_bucket::Bucket> {
+        let config = self
+            .bucket
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("LIBREJUSTICE_S3_ENDPOINT is unset"))?;
+        Ok(lj_bucket::Bucket::new(config)?)
     }
 
     /// Chemins sous `state_dir` (`lj_sources::state_paths::StatePaths`).
@@ -188,52 +220,41 @@ mod tests {
 
     #[test]
     fn inject_password_when_absent() {
-        let url = inject_pg_password(
-            "postgresql://librejustice@127.0.0.1:5432/librejustice",
-            Some("s3cret"),
-        )
-        .unwrap();
-        assert_eq!(
-            url,
-            "postgresql://librejustice:s3cret@127.0.0.1:5432/librejustice"
-        );
+        let url =
+            inject_pg_password("postgresql://app@db.example:5432/app", Some("s3cret")).unwrap();
+        assert_eq!(url, "postgresql://app:s3cret@db.example:5432/app");
     }
 
     #[test]
     fn keep_existing_password() {
         let url = inject_pg_password(
-            "postgresql://librejustice:already@127.0.0.1:5432/librejustice",
+            "postgresql://app:already@db.example:5432/app",
             Some("s3cret"),
         )
         .unwrap();
-        assert_eq!(
-            url,
-            "postgresql://librejustice:already@127.0.0.1:5432/librejustice"
-        );
+        assert_eq!(url, "postgresql://app:already@db.example:5432/app");
     }
 
     #[test]
     fn no_password_no_change() {
-        let url =
-            inject_pg_password("postgresql://librejustice@127.0.0.1/librejustice", None).unwrap();
-        assert_eq!(url, "postgresql://librejustice@127.0.0.1/librejustice");
+        let url = inject_pg_password("postgresql://app@db.example/app", None).unwrap();
+        assert_eq!(url, "postgresql://app@db.example/app");
     }
 
     #[test]
     fn inject_without_port() {
-        let url =
-            inject_pg_password("postgresql://lj@db.internal/librejustice", Some("pw")).unwrap();
-        assert_eq!(url, "postgresql://lj:pw@db.internal/librejustice");
+        let url = inject_pg_password("postgresql://lj@db.example/lj", Some("pw")).unwrap();
+        assert_eq!(url, "postgresql://lj:pw@db.example/lj");
     }
 
     #[test]
     fn parse_neuron_budget_scales_and_validates() {
         assert_eq!(parse_neuron_budget(None).unwrap(), None);
         assert_eq!(parse_neuron_budget(Some("  ".into())).unwrap(), None);
-        assert_eq!(parse_neuron_budget(Some("9k".into())).unwrap(), Some(9_000));
+        assert_eq!(parse_neuron_budget(Some("5k".into())).unwrap(), Some(5_000));
         assert_eq!(
-            parse_neuron_budget(Some("9000".into())).unwrap(),
-            Some(9_000)
+            parse_neuron_budget(Some("5000".into())).unwrap(),
+            Some(5_000)
         );
         assert_eq!(
             parse_neuron_budget(Some("1.5M".into())).unwrap(),
@@ -250,7 +271,7 @@ mod tests {
             piste_client_id: None,
             piste_client_secret: None,
             embed_backend: "openai-http".into(),
-            embed_hosts: lj_llm::hosts::parse_hosts("http://x", None).unwrap(),
+            embed_chain: lj_llm::hosts::parse_chain("http://x", None).unwrap(),
             cloudflare_account_id: None,
             cloudflare_backend_token: None,
             ingest_neuron_budget: None,
@@ -262,8 +283,10 @@ mod tests {
             deployment_environment: None,
             host_name: None,
             container_name: None,
-            watchdog_secs: 14_400,
+            watchdog_secs: 60,
             egress_proxy: String::new(),
+            page_gateway: String::new(),
+            bucket: None,
         };
         assert_eq!(settings.cache_dir(), PathBuf::from("/data/lj/ingest/cache"));
     }

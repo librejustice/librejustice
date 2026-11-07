@@ -79,7 +79,7 @@ pub fn Viewer(session: Session) -> impl IntoView {
         }
         event.prevent_default();
         // A trackpad pinch arrives as ctrl+wheel steps of a few pixels, a mouse
-        // notch as about 100: one gain for both makes the pinch crawl.
+        // notch as far larger ones: one gain for both makes the pinch crawl.
         #[cfg(feature = "hydrate")]
         {
             let delta = match event.delta_mode() {

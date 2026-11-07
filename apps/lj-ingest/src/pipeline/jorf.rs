@@ -31,25 +31,29 @@ use crate::config::Settings;
 /// Taille de batch des upserts JORF (textes puis articles).
 const JORF_BATCH_SIZE: usize = 512;
 
-/// Classe d'un membre XML du fond JORF, déduite de son chemin. `texte/version`
-/// (TEXTE_VERSION), `article` (JORFARTI) et `texte/struct` (TEXTELR, dispositif
-/// propre du texte) sont lus ; `conteneur` (sommaires JO) et `eli/` sont
-/// hors-périmètre (le fil d'Ariane vient du `TM` porté par chaque article).
-enum JorfMember {
+/// The kind of a JORF member, read from its tar path; `eli/` is not read.
+pub(super) enum JorfMember {
     Article,
     Texte,
     Struct,
+    Section,
+    Issue,
     Ignore,
 }
 
-/// Classe un membre par son chemin tar.
-fn classify_jorf_member(name: &str) -> JorfMember {
+pub(super) fn classify_jorf_member(name: &str) -> JorfMember {
     let lower = name.to_lowercase();
     let stem = name.rsplit('/').next().unwrap_or(name);
     if lower.contains("/texte/struct/") && stem.starts_with("JORFTEXT") {
         return JorfMember::Struct;
     }
-    if lower.contains("/struct/") || lower.contains("/conteneur/") || lower.contains("/eli/") {
+    if lower.contains("/conteneur/") && stem.starts_with("JORFCONT") {
+        return JorfMember::Issue;
+    }
+    if lower.contains("/section_ta/") && stem.starts_with("JORFSCTA") {
+        return JorfMember::Section;
+    }
+    if lower.contains("/struct/") || lower.contains("/eli/") {
         return JorfMember::Ignore;
     }
     if lower.contains("/article/") && stem.starts_with("JORFARTI") {
@@ -300,15 +304,14 @@ fn article_num_key(
 /// 2. **articles** → `referential_articles`, taggés selon les `cid` de traités
 ///    (lus en base entre les passes).
 ///
-/// `paths` = chemins locaux de `Freemium_jorf_global_*.tar.gz` (stock) et/ou
-/// d'incréments `JORF_*.tar.gz` — traités dans l'ordre, finisseurs **une fois**
-/// en fin de lot. Streaming borné par canal comme [`super::legi`] ; la seule
-/// mémoire qui suit la taille de l'archive est l'index du dispositif, ~1 M de
-/// créneaux sur le stock complet.
+/// `paths` are local `Freemium_jorf_global_*.tar.gz` (stock) and/or `JORF_*.tar.gz`
+/// increments, read in order, the finishers running **once** at the end of the
+/// batch. Streaming bounded by channel as in [`super::legi`]: the only memory that
+/// grows with the archive is the index of the `dispositif` slots.
 pub async fn ingest_jorf(paths: &[std::path::PathBuf]) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -325,10 +328,8 @@ pub async fn ingest_jorf(paths: &[std::path::PathBuf]) -> Result<()> {
     finish_jorf(&repo, None).await
 }
 
-/// Les deux passes d'une archive (textes puis articles traités). Renvoie les
-/// `text_uid` touchés (scope de la classification des rôles). Les finisseurs
-/// ([`finish_jorf`]) sont à la charge de l'appelant : une fois par archive en
-/// manuel, une fois par run en sync.
+/// Texts, articles, then issues and publications. Returns the `text_uid`s the
+/// role classification is scoped to; the caller runs [`finish_jorf`].
 async fn ingest_jorf_archive(
     repo: &DecisionRepository<'_>,
     path: &Path,
@@ -359,6 +360,7 @@ async fn ingest_jorf_archive(
     let routes = publie_routes.len();
     let (upserted, skipped, no_num, errors, deleted, bodies) =
         ingest_jorf_articles(repo, path, publie_routes, dispositif).await?;
+    super::jorf_publication::ingest_publications(repo, path).await?;
 
     tracing::info!(
         source = %path.display(),
@@ -403,6 +405,13 @@ async fn finish_jorf(
             .map_err(|e| anyhow!("backfill_text_roles: {e}"))?,
     };
 
+    let touched_uids: Option<Vec<String>> = touched.map(|t| t.iter().cloned().collect());
+    let dated = repo
+        .date_instruments_from_vehicles(touched_uids.as_deref())
+        .await
+        .map_err(|e| anyhow!("date_instruments_from_vehicles: {e}"))?;
+    let treaties =
+        super::treaty_articles::cut_treaty_articles(repo, touched_uids.as_deref()).await?;
     // Titre du code dénormalisé → titre formé `search_title`.
     let retitled = repo
         .refresh_article_denorm(None)
@@ -423,6 +432,8 @@ async fn finish_jorf(
         habilitation,
         vehicule,
         modificatif,
+        instruments_dated = dated.len(),
+        ?treaties,
         "finish_jorf"
     );
     Ok(())
@@ -450,7 +461,7 @@ pub async fn sync_jorf() -> Result<()> {
         "sync_jorf: ingesting the fresh archives"
     );
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -502,7 +513,7 @@ pub async fn backfill_jorf_bodies() -> Result<()> {
     .await
     .map_err(|e| anyhow!("jorf bodies join: {e}"))??;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let candidates = unnumbered.0.len();
     let written = unnumbered.write(&DecisionRepository::new(&conn)).await?;
@@ -553,8 +564,9 @@ async fn ingest_jorf_texts(repo: &DecisionRepository<'_>, path: &Path) -> Result
             |name, raw| match classify_jorf_member(&name) {
                 JorfMember::Struct => match lj_extract::jorf::parse_jorf_struct(&raw) {
                     Ok(s) => {
-                        dispositif.extend(s.articles.into_iter().filter_map(|a| {
-                            Some(dispositif_slot(&s.jorftext, a.num_key.as_deref()?))
+                        dispositif.extend(s.articles().filter_map(|(_, num)| {
+                            let key = lj_norm::article_key::identity_key(num?);
+                            Some(dispositif_slot(&s.jorftext, &key))
                         }));
                         Ok(())
                     }

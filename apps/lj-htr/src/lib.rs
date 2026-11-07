@@ -22,7 +22,7 @@ const LINE_WIDTHS: [usize; 5] = [320, 640, 960, 1280, 1920];
 const HAND_HEIGHT: usize = 128;
 const HAND_WIDTHS: [usize; 5] = [512, 1024, 2048, 3072, 4096];
 /// Lines the handwriting reader takes at once, padded with blank ones. Its
-/// LSTM runs a batch of one 19 times slower a line in WASM: 4.4 s against 0.23.
+/// LSTM runs a batch of one far slower a line in WASM.
 const HAND_BATCH: usize = 4;
 
 pub struct Reader {

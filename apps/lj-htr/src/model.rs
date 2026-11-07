@@ -13,7 +13,7 @@ const INT8: i32 = 3;
 const FLOAT16: i32 = 10;
 
 /// A graph and the plans made from it. A plan is fixed to one shape: planned
-/// for a symbolic width, the line reader ran 3.5 times slower.
+/// for a symbolic width, the line reader runs far slower.
 pub struct Network {
     graph: InferenceModel,
     plans: HashMap<Vec<usize>, Plan>,
@@ -21,9 +21,9 @@ pub struct Network {
 
 impl Network {
     /// The weights stored in fp16 or in int8 are widened back to fp32: tract
-    /// computes an fp16 graph ten times slower on a CPU, and its per-channel
-    /// `DequantizeLinear` misreads the handwriting reader, a quarter of its
-    /// frames off where onnxruntime reads it as in fp32.
+    /// computes an fp16 graph far slower on a CPU, and its per-channel
+    /// `DequantizeLinear` misreads the handwriting reader, many of its frames
+    /// off where onnxruntime reads it as in fp32.
     pub fn parse(bytes: &[u8]) -> TractResult<Network> {
         let onnx = tract_onnx::onnx();
         let mut proto = onnx.proto_model_for_read(&mut &*bytes)?;

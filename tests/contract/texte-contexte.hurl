@@ -19,9 +19,8 @@ jsonpath "$.context[?(@.current == true)].num" nth 0 == "2"
 jsonpath "$.context[0].num" isString
 jsonpath "$.context[0].etat" isString
 
-# Branche « division enclosante » (texte long, division ≤ CONTEXT_DIVISION_MAX
-# = 80) : les 8 articles de la section, et rien du reste des 11 438 articles
-# du code du travail.
+# Enclosing-division branch (long text, division ≤ CONTEXT_DIVISION_MAX = 80):
+# the section's 8 articles, and none of the rest of the code du travail.
 GET {{base}}/internal/norm/code-du-travail/L1234-5
 HTTP 200
 [Asserts]

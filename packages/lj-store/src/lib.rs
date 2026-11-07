@@ -3,7 +3,6 @@
 //! Driver : tokio-postgres + deadpool-postgres. Toute écriture passe par
 //! [`repository::DecisionRepository`].
 
-pub mod db;
 pub mod error;
 pub mod migrator;
 pub mod repository;

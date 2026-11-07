@@ -81,9 +81,8 @@ impl DecisionRepository<'_> {
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
-    /// Titres des lois du catalogue. Le numéro et la date se lisent là :
-    /// `date_texte` manque pour 3 568 des 13 323 lois, le titre les porte
-    /// toutes.
+    /// Titles of the catalogue's laws. The number and the date are read there:
+    /// `date_texte` is missing on many laws, and the title carries them all.
     pub async fn titres_de_lois(&self) -> Result<Vec<String>> {
         let rows = self
             .conn
@@ -147,9 +146,9 @@ impl DecisionRepository<'_> {
     /// le concurrent immédiat du même surnom : c'est lui qui tranche, pas le
     /// volume. `decision_id` à `None` dit que la cible n'est pas au fonds.
     ///
-    /// La date entre dans la condition d'index avec la juridiction : rendue
-    /// optionnelle par un `OR`, elle retombe en filtre et le résolveur balaie
-    /// les 98 000 décisions du Conseil d'État par candidat.
+    /// The date enters the index condition with the jurisdiction: made optional
+    /// by an `OR`, it falls back to a filter and the resolver sweeps every
+    /// Conseil d'État decision per candidate.
     pub async fn alias_candidates_revue(
         &self,
         genre: &str,

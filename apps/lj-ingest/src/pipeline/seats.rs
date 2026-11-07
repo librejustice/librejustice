@@ -20,7 +20,7 @@ const DELTA_LINES: usize = 80;
 pub async fn resolve_seats(dry_run: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0; SET synchronous_commit = off")
         .await?;

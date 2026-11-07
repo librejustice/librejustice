@@ -5,7 +5,6 @@ pub mod annonce_results;
 pub mod compact_search;
 pub mod corpus_intro;
 pub mod cross_teaser;
-pub mod date_range_picker;
 pub mod facet_widgets;
 pub mod filter_bar;
 pub mod filter_dropdown;
@@ -33,7 +32,6 @@ pub use annonce_results::AnnoncesView;
 pub use compact_search::CompactSearch;
 pub use corpus_intro::{corpus_stats, DecisionsCorpusTeaser, TextesCorpusTeaser};
 pub use cross_teaser::{DecisionsTeaser, TextesTeaser};
-pub use date_range_picker::DateRangePicker;
 pub use facet_widgets::StaleCounts;
 pub use filter_bar::DecisionsFilterBar;
 pub use freshness::{answered, is_stale};
@@ -51,4 +49,6 @@ pub use search_submit::SearchSubmit;
 pub use sort_select::SortSelect;
 pub use syntax_hint::{HelpCorpus, SyntaxHint};
 pub use text_results::TextesView;
-pub use view_prefs::{effective_card_view, provide_card_view_pref, CardView, ViewControls};
+pub use view_prefs::{
+    effective_card_view, provide_card_view_pref, CardView, CardViewPref, ViewControls,
+};

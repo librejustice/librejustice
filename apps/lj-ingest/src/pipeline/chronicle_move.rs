@@ -32,7 +32,7 @@ pub async fn move_chronicle(vehicle: &str, exclude: &[String]) -> Result<()> {
 
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await

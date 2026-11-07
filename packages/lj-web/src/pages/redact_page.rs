@@ -15,11 +15,11 @@ pub fn RedactPage() -> impl IntoView {
         <Title text="Anonymisation - LibreJustice" />
         <Meta
             name="description"
-            content="Anonymiser un PDF, un document Word ou une image dans le navigateur, sans envoyer le fichier nulle part."
+            content="Anonymiser un PDF, un document Word ou une image sans que le fichier quitte votre navigateur."
         />
         <div class="flex min-h-0 w-full min-w-0 flex-1 flex-col p-2 sm:px-6 sm:py-4 lg:px-8">
             <h1 class="sr-only">"Anonymiser un document dans votre navigateur"</h1>
-            <crate::pages::redact::RedactTool session=crate::pages::redact::Session::new() />
+            <crate::pages::redact::SiteWorkbench />
         </div>
     }
 }

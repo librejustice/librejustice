@@ -1,12 +1,10 @@
 //! TED — la colonne européenne du fond marchés.
 //!
-//! API v3 de l'Office des publications, publique et sans clé, servie en eForms.
-//! Stock actif = acheteur français et date limite de réception non passée
-//! (7 078 avis le 15/08/2026, en ~30 pages de 250). Trois champs portent le
-//! profil d'acheteur — `document-url-lot` (le DCE), `submission-url-lot` (le
-//! dépôt), `buyer-profile` — remplis à 92 / 95 / 58 % : quand l'URL porte
-//! l'identifiant du dossier, elle donne la clé de jointure vers la ligne du
-//! moteur, sinon elle donne le tenant.
+//! Publications Office API v3, public and keyless, served in eForms. Live stock:
+//! French buyer and receipt deadline not passed. Three fields carry the buyer
+//! profile, `document-url-lot` (the DCE), `submission-url-lot` (the submission)
+//! and `buyer-profile`: a URL carrying the file's identifier gives the join key
+//! to the engine's row, otherwise it gives the tenant.
 //!
 //! Ce que TED ajoute au BOAMP : un avis publié au JOUE dont l'acheteur a omis
 //! le BOAMP, et les reports d'échéance, qu'un rectificatif TED date alors que la
@@ -31,8 +29,7 @@ use lj_sources::error::{Result, SourceError};
 const API: &str = "https://api.ted.europa.eu/v3/notices/search";
 /// Plafond servi par l'API sur `limit`.
 const PAR_PAGE: usize = 250;
-/// Garde-fou : le stock FR ouvert tient en ~30 pages. Au-delà, la requête a
-/// changé de sens.
+/// Guard, far above the open FR stock: past it, the query has changed meaning.
 const PAGES_MAX: usize = 200;
 
 /// Acheteur français, date limite non passée. Le filtre serveur évite de
@@ -40,10 +37,9 @@ const PAGES_MAX: usize = 200;
 const REQUETE: &str =
     "(organisation-country-buyer IN (FRA)) AND (deadline-receipt-request>=today())";
 
-/// Where a notice says it applies, read in order until one answers: measured on
-/// 1 000 open French notices, the NUTS subdivision of the place of performance
-/// settles 758, the buyer's own NUTS 205 more and its post code 33, leaving 4
-/// without a zone. The post code of the place of performance is not asked for:
+/// Where a notice says it applies, read in order until one answers: the NUTS
+/// subdivision of the place of performance, the buyer's own NUTS, then its post
+/// code. The post code of the place of performance is not asked for:
 /// it is never served where the subdivision is silent. The `-lot` variants
 /// carry one value per lot, which is where a market spanning several
 /// départements shows itself.
@@ -135,14 +131,11 @@ pub async fn enumerate() -> Result<MoteurRun> {
     })
 }
 
-/// Les hôtes que cite chaque avis ouvert — second témoin du recensement, à côté
-/// du BOAMP, qui n'en fait pas le même métier : les entités adjudicatrices des
-/// secteurs spéciaux (SNCF, RATP, EDF, RTE, La Poste…) publient au JOUE et sur
-/// leur propre profil sans passer par le BOAMP. Sur les 718 hôtes cités le
-/// 15/08/2026, 152 étaient absents d'un recensement fondé sur le seul BOAMP.
+/// The hosts each open notice cites, the census's second witness beside the
+/// BOAMP: the contracting entities of the special sectors (SNCF, RATP, EDF, RTE,
+/// La Poste…) publish in the OJEU and on their own profile, bypassing the BOAMP.
 ///
-/// Quatre champs suffisent : la pagination y est deux fois plus légère que
-/// celle de [`enumerate`].
+/// Four fields suffice, which pages lighter than [`enumerate`].
 pub async fn hotes_par_avis() -> Result<Vec<std::collections::HashSet<String>>> {
     let client = super::client();
     let mut par_avis: Vec<std::collections::HashSet<String>> = Vec::new();
@@ -190,10 +183,8 @@ fn premier(v: Option<&Value>) -> Option<&str> {
     }
 }
 
-/// Horizon au-delà duquel une date limite est une coquille de saisie : le stock
-/// FR du 15/08/2026 en porte 31 au-delà de 2035, dont une en 2924. Un système
-/// d'acquisition dynamique reste ouvert des années — dix ans laissent passer
-/// les vrais, pas les fautes de frappe.
+/// Horizon past which a deadline is a typing slip: a dynamic purchasing system
+/// stays open for years, and ten let the real ones through but not the typos.
 const HORIZON_ANS: i16 = 10;
 
 /// La date limite la plus tardive parmi les lots : la consultation reste
@@ -223,11 +214,9 @@ fn plafond_annee() -> i16 {
         + HORIZON_ANS
 }
 
-/// TED normalise le titre en « France – <libellé CPV> – <objet> » (7 073 des
-/// 7 078 avis FR ouverts le 15/08/2026). Le préfixe n'est pas l'objet du
-/// marché : gardé, il empêche la ligne de se fondre dans sa jumelle, dont le
-/// titre est celui que l'acheteur a écrit. Le tiret long est le séparateur de
-/// TED, jamais celui d'un objet de marché — un objet garde ses tirets courts.
+/// TED titles a notice France, then the CPV label, then the object, joined by a
+/// long dash no object uses. The prefix goes: kept, it stops the row from merging
+/// into its twin, whose title is the buyer's own.
 fn objet_nu(titre: &str) -> &str {
     static PREFIXE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
         regex::Regex::new(r"^France\s*[–—]\s*[^–—]+?\s*[–—]\s*").expect("préfixe TED valide")
@@ -323,8 +312,7 @@ fn siren(v: Option<&Value>) -> Option<String> {
         .map(|s| s[..9].to_string())
 }
 
-/// TED serves part of its buyer URLs with the query separator HTML-escaped,
-/// 2 264 of them on 10/09/2026.
+/// TED serves some of its buyer URLs with the query separator HTML-escaped.
 fn desechappe(u: &str) -> String {
     u.replace("&amp;", "&")
 }
@@ -349,7 +337,7 @@ fn urls(n: &Value) -> Vec<String> {
 
 /// A dossier URL designates a consultation. A bare platform root designates
 /// none and already lives in `url_depot`: `buyer-profile`, last of the four
-/// fields, served one in three on 10/09.
+/// fields.
 fn precise(u: &str) -> bool {
     u.split_once("://").is_some_and(|(_, reste)| {
         reste
@@ -377,9 +365,8 @@ fn par_lot(v: Option<&Value>) -> Vec<String> {
 }
 
 /// Lots read off three arrays TED serves in the same order, which nothing in
-/// the payload states. Arrays of unequal length yield no lot rather than a
-/// mismatched one: 3 notices of 250 on 16/09/2026, all of them without a
-/// French version.
+/// the payload states. Arrays of unequal length, a notice without a French
+/// version, yield no lot rather than a mismatched one.
 fn lots(n: &Value) -> Vec<LotAnnonce> {
     let noms = par_lot(n.get("title-lot"));
     let descriptions = par_lot(n.get("description-lot"));
@@ -463,8 +450,8 @@ fn procedure(n: &Value) -> Option<String> {
     texte(n.get("procedure-identifier"))
 }
 
-/// Procedures resolved in batches: the query string is a literal list, and 514
-/// UUIDs in one `IN` is a 30 KB line.
+/// Procedures resolved in batches: the query string is a literal list, and
+/// hundreds of UUIDs in one `IN` make too long a line.
 const PROCEDURES_PAR_LOT: usize = 50;
 
 /// The consultation notices of each procedure, `ted:<numéro>` as the store
@@ -500,8 +487,7 @@ async fn consultations_par_procedure(
     Ok(out)
 }
 
-/// Every eForms shape an award takes. On the 525 award notices the Centrale des
-/// marchés cited on 15/09/2026, 511 were `can-standard`, 9 social, 5 design.
+/// Every eForms shape an award takes.
 const TYPES_RESULTAT: &str = "can-standard, can-social, can-tran, can-modif, can-desg";
 
 const CHAMPS_RESULTAT: [&str; 7] = [
@@ -644,7 +630,7 @@ mod tests {
     /// Plafond fixe : le test ne dépend pas de l'année où il tourne.
     const PLAFOND: i16 = 2036;
 
-    /// Real shape served on 16/09/2026: the three lot arrays run in the same
+    /// Real shape TED serves: the three lot arrays run in the same
     /// order, and the criteria repeat lot after lot.
     #[test]
     fn un_avis_ted_rend_les_quatre_champs() {
@@ -682,8 +668,8 @@ mod tests {
         );
     }
 
-    /// A notice with no French version leaves its lot arrays out of step: 3 of
-    /// 250 on 16/09/2026. No lot rather than a wrong one.
+    /// A notice with no French version leaves its lot arrays out of step: no lot
+    /// rather than a wrong one.
     #[test]
     fn des_tableaux_de_lot_desalignes_ne_rendent_aucun_lot() {
         let n = serde_json::json!({
@@ -708,9 +694,8 @@ mod tests {
         ));
     }
 
-    /// TED préfixe l'objet du pays et du libellé CPV — 7 073 avis sur 7 078 le
-    /// 15/08/2026. Le préfixe part, les tirets courts de l'objet restent : sans
-    /// ça, aucune ligne TED ne se fond dans sa jumelle de plateforme.
+    /// TED prefixes the object with the country and the CPV label: the prefix
+    /// goes, the object's short dashes stay.
     #[test]
     fn le_prefixe_pays_et_cpv_de_ted_ne_fait_pas_partie_de_l_objet() {
         assert_eq!(
@@ -725,8 +710,8 @@ mod tests {
         assert_eq!(objet_nu("Fourniture de repas"), "Fourniture de repas");
     }
 
-    /// Le stock FR porte 31 échéances au-delà de 2035, dont une en 2924 : une
-    /// coquille de saisie ne doit pas tenir une ligne ouverte pour mille ans.
+    /// A deadline past the ceiling is a typing slip: it is dropped rather than
+    /// clamped, so the row is not held open for centuries.
     #[test]
     fn une_echeance_aberrante_est_ecartee_pas_ramenee() {
         let n = serde_json::json!({
@@ -740,9 +725,9 @@ mod tests {
         assert_eq!(r.objet, "AT 01 transport scolaire");
     }
 
-    /// Forme réelle servie le 15/08/2026 : champs multilingues, valeurs
-    /// répétées par lot, URLs en tableau. L'URL PLACE porte l'identifiant du
-    /// dossier — donc la clé de jointure vers la ligne Atexo.
+    /// Real shape TED serves: multilingual fields, values repeated per lot, URLs
+    /// in an array. The PLACE URL carries the file's identifier, the join key to
+    /// the Atexo row.
     #[test]
     fn un_avis_ted_rend_sa_cle_de_jointure_et_son_echeance_la_plus_tardive() {
         let n = serde_json::json!({

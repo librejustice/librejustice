@@ -1,19 +1,10 @@
 # =============================================================================
 # MCP over Streamable HTTP at /mcp  (JSON-RPC 2.0)
-# Contract tests for LibreJustice — Python FastMCP oracle vs Rust axum hand-rolled.
+# Contract tests for LibreJustice.
 #
-# Transport notes (READ FIRST — major parity risk):
-#  - Python mounts the official MCP SDK FastMCP app (streamable_http_path="/",
-#    stateless_http=True, json_response=True). That transport ENFORCES headers:
-#       Accept: application/json, text/event-stream
-#       Content-Type: application/json
-#    and emits/echoes Mcp-Session-Id semantics. Missing/incorrect Accept on the
-#    Python side yields a 406 / protocol error from the SDK BEFORE any handler runs.
-#  - Rust mcp_router is a bare `POST /` JSON handler: it ignores Accept entirely,
-#    accepts any Content-Type axum can parse as JSON, and never sets Mcp-Session-Id.
-#  - Therefore these contract tests send the SDK-correct Accept header so the
-#    Python oracle answers; the A/B differ must tolerate transport-envelope/header
-#    differences and compare only the JSON-RPC `result`/`error` bodies.
+# Every request sends the headers the Streamable HTTP transport asks of a client:
+#    Accept: application/json, text/event-stream
+#    Content-Type: application/json
 #
 # Auth: gated by Settings.mcp_require_auth (default False). When True, an auth
 # middleware in front of /mcp requires `Authorization: Bearer <db-token>` and
@@ -160,10 +151,6 @@ jsonpath "$.result.tools[1].inputSchema.additionalProperties" == false
 jsonpath "$.result.tools[1].inputSchema.required" includes "url"
 jsonpath "$.result.tools[1].inputSchema.properties.url.type" == "string"
 jsonpath "$.result.tools[1].inputSchema.properties.url.minLength" == 1
-# DIVERGENCE: Python registers tools with title="Search Decisions" etc.;
-# _postprocess only strips `title` INSIDE inputSchema, leaving the tool-level
-# `title` field present. Rust omits tool-level `title` entirely. The differ
-# must flag tools[].title presence (Python) vs absence (Rust).
 
 # -----------------------------------------------------------------------------
 # tools/call search_decisions — structured search result shape
@@ -192,10 +179,10 @@ jsonpath "$.result.structuredContent.query" isString
 jsonpath "$.result.structuredContent.hits" isCollection
 jsonpath "$.result.isError" == false
 # Per-hit shape (only assert when at least one hit; data-dependent):
-# hits[].title/url/chars always present (camelCase), plus exactly one of
-# aiSummary (semantic) / snippet (lexical) per hit, optional metadata =
-# filter tokens: seat, solution, procedure, office, legalDomain,
-# publication, dateLecture, docketNumbers
+# hits[].title/url/chars always present (snake_case), plus exactly one of
+# ai_summary (semantic) / snippet (lexical) per hit, optional metadata =
+# filter tokens: seat, formation, solution, legal_domain,
+# publication, date, docket_numbers
 # (omitted when null — skip_serializing_if).
 
 # -----------------------------------------------------------------------------
@@ -240,8 +227,6 @@ HTTP 200
 [Asserts]
 jsonpath "$.jsonrpc" == "2.0"
 jsonpath "$.id" == 6
-# Rust: top-level error code -32602 "missing tool argument: url".
-# Python: FastMCP validation error → result.isError true (SDK-shaped message).
 
 # -----------------------------------------------------------------------------
 # tools/call unknown tool name → isError + contrat d'erreur (validation, hint)
@@ -283,7 +268,7 @@ jsonpath "$.result.content[0].text" contains "list_my_activity was removed."
 
 # -----------------------------------------------------------------------------
 # resources/list: the capability is not announced, so the method does not exist.
-# Serving an empty list made the directories advertise `capability:resources`.
+# An empty list would make directories advertise `capability:resources`.
 # -----------------------------------------------------------------------------
 POST {{base}}/mcp/
 Accept: application/json, text/event-stream
@@ -344,6 +329,28 @@ HTTP 200
 [Asserts]
 jsonpath "$.result.isError" == true
 jsonpath "$.result.content[0].text" contains "unknown field"
+
+# -----------------------------------------------------------------------------
+# tools/call search_decisions: `procedure` and `office` are retired but still
+# accepted, answered without them and with a second block naming their heirs.
+# -----------------------------------------------------------------------------
+POST {{base}}/mcp/
+Accept: application/json, text/event-stream
+Content-Type: application/json
+{
+  "jsonrpc": "2.0",
+  "id": 13,
+  "method": "tools/call",
+  "params": {
+    "name": "search_decisions",
+    "arguments": {"query": "saisie attribution", "office": ["JEX"], "limit": 3, "ai_rerank": false}
+  }
+}
+HTTP 200
+[Asserts]
+jsonpath "$.result.isError" == false
+jsonpath "$.result.structuredContent.hits" isCollection
+jsonpath "$.result.content[1].text" contains "formation"
 
 # -----------------------------------------------------------------------------
 # unknown top-level method → method not found

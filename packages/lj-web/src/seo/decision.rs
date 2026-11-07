@@ -6,6 +6,7 @@
 use lj_dtos::DecisionDetail;
 
 use super::generic::canonical_url;
+use crate::components::ui::shown_summary;
 
 /// Abreviations a NE PAS considerer comme fin de phrase.
 const ABBREVIATIONS: &[&str] = &[
@@ -112,10 +113,19 @@ pub fn seo_title(detail: &DecisionDetail) -> String {
 /// `<meta description>` : premier paragraphe du summary (ou fallback titre),
 /// tronque sur une frontiere de mot.
 ///
-/// Coupe en milieu de phrase plutot qu'a la phrase 1, qui fait 99 chars de
-/// moyenne sur le corpus (mediane 97) et laisse 40 % du budget SERP inutilise.
+/// Cuts mid-sentence rather than at the first sentence, which is short and
+/// leaves much of the SERP budget unused.
 pub fn meta_description(detail: &DecisionDetail, title: &str) -> String {
-    let raw = match detail.summary.as_deref() {
+    let shown = detail.summary.as_deref().map(|summary| {
+        shown_summary(
+            detail.jurisdiction_type,
+            summary,
+            detail.summary_quote.as_ref(),
+            detail.summary_body.as_ref(),
+        )
+        .text
+    });
+    let raw = match shown.as_deref() {
         Some(summary) => first_paragraph(summary),
         None => title,
     };
@@ -134,7 +144,11 @@ fn first_paragraph(summary: &str) -> &str {
 pub fn build_json_ld(detail: &DecisionDetail, title: &str, description: &str) -> serde_json::Value {
     use serde_json::{json, Map, Value};
 
-    let url = canonical_url(detail.jurisdiction_type, &detail.id);
+    let url = canonical_url(
+        detail.jurisdiction_type,
+        detail.jurisdiction_code.as_deref(),
+        &detail.id,
+    );
     let mut common = Map::new();
     common.insert("name".into(), json!(title));
     common.insert("headline".into(), json!(title));

@@ -30,35 +30,32 @@ use crate::error::ApiError;
 pub const RERANK_K: usize = 50;
 /// Notes visées par document avant fusion — une par passe (`scs3`).
 ///
-/// Measured on the 100-query ranking GT with no deadline: one pass scores
-/// +0.0813 NDCG@10 over base retrieval, two +0.0874, three +0.1111. The second
-/// pass buys nothing, the third is worth +0.0298 over one, CI95 [+0.0118, +0.0484].
+/// Without a deadline, a second pass buys nothing over one and a third lifts the
+/// ranking significantly.
 pub const TARGET_SCORES: usize = 3;
 /// Documents par appel listwise.
 const BATCH_SIZE: usize = 10;
-/// Relance d'un appel qui traîne (*hedged request*) : au-delà, un second appel
-/// part sans que le premier soit annulé, et la première réponse arrivée gagne.
-/// Posé seulement quand `deadline` l'est.
+/// Hedged request: past this, a second call leaves without cancelling the first,
+/// and the first answer back wins. Set only when `deadline` is.
 ///
-/// Au-dessus du p90 de la distribution mesurée. À 1 s, l'unique relance de
-/// [`HEDGES_PER_PASS`] partait sur la majorité des appels, donc plus aucune pour
-/// le vrai traînard.
+/// Above the p90 of the call latency: lower, the single hedge of
+/// [`HEDGES_PER_PASS`] would leave on most calls and none on the real straggler.
 const HEDGE_AFTER: Duration = Duration::from_millis(1500);
 
 /// Relances autorisées par passe.
 const HEDGES_PER_PASS: usize = 1;
 
-/// Échéance de latence de bout en bout du rerank sur le chemin live, passée en
-/// `deadline` par [`crate::search`]. Au-delà, les appels non revenus sont
-/// abandonnés et la fusion se fait sur ce qui est arrivé ([`fuse_scores`]).
+/// End-to-end latency deadline of the rerank on the live path, passed as
+/// `deadline` by [`crate::search`]. Past it, the calls not back are dropped and
+/// the fusion runs on what arrived ([`fuse_scores`]).
 ///
-/// Couvre toute la distribution mesurée. À 2 s, la coupe tombait dans le régime
-/// normal du modèle et une recherche sur dix sortait au classement dégradé.
+/// Covers the model's whole latency distribution: a shorter cut falls in its
+/// normal regime and degrades the ranking.
 pub const RERANK_BUDGET: Duration = Duration::from_secs(3);
 
-/// Same deadline for an MCP caller, whose assistant turn already costs seconds.
-/// On 07/09/2026 a burst of 23 searches in two minutes took the model to a 4,66 s
-/// median, so 3 s served the retrieval order rather than the ranking.
+/// Same deadline for an MCP caller, whose assistant turn already costs seconds:
+/// a burst of searches slows the model, and the live deadline would then serve
+/// the retrieval order rather than the ranking.
 pub const RERANK_BUDGET_MCP: Duration = Duration::from_secs(5);
 
 /// Model the prompt below was written and measured against. Moving one without
@@ -817,10 +814,7 @@ mod tests {
         assert_ne!(a, c);
     }
 
-    // Parseur listwise. GT figée dans tests/fixtures/oracle/rerank_parse.json :
-    // séparateurs `[:.\-]`, espaces parasites, lignes garbage ignorées, index hors
-    // [1..=k] ignorés, doublon d'index (dernier gagne), count ≠ k → None. Aligne le
-    // contrat exact de tolérance du parser, hors appel Mistral.
+    // The listwise parser's tolerance contract, held in tests/fixtures/oracle/rerank_parse.json.
     #[derive(serde::Deserialize)]
     struct RerankCase {
         content: String,

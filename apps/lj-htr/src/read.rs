@@ -197,12 +197,12 @@ pub const TRUST: f32 = 0.9;
 pub const MARGIN: f32 = 0.1;
 
 /// Fewer words, and the handwriting reader wins on chance: a misread single
-/// word lost 1 of 95 names on the handwritten forms.
+/// word costs a name on a handwritten form.
 pub const MIN_WORDS: usize = 2;
 
 /// Share of the doubtful lines the handwriting reader wins from which the
-/// page is handwritten, and it takes them all. Measured on 12 RIMES pages:
-/// 11.7 % of characters wrong, against 15.1 % line by line.
+/// page is handwritten, and it takes them all: reading the page whole beats
+/// choosing line by line.
 pub const HANDWRITTEN: f32 = 0.5;
 
 /// Whether the line reader doubts its reading enough to have the
@@ -220,8 +220,8 @@ fn text(words: &[Word]) -> String {
 }
 
 /// The words of a page's lines, each line read by the reader the page
-/// trusts. The handwriting reader reads French alone: on IAM, English
-/// handwriting, it raises the line reader's 18.8 % of characters wrong to 24.6.
+/// trusts. The handwriting reader reads French alone: on English handwriting
+/// it reads worse than the line reader.
 pub fn page(lexicons: &Lexicons, lines: Vec<Line>) -> Vec<Word> {
     let every: Vec<String> = lines
         .iter()
@@ -399,10 +399,10 @@ mod tests {
     fn a_single_word_line_keeps_the_line_reader_on_a_printed_page() {
         let lines = vec![
             line(0.95, "le chat dort", None),
-            line(0.6, "Thilan", Some("m.")),
+            line(0.6, "Kimanh", Some("m.")),
             line(0.6, "sur un lit", Some("sxr xn lxt")),
         ];
-        assert_eq!(read(lines), "le chat dort Thilan sur un lit");
+        assert_eq!(read(lines), "le chat dort Kimanh sur un lit");
     }
 
     #[test]
@@ -410,9 +410,9 @@ mod tests {
         let lines = vec![
             line(0.6, "lx chxt dxrt", Some("le chat dort")),
             line(0.6, "sxr xn", Some("sur un")),
-            line(0.6, "Tbilan", Some("Thilan")),
+            line(0.6, "Kirnanh", Some("Kimanh")),
         ];
-        assert_eq!(read(lines), "le chat dort sur un Thilan");
+        assert_eq!(read(lines), "le chat dort sur un Kimanh");
     }
 
     #[test]

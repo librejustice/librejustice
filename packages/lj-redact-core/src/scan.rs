@@ -50,21 +50,20 @@ impl Prepared {
 }
 
 /// Median height, in pixels, of the letters below which the reader is handed
-/// the page twice as large. Measured: 10 px at 144 dpi, 7 at 100, 5 at 72, and
-/// enlarging gains from 100 dpi down. A black and white image is never
-/// enlarged, only blurred: its broken strokes pass for small print, and
+/// the page twice as large, which it reads better. A black and white image is
+/// never enlarged, only blurred: its broken strokes pass for small print, and
 /// enlarging loses.
 const SMALL_TEXT: usize = 8;
 
 /// Narrowest grey range stretched to full range. Under 1 % of ink the low
-/// percentile falls on the paper: stretched as it was, a clean page came out all
-/// black and a noisy one as noise. Full pages measure 128 to 134 here.
+/// percentile falls on the paper: stretched, a clean page comes out all black
+/// and a noisy one as noise.
 const MIN_SPAN: f32 = 64.0;
 
 /// A black and white image is blurred before reading, by a Gaussian of its
 /// letter height divided by this: the reader takes grey levels, and reads a
-/// soft edge better than a jagged one. Measured from 100 to 200 dpi: 11 gains
-/// on photocopies and faxes and holds a clean page, 10 blurs that one too much.
+/// soft edge better than a jagged one. The divisor sharpens the reading of
+/// photocopies and faxes without blurring a clean page.
 const LETTERS_PER_BLUR: f32 = 11.0;
 
 /// Tilts beyond this are searched for no gain: a scan is never that crooked.
@@ -369,8 +368,8 @@ fn square_to(corners: [(f64, f64); 4]) -> [f64; 8] {
 }
 
 /// A Gaussian blur of one pixel. A phone's grain, once the paper is divided
-/// out, reads as specks that swell the boxes of the words: measured on the
-/// photographed pages, 8.8% of characters misread unsmoothed, 3.1% smoothed.
+/// out, reads as specks that swell the boxes of the words, and the blur
+/// removes them.
 fn smooth(image: &[f32], w: usize, h: usize) -> Vec<f32> {
     const KERNEL: [f32; 7] = [0.0044, 0.054, 0.242, 0.3992, 0.242, 0.054, 0.0044];
     convolve(image, w, h, &KERNEL)

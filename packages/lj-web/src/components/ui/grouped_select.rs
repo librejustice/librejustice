@@ -4,12 +4,18 @@ use leptos::prelude::*;
 use super::panel::PanelAnchor;
 #[cfg(feature = "hydrate")]
 use super::panel::{dismiss, Dismiss, PanelEdge};
-use super::SelectOption;
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectGroup {
     pub label: String,
-    pub options: Vec<SelectOption>,
+    pub options: Vec<GroupedOption>,
+}
+
+/// An option, and a word shown after its label in the list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupedOption {
+    pub value: String,
+    pub label: String,
+    pub note: Option<&'static str>,
 }
 
 #[cfg(feature = "hydrate")]
@@ -40,7 +46,7 @@ pub fn GroupedSelect(
             groups
                 .iter()
                 .filter_map(|g| {
-                    let options: Vec<SelectOption> = g
+                    let options: Vec<GroupedOption> = g
                         .options
                         .iter()
                         .filter(|o| needle.is_empty() || lj_fold::fold(&o.label).contains(&needle))
@@ -197,9 +203,9 @@ pub fn GroupedSelect(
                 aria-haspopup="listbox"
                 aria-expanded=move || open.get().then_some("true")
                 on:click=on_toggle
-                class="flex h-9 max-w-full items-center gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 text-sm text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]"
+                class="flex min-h-9 max-w-full items-center gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 py-1.5 text-left text-sm text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]"
             >
-                <span class="truncate">{current_label}</span>
+                <span>{current_label}</span>
                 <svg
                     viewBox="0 0 12 8"
                     class=move || {
@@ -274,7 +280,7 @@ pub fn GroupedSelect(
                                 .options
                                 .into_iter()
                                 .map(|opt| {
-                                    let SelectOption { value: opt_value, label } = opt;
+                                    let GroupedOption { value: opt_value, label, note } = opt;
                                     let is_selected = {
                                         let opt_value = opt_value.clone();
                                         move || value.get() == opt_value
@@ -295,6 +301,14 @@ pub fn GroupedSelect(
                                             class="block w-full whitespace-nowrap px-3 py-1.5 pl-5 text-left text-sm text-[var(--color-ink-muted)] transition-colors data-[active]:bg-[var(--color-bordeaux-soft)]/40 data-[active]:text-[var(--color-ink)] aria-selected:text-[var(--color-accent)]"
                                         >
                                             {label}
+                                            {note
+                                                .map(|n| {
+                                                    view! {
+                                                        <span class="ml-2 text-xs text-[var(--color-ink-subtle)]">
+                                                            {n}
+                                                        </span>
+                                                    }
+                                                })}
                                         </button>
                                     }
                                 })

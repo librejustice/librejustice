@@ -11,7 +11,7 @@ use std::time::Instant;
 
 use anyhow::{anyhow, bail, Result};
 use lj_redact_core::labels::{Labels, Needle};
-use lj_redact_core::{office, Anchor};
+use lj_redact_core::office;
 use serde::Serialize;
 
 const USAGE: &str = "usage: redact --file F --format docx|odt|doc --out FILE [ENTRY ...]
@@ -146,19 +146,9 @@ fn redact(file: &Path, out: &Path, needles: &[Needle]) -> Result<()> {
 /// The text of `file` with each occurrence of `needles` under its label, as
 /// the redaction of a document chooses them.
 fn expect(file: &Path, needles: &[Needle]) -> Result<()> {
-    let text: Vec<char> = std::fs::read_to_string(file)?.chars().collect();
-    let feed: Vec<(char, Anchor)> = text
-        .iter()
-        .enumerate()
-        .map(|(at, c)| {
-            let anchor = lj_office::Anchor::XmlText {
-                part: 0,
-                node: 0,
-                offset: u32::try_from(at)?,
-            };
-            Ok((*c, Anchor::Office(anchor)))
-        })
-        .collect::<Result<_>>()?;
+    let source = std::fs::read_to_string(file)?;
+    let text: Vec<char> = source.chars().collect();
+    let feed = office::plain(&source)?;
     let texts: Vec<String> = needles.iter().map(|n| n.text.to_owned()).collect();
     let (_, replacements) = office::replacements(&[feed], &[], &texts, &Labels::assign(needles))?;
     let mut removed = vec![false; text.len()];

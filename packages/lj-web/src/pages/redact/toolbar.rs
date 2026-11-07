@@ -233,7 +233,13 @@ fn OtherFile() -> impl IntoView {
 fn Options(session: Session) -> impl IntoView {
     let open = RwSignal::new(false);
     let container = NodeRef::<leptos::html::Div>::new();
-    crate::components::top_bar::close_on_outside_or_nav(open, container);
+    #[cfg(feature = "hydrate")]
+    crate::components::ui::panel::dismiss(
+        container,
+        move || open.get_untracked(),
+        move || open.set(false),
+        crate::components::ui::panel::Dismiss::default(),
+    );
     let zoom_by = move |factor: f64| {
         session.fit.set(false);
         session

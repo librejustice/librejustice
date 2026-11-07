@@ -26,24 +26,30 @@ fn ToolCard(
     }
 }
 
-const OUTILS: [(&str, &str, &str, &str); 3] = [
+const OUTILS: [(&str, &str, &str, &str); 4] = [
     (
         "Disponible",
         "Connecteur MCP",
-        "Claude, ChatGPT ou votre propre agent cherchent dans la jurisprudence et les textes sans quitter leur fil de conversation.",
+        "Claude, ChatGPT ou votre propre agent cherchent dans les décisions et les textes.",
         "/mcp-guide",
     ),
     (
         "Disponible",
         "API publique",
-        "La même base en REST, pour votre code. Recherche de décisions et de textes, clé gratuite.",
+        "Une API REST gratuite pour chercher les décisions et les textes depuis votre code.",
         "/api-guide",
     ),
     (
         "Bêta",
         "Anonymisation",
-        "Des règles proposent les noms, vous cochez, et le PDF, le document Word ou l'image repart sans. Tout se passe dans votre navigateur : le fichier ne part nulle part.",
+        "L'outil repère les noms et autres données identifiantes dans un PDF, un document Word ou une image et vous choisissez celles à retirer. Tout ça sans que le fichier quitte votre navigateur.",
         "/redact",
+    ),
+    (
+        "Bêta",
+        "Verser une décision",
+        "Envoyez une décision qui manque à LibreJustice.",
+        "/decision/contribute",
     ),
 ];
 
@@ -55,7 +61,7 @@ pub fn ToolsPage() -> impl IntoView {
         <Title text="Outils - LibreJustice" />
         <Meta
             name="description"
-            content="Les outils LibreJustice : connecteur MCP pour les assistants, API REST, et anonymisation de documents dans le navigateur."
+            content="Les outils de LibreJustice : connecteur MCP, API REST, anonymisation de documents et versement de décisions."
         />
         <div class="mx-auto flex w-full min-w-0 max-w-5xl flex-col gap-14 px-4 py-16 sm:px-6 lg:px-8">
             <section class="flex max-w-3xl flex-col gap-6">
@@ -74,12 +80,9 @@ pub fn ToolsPage() -> impl IntoView {
                         "en dehors de la recherche."
                     </em>
                 </h1>
-                <p class="text-lg leading-relaxed text-[var(--color-ink-muted)]">
-                    "Le même fonds, que vous passiez par votre assistant ou par votre propre code, et de quoi anonymiser vos documents sans qu'ils quittent votre navigateur."
-                </p>
             </section>
 
-            <section class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <section class="grid gap-4 sm:grid-cols-2">
                 {OUTILS
                     .iter()
                     .map(|&(state, title, body, href)| {

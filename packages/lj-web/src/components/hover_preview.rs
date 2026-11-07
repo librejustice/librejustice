@@ -193,11 +193,8 @@ pub fn HoverPreview(kind: PreviewKind, children: Children) -> impl IntoView {
                     .unwrap_or(0.0);
                 let left = rect.left().min(win_w - PANEL_W - 8.0).max(8.0);
                 let below = win_h - rect.bottom();
-                // Sous le lien si la place suffit (ou dépasse celle du dessus),
-                // au-dessus sinon (ancrage `bottom`, le panneau pousse vers le haut). Le
-                // wrapper est collé au lien : l'écart visuel de 6 px est un padding
-                // transparent qui porte les handlers, traversable par le pointeur à
-                // n'importe quelle vitesse.
+                // Below the link when there is room, above otherwise, anchored by `bottom`.
+                // The 6 px gap is a transparent padding inside the anchor, crossed at any speed.
                 let pos = if below >= 320.0 || below >= rect.top() {
                     format!("top:{}px; padding-top:6px;", rect.bottom())
                 } else {
@@ -261,22 +258,19 @@ pub fn HoverPreview(kind: PreviewKind, children: Children) -> impl IntoView {
         <span node_ref=anchor on:mouseenter=on_enter on:mouseleave=on_leave>
             {children()}
             <Show when=move || mounted.get()>
-                // Le wrapper (pont transparent inclus) garde les handlers : y entrer
-                // annule la fermeture différée, le contenu scrollable reste atteignable au
-                // pointeur. Il porte aussi `.lj-panel` : fermé, son `pointer-events:none`
-                // retire le pont du chemin du pointeur, qui resterait sinon posé sur le
-                // texte sous chaque lien déjà survolé.
-                // `data-hover-card` : la toolbar de sélection du corps de décision ignore
-                // les sélections nées dans cet îlot, rendu dans l'`<article>` observé.
+                // A DOM child of the anchor, covered by its handlers. Only the card inside
+                // slides: a sliding bridge covered the link's lower edge, taking its hover.
+                // `data-hover-card`: the body's selection toolbar ignores this island.
                 <span
                     data-hover-card=""
                     data-open=move || open.get().then_some("true")
                     style=move || style.get()
-                    on:mouseenter=on_enter
-                    on:mouseleave=on_leave
-                    class="lj-panel z-50 block w-96 max-w-[calc(100vw-16px)]"
+                    class="pointer-events-none z-50 block w-96 max-w-[calc(100vw-16px)] data-open:pointer-events-auto"
                 >
-                    <span class="block rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] p-4 text-left shadow-lg">
+                    <span
+                        data-open=move || open.get().then_some("true")
+                        class="lj-panel block rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] p-4 text-left shadow-lg"
+                    >
                         {move || card_view(data.get())}
                     </span>
                 </span>
@@ -326,17 +320,15 @@ fn article_card(article: LawArticleResponse) -> AnyView {
     .into_any()
 }
 
-/// Carte décision : titre, badges (solution + voie + portée, mêmes tons que
-/// les cartes résultat), résumé scrollable.
+/// Decision card: title, badges (solution and reach, in the tones of the
+/// result cards), scrollable summary.
 fn decision_card(preview: DecisionPreview) -> AnyView {
     let solution = preview.solution.map(|s| s.label);
-    let procedure = preview.procedure.map(|v| v.label);
     let publication = publication_badge(&preview.publication_codes);
-    let badges = (solution.is_some() || procedure.is_some() || publication.is_some()).then(|| {
+    let badges = (solution.is_some() || publication.is_some()).then(|| {
         view! {
             <span class="mt-1.5 flex flex-wrap gap-1.5">
                 {solution.map(|label| view! { <Badge tone=BadgeTone::Outline>{label}</Badge> })}
-                {procedure.map(|label| view! { <Badge tone=BadgeTone::Accent>{label}</Badge> })}
                 {publication.map(|label| view! { <Badge tone=BadgeTone::Neutral>{label}</Badge> })}
             </span>
         }

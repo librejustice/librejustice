@@ -1,5 +1,5 @@
 {
-  "_provenance": "oracle des poids de fusion. Le générateur Python d'origine a disparu avec l'API Python : un cas s'ajoute à la main, et lj-api::signals::tests l'asservit.",
+  "_provenance": "Expected fusion weights of src/signals.rs, one case per signal combination, maintained by hand. Held by compute_weights_full_matrix_parity_oracle.",
   "cases": [
     {
       "name": "empty_no_signal",

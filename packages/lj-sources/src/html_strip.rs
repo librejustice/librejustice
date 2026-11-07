@@ -62,14 +62,28 @@ const WINDOWS_1252: [char; 32] = [
 ];
 
 /// A code point of Word's Symbol font, the private area 0xF000-0xF0FF, where
-/// a pasted list keeps its bullets: 998 of them in the procurement fund on
-/// 23/09/2026, and no font renders them.
+/// a pasted list keeps its bullets, which no font renders.
 fn caractere(cp: u32) -> Option<char> {
     match cp {
         0x80..=0x9f => Some(WINDOWS_1252[(cp - 0x80) as usize]),
         0xf000..=0xf0ff => Some('\u{2022}'),
         _ => char::from_u32(cp),
     }
+}
+
+/// A named reference of the WHATWG table, which is sorted by name.
+fn named_entity(name: &str) -> Option<&'static str> {
+    let table = &html_escape::NAMED_ENTITIES;
+    table
+        .binary_search_by(|(n, _)| n.cmp(&name.as_bytes()))
+        .ok()
+        .map(|i| table[i].1)
+}
+
+/// A text `strip_html` wrote, with the references it left undecoded decoded
+/// as it decodes them now.
+pub fn decode_stripped(text: &str) -> String {
+    collapse_whitespace(&decode_entities(text))
 }
 
 fn decode_entities_once(s: &str) -> String {
@@ -91,56 +105,9 @@ fn decode_entities_once(s: &str) -> String {
                 .unwrap_or_else(|| caps[0].to_string());
         }
         match body {
-            "amp" => "&".to_string(),
-            "lt" => "<".to_string(),
-            "gt" => ">".to_string(),
-            "quot" => "\"".to_string(),
-            "apos" => "'".to_string(),
-            "nbsp" => "\u{a0}".to_string(),
-            "laquo" => "\u{ab}".to_string(),
-            "raquo" => "\u{bb}".to_string(),
-            "ndash" => "\u{2013}".to_string(),
-            "mdash" => "\u{2014}".to_string(),
-            "lsquo" => "\u{2018}".to_string(),
-            "rsquo" => "\u{2019}".to_string(),
-            "ldquo" => "\u{201c}".to_string(),
-            "rdquo" => "\u{201d}".to_string(),
-            "hellip" => "\u{2026}".to_string(),
-            "eacute" => "é".to_string(),
-            "egrave" => "è".to_string(),
-            "ecirc" => "ê".to_string(),
-            "agrave" => "à".to_string(),
-            "acirc" => "â".to_string(),
-            "ccedil" => "ç".to_string(),
-            "ugrave" => "ù".to_string(),
-            "ucirc" => "û".to_string(),
-            "icirc" => "î".to_string(),
-            "iuml" => "ï".to_string(),
-            "ocirc" => "ô".to_string(),
-            "euml" => "ë".to_string(),
-            "Eacute" => "É".to_string(),
-            "Egrave" => "È".to_string(),
-            "Ecirc" => "Ê".to_string(),
-            "Agrave" => "À".to_string(),
-            "Acirc" => "Â".to_string(),
-            "Ccedil" => "Ç".to_string(),
-            "Ugrave" => "Ù".to_string(),
-            "Ucirc" => "Û".to_string(),
-            "Icirc" => "Î".to_string(),
-            "Iuml" => "Ï".to_string(),
-            "Ocirc" => "Ô".to_string(),
-            "Euml" => "Ë".to_string(),
-            "oelig" => "œ".to_string(),
-            "OElig" => "Œ".to_string(),
-            "iquest" => "¿".to_string(),
-            "yuml" => "ÿ".to_string(),
-            "sup2" => "²".to_string(),
-            // Trait d'union conditionnel : invisible, il ne porte rien en texte plat.
+            // A soft hyphen is invisible and carries nothing in plain text.
             "shy" => String::new(),
-            "deg" => "\u{b0}".to_string(),
-            "euro" => "\u{20ac}".to_string(),
-            "sect" => "\u{a7}".to_string(),
-            _ => caps[0].to_string(),
+            _ => named_entity(body).map_or_else(|| caps[0].to_string(), str::to_string),
         }
     })
     .into_owned()
@@ -178,6 +145,19 @@ mod tests {
         let html = "<p>droit &agrave; un proc&egrave;s &laquo;&nbsp;\u{e9}quitable&nbsp;&raquo; &amp; libre</p>";
         let out = strip_html(html);
         assert_eq!(out, "droit à un procès « équitable » & libre");
+    }
+
+    #[test]
+    fn every_named_reference_of_the_html_table_decodes() {
+        let html = "<p>&Ouml;ffentlicher Dienst, Stra&szlig;e, Jo&atilde;o, n&ordm;&nbsp;3, Pr&shy;&eacute;sident, &unknown;</p>";
+        assert_eq!(
+            strip_html(html),
+            "Öffentlicher Dienst, Straße, João, nº 3, Président, &unknown;"
+        );
+        assert_eq!(
+            decode_stripped("AVOCAT G&Eacute;N&Eacute;RAL\nM&uuml;ller&thinsp;&amp;&thinsp;Co"),
+            "AVOCAT GÉNÉRAL\nMüller & Co"
+        );
     }
 
     #[test]

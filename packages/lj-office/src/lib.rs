@@ -105,8 +105,8 @@ pub(crate) fn record(
     Ok(removed)
 }
 
-/// Elements a part may nest. The corpus peaks at 97, and the recursive walks
-/// of the model and the layout must fit the 1 MiB stack of a wasm module.
+/// Elements a part may nest, far deeper than a real document: the recursive
+/// walks of the model and the layout must fit the 1 MiB stack of a wasm module.
 pub(crate) const MAX_DEPTH: usize = 1000;
 
 /// The word-processing formats, told apart by their bytes.
@@ -443,7 +443,7 @@ mod tests {
         let bytes = docx(&format!("<w:p>{}</w:p>", open_page.repeat(20_000)), "");
         let started = std::time::Instant::now();
         open(&bytes).unwrap();
-        // About a second in a debug build; rereading the open fields at each run took minutes.
+        // A loose bound, which only a quadratic reading of the open fields exceeds.
         assert!(started.elapsed().as_secs() < 30, "{:?}", started.elapsed());
     }
 

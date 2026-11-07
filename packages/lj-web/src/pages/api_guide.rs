@@ -15,26 +15,26 @@ const LIEN: &str = "text-[var(--color-accent)] underline underline-offset-2 hove
 const ROUTES: [(&str, &str); 7] = [
     (
         "GET /api/search",
-        "Recherche de décisions. Mêmes paramètres que la recherche du site : `q`, `limit`, `offset`, filtres de juridiction et de date.",
+        "Recherche de décisions, sous les noms de paramètres de l'outil MCP `search_decisions` : `query`, `limit`, `offset`, filtres de juridiction et de date.",
     ),
     (
         "GET /api/search-textes",
-        "Recherche d'articles dans le référentiel de normes. `q`, `code` pour borner à un texte, `date` pour chercher dans les versions en vigueur ce jour-là.",
+        "Recherche d'articles dans le référentiel de normes. `query`, `code` pour borner à un texte, `as_of` pour chercher dans les versions en vigueur ce jour-là.",
     ),
     (
         "GET /api/decision/{id}",
         "Une décision entière, avec son texte et ses métadonnées.",
     ),
     (
-        "GET /api/norm/{juridiction}/{code}",
+        "GET /api/norm/{jurisdiction}/{code}",
         "Un texte sans articles rend son corps ; un texte qui en porte rend son sommaire. La juridiction est son code ISO en minuscules (`fr`, `be`, `eu`) ; le code se nomme par son slug, son nom ou son sigle.",
     ),
     (
-        "GET /api/norm/{juridiction}/{code}/{article}",
-        "Un article dans sa version en vigueur, ou telle qu'elle était au jour passé en `date`.",
+        "GET /api/norm/{jurisdiction}/{code}/{article}",
+        "Un article dans sa version en vigueur, ou telle qu'elle était au jour passé en `as_of`.",
     ),
     (
-        "GET /api/norm/{juridiction}/{code}/{chemin}",
+        "GET /api/norm/{jurisdiction}/{code}/{path}",
         "Une division du texte et ses articles, nommée par le chemin que porte le sommaire (`livre-i/titre-v`).",
     ),
     (
@@ -48,19 +48,19 @@ pub fn ApiGuide() -> impl IntoView {
     crate::pages::cache_public_5_min();
     let exemple = format!(
         "curl -H 'Authorization: Bearer ljk_votre_cle' \\\n  \
-         '{CANONICAL_BASE}/api/search?q=trouble+anormal+de+voisinage&limit=3'"
+         '{CANONICAL_BASE}/api/search?query=trouble+anormal+de+voisinage&limit=3'"
     );
 
     view! {
         <Title text="API publique - LibreJustice" />
         <Meta
             name="description"
-            content="L'API REST de LibreJustice : recherche de jurisprudence et de textes, clé gratuite."
+            content="L'API REST de LibreJustice : recherche de jurisprudence et de normes, clé gratuite."
         />
         <div class="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-14 px-4 py-16 sm:px-6 lg:px-8">
             <section class="flex flex-col gap-6">
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "API publique"
+                    "API publique · bêta"
                 </p>
                 <h1
                     class="text-balance font-sans text-3xl leading-[1.05] tracking-tight text-[var(--color-ink)] sm:text-5xl"
@@ -75,12 +75,12 @@ pub fn ApiGuide() -> impl IntoView {
                     </em>
                 </h1>
                 <p class="text-lg leading-relaxed text-[var(--color-ink-muted)]">
-                    "La même base de données que le site et que le connecteur MCP, en REST. Jurisprudence et textes, mis à jour quotidiennement depuis les sources officielles. La clé est gratuite."
+                    "L'API donne accès en REST à la même base que le site et le connecteur MCP. La jurisprudence et les normes sont mises à jour chaque jour depuis les sources officielles et la clé d'accès est gratuite."
                 </p>
             </section>
 
             <section class="flex flex-col gap-4">
-                <h2 class=TITRE_SECTION>"Prendre une clé"</h2>
+                <h2 class=TITRE_SECTION>"Générer une clé"</h2>
                 <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
                     "Créez un compte, puis une clé depuis "
                     <a href="/profile" class=LIEN>
@@ -118,7 +118,7 @@ pub fn ApiGuide() -> impl IntoView {
                         .collect_view()}
                 </div>
                 <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                    "Le contrat complet, paramètres et réponses, se lit en OpenAPI : "
+                    "L'API est en bêta : ses noms de paramètres et de champs peuvent encore changer. Le contrat complet, paramètres et réponses, se lit en OpenAPI : "
                     <a href="/openapi.json" rel="external" class=LIEN>
                         "openapi.json"
                     </a>
@@ -140,7 +140,11 @@ pub fn ApiGuide() -> impl IntoView {
                     ". Si votre usage légitime dépasse ce plafond, écrivez-nous plutôt que de contourner : le fonds est public et gratuit, on souhaite que ça le reste, en faisant attention à partager les ressources entre tous les utilisateurs."
                 </p>
                 <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                    "Les autres chemins du site ne sont pas une API : ils servent le front et changent sans préavis. Ce qui est ici est stable, et versionné pour le rester."
+                    "L'API est régie par les "
+                    <a href="/terms" class=LIEN>
+                        "conditions d'utilisation"
+                    </a>
+                    " du service."
                 </p>
             </section>
 

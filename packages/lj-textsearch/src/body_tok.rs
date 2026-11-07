@@ -21,11 +21,10 @@ use regex::Regex;
 /// le tokenizer tantivy des snippets et [`tokenize`] portent tous celui-ci.
 /// `legal_article_usage_bm25.terms` y ajoute `_`, seule variation du dépôt.
 ///
-/// La première alternative garde un numéro entier — `2008/115`, `19-20.312`,
-/// `3.000` — parce que sur un instrument européen le numéro EST l'identifiant,
-/// et que le découper divise la précision par deux. L'alternance est
-/// leftmost-first : à une position numérique, la forme collée gagne. Le tiret,
-/// lui, était déjà collé par la seconde alternative.
+/// The first alternative keeps a number whole (`2008/115`, `19-20.312`, `3.000`),
+/// because on a European instrument the number IS the identifier, and splitting it
+/// costs precision. The alternation is leftmost-first: at a numeric position, the
+/// glued form wins. The hyphen was already glued by the second alternative.
 pub const TOKEN_PATTERN: &str = r"\p{N}+(?:[./-]\p{N}+)+|[\p{L}\p{N}-]+";
 
 static TOKEN_RE: LazyLock<Regex> =
@@ -158,7 +157,7 @@ mod tests {
         assert_eq!(tokenize("pourvoi 19-20.312"), vec!["pourvoi", "19-20.312"]);
         assert_eq!(tokenize("22/01772"), vec!["22/01772"]);
         assert_eq!(tokenize("3.000 euros"), vec!["3.000", "euros"]);
-        // Une date à barres est avalée entière — c'est le prix mesuré du gain.
+        // A slashed date is swallowed whole, as numbers are kept whole.
         assert_eq!(tokenize("du 16/12/2008"), vec!["du", "16/12/2008"]);
         // Un séparateur non encadré de chiffres ne colle rien.
         assert_eq!(tokenize("fin. Alors"), vec!["fin", "alors"]);

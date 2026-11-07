@@ -1,25 +1,21 @@
 //! Codes and constants the server, the ingest and the browser build share:
-//! text paths, hub pages, notice fonds, zones and the tokenizer calibration.
+//! text paths, hub pages, notice fonds, zones, passage tags, the tokenizer
+//! calibration and the workbench's document types and files.
 
+pub mod courts;
+pub mod files;
 pub mod languages;
 pub mod tokens;
 
 /// The first path segment of a text URL, naming the jurisdiction that enacts
-/// it. The Union is stored under its French initials and addressed by the code
-/// ISO 3166-1 reserves for it; what no state enacts alone borrows no code.
+/// it.
 pub fn url_segment(jurisdiction: &str) -> String {
-    match jurisdiction {
-        "UE" => "eu".to_string(),
-        other => other.to_ascii_lowercase(),
-    }
+    jurisdiction.to_ascii_lowercase()
 }
 
 /// The stored jurisdiction an URL segment names, inverse of [`url_segment`].
 pub fn jurisdiction_of_segment(segment: &str) -> String {
-    match segment {
-        "eu" => "UE".to_string(),
-        other => other.to_ascii_uppercase(),
-    }
+    segment.to_ascii_uppercase()
 }
 
 /// What the Journal officiel appends to the title of an act on a person's civil
@@ -55,6 +51,19 @@ pub fn notice_path(uid: &str) -> String {
 /// declare `?page=N` pages that do not exist.
 pub const HUB_PAGE_SIZE: u32 = 100;
 
+/// What a passage of a decision holds, the tags of `decision_chunks.zones`,
+/// several at once.
+pub mod passage_zones {
+    /// Its prefix carries the decision's summary.
+    pub const SUMMARY: &str = "summary";
+    /// Its body crosses the text before the moyens annexés.
+    pub const TEXT: &str = "text";
+    /// Its body crosses the moyens annexés.
+    pub const ANNEXES: &str = "annexes";
+    /// Its decision's text carries the court's summary, a tag the base keeps.
+    pub const HEADNOTE: &str = "headnote";
+}
+
 /// The fonds of the notice pot, in display order. Each has its own backend
 /// (the `annonce` table for `marche`, the DILA ODS proxy for `bodacc` and
 /// `joafe`), but all project onto the same hit: the fond is a facet axis, not
@@ -77,9 +86,9 @@ pub const DIVISION_TRAVAUX: &str = "45";
 /// ones. [`ZONE_SANS`] is never stored: the empty set is what the column
 /// carries, and this is the key that ticks it.
 pub const ZONE_FRANCE: &str = "fr";
-pub const ZONE_UE: &str = "ue";
+pub const ZONE_EU: &str = "eu";
 pub const ZONE_SANS: &str = "sans";
 
 pub fn zone_est_departement(code: &str) -> bool {
-    !matches!(code, ZONE_FRANCE | ZONE_UE | ZONE_SANS)
+    !matches!(code, ZONE_FRANCE | ZONE_EU | ZONE_SANS)
 }

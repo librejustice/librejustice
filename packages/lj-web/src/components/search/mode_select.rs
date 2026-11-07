@@ -13,12 +13,12 @@ pub type ModeChoice = (&'static str, &'static str, &'static str);
 const AUTO: ModeChoice = (
     "auto",
     "Auto",
-    "Le moteur lit votre requête et choisit le mode. La pastille grise dit lequel il a retenu.",
+    "Choisit le mode le plus adapté à votre recherche.",
 );
 const LEXICAL: ModeChoice = (
     "lexical",
     "Lexicale",
-    "Tous vos mots, tels quels. Guillemets pour une expression exacte, ET / OU / SAUF pour combiner.",
+    "Recherche en utilisant des mots-clés. Mettez une expression entre guillemets ou combinez des termes avec ET, OU, SAUF.",
 );
 
 pub const DECISION_MODES: &[ModeChoice] = &[
@@ -26,13 +26,13 @@ pub const DECISION_MODES: &[ModeChoice] = &[
     LEXICAL,
     (
         "semantic",
-        "Sémantique",
-        "Par le sens : synonymes et reformulations sont rapprochés de votre question.",
+        "Reformulation",
+        "Recherche aussi les synonymes et les formulations proches de votre question.",
     ),
     (
         "reference",
         "Référence",
-        "La décision elle-même, désignée par son numéro, son nom d'usage, ou sa cour et sa date.",
+        "Pour retrouver une décision à partir de son numéro, de son nom d'usage ou de sa juridiction et sa date.",
     ),
 ];
 
@@ -44,7 +44,7 @@ pub const TEXTES_MODES: &[ModeChoice] = &[
     (
         "reference",
         "Référence",
-        "L'article lui-même, désigné par son code et son numéro.",
+        "Pour retrouver un article à partir de son code et de son numéro.",
     ),
 ];
 

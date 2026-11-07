@@ -4,6 +4,8 @@
 use leptos::prelude::*;
 use leptos_meta::{Meta, Title};
 
+use crate::components::ui::{DropdownSelect, SelectOption};
+
 /// Alignées sur l'énumération de `lj-api::support`.
 const SUJETS: &[(&str, &str)] = &[
     ("technique", "Problème technique sur le site"),
@@ -60,6 +62,14 @@ pub fn FeedbackPage() -> impl IntoView {
 #[component]
 fn Formulaire(de: String, erreur: Option<String>) -> impl IntoView {
     let motif = erreur.as_deref().map(traduire).unwrap_or_default();
+    let sujet = RwSignal::new(SUJETS[0].0.to_string());
+    let sujets: Vec<SelectOption> = SUJETS
+        .iter()
+        .map(|(value, label)| SelectOption {
+            value: value.to_string(),
+            label: label.to_string(),
+        })
+        .collect();
     view! {
         <h1 class="font-sans text-2xl text-[var(--color-ink)]">"Signaler un problème"</h1>
         <p class="mt-3 text-sm text-[var(--color-ink-muted)]">
@@ -71,17 +81,18 @@ fn Formulaire(de: String, erreur: Option<String>) -> impl IntoView {
         </p>
         <p class="mt-4 min-h-5 text-sm text-red-600">{motif}</p>
         <form method="post" action="/internal/signalement" class="mt-2 flex flex-col gap-5">
-            <label class="flex flex-col gap-1.5">
+            <div class="flex flex-col gap-1.5">
                 <span class=ETIQUETTE>"De quoi s'agit-il ?"</span>
-                <select name="sujet" class=CHAMP>
-                    {SUJETS
-                        .iter()
-                        .map(|(valeur, libelle)| {
-                            view! { <option value=*valeur>{*libelle}</option> }
-                        })
-                        .collect::<Vec<_>>()}
-                </select>
-            </label>
+                <input type="hidden" name="sujet" value=move || sujet.get() />
+                <DropdownSelect
+                    value=sujet
+                    on_change=Callback::new(move |picked| sujet.set(picked))
+                    options=sujets
+                    aria_label="De quoi s'agit-il ?"
+                    class="w-full"
+                    field=true
+                />
+            </div>
 
             <label class="flex flex-col gap-1.5">
                 <span class=ETIQUETTE>"Page concernée"</span>

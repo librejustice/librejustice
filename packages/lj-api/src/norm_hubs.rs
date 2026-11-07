@@ -18,8 +18,8 @@ use std::sync::Arc;
 pub const UNDATED_TOKEN: &str = "sans-date";
 
 /// Catalogue of each jurisdiction's fonds, in the editorial order of `NORM_FONDS`.
-/// A single cache entry (key `()`), TTL 12 h: the aggregate over 1 M rows is never
-/// recomputed per request.
+/// A single cache entry (key `()`), TTL 12 h: the aggregate over the whole catalogue
+/// is never recomputed per request.
 pub async fn catalogue(state: &AppState) -> Result<Arc<NormCatalogueResponse>> {
     state
         .norm_catalogue_cache
@@ -92,6 +92,7 @@ pub async fn hub(state: &AppState, segment: &str, fond: &str) -> Result<NormFond
         jurisdiction: segment.to_string(),
         fond: fond.to_string(),
         label,
+        search_paths: lj_norm::norm_fond::fond_search_paths(&jurisdiction, fond),
         text_count: years.iter().map(|(_, c)| c).sum(),
         years: years
             .into_iter()
@@ -114,13 +115,10 @@ pub async fn year_page(
     let jurisdiction = lj_vocab::jurisdiction_of_segment(segment);
     let conn = state.pool.get().await?;
     let repo = DecisionRepository::new(&conn);
-    let total = repo
-        .norm_fond_years(&jurisdiction, fond)
-        .await?
-        .into_iter()
-        .find(|(y, _)| *y == year)
-        .map(|(_, c)| c)
-        .ok_or(ApiError::NotFound)?;
+    let total = repo.norm_fond_year_total(&jurisdiction, fond, year).await?;
+    if total == 0 {
+        return Err(ApiError::NotFound);
+    }
 
     let page = page.max(1);
     let offset = i64::from(page - 1) * i64::from(HUB_PAGE_SIZE);
@@ -131,6 +129,7 @@ pub async fn year_page(
         jurisdiction: segment.to_string(),
         fond: fond.to_string(),
         label,
+        search_paths: lj_norm::norm_fond::fond_search_paths(&jurisdiction, fond),
         year,
         total,
         page,

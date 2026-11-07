@@ -66,9 +66,8 @@ static MODELE: LazyLock<Modele> = LazyLock::new(|| {
 });
 
 /// Division to market nature, kept where one nature holds at least 85 % of the
-/// markets sources labelled both ways. Measured on 789 836: the 38 kept cover
-/// 93,8 % of the corpus at 97,0 % precision, and `41` is among the seven
-/// dropped, splitting 45/55 between works and services.
+/// markets sources labelled both ways. `41` is dropped, split between works and
+/// services.
 const NATURE_PAR_DIVISION: [(&str, NatureMarche); 38] = [
     ("03", NatureMarche::Fournitures),
     ("09", NatureMarche::Fournitures),
@@ -133,10 +132,9 @@ fn jetons(titre: &str) -> HashSet<String> {
 }
 
 /// `cpv:NN` inferred from the title, `None` only when no token of the title is
-/// in the table. Never abstains on a thin margin: measured on 88 638 held-out
-/// markets, answering always puts 74,1 % of them in their true division against
-/// 54,4 % for a margin of 3, a wrong division and an empty one both being a
-/// market its buyer never finds.
+/// in the table. Never abstains on a thin margin: answering always puts more
+/// markets in their true division, a wrong division and an empty one both being
+/// a market its buyer never finds.
 pub fn division_probable(titre: &str) -> Option<String> {
     let m = &*MODELE;
     let mut scores: Vec<f32> = m.divisions.iter().map(|(_, prior, _)| *prior).collect();
@@ -224,7 +222,7 @@ mod tests {
         assert_eq!(
             nature_probable("cpv:41"),
             None,
-            "eau : 45/55 travaux/services"
+            "water splits between works and services"
         );
         assert_eq!(nature_probable("45"), None, "sans le préfixe");
     }

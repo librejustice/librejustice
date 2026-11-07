@@ -1,6 +1,6 @@
-//! Bloc « Citée par » : les décisions dont le texte cite celle de la page,
-//! autorité d'abord. Ni la chronologie du rail (les étapes de la même affaire),
-//! ni les analyses du Conseil d'État (écrites par un documentaliste).
+//! The « Citée par » block: the decisions whose text cites the page's, or whose
+//! Conseil d'Etat analysis refers to it, authority first. Not the chronology of
+//! the rail, the steps of the same case.
 
 use leptos::prelude::*;
 use lj_dtos::CitingDecisionHit;

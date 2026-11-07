@@ -1,21 +1,17 @@
 //! Summaries through a ChatGPT subscription seat, on the codex responses route.
 //!
 //! The ceiling is neither requests nor tokens but value spent in a rolling
-//! window, counted per SEAT and not per workspace: three weekly figures on
-//! 19/09/2026 (16, 10 and 37 %) showed seats sharing an `account_id` consume
-//! separately. The caller hands the seats in the order it wants them served and
-//! this file keeps it, a refused seat being parked until the reset it announces.
-//! A rotation stood here until 21/09/2026 and spread the calls evenly, which
-//! wastes the capacity of a seat whose window expires while the others keep
-//! theirs to the end of the week.
+//! window, counted per SEAT and not per workspace: seats sharing an
+//! `account_id` consume separately. The caller hands the seats in the order it
+//! wants them served and this file keeps it, a refused seat being parked until
+//! the reset it announces. An even rotation would waste the capacity of a seat
+//! whose window expires while the others keep theirs to the end of the week.
 //!
 //! Two properties of the route decide the shape below. It refuses `stream:
 //! false`, so the body arrives as server-sent events and is read whole rather
 //! than incrementally, the answer being one short summary. And it caches the
-//! prefix only for a stable routing key: measured 19/09/2026, the same
-//! 5 719-token prefix returns 0 cached tokens twice in a row under a fresh
-//! `session_id`, and 4 864 under `prompt_cache_key`, which is 51 % of the input
-//! served at a tenth of the price over a 120-call run.
+//! prefix only for a stable routing key: under `prompt_cache_key`, never under a
+//! fresh `session_id`.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
@@ -31,22 +27,20 @@ use crate::ratelimit::{now_unix, Ledger, Quota, Reservation};
 const BASE: &str = "https://chatgpt.com/backend-api/codex/responses";
 
 /// Longest wait a caller is asked to hold rather than being handed back its job.
-/// Above the minute a throttle parks every seat for when a batch opens all at once
-/// (57 to 59 s, 26/09/2026): at 30 s the drivers left the batch to a few survivors.
+/// Above the minute a throttle parks every seat for when a batch opens all at once.
 const MAX_WAIT_S: f64 = 90.0;
 
-/// Seeds of the bucket, from the throughput measured 19/09/2026: 40 summaries in
-/// 13,4 seconds over 3 seats at 24 threads, with no refusal. They only keep the
-/// first wave from being blind; the bucket learns from the outcomes.
+/// Seeds of the bucket. They only keep the first wave from being blind; the
+/// bucket learns from the outcomes.
 const SEED_RATE_PER_MIN: f64 = 60.0;
 const SEED_LATENCY_S: f64 = 8.0;
 /// Never corrected, the door announcing no token counter, so it is a ceiling and
-/// not a seed. The service throttles a seat past 200 to 230 calls in its minute,
-/// ~1,5 M tokens (26/09/2026): this sits above it, and the throttle paces the rest.
+/// not a seed. It sits above the service's own throttle of a seat, which paces
+/// the rest.
 const SEED_TOKENS_PER_MIN: u32 = 2_000_000;
 
-/// Park of a throttled seat that states no `retry-after`: the one throttle quoted
-/// in the Codex issues asked for 60 s.
+/// Park of a throttled seat that states no `retry-after`: the wait the one throttle
+/// quoted in the Codex issues asked for.
 const THROTTLE_PARK_S: f64 = 60.0;
 
 /// What the store hands over for one seat.
@@ -117,8 +111,8 @@ pub struct LunaClient {
 }
 
 /// Tokens of one answer, split the way the public price splits them: `cached` is
-/// the share of `input` read from the prefix cache, billed a tenth, `cache_write`
-/// the share written to it, billed 1,25 times on the platform.
+/// the share of `input` read from the prefix cache, billed at a discount, `cache_write`
+/// the share written to it, billed at a premium on the platform.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Usage {
     pub input: u64,
@@ -496,8 +490,8 @@ fn parse_events(raw: &str) -> Result<(String, Option<Usage>), LunaError> {
             continue;
         };
         match event.get("type").and_then(Value::as_str) {
-            // gpt-6-luna at effort none writes its reasoning as a `commentary`
-            // message before the answer, 2 calls in 6 on a probe (22/09/2026).
+            // gpt-6-luna at effort none may write its reasoning as a
+            // `commentary` message before the answer.
             Some("response.output_item.added") => {
                 if event.pointer("/item/phase").and_then(Value::as_str) == Some("commentary") {
                     if let Some(id) = event.pointer("/item/id").and_then(Value::as_str) {
@@ -548,9 +542,9 @@ mod tests {
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"Le salarié \"}\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"conteste.\"}\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"usage\":",
-            "{\"input_tokens\":4011,\"input_tokens_details\":{\"cached_tokens\":3840,",
-            "\"cache_write_tokens\":128},",
-            "\"output_tokens\":200,\"total_tokens\":4211}}}\n",
+            "{\"input_tokens\":5000,\"input_tokens_details\":{\"cached_tokens\":4000,",
+            "\"cache_write_tokens\":100},",
+            "\"output_tokens\":200,\"total_tokens\":5200}}}\n",
             "data: [DONE]\n"
         );
         let (answer, billed) = parse_events(raw).expect("flux lisible");
@@ -558,9 +552,9 @@ mod tests {
         assert_eq!(
             billed,
             Some(Usage {
-                input: 4011,
-                cached: 3840,
-                cache_write: 128,
+                input: 5000,
+                cached: 4000,
+                cache_write: 100,
                 output: 200
             })
         );

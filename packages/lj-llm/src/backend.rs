@@ -1,5 +1,6 @@
 //! Trait commun des embedders.
 
+use crate::cloudflare::CloudflareWorkersAIEmbedder;
 use crate::error::{EmbedError, Result};
 use crate::hosts::EmbedHost;
 use crate::openai_http::OpenAIHttpEmbedder;
@@ -41,28 +42,66 @@ pub trait Embedder {
 /// cause des `async fn`). Construit par `auto`/`cloudflare`/`openai-http`.
 pub enum AnyEmbedder {
     Dummy(DummyEmbedder),
-    Cloudflare(crate::cloudflare::CloudflareWorkersAIEmbedder),
+    Cloudflare(CloudflareWorkersAIEmbedder),
     OpenAiHttp(OpenAIHttpEmbedder),
-    /// Local hosts in priority order, then Cloudflare once every host is down.
-    Auto {
-        locals: Vec<LocalHost>,
-        cloudflare: crate::cloudflare::CloudflareWorkersAIEmbedder,
-    },
+    /// Backends in priority order, each behind its own breaker.
+    Auto(Vec<Link>),
 }
 
-/// One local host of the `auto` chain, with its own breaker.
-pub struct LocalHost {
-    embedder: OpenAIHttpEmbedder,
+/// One backend of the `auto` chain, with its own breaker.
+pub struct Link {
+    backend: Backend,
     label: String,
     degraded: AtomicBool,
 }
 
-impl LocalHost {
-    pub fn new(host: &EmbedHost) -> Self {
+enum Backend {
+    Local(OpenAIHttpEmbedder),
+    Cloudflare(CloudflareWorkersAIEmbedder),
+}
+
+impl Link {
+    pub fn local(host: &EmbedHost) -> Self {
+        Self::new(
+            Backend::Local(OpenAIHttpEmbedder::new(
+                host.url.clone(),
+                host.api_key.clone(),
+                "",
+            )),
+            host.label.clone(),
+        )
+    }
+
+    pub fn cloudflare(embedder: CloudflareWorkersAIEmbedder) -> Self {
+        Self::new(Backend::Cloudflare(embedder), "cloudflare".to_string())
+    }
+
+    fn new(backend: Backend, label: String) -> Self {
         Self {
-            embedder: OpenAIHttpEmbedder::new(host.url.clone(), host.api_key.clone(), ""),
-            label: host.label.clone(),
+            backend,
+            label,
             degraded: AtomicBool::new(false),
+        }
+    }
+
+    fn backend(&self) -> &'static str {
+        match self.backend {
+            Backend::Local(_) => "local",
+            Backend::Cloudflare(_) => "cloudflare",
+        }
+    }
+
+    fn embed_passages<'a>(&'a self, texts: &'a [String]) -> Leg<'a> {
+        match &self.backend {
+            Backend::Local(e) => Box::pin(e.embed_passages(texts)),
+            Backend::Cloudflare(e) => Box::pin(e.embed_passages(texts)),
+        }
+    }
+
+    fn embed_query<'a>(&'a self, texts: &'a [String]) -> Leg<'a> {
+        match &self.backend {
+            Backend::Local(e) => Box::pin(e.embed_query(texts)),
+            Backend::Cloudflare(e) => Box::pin(e.embed_query(texts)),
         }
     }
 }
@@ -74,55 +113,47 @@ type Chain<'a> = Pin<Box<dyn Future<Output = (Result<Array2<f32>>, Served)> + Se
 /// nothing about the health of any backend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Served {
-    Local(usize),
-    Cloudflare,
+    Link(usize),
     Nobody,
     Refused,
 }
 
-impl Served {
-    fn backend(self) -> &'static str {
-        match self {
-            Served::Local(_) => "local",
-            Served::Cloudflare => "cloudflare",
-            Served::Nobody => "aucun",
-            Served::Refused => "refus",
-        }
-    }
-}
-
-/// First answer of a latched host's race against the rest of the chain.
+/// First answer of a latched link's race against the rest of the chain.
 enum Winner {
-    Host(Result<Array2<f32>>),
+    Link(Result<Array2<f32>>),
     Rest((Result<Array2<f32>>, Served)),
 }
 
-/// Breaker of the `auto` mode, shared between passages and queries through two
-/// future factories: `local(i)` for host `i`, `cloudflare()` for the fallback.
-///
-/// When degraded, several legs emit the same HTTP trace: the span's `backend`
-/// and `host` fields are the only ones naming the leg that answered.
+/// Breaker of the `auto` mode, `leg(i)` building the future of link `i`. When
+/// degraded, several legs emit the same HTTP trace: the span's `backend` and
+/// `host` fields are the only ones naming the leg that answered.
 #[instrument(skip_all, fields(
     librejustice.embed.degraded = tracing::field::Empty,
     librejustice.embed.backend = tracing::field::Empty,
     librejustice.embed.host = tracing::field::Empty,
 ))]
 async fn auto_embed<'a>(
-    hosts: &'a [LocalHost],
-    local: &'a (dyn Fn(usize) -> Leg<'a> + Sync),
-    cloudflare: &'a (dyn Fn() -> Leg<'a> + Sync),
+    links: &'a [Link],
+    leg: &'a (dyn Fn(usize) -> Leg<'a> + Sync),
 ) -> Result<Array2<f32>> {
     let span = tracing::Span::current();
-    let any_degraded = hosts.iter().any(|h| h.degraded.load(Ordering::Relaxed));
+    let any_degraded = links.iter().any(|l| l.degraded.load(Ordering::Relaxed));
     span.record("librejustice.embed.degraded", any_degraded);
 
-    let (out, served) = race(hosts, 0, local, cloudflare).await;
+    let (out, served) = race(links, 0, leg).await;
 
-    span.record("librejustice.embed.backend", served.backend());
-    let mut attributes = vec![KeyValue::new("backend", served.backend())];
-    if let Served::Local(i) = served {
-        span.record("librejustice.embed.host", hosts[i].label.as_str());
-        attributes.push(KeyValue::new("host", hosts[i].label.clone()));
+    let backend = match served {
+        Served::Link(i) => links[i].backend(),
+        Served::Nobody => "aucun",
+        Served::Refused => "refus",
+    };
+    span.record("librejustice.embed.backend", backend);
+    let mut attributes = vec![KeyValue::new("backend", backend)];
+    if let Served::Link(i) = served {
+        if let Backend::Local(_) = links[i].backend {
+            span.record("librejustice.embed.host", links[i].label.as_str());
+            attributes.push(KeyValue::new("host", links[i].label.clone()));
+        }
     }
     lj_telemetry::meter()
         .u64_counter("embed.auto.served")
@@ -132,47 +163,42 @@ async fn auto_embed<'a>(
     out
 }
 
-/// Breaker of host `i`, whose fallback is the rest of the chain: the hosts after
-/// it, then Cloudflare. A healthy host is called alone and its first failure
-/// latches its breaker. A latched host races the rest of the chain, the losing
-/// call being the recovery probe: winning is what rearms it.
-fn race<'a>(
-    hosts: &'a [LocalHost],
-    i: usize,
-    local: &'a (dyn Fn(usize) -> Leg<'a> + Sync),
-    cloudflare: &'a (dyn Fn() -> Leg<'a> + Sync),
-) -> Chain<'a> {
+/// Breaker of link `i`: healthy, it is called alone and its first failure
+/// latches it; latched, it races the rest of the chain and winning rearms it.
+/// The last link has nothing to fall back to: called alone, never latched.
+fn race<'a>(links: &'a [Link], i: usize, leg: &'a (dyn Fn(usize) -> Leg<'a> + Sync)) -> Chain<'a> {
     Box::pin(async move {
-        let Some(host) = hosts.get(i) else {
-            return match cloudflare().await {
-                Ok(v) => (Ok(v), Served::Cloudflare),
+        let link = &links[i];
+        if i + 1 == links.len() {
+            return match leg(i).await {
+                Ok(v) => (Ok(v), Served::Link(i)),
                 Err(exc) => (Err(exc), Served::Nobody),
             };
-        };
-        if !host.degraded.load(Ordering::Relaxed) {
-            return match local(i).await {
-                Ok(v) => (Ok(v), Served::Local(i)),
+        }
+        if !link.degraded.load(Ordering::Relaxed) {
+            return match leg(i).await {
+                Ok(v) => (Ok(v), Served::Link(i)),
                 Err(exc) if is_request_fault(&exc) => (Err(exc), Served::Refused),
                 Err(exc) => {
-                    host.degraded.store(true, Ordering::Relaxed);
-                    tracing::warn!(host = %host.label, error = %exc, "local host failed, degraded: falling back");
-                    race(hosts, i + 1, local, cloudflare).await
+                    link.degraded.store(true, Ordering::Relaxed);
+                    tracing::warn!(link = %link.label, error = %exc, "embedding link failed, degraded: falling back");
+                    race(links, i + 1, leg).await
                 }
             };
         }
-        let mut rest = race(hosts, i + 1, local, cloudflare);
+        let mut rest = race(links, i + 1, leg);
         let winner = tokio::select! {
-            r = local(i) => Winner::Host(r),
+            r = leg(i) => Winner::Link(r),
             r = &mut rest => Winner::Rest(r),
         };
         match winner {
-            Winner::Host(Ok(v)) => {
-                host.degraded.store(false, Ordering::Relaxed);
-                tracing::info!(host = %host.label, "local host won the race again, rearmed");
-                (Ok(v), Served::Local(i))
+            Winner::Link(Ok(v)) => {
+                link.degraded.store(false, Ordering::Relaxed);
+                tracing::info!(link = %link.label, "embedding link won the race again, rearmed");
+                (Ok(v), Served::Link(i))
             }
-            Winner::Host(Err(exc)) if is_request_fault(&exc) => (Err(exc), Served::Refused),
-            Winner::Host(Err(_)) => rest.await,
+            Winner::Link(Err(exc)) if is_request_fault(&exc) => (Err(exc), Served::Refused),
+            Winner::Link(Err(_)) => rest.await,
             Winner::Rest(served) => served,
         }
     })
@@ -201,13 +227,8 @@ impl Embedder for AnyEmbedder {
             AnyEmbedder::Dummy(e) => e.embed_passages(texts).await,
             AnyEmbedder::Cloudflare(e) => e.embed_passages(texts).await,
             AnyEmbedder::OpenAiHttp(e) => e.embed_passages(texts).await,
-            AnyEmbedder::Auto { locals, cloudflare } => {
-                auto_embed(
-                    locals,
-                    &|i| -> Leg<'_> { Box::pin(locals[i].embedder.embed_passages(texts)) },
-                    &|| -> Leg<'_> { Box::pin(cloudflare.embed_passages(texts)) },
-                )
-                .await
+            AnyEmbedder::Auto(links) => {
+                auto_embed(links, &|i| links[i].embed_passages(texts)).await
             }
         }
     }
@@ -216,14 +237,7 @@ impl Embedder for AnyEmbedder {
             AnyEmbedder::Dummy(e) => e.embed_query(texts).await,
             AnyEmbedder::Cloudflare(e) => e.embed_query(texts).await,
             AnyEmbedder::OpenAiHttp(e) => e.embed_query(texts).await,
-            AnyEmbedder::Auto { locals, cloudflare } => {
-                auto_embed(
-                    locals,
-                    &|i| -> Leg<'_> { Box::pin(locals[i].embedder.embed_query(texts)) },
-                    &|| -> Leg<'_> { Box::pin(cloudflare.embed_query(texts)) },
-                )
-                .await
-            }
+            AnyEmbedder::Auto(links) => auto_embed(links, &|i| links[i].embed_query(texts)).await,
         }
     }
 }
@@ -368,24 +382,28 @@ French court decisions that best answer it."
         assert_ne!(a, b);
     }
 
-    /// Hosts of the chain, each latched or not.
-    fn hosts(latched: &[bool]) -> Vec<LocalHost> {
+    /// Chain of links, each latched or not.
+    fn chain(latched: &[bool]) -> Vec<Link> {
         latched
             .iter()
             .enumerate()
             .map(|(i, &latched)| {
-                let url = format!("http://host{i}:8400/v1/embeddings");
-                let host = LocalHost::new(&crate::hosts::parse_hosts(&url, None).unwrap()[0]);
-                host.degraded.store(latched, Ordering::Relaxed);
-                host
+                let host = crate::hosts::EmbedHost {
+                    url: format!("http://host{i}:8400/v1/embeddings"),
+                    api_key: None,
+                    label: format!("host{i}:8400"),
+                };
+                let link = Link::local(&host);
+                link.degraded.store(latched, Ordering::Relaxed);
+                link
             })
             .collect()
     }
 
-    fn latched(hosts: &[LocalHost]) -> Vec<bool> {
-        hosts
+    fn latched(links: &[Link]) -> Vec<bool> {
+        links
             .iter()
-            .map(|h| h.degraded.load(Ordering::Relaxed))
+            .map(|l| l.degraded.load(Ordering::Relaxed))
             .collect()
     }
 
@@ -394,135 +412,126 @@ French court decisions that best answer it."
         Box::pin(std::future::ready(out))
     }
 
+    fn up() -> Leg<'static> {
+        ready(Ok(Array2::zeros((1, 2))))
+    }
+    fn down() -> Leg<'static> {
+        ready(Err(EmbedError::Middleware(
+            reqwest_middleware::Error::Middleware(anyhow::anyhow!("backend injoignable")),
+        )))
+    }
+    fn refused() -> Leg<'static> {
+        ready(Err(EmbedError::InputTooLong))
+    }
     /// Jambe qui ne répond jamais. `tokio::select!` tire l'ordre de ses branches
     /// au hasard : deux jambes prêtes en même temps donnent un gagnant aléatoire,
     /// et seule celle-ci fait perdre l'autre à coup sûr.
-    fn leg_lente() -> Leg<'static> {
+    fn slow() -> Leg<'static> {
         Box::pin(std::future::pending())
-    }
-
-    fn ok() -> Result<Array2<f32>> {
-        Ok(Array2::zeros((1, 2)))
-    }
-    fn panne() -> Result<Array2<f32>> {
-        Err(EmbedError::Middleware(
-            reqwest_middleware::Error::Middleware(anyhow::anyhow!("backend injoignable")),
-        ))
-    }
-    fn entree_invalide() -> Result<Array2<f32>> {
-        Err(EmbedError::InputTooLong)
     }
 
     #[tokio::test]
     async fn nominal_sert_le_local_sans_armer_le_disjoncteur() {
-        let hosts = hosts(&[false]);
-        let (out, served) = race(&hosts, 0, &|_| ready(ok()), &|| ready(panne())).await;
+        let links = chain(&[false, false]);
+        let (out, served) = race(&links, 0, &|i| [up, down][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Local(0));
-        assert_eq!(latched(&hosts), [false]);
+        assert_eq!(served, Served::Link(0));
+        assert_eq!(latched(&links), [false, false]);
     }
 
     #[tokio::test]
     async fn panne_du_local_arme_le_disjoncteur_et_sert_cloudflare() {
-        let hosts = hosts(&[false]);
-        let (out, served) = race(&hosts, 0, &|_| ready(panne()), &|| ready(ok())).await;
+        let links = chain(&[false, false]);
+        let (out, served) = race(&links, 0, &|i| [down, up][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Cloudflare);
-        assert_eq!(latched(&hosts), [true]);
+        assert_eq!(served, Served::Link(1));
+        assert_eq!(latched(&links), [true, false]);
     }
 
     #[tokio::test]
     async fn les_deux_en_panne_ne_designent_aucun_backend() {
-        let hosts = hosts(&[false]);
-        let (out, served) = race(&hosts, 0, &|_| ready(panne()), &|| ready(panne())).await;
+        let links = chain(&[false, false]);
+        let (out, served) = race(&links, 0, &|i| [down, down][i]()).await;
         assert!(out.is_err());
         assert_eq!(served, Served::Nobody);
+        assert_eq!(latched(&links), [true, false]);
     }
 
     /// Une entrée invalide n'apprend rien sur la santé du backend : elle remonte
     /// telle quelle, sans repli et sans armer le disjoncteur.
     #[tokio::test]
     async fn entree_invalide_ne_degrade_pas() {
-        let hosts = hosts(&[false]);
-        let (out, served) = race(&hosts, 0, &|_| ready(entree_invalide()), &|| ready(ok())).await;
+        let links = chain(&[false, false]);
+        let (out, served) = race(&links, 0, &|i| [refused, up][i]()).await;
         assert!(matches!(out, Err(EmbedError::InputTooLong)));
         assert_eq!(served, Served::Refused);
-        assert_eq!(latched(&hosts), [false]);
+        assert_eq!(latched(&links), [false, false]);
     }
 
     #[tokio::test]
     async fn le_local_qui_regagne_la_course_rearme_le_mode_nominal() {
-        let hosts = hosts(&[true]);
-        let (out, served) = race(&hosts, 0, &|_| ready(ok()), &|| leg_lente()).await;
+        let links = chain(&[true, false]);
+        let (out, served) = race(&links, 0, &|i| [up, slow][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Local(0));
-        assert_eq!(latched(&hosts), [false]);
+        assert_eq!(served, Served::Link(0));
+        assert_eq!(latched(&links), [false, false]);
     }
 
     /// En dégradé, un local toujours KO laisse Cloudflare servir et le verrou
     /// fermé : sans ça chaque requête repaierait le stall du primaire.
     #[tokio::test]
     async fn degrade_avec_le_local_toujours_ko_reste_degrade() {
-        let hosts = hosts(&[true]);
-        let (out, served) = race(&hosts, 0, &|_| ready(panne()), &|| ready(ok())).await;
+        let links = chain(&[true, false]);
+        let (out, served) = race(&links, 0, &|i| [down, up][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Cloudflare);
-        assert_eq!(latched(&hosts), [true]);
+        assert_eq!(served, Served::Link(1));
+        assert_eq!(latched(&links), [true, false]);
     }
 
     #[tokio::test]
     async fn a_failed_primary_hands_over_to_the_next_host_before_cloudflare() {
-        let hosts = hosts(&[false, false]);
-        let (out, served) = race(
-            &hosts,
-            0,
-            &|i| if i == 0 { ready(panne()) } else { ready(ok()) },
-            &|| ready(ok()),
-        )
-        .await;
+        let links = chain(&[false, false, false]);
+        let (out, served) = race(&links, 0, &|i| [down, up, up][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Local(1));
-        assert_eq!(latched(&hosts), [true, false]);
+        assert_eq!(served, Served::Link(1));
+        assert_eq!(latched(&links), [true, false, false]);
     }
 
     #[tokio::test]
     async fn cloudflare_serves_only_once_every_host_is_down() {
-        let hosts = hosts(&[false, false]);
-        let (out, served) = race(&hosts, 0, &|_| ready(panne()), &|| ready(ok())).await;
+        let links = chain(&[false, false, false]);
+        let (out, served) = race(&links, 0, &|i| [down, down, up][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Cloudflare);
-        assert_eq!(latched(&hosts), [true, true]);
+        assert_eq!(served, Served::Link(2));
+        assert_eq!(latched(&links), [true, true, false]);
     }
 
     #[tokio::test]
     async fn a_latched_primary_that_answers_first_is_rearmed() {
-        let hosts = hosts(&[true, false]);
-        let (out, served) = race(
-            &hosts,
-            0,
-            &|i| if i == 0 { ready(ok()) } else { leg_lente() },
-            &|| leg_lente(),
-        )
-        .await;
+        let links = chain(&[true, false, false]);
+        let (out, served) = race(&links, 0, &|i| [up, slow, slow][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Local(0));
-        assert_eq!(latched(&hosts), [false, false]);
+        assert_eq!(served, Served::Link(0));
+        assert_eq!(latched(&links), [false, false, false]);
     }
 
-    /// Cloudflare never answers here: reaching it would hang the test.
+    /// The last link never answers here: reaching it would hang the test.
     #[tokio::test]
     async fn a_primary_still_down_leaves_the_second_host_serving() {
-        let hosts = hosts(&[true, false]);
-        let (out, served) = race(
-            &hosts,
-            0,
-            &|i| if i == 0 { ready(panne()) } else { ready(ok()) },
-            &|| leg_lente(),
-        )
-        .await;
+        let links = chain(&[true, false, false]);
+        let (out, served) = race(&links, 0, &|i| [down, up, slow][i]()).await;
         assert!(out.is_ok());
-        assert_eq!(served, Served::Local(1));
-        assert_eq!(latched(&hosts), [true, false]);
+        assert_eq!(served, Served::Link(1));
+        assert_eq!(latched(&links), [true, false, false]);
+    }
+
+    #[tokio::test]
+    async fn a_cloudflare_failure_during_an_outage_hands_over_to_the_last_resort() {
+        let links = chain(&[true, false, false]);
+        let (out, served) = race(&links, 0, &|i| [down, down, up][i]()).await;
+        assert!(out.is_ok());
+        assert_eq!(served, Served::Link(2));
+        assert_eq!(latched(&links), [true, true, false]);
     }
 
     #[tokio::test]

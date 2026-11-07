@@ -17,11 +17,12 @@ pub mod toc_spy;
 use leptos::either::Either;
 use leptos::prelude::*;
 use leptos_meta::{Link, Meta, Script, Title};
+use lj_dtos::UiAction;
 
 use crate::components::decision::{
-    DecisionActions, DecisionBody, DecisionCitantes, DecisionCommentaires, DecisionHeader,
-    DecisionLayout, DecisionMeta, DecisionParties, DecisionProvenance, DecisionRenvoyants,
-    DecisionSimilar, DecisionSkeleton, DecisionToc,
+    use_search_hits, DecisionActions, DecisionBody, DecisionCitantes, DecisionCommentaires,
+    DecisionHeader, DecisionLayout, DecisionMeta, DecisionParties, DecisionProvenance,
+    DecisionReferences, DecisionSimilar, DecisionSkeleton, DecisionToc,
 };
 use crate::components::own_page_description;
 use crate::seo::decision::{build_json_ld, meta_description, seo_title};
@@ -32,7 +33,7 @@ use data::{
     SimilarResult,
 };
 use reference::build_decision_references;
-use sections::{resolve_decision_sections, toc_sections};
+use sections::{resolve_decision_sections, toc_hit_counts, toc_sections};
 
 #[component]
 pub fn DecisionPage() -> impl IntoView {
@@ -102,6 +103,9 @@ fn set_cache_control(_status: u16, _summary_present: bool) {}
 /// Page d'erreur (id invalide / 404 / autre). Pose `robots noindex`.
 #[component]
 fn DecisionError(err: PageError) -> impl IntoView {
+    if err.status == 404 {
+        crate::pages::not_found::signaler_lien_mort();
+    }
     let eyebrow = if err.status == 404 {
         "Introuvable"
     } else {
@@ -131,17 +135,25 @@ fn DecisionLoaded(
     similar: Resource<SimilarResult>,
     parties: Resource<PartiesResult>,
 ) -> impl IntoView {
-    #[cfg(feature = "hydrate")]
-    Effect::new(|_| crate::reads::report(lj_dtos::ReadKind::Decision));
-
     let title = detail.title.clone();
     let description = meta_description(&detail, &title);
-    let url = canonical_url(detail.jurisdiction_type, &detail.id);
+    let url = canonical_url(
+        detail.jurisdiction_type,
+        detail.jurisdiction_code.as_deref(),
+        &detail.id,
+    );
+    #[cfg(feature = "hydrate")]
+    {
+        let document = url.clone();
+        Effect::new(move |_| crate::reads::report(lj_dtos::ReadKind::Decision, &document));
+    }
     let jsonld = serde_json::to_string(&build_json_ld(&detail, &title, &description))
         .unwrap_or_else(|_| "{}".to_string());
     // Fil d'Ariane structuré vers l'arborescence juridiction — absent si la
     // décision n'a pas de code juridiction résolu.
-    let juris = detail.jurisdiction_type.url_segment();
+    let juris = detail
+        .jurisdiction_type
+        .url_segment(detail.jurisdiction_code.as_deref());
     let breadcrumb_jsonld = detail.jurisdiction_code.as_ref().map(|code| {
         let label = detail
             .jurisdiction_name
@@ -182,39 +194,69 @@ fn DecisionLoaded(
     // coquille comme une vraie décision.
     let has_text = body_sections.iter().any(|s| !s.paragraphs.is_empty());
     let toc = toc_sections(&detail, &body_sections);
+    let hits = use_search_hits(&detail, &body_sections);
+    let toc_hits = {
+        let toc = toc.clone();
+        let section_ids: Vec<String> = body_sections.iter().map(|s| s.id.clone()).collect();
+        Memo::new(move |_| {
+            hits.with(|h| {
+                let per_section: Vec<usize> =
+                    h.iter().map(|s| s.iter().map(Vec::len).sum()).collect();
+                toc_hit_counts(&toc, &section_ids, &per_section)
+            })
+        })
+    };
 
     let detail_header = detail.clone();
     let detail_meta = detail.clone();
     let detail_body = detail.clone();
     let detail_provenance = detail.clone();
+    let detail_references = detail.clone();
+    let detail_references_side = detail.clone();
 
     let toc_mobile = toc.clone();
     let chronology_mobile = detail.chronology.clone();
     let detail_actions = detail.clone();
     let detail_actions_rail = detail.clone();
 
-    // Rail gauche desktop : le même bloc cohérent qu'en mobile — actions
-    // (référence, signet, impression, PDF) puis sommaire (+ chronologie) —
-    // sticky en entier.
+    // Streamed, hidden when empty. An error stays silent: the block enriches the page, it carries nothing.
+    let parties_view = move |class: &'static str| {
+        view! {
+            <Suspense fallback=|| ()>
+                {move || Suspend::new(async move {
+                    let resolved = parties.await;
+                    match resolved.error {
+                        Some(_) => ().into_any(),
+                        None => {
+                            view! { <DecisionParties parties=resolved.parties class=class /> }
+                                .into_any()
+                        }
+                    }
+                })}
+            </Suspense>
+        }
+        .into_any()
+    };
+    // Desktop left rail, sticky as one block. When it outgrows the viewport, the parties scroll on
+    // their own, the actions and the sommaire staying in place.
     let toc_view = view! {
-        <div class="flex flex-col gap-6 lg:sticky lg:top-20 lg:self-start">
-            <DecisionActions detail=detail_actions_rail />
-            <DecisionToc sections=toc chronology=detail.chronology.clone() />
+        <div class="flex flex-col gap-6 lg:sticky lg:top-20 lg:max-h-[calc(100dvh-6rem)]">
+            <div class="flex shrink-0 flex-col gap-6">
+                <DecisionActions detail=detail_actions_rail />
+                <DecisionToc sections=toc chronology=detail.chronology.clone() hits=toc_hits />
+            </div>
+            <div class="flex min-h-0 flex-col gap-6 overflow-y-auto">
+                <div class="contents" data-usage=UiAction::DecisionParties.as_str()>
+                    {parties_view("")}
+                </div>
+                // Pinned to the bottom of the visible area, it fades what scrolls on; past
+                // the end of the content it covers blank space only.
+                <div
+                    aria-hidden="true"
+                    class="pointer-events-none sticky bottom-0 -mt-6 h-8 shrink-0 bg-linear-to-b from-transparent to-[var(--color-background)]"
+                />
+            </div>
         </div>
-    }
-    .into_any();
-    // Encart « Parties » sous la synthèse : streamé, masqué si vide.
-    let parties_view = view! {
-        <Suspense fallback=|| ()>
-            {move || Suspend::new(async move {
-                let resolved = parties.await;
-                match resolved.error {
-                    // Erreur silencieuse : l'encart est un enrichissement, pas un contenu porteur.
-                    Some(_) => ().into_any(),
-                    None => view! { <DecisionParties parties=resolved.parties /> }.into_any(),
-                }
-            })}
-        </Suspense>
     }
     .into_any();
 
@@ -222,45 +264,74 @@ fn DecisionLoaded(
         <article class="flex flex-col gap-10">
             <h1 class="sr-only lj-doc-title">{references_full}</h1>
             <DecisionHeader detail=detail_header />
-            <DecisionMeta detail=detail_meta section_id="synthese" />
-            {parties_view}
-            // Sous lg le rail gauche desktop disparaît : le même bloc —
-            // actions (référence, signet, impression, PDF) puis sommaire
-            // (+ chronologie) — rejoint le flux de lecture entre « Parties »
-            // et le texte ; les décisions similaires restent en fin de page.
+            <div class="contents" data-usage=UiAction::DecisionMeta.as_str()>
+                <DecisionMeta detail=detail_meta section_id="synthese" />
+            </div>
+            // Below lg the side columns go: the actions and the sommaire join the reading flow
+            // before the text, the references and the parties after its source.
             <div class="flex flex-col gap-6 lg:hidden print:hidden">
                 <DecisionActions detail=detail_actions />
-                <DecisionToc sections=toc_mobile chronology=chronology_mobile />
+                <DecisionToc sections=toc_mobile chronology=chronology_mobile hits=toc_hits />
             </div>
-            <DecisionBody detail=detail_body sections=body_sections />
-            <DecisionCommentaires commentaires=detail.commentaires.clone() />
-            <DecisionCitantes
-                citantes=detail.citantes.clone()
-                total=detail.citantes_total
-            />
-            <DecisionRenvoyants renvoyants=detail.renvoyants.clone() />
-            <DecisionProvenance detail=detail_provenance />
+            <div class="contents" data-usage=UiAction::DecisionText.as_str()>
+                <DecisionBody detail=detail_body sections=body_sections hits=hits />
+            </div>
+            <div class="contents" data-usage=UiAction::DecisionCommentaries.as_str()>
+                <DecisionCommentaires commentaires=detail.commentaires.clone() />
+            </div>
+            <div class="contents" data-usage=UiAction::DecisionProvenance.as_str()>
+                <DecisionProvenance detail=detail_provenance />
+            </div>
+            <div class="contents" data-usage=UiAction::DecisionReferences.as_str()>
+                <DecisionReferences detail=detail_references class="lg:hidden" />
+            </div>
+            <div class="contents" data-usage=UiAction::DecisionParties.as_str()>
+                {parties_view("lg:hidden")}
+            </div>
+            <div class="contents" data-usage=UiAction::DecisionCiting.as_str()>
+                <DecisionCitantes
+                    citantes=detail.citantes.clone()
+                    total=detail.citantes_total
+                />
+            </div>
         </article>
     }
     .into_any();
+    // Desktop right column: the legal references above the neighbours.
+    let has_references = detail
+        .legal_references
+        .as_ref()
+        .is_some_and(|r| !r.is_empty());
+    let references_side = has_references.then(|| {
+        view! {
+            <div class="hidden lg:block" data-usage=UiAction::DecisionReferences.as_str()>
+                <DecisionReferences detail=detail_references_side />
+            </div>
+        }
+    });
     let similar_view = view! {
-        <Suspense fallback=move || {
-            view! { <DecisionSimilar principe=vec![] espece=vec![] loading=true /> }
-        }>
-            {move || {
-                Suspend::new(async move {
-                    let resolved = similar.await;
-                    view! {
-                        <DecisionSimilar
-                            principe=resolved.principe
-                            espece=resolved.espece
-                            abstained=resolved.abstained
-                            error=resolved.error
-                        />
-                    }
-                })
-            }}
-        </Suspense>
+        <div class="flex flex-col gap-8">
+            {references_side}
+            <div class="contents" data-usage=UiAction::DecisionSimilar.as_str()>
+                <Suspense fallback=move || {
+                view! { <DecisionSimilar principe=vec![] espece=vec![] loading=true /> }
+            }>
+                {move || {
+                    Suspend::new(async move {
+                        let resolved = similar.await;
+                        view! {
+                            <DecisionSimilar
+                                principe=resolved.principe
+                                espece=resolved.espece
+                                abstained=resolved.abstained
+                                error=resolved.error
+                            />
+                        }
+                    })
+                }}
+                </Suspense>
+            </div>
+        </div>
     }
     .into_any();
 

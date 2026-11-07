@@ -17,6 +17,7 @@ use serde::Deserialize;
 
 use crate::accounts::{lien_mail, normaliser};
 use crate::auth::RequiredUser;
+use crate::disposable::{disposable_domain, log_refusal};
 use crate::error::{ApiError, Result};
 use crate::me::ts_to_rfc3339;
 use crate::state::AppState;
@@ -181,6 +182,10 @@ async fn email_change_request(
         Ok(email) => email,
         Err(_) => return Ok(retour_profil("error", "email_invalide")),
     };
+    if let Some(listed) = disposable_domain(&state, &nouvelle).await? {
+        log_refusal(&listed, "email_change");
+        return Ok(retour_profil("error", "email_jetable"));
+    }
     let conn = state.pool.get().await?;
     let actuelle: Option<String> = conn
         .query_one("SELECT email FROM users WHERE sub = $1", &[&sub])

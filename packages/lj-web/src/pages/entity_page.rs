@@ -1,8 +1,8 @@
-//! Page `/entity/{juris}/{ns}/{id}` (fiche entité). Identité registre
-//! (`entity`/`entity_denomination`) + agrégats contentieux dérivés du
-//! reverse-lookup `decision_party`. En-tête + agrégats bloquants SSR (SEO dans le
-//! document initial), liste de décisions citantes streamée (`PartiallyBlocked`),
-//! paginée par `?page=`.
+//! Page `/entity/{juris}/{ns}/{id}` (entity page). Registry identity
+//! (`entity`/`entity_denomination`) and litigation aggregates from the actors
+//! linked to it. Header and aggregates blocking in SSR (SEO in the initial
+//! document), the list of citing decisions streamed (`PartiallyBlocked`),
+//! paginated by `?page=`.
 //!
 //! Le rendu s'adapte au namespace (`siren` entreprise, `rna` association,
 //! `cnb`/`oacc` avocat) : libellé de catégorie et forme lisible de l'uid registre.
@@ -176,6 +176,9 @@ fn set_cache_control(_status: u16) {}
 
 #[component]
 fn EntityError(err: PageError) -> impl IntoView {
+    if err.status == 404 {
+        crate::pages::not_found::signaler_lien_mort();
+    }
     let eyebrow = if err.status == 404 {
         "Introuvable"
     } else {
@@ -227,8 +230,6 @@ fn EntityLoaded(
     registre: Resource<Option<EntityRegistreResponse>>,
     page: Signal<i64>,
 ) -> impl IntoView {
-    #[cfg(feature = "hydrate")]
-    Effect::new(|_| crate::reads::report(lj_dtos::ReadKind::Entity));
     let EntityPageResponse { header, stats } = data;
     let (ns, local) = split_entity_uid(&header.uid);
     let (ns, local) = (ns.to_string(), local.to_string());
@@ -238,12 +239,18 @@ fn EntityLoaded(
     let title = header.denomination.clone();
     let page_title = format!("{title} - LibreJustice");
     let url = format!("{CANONICAL_BASE}{base_path}");
+    #[cfg(feature = "hydrate")]
+    {
+        let document = url.clone();
+        Effect::new(move |_| crate::reads::report(lj_dtos::ReadKind::Entity, &document));
+    }
     let description = meta_description(&header, &stats, category);
     let jsonld = build_json_ld(&header, &url, category);
 
     let is_lawyer = matches!(ns.as_str(), "cnb" | "oacc") && header.nature == "physique";
     let denominations = denominations_section(&header);
     let contentieux = contentieux_section(&stats, matches!(ns.as_str(), "cnb" | "oacc"));
+    let documents = (ns == "siren").then(|| view! { <DocumentsSection siren=local.clone() /> });
 
     view! {
         <Title text=page_title />
@@ -264,6 +271,7 @@ fn EntityLoaded(
             {denominations}
             {contentieux}
             <RegistreSection registre=registre />
+            {documents}
             <DecisionsSection decisions=decisions base_path=base_path page=page />
         </div>
     }
@@ -549,9 +557,15 @@ fn abbreviate_jurisdiction(label: &str) -> String {
             "Commission nationale de l'informatique et des libertés",
             "CNIL",
         ),
+        ("Défenseur des droits", "DDD"),
+        ("Autorité de la concurrence", "Aut. conc."),
+        ("Conseil de la concurrence", "Cons. conc."),
     ];
     if let Some((_, court)) = EXACT.iter().find(|(full, _)| *full == label) {
         return (*court).to_string();
+    }
+    if let Some(instrument) = label.strip_prefix("Commission européenne, ") {
+        return format!("Comm. UE, {instrument}");
     }
     const FAMILLES: &[(&str, &str)] = &[
         ("Cour administrative d'appel ", "CAA"),
@@ -870,7 +884,7 @@ fn annonce_row(a: lj_dtos::AnnonceHit) -> AnyView {
     .into_any()
 }
 
-/// Liens sortants vers les sources officielles (annuaire-entreprises, INPI).
+/// Liens sortants vers les sources officielles (annuaire-entreprises).
 fn liens_block(liens: Vec<lj_dtos::RegistreLienDto>) -> Option<AnyView> {
     if liens.is_empty() {
         return None;
@@ -892,6 +906,116 @@ fn liens_block(liens: Vec<lj_dtos::RegistreLienDto>) -> Option<AnyView> {
         })
         .collect_view();
     Some(view! { <div class="mt-6 flex flex-wrap gap-2">{items}</div> }.into_any())
+}
+
+/// The deeds and accounts the company filed, listed from the INPI on the reader's
+/// click.
+#[component]
+fn DocumentsSection(siren: String) -> impl IntoView {
+    let state = RwSignal::new(Documents::Idle);
+    let siren = StoredValue::new(siren);
+    let load = move |_| {
+        state.set(Documents::Loading);
+        #[cfg(feature = "hydrate")]
+        leptos::task::spawn_local(async move {
+            let next = match client()
+                .fetch_entity_documents("siren", &siren.get_value())
+                .await
+            {
+                Ok(response) => Documents::Loaded(response),
+                Err(_) => Documents::Failed,
+            };
+            state.set(next);
+        });
+    };
+    let inpi = format!(
+        "https://data.inpi.fr/entreprises/{}#documents",
+        siren.get_value()
+    );
+    let note = "text-sm text-[var(--color-ink-muted)]";
+    view! {
+        <section aria-label="Actes et comptes annuels" class="mt-10">
+            <h2 class="font-sans text-base text-[var(--color-ink)]">"Actes et comptes annuels"</h2>
+            {move || match state.get() {
+                Documents::Idle => view! {
+                    <button
+                        type="button"
+                        on:click=load
+                        class="mt-4 rounded-full border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 py-1 text-xs text-[var(--color-ink-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
+                    >
+                        "Afficher les documents déposés"
+                    </button>
+                }
+                .into_any(),
+                Documents::Loading => view! { <p class=format!("mt-4 {note}")>"Chargement…"</p> }.into_any(),
+                Documents::Loaded(response) if response.comptes.is_empty() && response.actes.is_empty() => {
+                    view! { <p class=format!("mt-4 {note}")>"Aucun document déposé au registre."</p> }.into_any()
+                }
+                Documents::Loaded(response) => view! {
+                    {documents_list("Comptes annuels", response.comptes)}
+                    {documents_list("Actes", response.actes)}
+                    <p class="mt-4 text-xs text-[var(--color-ink-subtle)]">"Source : INPI, registre national des entreprises."</p>
+                }
+                .into_any(),
+                Documents::Failed => view! {
+                    <p class=format!("mt-4 {note}")>
+                        "Liste indisponible pour le moment. "
+                        <a href=inpi.clone() target="_blank" rel="noopener external" class="text-[var(--color-accent)] underline hover:opacity-80">
+                            "Consulter sur data.inpi.fr"
+                        </a>
+                    </p>
+                }
+                .into_any(),
+            }}
+        </section>
+    }
+}
+
+#[derive(Clone)]
+#[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
+enum Documents {
+    Idle,
+    Loading,
+    Loaded(lj_dtos::EntityDocumentsResponse),
+    Failed,
+}
+
+fn documents_list(
+    title: &'static str,
+    documents: Vec<lj_dtos::EntityDocumentDto>,
+) -> Option<AnyView> {
+    if documents.is_empty() {
+        return None;
+    }
+    let rows = documents
+        .into_iter()
+        .map(|document| view! { <DocumentRow document=document /> })
+        .collect_view();
+    Some(
+        view! {
+            <h3 class="mt-5 text-sm text-[var(--color-ink-muted)]">{title}</h3>
+            <ul class="mt-2 flex max-h-96 flex-col gap-1.5 overflow-y-auto">{rows}</ul>
+        }
+        .into_any(),
+    )
+}
+
+#[component]
+fn DocumentRow(document: lj_dtos::EntityDocumentDto) -> impl IntoView {
+    let filed = format_iso_date(document.filed.as_deref());
+    view! {
+        <li class="flex gap-3 text-sm">
+            <span class="w-28 shrink-0 text-[var(--color-ink-subtle)]">{filed}</span>
+            <a
+                href=document.url
+                target="_blank"
+                rel="noopener nofollow"
+                class="min-w-0 text-[var(--color-ink)] underline decoration-[var(--color-rule)] hover:text-[var(--color-accent)]"
+            >
+                {document.label}
+            </a>
+        </li>
+    }
 }
 
 // ── Décisions (liste paginée) ──────────────────────────────────────────────────
@@ -951,7 +1075,13 @@ fn decisions_view(resolved: EntityDecisionsResult, base_path: &str, page: i64) -
         response
             .items
             .iter()
-            .map(|i| lj_dtos::decision_path(i.hit.jurisdiction_type, &i.hit.id))
+            .map(|i| {
+                lj_dtos::decision_path(
+                    i.hit.jurisdiction_type,
+                    i.hit.jurisdiction_code.as_deref(),
+                    &i.hit.id,
+                )
+            })
             .collect(),
     );
     let cards = response

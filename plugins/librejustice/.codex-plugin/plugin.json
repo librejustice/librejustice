@@ -1,7 +1,7 @@
 {
   "name": "librejustice",
-  "version": "1.18.0+codex.20260928224419",
-  "description": "Free and open source, LibreJustice gives your agent ~3.8 million French-language and European decisions and ~3.9 million legal articles, readable as they stood on any date and linked article by article. Four MCP tools over OAuth, two research skills.",
+  "version": "1.19.0",
+  "description": "Free and open source, LibreJustice gives your agent ~3.9 million French-language and European decisions and ~2.1 million legal articles in force and ~1.8 million historical versions, readable as they stood on any date and linked article by article. Four MCP tools over OAuth, two research skills.",
   "author": {
     "name": "LibreJustice"
   },
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "LibreJustice",
     "shortDescription": "French case law and legislation.",
-    "longDescription": "The only legal research connector your agent needs for French law: ~3.8 million decisions from France's administrative and judicial courts and from the European courts, linked article by article to ~3.9 million legal articles readable as they stood on any date, plus EU law, treaties, collective agreements, BOFiP and the codes of 59 foreign countries.",
+    "longDescription": "The only legal research connector your agent needs for French law: ~3.9 million decisions from France's administrative and judicial courts and from the European courts, linked article by article to ~2.1 million legal articles in force and ~1.8 million historical versions, readable as they stood on any date, plus EU law, treaties, collective agreements, BOFiP and the codes of 59 foreign countries.",
     "developerName": "LibreJustice",
     "category": "Productivity",
     "capabilities": [

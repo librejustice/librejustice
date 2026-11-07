@@ -133,7 +133,7 @@ pub fn apercus(exemple: &str, lien: &str) -> Vec<Apercu> {
 }
 
 /// Left bare, Gmail turns the address into an underlined blue `mailto:` that
-/// competes with the button (seen on 22/08 on a real send). An anchor set in
+/// competes with the button. An anchor set in
 /// advance holds the style: a client does not link what is already a link.
 fn adresse_html(brute: &str) -> String {
     let e = echapper(brute);

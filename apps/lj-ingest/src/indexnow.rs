@@ -1,9 +1,8 @@
 //! Push IndexNow — notifie Bing/Yandex des URLs (re)publiées.
 //!
-//! IndexNow (<https://www.indexnow.org>) : un POST JSON avec une liste d'URLs et
-//! une clé publiée à `https://<host>/<key>.txt` suffit à signaler aux moteurs
-//! participants (Bing, Yandex…) de venir crawler. Pas d'OAuth, pas de quota
-//! Google. Limite protocole : 10 000 URLs par requête.
+//! IndexNow (<https://www.indexnow.org>): a JSON POST of URLs, with a key served
+//! at `https://<host>/<key>.txt`, asks the participating engines (Bing, Yandex) to
+//! crawl them. No OAuth, no Google quota. The protocol caps the URLs of a request.
 
 use anyhow::{Context, Result};
 use reqwest_middleware::ClientBuilder;
@@ -12,7 +11,7 @@ use serde::Serialize;
 
 pub const INDEXNOW_ENDPOINT: &str = "https://api.indexnow.org/indexnow";
 pub const INDEXNOW_HOST: &str = "librejustice.fr";
-/// Limite protocole IndexNow : 10 000 URLs par requête.
+/// IndexNow protocol cap on the URLs of a request.
 pub const MAX_URLS_PER_REQUEST: usize = 10_000;
 
 /// URL publique où la clé doit être servie (fichier `<key>.txt`).
@@ -28,7 +27,7 @@ pub fn notice_url(uid: &str) -> String {
     format!("https://{INDEXNOW_HOST}{}", lj_vocab::notice_path(uid))
 }
 
-/// Corps JSON d'une soumission IndexNow. `urls` doit faire ≤ 10 000 entrées.
+/// JSON body of an IndexNow submission, at most [`MAX_URLS_PER_REQUEST`] URLs.
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IndexNowPayload {
@@ -56,7 +55,8 @@ pub fn build_payload(key: &str, urls: Vec<String>) -> Result<IndexNowPayload> {
     })
 }
 
-/// POST des URLs à IndexNow par lots de 10 000. Retourne le nb soumis.
+/// POSTs the URLs to IndexNow in batches of [`MAX_URLS_PER_REQUEST`]. Returns the
+/// count submitted.
 ///
 /// Lève une erreur si un lot échoue (4xx clé invalide, 5xx…).
 pub async fn submit(urls: &[String], key: &str) -> Result<usize> {

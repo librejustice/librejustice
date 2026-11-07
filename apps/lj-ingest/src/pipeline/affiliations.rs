@@ -1,9 +1,9 @@
-//! Affiliations avocat ↔ cabinet dérivées des décisions.
+//! Counsel to law firm affiliations derived from the decisions.
 //!
-//! L'appariement est capté à la construction des lignes acteur
-//! (`decision_party.firm_ord`) ; on ne garde que les couples dont les deux bouts
-//! sont résolus. Chaque run recalcule ses arêtes en entier et remplace les
-//! précédentes. Dry-run par défaut, `--apply` pour écrire.
+//! The pairing is read when the actors are built (`firm_ord` in the actor
+//! document); only the pairs resolved at both ends are kept. Each run recomputes
+//! its edges in full and replaces the previous ones. Dry run by default,
+//! `--apply` to write.
 
 use anyhow::{anyhow, Result};
 
@@ -20,7 +20,7 @@ const SUPPORT: i64 = 2;
 pub async fn derive_affiliations(apply: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 

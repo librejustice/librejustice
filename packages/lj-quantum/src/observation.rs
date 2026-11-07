@@ -42,10 +42,10 @@ impl Axis {
     }
 }
 
-/// De quelle cellule une ligne relève, sans relire l'arrêt. Le taux est celui de
-/// la victime directe même sur la ligne d'un proche : à catégorie égale, un
-/// préjudice d'affection va de 500 à 30 000 euros selon lui. `referentiel_cite`
-/// rempli dit une table recopiée, donc pas un témoignage indépendant.
+/// Which cell a row belongs to, without rereading the ruling. The rate is the
+/// direct victim's even on a relative's row: within one category, a préjudice
+/// d'affection varies with it. A filled `referentiel_cite` means a table copied
+/// out, so not an independent testimony.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Comparabilite {
     pub regimes: Vec<Regime>,
@@ -259,9 +259,8 @@ pub fn paf_category(v: &Victime) -> (String, Option<String>) {
     }
 }
 
-/// Les seuls postes de proche dont le lien est l'abscisse : des frais d'obsèques
-/// se mesurent en frais réels, et ranger un « conjoint » en abscisse a mis une
-/// perte de revenus de 337 782 euros dans la médiane du préjudice d'affection.
+/// The only relatives' postes whose abscissa is the link: funeral costs are
+/// actual costs, and a loss of income placed by the link would skew the median.
 const ON_LINK: &[&str] = &["PAF", "PAC"];
 
 /// The CFP franc has been pegged to the euro since 1999: 1 000 F CFP = 8,38 euros.
@@ -461,8 +460,9 @@ fn settle(o: &mut Observation, q: &Quantum, v: &Victime, p: &Poste) {
         });
 }
 
-/// A foundation that opens on a foreign law, 7 of 10 189 decisions read twice: the court values under
-/// it. The 2 that cite one further on value under French law, the foreign one ruling the fault or a claim.
+/// A foundation that opens on a foreign law: the court values under it. A decision
+/// citing one further on values under French law, the foreign one ruling the fault or a
+/// claim.
 static FOREIGN_LAW: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(concat!(
         r"^[^;]{0,30}\b(loi|droit)s? (interne )?(belge|espagnol|allemand|italien|luxembourgeois|",
@@ -568,9 +568,9 @@ pub fn priced_under(p: &Poste, vi: i16, pi: i16) -> Vec<Priced> {
 }
 
 /// The price to the cent and its unit: the same tariff written twice under one
-/// poste is one observation. On the ground truth, 522 of the 1 458 finer
-/// writings only repeat the poste's tariff, period by period, and counting them
-/// would put five copies of one daily price in the median.
+/// poste is one observation. The finer writings often only repeat the poste's
+/// tariff, period by period, and counting them would put copies of one daily
+/// price in the median.
 fn price_key(vu: Option<f64>, unite: Option<Unite>) -> Option<(i64, Option<&'static str>)> {
     vu.map(|x| ((x * 100.0).round() as i64, unite.map(|u| u.name())))
 }

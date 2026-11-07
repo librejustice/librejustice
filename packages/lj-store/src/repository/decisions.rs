@@ -4,11 +4,11 @@
 
 use super::decision_text::text_lang;
 use super::support::{
-    as_param_refs, extracted_column_type, extracted_field_value, is_routed_field, now,
-    CASE_CITATIONS_FIELD, CASE_NAME_FIELD, DECISION_LINKS_FIELD, LEGAL_REFS_FIELD, PARTIES_FIELD,
-    REEXTRACTABLE_FIELDS,
+    as_param_refs, extracted_column_type, extracted_field_value, formation_paths, is_routed_field,
+    now, CASE_CITATIONS_FIELD, CASE_NAME_FIELD, DECISION_LINKS_FIELD, LEGAL_REFS_FIELD,
+    PARTIES_FIELD, REEXTRACTABLE_FIELDS,
 };
-use super::types::{ExtractedFields, JurisdictionRow, UpsertResult, UpsertStatus};
+use super::types::{ExtractedFields, Identity, JurisdictionRow, UpsertResult, UpsertStatus};
 use super::{DecisionRepository, ElectedCaseName};
 use crate::error::{Result, StoreError};
 use lj_core::decision::Decision;
@@ -54,8 +54,8 @@ impl DecisionRepository<'_> {
         extracted: Option<&ExtractedFields>,
         canonical_ref: Option<&str>,
         source_fields: &Value,
-        embed_version: Option<i16>,
         payload_format: &str,
+        distinct: bool,
     ) -> Result<UpsertResult> {
         if decision.jurisdiction_type.is_none() {
             return Err(StoreError::Invalid(format!(
@@ -86,7 +86,6 @@ impl DecisionRepository<'_> {
                 extracted,
                 canonical_ref,
                 source_fields,
-                embed_version,
                 payload_format,
             )
             .await?;
@@ -96,30 +95,42 @@ impl DecisionRepository<'_> {
             });
         }
 
-        // Unknown `source_uid`: another language of the same judgment, then the
-        // `canonical_ref` identity. A match takes the provenance, otherwise create.
-        let lang = source_fields.get("lang").and_then(Value::as_str);
-        let existing = match self.find_language_sibling(decision, lang).await? {
-            Some(id) => Some(id),
-            None => self.resolve_identity(decision, canonical_ref).await?,
+        let identity = if distinct {
+            Identity::Create
+        } else {
+            self.identity_of(decision, extracted, source_fields).await?
         };
-        if let Some(existing_id) = existing {
-            self.apply_provenance(
-                existing_id,
-                decision,
-                content_checksum,
-                public_id,
-                extracted,
-                canonical_ref,
-                source_fields,
-                embed_version,
-                payload_format,
-            )
-            .await?;
-            return Ok(UpsertResult {
-                id: existing_id,
-                status: UpsertStatus::Updated,
-            });
+        match identity {
+            Identity::Attach(existing_id) => {
+                self.apply_provenance(
+                    existing_id,
+                    decision,
+                    content_checksum,
+                    public_id,
+                    extracted,
+                    canonical_ref,
+                    source_fields,
+                    payload_format,
+                )
+                .await?;
+                return Ok(UpsertResult {
+                    id: existing_id,
+                    status: UpsertStatus::Updated,
+                });
+            }
+            Identity::Copy(id) => {
+                return Ok(UpsertResult {
+                    id,
+                    status: UpsertStatus::Copy,
+                })
+            }
+            Identity::Hold(id) => {
+                return Ok(UpsertResult {
+                    id,
+                    status: UpsertStatus::Held,
+                })
+            }
+            Identity::Create => {}
         }
 
         let id = self
@@ -130,7 +141,6 @@ impl DecisionRepository<'_> {
                 extracted,
                 canonical_ref,
                 source_fields,
-                embed_version,
                 payload_format,
             )
             .await?;
@@ -157,7 +167,6 @@ impl DecisionRepository<'_> {
         extracted: Option<&ExtractedFields>,
         canonical_ref: Option<&str>,
         source_fields: &Value,
-        embed_version: Option<i16>,
         payload_format: &str,
     ) -> Result<()> {
         // Verrou par décision (relâché en fin de transaction de l'appelant) :
@@ -187,7 +196,6 @@ impl DecisionRepository<'_> {
                 extracted,
                 canonical_ref,
                 source_fields,
-                embed_version,
             )
             .await?;
             if let Some(e) = extracted {
@@ -199,7 +207,7 @@ impl DecisionRepository<'_> {
                     .await?;
                 self.replace_case_citations(decision_id, e.case_citations.as_deref())
                     .await?;
-                self.replace_decision_parties(decision_id, e.parties.as_deref())
+                self.replace_decision_actors(decision_id, e.parties.as_deref())
                     .await?;
             }
         } else {
@@ -232,7 +240,6 @@ impl DecisionRepository<'_> {
         extracted: Option<&ExtractedFields>,
         canonical_ref: Option<&str>,
         source_fields: &Value,
-        embed_version: Option<i16>,
     ) -> Result<()> {
         let e = extracted;
         let jurisdiction_code = match e.and_then(|e| e.jurisdiction.clone()) {
@@ -248,21 +255,18 @@ impl DecisionRepository<'_> {
                 "
                 UPDATE decisions SET
                   jurisdiction_type = $1,
-                  public_id = $2, updated_at = $3,
+                  public_id = coalesce(public_id, $2), updated_at = $3,
                   date_lecture = $4, date_audience = $5, docket_numbers = $6,
                   publication_codes = $7,
                   extract_version = $9,
-                  embed_version = $10, ecli = $11, canonical_ref = $12,
-                  solution_uid = $13, procedure_uid = $14, office_uid = $15,
-                  legal_domain_uid = $16,
-                  jurisdiction_code = $17,
-                  applicant_counsel_names = $18, applicant_law_firms = $19,
-                  applicant_companies = $20, defendant_counsel_names = $21,
-                  defendant_law_firms = $22, defendant_companies = $23,
-                  intervenors = $24, themes = $25,
-                  formation_uid = $26,
-                  search_title = $27,
-                  seat = $28, seat_paths = $29
+                  ecli = $10, canonical_ref = $11,
+                  solution_uid = $12, procedure_uid = $13, office_uid = $14,
+                  legal_domain_uid = $15,
+                  jurisdiction_code = $16,
+                  themes = $17,
+                  formation_uid = $18,
+                  search_title = $19,
+                  seat = $20, seat_paths = $21, formation_paths = $22
                 WHERE id = $8
                   AND (extract_version IS NULL OR extract_version <= $9)
                 ",
@@ -276,7 +280,6 @@ impl DecisionRepository<'_> {
                     &e.map(|e| e.publication_codes.clone()).unwrap_or_default(),
                     &decision_id,
                     &EXTRACT_VERSION,
-                    &embed_version,
                     &decision.ecli,
                     &canonical_ref,
                     &e.and_then(|e| e.solution_uid.clone()),
@@ -284,20 +287,12 @@ impl DecisionRepository<'_> {
                     &e.and_then(|e| e.office_uid.clone()),
                     &e.and_then(|e| e.legal_domain_uid.clone()),
                     &jurisdiction_code,
-                    &e.map(|e| e.applicant_counsel_names.clone())
-                        .unwrap_or_default(),
-                    &e.map(|e| e.applicant_law_firms.clone()).unwrap_or_default(),
-                    &e.map(|e| e.applicant_companies.clone()).unwrap_or_default(),
-                    &e.map(|e| e.defendant_counsel_names.clone())
-                        .unwrap_or_default(),
-                    &e.map(|e| e.defendant_law_firms.clone()).unwrap_or_default(),
-                    &e.map(|e| e.defendant_companies.clone()).unwrap_or_default(),
-                    &e.map(|e| e.intervenors.clone()).unwrap_or_default(),
                     &e.map(|e| e.themes.clone()).unwrap_or_default(),
                     &e.and_then(|e| e.formation_uid.clone()),
                     &e.and_then(|e| e.search_title.clone()),
                     &e.and_then(|e| e.seat.clone()).map(Json),
                     &e.map(|e| e.seat_paths.clone()).unwrap_or_default(),
+                    &e.map(formation_paths).unwrap_or_default(),
                 ],
             )
             .await?;
@@ -406,8 +401,14 @@ impl DecisionRepository<'_> {
                 .map(|r| r.get(0))
                 .collect()
         };
-        let (mut codes, mut sources, mut types, mut cities, mut labels) =
-            (Vec::new(), Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        let (mut codes, mut sources, mut types, mut cities, mut labels, mut places) = (
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
         for (source, r) in by_code {
             let code = match existing.get(source) {
                 Some((code, complete)) => {
@@ -435,35 +436,77 @@ impl DecisionRepository<'_> {
             types.push(r.jurisdiction_type.clone());
             cities.push(r.city.clone());
             labels.push(r.label.clone());
+            places.push(r.place.clone());
         }
         if codes.is_empty() {
             return Ok(resolved);
         }
         self.conn
             .execute(
-                "INSERT INTO jurisdiction (code, source_code, jurisdiction_type, city, label)
-                 SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[])
+                "INSERT INTO jurisdiction (code, source_code, jurisdiction_type, city, label, place)
+                 SELECT * FROM UNNEST($1::text[], $2::text[], $3::text[], $4::text[], $5::text[], $6::text[])
                  ON CONFLICT (source_code) DO UPDATE
                      SET city = EXCLUDED.city, label = EXCLUDED.label
                  WHERE jurisdiction.city IS NULL AND EXCLUDED.city IS NOT NULL",
-                &[&codes, &sources, &types, &cities, &labels],
+                &[&codes, &sources, &types, &cities, &labels, &places],
             )
             .await?;
         Ok(resolved)
     }
 
-    /// `jurisdiction_type` of a live decision, by its public id.
-    #[tracing::instrument(name = "db.decision_jurisdiction_type", skip(self), fields(db.system = "postgresql"))]
-    pub async fn decision_jurisdiction_type(&self, public_id: &str) -> Result<Option<String>> {
+    /// `jurisdiction_type` and `jurisdiction_code` of a live decision, by its public id.
+    #[tracing::instrument(name = "db.decision_jurisdiction", skip(self), fields(db.system = "postgresql"))]
+    pub async fn decision_jurisdiction(
+        &self,
+        public_id: &str,
+    ) -> Result<Option<(String, Option<String>)>> {
         let row = self
             .conn
             .query_opt(
-                "SELECT jurisdiction_type FROM decisions \
+                "SELECT jurisdiction_type, jurisdiction_code FROM decisions \
                  WHERE public_id = $1 AND deleted_at IS NULL",
                 &[&public_id],
             )
             .await?;
-        Ok(row.map(|r| r.get(0)))
+        Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    /// Held until the session ends: one ingest chain at a time.
+    pub async fn chain_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one("SELECT pg_try_advisory_lock(hashtext('ingest_chain'))", &[])
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one JuriCAF sync at a time fetches and loads.
+    pub async fn juricaf_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one("SELECT pg_try_advisory_lock(hashtext('juricaf_sync'))", &[])
+            .await?
+            .get(0))
+    }
+
+    /// `(source_uid, public_id)` of the active decisions these provenances sit on.
+    #[tracing::instrument(name = "db.decisions_by_source_uid", skip(self), fields(db.system = "postgresql"))]
+    pub async fn decisions_by_source_uid(
+        &self,
+        source_uids: &[String],
+    ) -> Result<Vec<(String, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT s.source_uid, d.public_id \
+                 FROM decision_sources s JOIN decisions d ON d.id = s.decision_id \
+                 WHERE s.source_uid = ANY($1) AND s.deleted_at IS NULL \
+                   AND d.deleted_at IS NULL \
+                 ORDER BY s.source_uid",
+                &[&source_uids],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
     #[tracing::instrument(name = "db.set_public_id", skip(self), fields(db.system = "postgresql"))]
@@ -495,7 +538,6 @@ impl DecisionRepository<'_> {
         extracted: Option<&ExtractedFields>,
         canonical_ref: Option<&str>,
         source_fields: &Value,
-        embed_version: Option<i16>,
         payload_format: &str,
     ) -> Result<()> {
         self.apply_provenance(
@@ -506,7 +548,6 @@ impl DecisionRepository<'_> {
             extracted,
             canonical_ref,
             source_fields,
-            embed_version,
             payload_format,
         )
         .await
@@ -531,6 +572,16 @@ impl DecisionRepository<'_> {
         Ok(())
     }
 
+    /// Copies the facets of `ids` onto their texts, for a writer that runs
+    /// with triggers off.
+    #[tracing::instrument(name = "db.mirror_text_facets", skip_all, fields(db.system = "postgresql", n = ids.len()))]
+    pub async fn mirror_text_facets(&self, ids: &[i64]) -> Result<()> {
+        self.conn
+            .execute("SELECT decision_text_mirror($1)", &[&ids])
+            .await?;
+        Ok(())
+    }
+
     #[tracing::instrument(name = "db.update_extracted_fields_bulk", skip(self, items), fields(db.system = "postgresql", items = items.len()))]
     pub async fn update_extracted_fields_bulk(
         &self,
@@ -543,11 +594,21 @@ impl DecisionRepository<'_> {
         let selected: Vec<&str> = fields
             .map(|f| f.to_vec())
             .unwrap_or_else(|| REEXTRACTABLE_FIELDS.to_vec());
-        let column_fields: Vec<&str> = selected
+        let mut column_fields: Vec<&str> = selected
             .iter()
             .copied()
             .filter(|f| !is_routed_field(f))
             .collect();
+        if !column_fields.contains(&"formation_paths")
+            && column_fields.iter().any(|f| {
+                matches!(
+                    *f,
+                    "seat_paths" | "formation_uid" | "office_uid" | "procedure_uid"
+                )
+            })
+        {
+            column_fields.push("formation_paths");
+        }
 
         // Pas de skip-diff colonnes en lecture préalable : le skip vit DANS
         // l'UPDATE (comparaison de tuples, cf. plus bas).
@@ -687,11 +748,11 @@ impl DecisionRepository<'_> {
             satellites.extend(self.replace_case_citations_bulk(&case_items).await?);
         }
         if selected.contains(&PARTIES_FIELD) {
-            let party_items: Vec<super::parties::DecisionPartyWriteItem> = items
+            let actor_items: Vec<super::parties::DecisionActorWriteItem> = items
                 .iter()
                 .map(|(id, e)| (*id, e.parties.clone()))
                 .collect();
-            satellites.extend(self.replace_decision_parties_bulk(&party_items).await?);
+            satellites.extend(self.replace_decision_actors_bulk(&actor_items).await?);
         }
         self.touch_content_changed(satellites).await?;
 
@@ -838,7 +899,6 @@ impl DecisionRepository<'_> {
         extracted: Option<&ExtractedFields>,
         canonical_ref: Option<&str>,
         source_fields: &Value,
-        embed_version: Option<i16>,
         payload_format: &str,
     ) -> Result<i64> {
         let e = extracted;
@@ -866,18 +926,14 @@ impl DecisionRepository<'_> {
                   jurisdiction_type, public_id, updated_at,
                   date_lecture, date_audience, docket_numbers,
                   publication_codes, extract_version,
-                  embed_version, ecli, canonical_ref,
+                  ecli, canonical_ref,
                   solution_uid, procedure_uid, office_uid, legal_domain_uid,
-                  jurisdiction_code,
-                  applicant_counsel_names, applicant_law_firms, applicant_companies,
-                  defendant_counsel_names, defendant_law_firms, defendant_companies,
-                  intervenors, themes, formation_uid,
+                  jurisdiction_code, themes, formation_uid,
                   search_title, case_name, case_name_keys, case_name_source,
-                  seat, seat_paths, lang
+                  seat, seat_paths, lang, formation_paths
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                        $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28,
-                        $29, $30, $31, $32)
+                        $17, $18, $19, $20, $21, $22, $23, $24, $25)
                 RETURNING id
                 ",
                 &[
@@ -889,7 +945,6 @@ impl DecisionRepository<'_> {
                     &e.map(|e| e.docket_numbers.clone()).unwrap_or_default(),
                     &e.map(|e| e.publication_codes.clone()).unwrap_or_default(),
                     &EXTRACT_VERSION,
-                    &embed_version,
                     &decision.ecli,
                     &canonical_ref,
                     &e.and_then(|e| e.solution_uid.clone()),
@@ -897,15 +952,6 @@ impl DecisionRepository<'_> {
                     &e.and_then(|e| e.office_uid.clone()),
                     &e.and_then(|e| e.legal_domain_uid.clone()),
                     &jurisdiction_code,
-                    &e.map(|e| e.applicant_counsel_names.clone())
-                        .unwrap_or_default(),
-                    &e.map(|e| e.applicant_law_firms.clone()).unwrap_or_default(),
-                    &e.map(|e| e.applicant_companies.clone()).unwrap_or_default(),
-                    &e.map(|e| e.defendant_counsel_names.clone())
-                        .unwrap_or_default(),
-                    &e.map(|e| e.defendant_law_firms.clone()).unwrap_or_default(),
-                    &e.map(|e| e.defendant_companies.clone()).unwrap_or_default(),
-                    &e.map(|e| e.intervenors.clone()).unwrap_or_default(),
                     &e.map(|e| e.themes.clone()).unwrap_or_default(),
                     &e.and_then(|e| e.formation_uid.clone()),
                     &e.and_then(|e| e.search_title.clone()),
@@ -915,6 +961,7 @@ impl DecisionRepository<'_> {
                     &e.and_then(|e| e.seat.clone()).map(Json),
                     &e.map(|e| e.seat_paths.clone()).unwrap_or_default(),
                     &lang,
+                    &e.map(formation_paths).unwrap_or_default(),
                 ],
             )
             .await?;
@@ -926,7 +973,7 @@ impl DecisionRepository<'_> {
                 .await?;
             self.replace_case_citations(decision_id, e.case_citations.as_deref())
                 .await?;
-            self.replace_decision_parties(decision_id, e.parties.as_deref())
+            self.replace_decision_actors(decision_id, e.parties.as_deref())
                 .await?;
         }
         self.upsert_decision_source(
@@ -960,9 +1007,12 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT decision_id, full_text FROM decision_text \
-                 WHERE decision_id > $1 AND decision_id % $2 = 0 AND lead \
+                &format!(
+                    "SELECT decision_id, full_text FROM decision_text \
+                 WHERE decision_id > $1 AND decision_id % $2 = 0 AND {read} \
                  ORDER BY decision_id LIMIT $3",
+                    read = super::pick::read("decision_text")
+                ),
                 &[&after_id, &sample_mod, &limit],
             )
             .await?;
@@ -973,16 +1023,16 @@ impl DecisionRepository<'_> {
     }
 }
 
-/// Code canonique d'une unité juridictionnelle : TJ/TCOM = slug de la ville
-/// (`tj_paris`, `tcom_lyon`) ; tout autre type reprend le code source tel quel
-/// (singletons `cc`/`ce`… et slugs `ca_`/`caa_`/`ta_` déjà en ville). Sans ville
-/// exploitable, repli franc sur le code source.
+/// Canonical code of a court: TJ, TCOM and CPH take the slug of their city
+/// (`tj_paris`, `tcom_lyon`, `cph_lorient`); any other type keeps its source code
+/// (singletons `cc`/`ce`, and `ca_`/`caa_`/`ta_` slugs already named by city).
+/// Without a usable city, the source code.
 pub fn canonical_jurisdiction_code(
     jurisdiction_type: &str,
     city: Option<&str>,
     source_code: &str,
 ) -> String {
-    if !matches!(jurisdiction_type, "TJ" | "TCOM") {
+    if !matches!(jurisdiction_type, "TJ" | "TCOM" | "CPH") {
         return source_code.to_string();
     }
     match city
@@ -1024,6 +1074,10 @@ mod tests {
                 "tcom6903"
             ),
             "tcom_villefranche_sur_saone_tarare"
+        );
+        assert_eq!(
+            canonical_jurisdiction_code("CPH", Some("Bourgoin-Jallieu"), "cph101036"),
+            "cph_bourgoin_jallieu"
         );
         assert_eq!(
             canonical_jurisdiction_code("TJ", None, "tj75056"),

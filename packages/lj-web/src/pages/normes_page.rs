@@ -14,9 +14,10 @@ use lj_dtos::{NormCatalogueResponse, NormFondResponse, NormYearResponse};
 
 use crate::api::ApiClient;
 use crate::components::own_page_description;
+use crate::helpers::norms_href;
 use crate::pages::juridictions_page::{
     breadcrumb_jsonld, fmt_count, set_cache_control, HubBreadcrumb, HubError, HubSkeleton,
-    YearPagination,
+    YearPagination, DEEP_LINK,
 };
 use crate::pages::law_page::data::{sendable, PageError};
 
@@ -118,6 +119,7 @@ fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView
         ("Accueil", "https://librejustice.fr/".to_string()),
         ("Normes", url.clone()),
     ]);
+    let search_href = norms_href([("jurisdiction", lj_vocab::jurisdiction_of_segment(&juris))]);
 
     view! {
         <Title text=title />
@@ -135,6 +137,7 @@ fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView
                     "Parcourez les textes du corpus par fond, puis par année. "
                     "Chaque fond ouvre la liste complète de ses textes."
                 </p>
+                <A href=search_href attr:class=DEEP_LINK>"Rechercher dans ces textes"</A>
             </header>
 
             <ul class="flex flex-col divide-y divide-[var(--color-rule)]">
@@ -277,6 +280,7 @@ fn NormFondLoaded(hub: NormFondResponse) -> impl IntoView {
         (Some(min), Some(max)) => format!(", de {min} à {max}"),
         _ => String::new(),
     };
+    let search_href = norms_href(hub.search_paths.into_iter().map(|p| ("jurisdiction", p)));
 
     view! {
         <Title text=title />
@@ -298,6 +302,7 @@ fn NormFondLoaded(hub: NormFondResponse) -> impl IntoView {
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
                     {format!("{} textes{span}.", fmt_count(hub.text_count))}
                 </p>
+                <A href=search_href attr:class=DEEP_LINK>"Rechercher dans ces textes"</A>
             </header>
 
             <section class="flex flex-col gap-3">
@@ -443,6 +448,22 @@ fn NormYearLoaded(page: NormYearResponse) -> impl IntoView {
         (&page.label, format!("https://librejustice.fr{hub_href}")),
         (&ylabel, base_url.clone()),
     ]);
+    let bounds = page.year.into_iter().flat_map(|y| {
+        [
+            ("valid_from", format!("{y}-01-01")),
+            ("as_of", format!("{y}-12-31")),
+        ]
+    });
+    let search_href = norms_href(
+        page.search_paths
+            .iter()
+            .map(|p| ("jurisdiction", p.clone()))
+            .chain(bounds),
+    );
+    let search_label = match page.year {
+        Some(y) => format!("Rechercher dans les textes de {y}"),
+        None => "Rechercher dans ces textes".to_string(),
+    };
 
     view! {
         <Title text=title />
@@ -473,6 +494,7 @@ fn NormYearLoaded(page: NormYearResponse) -> impl IntoView {
                         ),
                     }}
                 </p>
+                <A href=search_href attr:class=DEEP_LINK>{search_label}</A>
             </header>
 
             <ul class="flex flex-col divide-y divide-[var(--color-rule)]">

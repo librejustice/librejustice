@@ -3,7 +3,7 @@
 //! XML via `quick-xml` (tolérant, mode recover). JSON Judilibre via `serde_json`.
 //! Aucun I/O : les bytes/valeurs sont fournis par l'appelant (`lj-sources`).
 
-use lj_core::decision::{Decision, DecisionSection, VISA_TRIM_MAX_CHARS};
+use lj_core::decision::{Decision, DecisionSection};
 use lj_core::normalizer::clean_texte;
 use quick_xml::events::Event;
 use quick_xml::Reader;
@@ -12,16 +12,27 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
-mod adde;
+mod adlc;
 mod ariane;
 mod ce_list;
 mod cnda;
+mod comeu;
+mod contribution;
+mod court_summary;
+mod court_summary_ocr;
+mod ddd;
 mod dila;
+mod dila_judi;
+mod doctrine_oai;
 mod european;
 pub mod formex;
 mod hal;
 mod juricaf;
-pub use adde::{build_adde_source_fields, parse_adde_title, AddeCitation};
+mod lead;
+mod reflow;
+mod service_public;
+mod wiki_names;
+pub use adlc::{adlc_is_decision, adlc_number, adlc_source_fields, adlc_text};
 pub use ariane::{
     analyse_body, build_ariane_source_fields, parse_ajce_html, parse_dce_html, AjceAnalysis,
     AjceEntry, AjceRubrique, DceParsed,
@@ -35,12 +46,36 @@ pub use cnda::{
     clean_ocr_markdown, cnda_solution_uid_from_source_fields, parse_cnda, reflow_cnda_pdf_text,
     CndaParsed,
 };
+pub use comeu::{comeu_court_code, comeu_first, COMEU_ADOPTION_DATE, COMEU_COURTS};
+pub use contribution::contribution_source_fields;
+use contribution::source_uid_is_contribution;
+pub use court_summary::{
+    cassation_summary_for, cassation_summary_numbers_arrets, cedh_legal_summary,
+    cedh_legal_summary_pending, cjue_court_summary,
+};
+pub use court_summary_ocr::{cjue_case_number, cjue_court_summary_ocr, OcrBlock, OcrPage};
+pub use ddd::ddd_source_fields;
 use dila::source_fields_is_dila;
 pub use dila::{build_source_fields_dila, parse_dila_doc, parse_dila_xml, DilaDoc, DilaFond};
+pub use dila_judi::judicial_record_uids;
+pub use doctrine_oai::{
+    build_doctrine_source_fields, cairn_label_title, cairn_note, cited_decisions, openedition_note,
+    page_dc_title, parse_oai_page, prairial_note, prairial_page_url, robots_allows, same_note,
+    Citation, DoctrineNote, OaiPage, OaiRecord,
+};
 use european::source_uid_is_html_europe;
-pub use european::{cedh_case_name, cjue_case_name, parse_cedh, parse_cjue};
+pub use european::{
+    cedh_case_name, celex_to_case_number, cjue_case_name, cjue_title_case_name, eurlex_act_text,
+    parse_cedh, parse_cjue,
+};
 pub use hal::{build_hal_source_fields, extract_dockets, extract_law_numbers, HalDeposit};
-pub use juricaf::{parse_juricaf, JuricafParsed};
+pub use juricaf::{juricaf_country, parse_juricaf, JuricafParsed};
+use lead::augment_lead;
+pub use reflow::reflow_page_text;
+pub use service_public::{
+    parse_service_public_sheet, ArticleSpan, ServicePublicSheet, SheetReference,
+};
+pub use wiki_names::{wiki_list_entries, wiki_page_entry, wiki_usage_name, WikiEntry};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // XML opendata (TA / CAA / CE)
@@ -73,14 +108,26 @@ static SECTION_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(||
         ),
         ("visa", Regex::new(r"(?i)\bVu\s*:\s*").unwrap()),
         ("visa", Regex::new(r"(?i)\bVu les autres pièces du dossier\b\s*;?").unwrap()),
-        // Conseil constitutionnel: its own visa, on 2 392 of its 7 388 decisions
-        // and on none of the 1 115 622 administrative ones.
+        // Conseil constitutionnel: its own visa, which no administrative decision
+        // carries.
         ("visa", Regex::new(r"(?i)\bAu vu des textes suivants\s*:").unwrap()),
+        // The Conseil d'État before 1986, printed in capitals without accents.
+        (
+            "visa",
+            Regex::new(r"(?m)^[ \t]*VU\s+(?:LA|LE|LES|L')\s").unwrap(),
+        ),
+        // A text the decision applies, opening a line or a clause, whatever its case.
+        (
+            "visa",
+            Regex::new(
+                r"(?mi)(?:^[ \t]*|;[ \t]*)(Vu\s+(?:le|la|les|l')\s*(?:code|loi|décret|decret|constitution|convention|traité|traite|directive|règlement|reglement)\b)",
+            )
+            .unwrap(),
+        ),
         ("motivations", Regex::new(r"(?i)\bConsidérant ce qui suit\b\s*:?\s*").unwrap()),
         // Conseil constitutionnel again, whose recent drafting closes its visa and
         // opens its dispositif in the middle of a line: the boundary is taken on
-        // the numbered paragraph that follows, and on the heading itself. Over
-        // 1 053 of its decisions, motivations rise from 668 to 1 003, none lost.
+        // the numbered paragraph that follows, and on the heading itself.
         (
             "motivations",
             Regex::new(r"(?i)S['’]EST FONDÉ SUR CE QUI SUIT\s*:\s*\n\s*(\d+\.)").unwrap(),
@@ -96,18 +143,54 @@ static SECTION_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(||
             "dispositif",
             Regex::new(r"(?mi)^[ \t]*(LE CONSEIL CONSTITUTIONNEL\s+D\s*[ÉE]\s*C\s*I\s*D\s*E)\s*:").unwrap(),
         ),
+        (
+            "dispositif",
+            Regex::new(r"(?mi)^[ \t]*D[ÉE]CIDE\s*:?\s*ART(?:ICLE|\.)").unwrap(),
+        ),
     ]
 });
 
+/// The CNIL's drafting, over the administrative markers: its visas open a line
+/// on « Vu la loi », its reasons on what it examined or observes, its operative
+/// part on what it grants or advises.
+static CNIL_SECTION_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    let mut patterns = SECTION_PATTERNS.clone();
+    patterns.extend([
+        (
+            "visa",
+            Regex::new(r"(?m)^[ \t]*Vu\s+(?:la|le|les|l['’])\s*\S").unwrap(),
+        ),
+        (
+            "expose",
+            Regex::new(r"(?m)^[ \t]*(?:[IVX]+\s*\.?\s*[\x{2013}-]?\s*)?(?:Faits et procédure|La saisine|Constate\b)")
+                .unwrap(),
+        ),
+        (
+            "motivations",
+            Regex::new(
+                r"(?m)^[ \t]*(?:(?:[IVX]+\s*\.?\s*[\x{2013}-]?\s*)?(?:Motifs de la décision|L['’]avis de la (?:CNIL|Commission))\b|Formule les observations suivantes|[ÉE]met l['’]avis suivant|A adopté la délibération suivante|Après en avoir délibéré|Sur (?:la|le|les|l['’])\s*(?:finalités?|données|destinataires|durées?|droits|information|sécurité|mesures|responsable|catégories|base légale|licéité|conformité|manquements?|recevabilité)\b|La Commission (?:considère|rappelle|estime|relève|observe|prend acte|note|constate)\b)",
+            )
+            .unwrap(),
+        ),
+        (
+            "dispositif",
+            Regex::new(
+                r"(?m)^[ \t]*(?:Par ces motifs|PAR CES MOTIFS|Autorise\b|Met en demeure\b|Décide\s*:|Prononce\b|Délivre\b|Dans ces conditions, la Commission (?:autorise|émet|décide)\b|[ÉE]met un avis (?:favorable|défavorable)\b)",
+            )
+            .unwrap(),
+        ),
+    ]);
+    patterns
+});
+
 /// Motifs of the drafting that predates « Considérant ce qui suit », read only
-/// when that marker is absent: 0.5 % of the decisions carrying it quote a
-/// « considérant qu' » earlier, in the procedure they recite. The opening
-/// boundary is required, « en considérant que » being how a party's argument is
-/// recited: without it, 1 % of a 400-decision sample opened their motifs before
-/// their own visa. Group 1 is the marker, the match itself reaching back over
-/// the punctuation.
-static MOTIFS_ANCIENS_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?im)(?:^|[;:.]\s+)(Considérant\s+qu(?:['’]|e\b))").unwrap());
+/// when that marker is absent: a decision carrying it may quote a « considérant
+/// qu' » earlier, in the procedure it recites. The opening boundary is required,
+/// « en considérant que » being how a party's argument is recited. Group 1 is
+/// the marker, the match itself reaching back over the punctuation.
+static MOTIFS_ANCIENS_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?im)(?:^|[;:.]\s+)(Consid[ée]rant\s+qu(?:['’]|e\b)|CONS\.\s+QU)").unwrap()
+});
 
 fn path_name(p: &str) -> &str {
     p.rsplit('/').next().unwrap_or(p)
@@ -127,10 +210,85 @@ fn classify_uid(source_uid: &str) -> Option<String> {
 pub struct XmlNode {
     pub tag: String,
     pub children: Vec<XmlNode>,
-    /// Tous les bouts de texte de ce nœud ET de ses descendants, dans l'ordre.
-    text_parts: Vec<String>,
+    /// The text of this node and of its descendants, and the HTML breaks between
+    /// them, in document order.
+    text_parts: Vec<TextPart>,
     /// Attributs directs du nœud : `(nom local, valeur)`, ordre document.
     attrs: Vec<(String, String)>,
+}
+
+#[derive(Debug, Clone)]
+enum TextPart {
+    Text(String),
+    /// Text inside a table cell, where the source's line breaks are layout.
+    CellText(String),
+    /// Whitespace between the cells and rows of a table.
+    TableSpace(String),
+    /// A `<br/>`.
+    Break,
+    /// The edge of a paragraph-level element.
+    Block,
+    /// The edge of a table row.
+    Row,
+    /// The start of a table cell.
+    Cell,
+}
+
+/// What an HTML element leaves in the text at its edges.
+fn edge_part(tag: &str) -> Option<TextPart> {
+    match tag.to_ascii_lowercase().as_str() {
+        "br" => Some(TextPart::Break),
+        "tr" => Some(TextPart::Row),
+        "td" | "th" => Some(TextPart::Cell),
+        "p" | "div" | "blockquote" | "table" | "ul" | "ol" | "li" | "h1" | "h2" | "h3" | "h4"
+        | "h5" | "h6" => Some(TextPart::Block),
+        _ => None,
+    }
+}
+
+/// The breaks met between two runs of text.
+#[derive(Default)]
+struct Gap {
+    breaks: usize,
+    block: bool,
+    row: bool,
+    cell: bool,
+}
+
+impl Gap {
+    /// Appends a run of text to `out`, behind the separator the gap calls for
+    /// when both sides carry text. A line break the source already has counts as
+    /// one asked for.
+    fn push(&mut self, out: &mut String, mut text: &str) {
+        if text.trim().is_empty() {
+            out.push_str(text);
+            return;
+        }
+        if !out.trim().is_empty() {
+            let body = out.trim_end().len();
+            if self.cell && !self.row {
+                out.truncate(body);
+                out.push_str(" | ");
+                text = text.trim_start();
+            } else {
+                let lead = text.len() - text.trim_start().len();
+                let present =
+                    out[body..].matches('\n').count() + text[..lead].matches('\n').count();
+                let wanted = if self.row {
+                    present.max(1)
+                } else if self.block {
+                    present.max(self.breaks).max(1)
+                } else {
+                    present.max(self.breaks)
+                };
+                for _ in present..wanted {
+                    out.push('\n');
+                }
+            }
+        }
+        out.push_str(text);
+        *self = Gap::default();
+    }
 }
 
 impl XmlNode {
@@ -149,8 +307,34 @@ impl XmlNode {
 
     /// Texte descendant concaténé puis trimé ; `None` si vide.
     pub fn text(&self) -> Option<String> {
-        let joined: String = self.text_parts.concat();
+        let mut joined = String::new();
+        for part in &self.text_parts {
+            if let TextPart::Text(t) | TextPart::CellText(t) | TextPart::TableSpace(t) = part {
+                joined.push_str(t);
+            }
+        }
         let trimmed = joined.trim();
+        (!trimmed.is_empty()).then(|| trimmed.to_string())
+    }
+
+    /// The descendant text read as HTML, trimmed, `None` when empty: a `<br/>`,
+    /// the edge of a paragraph-level element and the edge of a table row each
+    /// start a line, and a table cell is set off from the one before it by ` | `.
+    pub fn html_text(&self) -> Option<String> {
+        let mut out = String::new();
+        let mut gap = Gap::default();
+        for part in &self.text_parts {
+            match part {
+                TextPart::Break => gap.breaks += 1,
+                TextPart::Block => gap.block = true,
+                TextPart::Row => gap.row = true,
+                TextPart::Cell => gap.cell = true,
+                TextPart::TableSpace(_) => {}
+                TextPart::Text(t) => gap.push(&mut out, t),
+                TextPart::CellText(t) => gap.push(&mut out, &t.replace(['\r', '\n'], " ")),
+            }
+        }
+        let trimmed = out.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
     }
 
@@ -188,6 +372,24 @@ fn read_attrs(e: &quick_xml::events::BytesStart) -> Vec<(String, String)> {
         .collect()
 }
 
+fn push_part(stack: &mut [XmlNode], part: TextPart) {
+    for node in stack.iter_mut() {
+        node.text_parts.push(part.clone());
+    }
+}
+
+fn push_text(stack: &mut [XmlNode], txt: String) {
+    const CELLS: &[&str] = &["td", "th"];
+    const TABLE: &[&str] = &["table", "thead", "tbody", "tfoot", "tr", "td", "th"];
+    let is = |tag: &str, set: &[&str]| set.iter().any(|t| tag.eq_ignore_ascii_case(t));
+    let part = match stack.iter().rev().find(|n| is(&n.tag, TABLE)) {
+        Some(n) if is(&n.tag, CELLS) => TextPart::CellText(txt),
+        Some(_) if txt.trim().is_empty() => TextPart::TableSpace(txt),
+        _ => TextPart::Text(txt),
+    };
+    push_part(stack, part);
+}
+
 pub fn build_tree(raw: &[u8]) -> Option<XmlNode> {
     let mut reader = Reader::from_reader(raw);
     let config = reader.config_mut();
@@ -207,14 +409,24 @@ pub fn build_tree(raw: &[u8]) -> Option<XmlNode> {
 
     loop {
         match reader.read_event_into(&mut buf) {
-            Ok(Event::Start(e)) => stack.push(XmlNode {
-                tag: local_name(e.name().as_ref()),
-                attrs: read_attrs(&e),
-                ..Default::default()
-            }),
+            Ok(Event::Start(e)) => {
+                let tag = local_name(e.name().as_ref());
+                if let Some(part) = edge_part(&tag) {
+                    push_part(&mut stack, part);
+                }
+                stack.push(XmlNode {
+                    tag,
+                    attrs: read_attrs(&e),
+                    ..Default::default()
+                });
+            }
             Ok(Event::Empty(e)) => {
+                let tag = local_name(e.name().as_ref());
+                if let Some(part) = edge_part(&tag) {
+                    push_part(&mut stack, part);
+                }
                 let node = XmlNode {
-                    tag: local_name(e.name().as_ref()),
+                    tag,
                     attrs: read_attrs(&e),
                     ..Default::default()
                 };
@@ -228,9 +440,7 @@ pub fn build_tree(raw: &[u8]) -> Option<XmlNode> {
                     Err(_) => String::from_utf8_lossy(e.as_ref()).into_owned(),
                 };
                 if !txt.is_empty() {
-                    for node in stack.iter_mut() {
-                        node.text_parts.push(txt.clone());
-                    }
+                    push_text(&mut stack, txt);
                 }
             }
             // quick-xml émet les références d'entités (`&amp;`, `&#160;`, `&#39;` …)
@@ -244,13 +454,14 @@ pub fn build_tree(raw: &[u8]) -> Option<XmlNode> {
                     Err(_) => String::from_utf8_lossy(e.as_ref()).into_owned(),
                 };
                 if !txt.is_empty() {
-                    for node in stack.iter_mut() {
-                        node.text_parts.push(txt.clone());
-                    }
+                    push_text(&mut stack, txt);
                 }
             }
             Ok(Event::End(_)) => {
                 if let Some(node) = stack.pop() {
+                    if let Some(part @ (TextPart::Block | TextPart::Row)) = edge_part(&node.tag) {
+                        push_part(&mut stack, part);
+                    }
                     attach(node, &mut stack, &mut root);
                 }
             }
@@ -348,31 +559,13 @@ pub fn build_metadata_header_xml_from_fields(source_fields: &Value) -> String {
     )
 }
 
-/// Visa tronqué (XML) : préfixe `preamble`/`procedure`/`visa`, tronqué
-/// paragraph-aware à `VISA_TRIM_MAX_CHARS`.
-pub(crate) fn build_visa_trim_xml(sections: &[DecisionSection]) -> String {
-    let parts: Vec<&str> = sections
-        .iter()
-        .filter(|s| matches!(s.kind.as_str(), "preamble" | "procedure" | "visa"))
-        .map(|s| s.text.as_str())
-        .collect();
-    if parts.is_empty() {
-        return String::new();
-    }
-    let visa = parts.join("\n\n");
-    if char_len(&visa) <= VISA_TRIM_MAX_CHARS {
-        return visa;
-    }
-    let truncated = char_take(&visa, VISA_TRIM_MAX_CHARS);
-    match char_rfind_double_newline(&truncated) {
-        Some(last_para) if last_para > 0 => char_take(&truncated, last_para),
-        _ => truncated,
-    }
-}
-
 /// Découpe le texte XML nettoyé en sections. Offsets en **codepoints**.
 pub(crate) fn extract_sections_xml(cleaned_text: &str) -> Vec<DecisionSection> {
     sections_from_markers(cleaned_text, &SECTION_PATTERNS, true)
+}
+
+pub(crate) fn extract_sections_cnil(cleaned_text: &str) -> Vec<DecisionSection> {
+    sections_from_markers(cleaned_text, &CNIL_SECTION_PATTERNS, true)
 }
 
 /// The marker of a match: group 1 when the pattern has one, so that a pattern
@@ -426,8 +619,8 @@ fn sections_from_markers(
     // boundary falls back to the start of its line, without crossing the previous
     // one: the renderer puts a whole paragraph in the section covering its first
     // character, so a boundary set inside a line opens no section at all. Markers
-    // of the recent drafting already open their line (98 to 100 % over 300
-    // decisions), those of the older stock one time in three.
+    // of the recent drafting already open their line, those of the older stock
+    // seldom do.
     let mut deduped: Vec<(usize, &'static str, String)> = Vec::new();
     let mut seen_kinds: Vec<&'static str> = Vec::new();
     let mut last_start: Option<usize> = None;
@@ -550,7 +743,6 @@ pub fn parse_xml(raw: &[u8], member_name: &str, archive_name: Option<&str>) -> D
     let texte_integral_clean = clean_texte(&texte_integral_raw);
     let sections = extract_sections_xml(&texte_integral_clean);
     let metadata_header = build_metadata_header_xml(&root);
-    let visa_trim = build_visa_trim_xml(&sections);
 
     let publication_codes = dossier
         .and_then(|d| node_text(d.find_first(&["Code_Publication"])))
@@ -581,11 +773,11 @@ pub fn parse_xml(raw: &[u8], member_name: &str, archive_name: Option<&str>) -> D
         solution: dossier.and_then(|d| node_text(d.find_first(&["Solution"]))),
         publication_codes,
         avocat_requerant: dossier.and_then(|d| node_text(d.find_first(&["Avocat_Requerant"]))),
+        listed_counsel: Vec::new(),
         texte_integral_raw,
         texte_integral_clean,
         sections,
         metadata_header,
-        visa_trim,
         themes: Vec::new(),
         attacked: None,
         parse_warnings: warnings,
@@ -616,12 +808,14 @@ static DISPOSITIF_VERB_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 const DISPOSITIF_VERB_TAIL_RATIO: f64 = 0.65;
 
-/// (`zone_key`, `kind`, `label`).
+/// (`zone_key`, `kind`, `label`). `chapeau` is no Judilibre zone: carved at
+/// ingest, it is stored with the zones and rebuilt as one.
 const ZONE_KIND_MAP: &[(&str, &str, &str)] = &[
     ("introduction", "preamble", "Introduction"),
     ("expose", "expose", "Exposé du litige"),
     ("moyens", "moyens", "Moyens"),
     ("motivations", "motivations", "Motivations"),
+    ("chapeau", "chapeau", "Chapeau"),
     ("dispositif", "dispositif", "Dispositif"),
 ];
 
@@ -664,23 +858,6 @@ fn char_find_from(haystack: &str, needle: &str, from: usize) -> Option<usize> {
         i += 1;
     }
     None
-}
-
-fn char_rfind_double_newline(s: &str) -> Option<usize> {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() < 2 {
-        return None;
-    }
-    let mut i = chars.len() - 2;
-    loop {
-        if chars[i] == '\n' && chars[i + 1] == '\n' {
-            return Some(i);
-        }
-        if i == 0 {
-            return None;
-        }
-        i -= 1;
-    }
 }
 
 /// Position d'un fragment nettoyé dans `clean_text` (recherche monotone à partir
@@ -738,6 +915,7 @@ pub(crate) mod vocab {
         ("ca", "Cour d'appel"),
         ("tj", "Tribunal judiciaire"),
         ("tcom", "Tribunal de commerce"),
+        ("cph", "Conseil de prud'hommes"),
         ("constit", "Conseil constitutionnel"),
         ("tc", "Tribunal des conflits"),
         ("cnil", "CNIL"),
@@ -754,6 +932,7 @@ pub(crate) mod vocab {
         ("ca", "CA"),
         ("tj", "TJ"),
         ("tcom", "TCOM"),
+        ("cph", "CPH"),
         ("constit", "CONSTIT"),
         ("tc", "TC"),
         ("cnil", "CNIL"),
@@ -929,22 +1108,12 @@ fn build_sections(raw_text: &str, clean_text: &str, payload: &Value) -> Vec<Deci
     }
 
     // 3. Fragment « motivations » orphelin EN TÊTE replié dans l'introduction.
-    let body_anchor = frags
-        .iter()
-        .filter(|f| f.kind == "moyens" || f.kind == "expose")
-        .map(|f| f.start)
-        .min();
-    if let Some(body_anchor) = body_anchor {
-        let motiv_count = frags.iter().filter(|f| f.kind == "motivations").count();
-        let any_after = frags
-            .iter()
-            .any(|f| f.kind == "motivations" && f.start >= body_anchor);
-        if motiv_count >= 2 && any_after {
-            for f in frags.iter_mut() {
-                if f.kind == "motivations" && f.start < body_anchor {
-                    f.kind = "preamble".to_string();
-                    f.label = "Introduction".to_string();
-                }
+    if let Some(anchor) = orphan_motivations_bound(frags.iter().map(|f| (f.start, f.kind.as_str())))
+    {
+        for f in frags.iter_mut() {
+            if f.kind == "motivations" && f.start < anchor {
+                f.kind = "preamble".to_string();
+                f.label = "Introduction".to_string();
             }
         }
     }
@@ -992,19 +1161,55 @@ fn build_sections(raw_text: &str, clean_text: &str, payload: &Value) -> Vec<Deci
     out
 }
 
+/// Sections of a decision in Judilibre's shape: its zones, completed by the
+/// markers of its drafting, which for a Conseil d'État payload are all it has.
+fn judilibre_sections(raw_text: &str, text: &str, payload: &Value) -> Vec<DecisionSection> {
+    if get_str(payload, "jurisdiction") == Some("ce") {
+        return extract_sections_xml(text);
+    }
+    let sections = build_sections(raw_text, text, payload);
+    let sections = augment_dispositif_fallback(sections, text);
+    let sections = augment_lead(sections, text, is_cassation(payload));
+    augment_annexes(augment_chapeau(sections, text), text)
+}
+
+fn is_cassation(payload: &Value) -> bool {
+    get_str(payload, "jurisdiction") == Some("cc")
+}
+
+/// The first moyens or exposé, ahead of which a motivations fragment belongs to
+/// the introduction, when another motivations fragment follows it.
+pub(crate) fn orphan_motivations_bound<'a>(
+    frags: impl Iterator<Item = (usize, &'a str)> + Clone,
+) -> Option<usize> {
+    let anchor = frags
+        .clone()
+        .filter(|(_, k)| *k == "moyens" || *k == "expose")
+        .map(|(start, _)| start)
+        .min()?;
+    let motivations: Vec<usize> = frags
+        .filter(|(_, k)| *k == "motivations")
+        .map(|(start, _)| start)
+        .collect();
+    (motivations.len() >= 2 && motivations.iter().any(|&start| start >= anchor)).then_some(anchor)
+}
+
 /// Ajoute une section `dispositif` par marqueurs si les zones n'en ont pas.
 fn augment_dispositif_fallback(sections: Vec<DecisionSection>, text: &str) -> Vec<DecisionSection> {
     if text.is_empty() || sections.iter().any(|s| s.kind == "dispositif") {
         return sections;
     }
-    let start = match find_dispositif_start(text) {
-        Some(s) => s,
-        None => return sections,
+    let bound = lj_core::annexes::start(text).unwrap_or_else(|| char_len(text));
+    let Some(found) = find_dispositif_start(&char_slice(text, 0, bound)) else {
+        return sections;
     };
-    let dispositif_text = char_slice(text, start, char_len(text)).trim().to_string();
+    let span = char_slice(text, found, bound);
+    let dispositif_text = span.trim().to_string();
     if dispositif_text.is_empty() {
         return sections;
     }
+    let start = found + span.chars().take_while(|c| c.is_whitespace()).count();
+    let end = start + char_len(&dispositif_text);
 
     let mut out: Vec<DecisionSection> = Vec::with_capacity(sections.len() + 1);
     for section in sections {
@@ -1033,8 +1238,40 @@ fn augment_dispositif_fallback(sections: Vec<DecisionSection>, text: &str) -> Ve
         label: "Dispositif".to_string(),
         kind: "dispositif".to_string(),
         start_char: start,
-        end_char: char_len(text),
+        end_char: end,
         text: dispositif_text,
+    });
+    out
+}
+
+/// Sets the moyens annexés apart: a section crossing their heading ends on it,
+/// one starting past it goes, and an `annexes` section runs to the end.
+fn augment_annexes(sections: Vec<DecisionSection>, text: &str) -> Vec<DecisionSection> {
+    let Some(start) = lj_core::annexes::start(text) else {
+        return sections;
+    };
+    let mut out: Vec<DecisionSection> = Vec::with_capacity(sections.len() + 1);
+    for section in sections {
+        if section.start_char == SECTION_NO_OFFSET || section.end_char <= start {
+            out.push(section);
+        } else if section.start_char < start {
+            let kept = char_slice(text, section.start_char, start);
+            let kept = kept.trim_end();
+            if !kept.is_empty() {
+                out.push(DecisionSection {
+                    end_char: section.start_char + char_len(kept),
+                    text: kept.to_string(),
+                    ..section
+                });
+            }
+        }
+    }
+    out.push(DecisionSection {
+        label: "Moyens annexés".to_string(),
+        kind: "annexes".to_string(),
+        start_char: start,
+        end_char: char_len(text),
+        text: char_slice(text, start, char_len(text)).trim().to_string(),
     });
     out
 }
@@ -1058,12 +1295,17 @@ static CHAPEAU_GRIEF_RE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
+/// Sections of a judicial decision whose source zoned none of its text.
+pub(crate) fn unzoned_judicial_sections(text: &str, cassation: bool) -> Vec<DecisionSection> {
+    let sections = augment_dispositif_fallback(Vec::new(), text);
+    let sections = augment_lead(sections, text, cassation);
+    augment_annexes(augment_chapeau(sections, text), text)
+}
+
 /// Carves the chapeau out of the motivations. In the recent cassation drafting a
 /// `Vu <texte> :` line opens the rule, the numbered paragraphs that follow carry
-/// it, and the one turning to the grief closes it. Measured over 244 such visas:
-/// 90 % yield a chapeau of 1 to 3 paragraphs, 7 % go straight to the grief and
-/// carry none. A chapeau no grief closes is left alone rather than run to the end
-/// of the motivations, which costs the 3 % that end a branch.
+/// it, and the one turning to the grief closes it. A chapeau no grief closes is
+/// left alone rather than run to the end of the motivations.
 fn augment_chapeau(sections: Vec<DecisionSection>, text: &str) -> Vec<DecisionSection> {
     if text.is_empty() {
         return sections;
@@ -1123,8 +1365,10 @@ fn split_chapeau(section: DecisionSection) -> Vec<DecisionSection> {
     }
 
     let mut out: Vec<DecisionSection> = Vec::with_capacity(cuts.len() * 2 + 1);
+    // Bounded on the trimmed text, as `build_sections` bounds a stored zone.
     let mut push = |start: usize, end: usize, chapeau: bool| {
-        let text = body[start..end].trim();
+        let piece = &body[start..end];
+        let text = piece.trim();
         if text.is_empty() {
             return;
         }
@@ -1133,11 +1377,13 @@ fn split_chapeau(section: DecisionSection) -> Vec<DecisionSection> {
         } else {
             ("motivations", section.label.as_str())
         };
+        let start_char = section.start_char
+            + byte_to_char_index(body, start + piece.len() - piece.trim_start().len());
         out.push(DecisionSection {
             label: label.to_string(),
             kind: kind.to_string(),
-            start_char: section.start_char + byte_to_char_index(body, start),
-            end_char: section.start_char + byte_to_char_index(body, end),
+            start_char,
+            end_char: start_char + char_len(text),
             text: text.to_string(),
         });
     };
@@ -1196,29 +1442,6 @@ fn build_metadata_header(payload: &Value) -> String {
     lines.join("\n")
 }
 
-/// visa_trim Judilibre : préfixe `expose + moyens` paragraph-aware.
-fn build_visa_trim(sections: &[DecisionSection]) -> String {
-    let parts: Vec<&str> = sections
-        .iter()
-        .filter(|s| s.kind == "expose" || s.kind == "moyens")
-        .map(|s| s.text.as_str())
-        .collect();
-    if parts.is_empty() {
-        return String::new();
-    }
-
-    let visa = parts.join("\n\n");
-    if char_len(&visa) <= VISA_TRIM_MAX_CHARS {
-        return visa;
-    }
-
-    let truncated = char_take(&visa, VISA_TRIM_MAX_CHARS);
-    match char_rfind_double_newline(&truncated) {
-        Some(last_para) if last_para > 0 => char_take(&truncated, last_para),
-        _ => truncated,
-    }
-}
-
 /// Thèmes Judilibre (`payload["themes"]`) : liste verbatim (matière → chaîne de
 /// mots-clés), entrées vides écartées.
 fn parse_themes(payload: &Value) -> Vec<String> {
@@ -1242,8 +1465,7 @@ pub fn parse_judilibre(payload: &Value, member_name: Option<&str>) -> Decision {
 
     let raw_text = get_str(payload, "text").unwrap_or("");
     let text = clean_texte(raw_text);
-    let sections = build_sections(raw_text, &text, payload);
-    let sections = augment_chapeau(augment_dispositif_fallback(sections, &text), &text);
+    let sections = judilibre_sections(raw_text, &text, payload);
 
     // `numbers` : liste propre, dédoublonnée en gardant l'ordre — le scalaire
     // `number` de la source n'est pas fiable.
@@ -1266,8 +1488,6 @@ pub fn parse_judilibre(payload: &Value, member_name: Option<&str>) -> Decision {
     } else {
         Some(clean_numbers)
     };
-
-    let visa_trim = build_visa_trim(&sections);
     let metadata_header = build_metadata_header(payload);
 
     Decision {
@@ -1307,11 +1527,11 @@ pub fn parse_judilibre(payload: &Value, member_name: Option<&str>) -> Decision {
             })
             .unwrap_or_default(),
         avocat_requerant: None,
+        listed_counsel: Vec::new(),
         texte_integral_raw: raw_text.to_string(),
         texte_integral_clean: text,
         sections,
         metadata_header,
-        visa_trim,
         themes: parse_themes(payload),
         attacked: None,
         parse_warnings: Vec::new(),
@@ -1333,6 +1553,9 @@ pub fn parse_judilibre(payload: &Value, member_name: Option<&str>) -> Decision {
 /// `full_text` (refs HTML), elles se reconstruisent au rendu depuis
 /// `source_fields["visa"]`.
 ///
+/// The moyens annexés are left out too: they are carved from their heading at
+/// every read.
+///
 /// Sources sans payload JSON structuré (XML opendata : `<Dossier>` déjà en
 /// colonnes, sections redétectables sur `full_text`) → passer un `payload`
 /// non-objet rend `Value::Null`.
@@ -1347,6 +1570,7 @@ pub fn build_source_fields(payload: &Value, sections: &[DecisionSection]) -> Val
     let rebased: Vec<Value> = sections
         .iter()
         .filter(|s| s.start_char != SECTION_NO_OFFSET)
+        .filter(|s| ZONE_KIND_MAP.iter().any(|(_, kind, _)| *kind == s.kind))
         .map(|s| {
             serde_json::json!({
                 "kind": s.kind,
@@ -1375,24 +1599,36 @@ pub trait FromSourceFields {
 }
 
 impl FromSourceFields for Decision {
-    /// Convertisseur canonique `(full_text, source_fields) → Decision`, pendant exact
-    /// des `build_source_fields*` (`xml`/`dila`/HTML CEDH-CJUE/CNDA). Chemin
-    /// d'extraction LINÉAIRE unique : utilisé à l'ingest comme en aval (re-extract,
-    /// affichage). Dispatch sur le **préfixe du `source_uid`** d'abord (discriminant
-    /// stable en DB) pour les fonds scrapés — `cedh/`/`cjue/` ⇒ HTML européen ;
-    /// `cnda/` ⇒ CNDA ; `juricaf/` ⇒ fond international (URN:LEX) —, puis sur la
-    /// **forme de `source_fields`** : `<Dossier>`/`<Audience>` ⇒ XML opendata
-    /// (TA/CAA/CE) ; `META_COMMUN`+`META_JURI` ⇒ DILA bulk (JADE/CONSTIT, fond déduit
-    /// du `source_uid` `dila-jade`/`dila-constit`) ; sinon JSON Judilibre
-    /// (CC/CA/TJ/TCOM). `source_uid` est la provenance (sert de `member_name` et de
-    /// base à `classify_uid` côté XML, au fond côté DILA).
+    /// The canonical decision of `(full_text, source_fields)`, counterpart of the
+    /// `build_source_fields*`, and the one path the ingest, the re-extraction
+    /// and the display read a decision through. A French text in capitals is read
+    /// recased, which is the text the ingest stores. Dispatches on the `source_uid`
+    /// prefix for the scraped fonds (`cedh/`, `cjue/`, `cnda/`, `ddd/`, `adlc/`, `comeu/`, `juricaf/`) and the contributions, then on
+    /// the shape of `source_fields`: `Dossier`/`Audience` for the opendata XML,
+    /// `META_COMMUN` and `META_JURI` for the DILA bulk, the Judilibre JSON otherwise.
     fn from_source_fields(full_text: &str, source_fields: &Value, source_uid: &str) -> Decision {
+        let french = source_fields
+            .get("lang")
+            .and_then(Value::as_str)
+            .is_none_or(|code| code.eq_ignore_ascii_case("fra"));
+        let recased = french
+            .then(|| lj_core::truecase::recased_text(full_text))
+            .flatten();
+        let full_text = recased.as_deref().unwrap_or(full_text);
         if source_uid_is_html_europe(source_uid) {
             european::from_source_fields_html_europe(full_text, source_fields, source_uid)
         } else if source_uid_is_cnda(source_uid) {
             cnda::from_source_fields_cnda(full_text, source_fields, source_uid)
+        } else if ddd::source_uid_is_ddd(source_uid) {
+            ddd::from_source_fields_ddd(full_text, source_fields, source_uid)
+        } else if adlc::source_uid_is_adlc(source_uid) {
+            adlc::from_source_fields_adlc(full_text, source_fields, source_uid)
+        } else if comeu::source_uid_is_comeu(source_uid) {
+            comeu::from_source_fields_comeu(full_text, source_fields, source_uid)
         } else if source_uid.starts_with("juricaf/") {
             juricaf::from_source_fields_juricaf(full_text, source_fields, source_uid)
+        } else if source_uid_is_contribution(source_uid) {
+            contribution::from_source_fields_contribution(full_text, source_fields, source_uid)
         } else if source_fields_is_xml(source_fields) {
             from_source_fields_xml(full_text, source_fields, source_uid)
         } else if source_fields_is_dila(source_fields) {
@@ -1406,7 +1642,7 @@ impl FromSourceFields for Decision {
 /// Opendata XML branch of [`Decision::from_source_fields`]. Maps the
 /// `<Dossier>`/`<Audience>` scalars (kept verbatim by
 /// [`build_source_fields_xml`]) onto `Decision` as [`parse_xml`] does, and
-/// recomputes sections/`metadata_header`/`visa_trim` on `full_text` (offsets
+/// recomputes the sections and `metadata_header` on `full_text` (offsets
 /// recomputed, no rebasing). `raw == clean == full_text`; `date_mise_jour` is
 /// not carried in `source_fields` (hence `None`).
 fn from_source_fields_xml(full_text: &str, source_fields: &Value, source_uid: &str) -> Decision {
@@ -1424,7 +1660,6 @@ fn from_source_fields_xml(full_text: &str, source_fields: &Value, source_uid: &s
         .map(|c| vec![c])
         .unwrap_or_default();
     let sections = extract_sections_xml(full_text);
-    let visa_trim = build_visa_trim_xml(&sections);
 
     Decision {
         source_uid: source_uid.to_string(),
@@ -1449,11 +1684,11 @@ fn from_source_fields_xml(full_text: &str, source_fields: &Value, source_uid: &s
         solution: get("Dossier", "Solution"),
         publication_codes,
         avocat_requerant: get("Dossier", "Avocat_Requerant"),
+        listed_counsel: Vec::new(),
         texte_integral_raw: full_text.to_string(),
         texte_integral_clean: full_text.to_string(),
         sections,
         metadata_header: build_metadata_header_xml_from_fields(source_fields),
-        visa_trim,
         themes: Vec::new(),
         attacked: None,
         parse_warnings: Vec::new(),
@@ -1462,15 +1697,14 @@ fn from_source_fields_xml(full_text: &str, source_fields: &Value, source_uid: &s
 
 /// Judilibre JSON branch of [`Decision::from_source_fields`]. Reproduces the
 /// direct parse exactly: rebuilds the `zones` from `source_fields["sections"]`
-/// (inverse of [`ZONE_KIND_MAP`]) then applies [`build_sections`] +
-/// [`augment_dispositif_fallback`] on `(full_text, payload-like)`. The synthetic
+/// (inverse of [`ZONE_KIND_MAP`]) then applies [`build_sections`] and the
+/// fallbacks on `(full_text, payload-like)`. The synthetic
 /// visa is rebuilt from `source_fields["visa"]` (kept verbatim).
 /// `raw == clean == full_text`.
 fn from_source_fields_json(full_text: &str, source_fields: &Value, source_uid: &str) -> Decision {
     let payload = json_payload_from_source_fields(full_text, source_fields);
 
-    let sections = build_sections(full_text, full_text, &payload);
-    let sections = augment_chapeau(augment_dispositif_fallback(sections, full_text), full_text);
+    let sections = judilibre_sections(full_text, full_text, &payload);
 
     // `numbers`: a clean list, deduplicated in order; the source's `number`
     // scalar is not reliable.
@@ -1492,8 +1726,6 @@ fn from_source_fields_json(full_text: &str, source_fields: &Value, source_uid: &
     } else {
         Some(clean_numbers)
     };
-
-    let visa_trim = build_visa_trim(&sections);
     let metadata_header = build_metadata_header(&payload);
 
     Decision {
@@ -1531,11 +1763,11 @@ fn from_source_fields_json(full_text: &str, source_fields: &Value, source_uid: &
             })
             .unwrap_or_default(),
         avocat_requerant: None,
+        listed_counsel: Vec::new(),
         texte_integral_raw: full_text.to_string(),
         texte_integral_clean: full_text.to_string(),
         sections,
         metadata_header,
-        visa_trim,
         themes: parse_themes(&payload),
         attacked: parse_attacked(&payload),
         parse_warnings: Vec::new(),
@@ -1627,16 +1859,91 @@ pub(crate) fn xml_scalar_children(node: &XmlNode) -> serde_json::Map<String, Val
     out
 }
 
+/// Formatting tags inside a field's text: they carry no metadata, so a node
+/// holding only these reads as its text.
+const INLINE_TAGS: &[&str] = &[
+    "br", "p", "i", "b", "u", "em", "strong", "sup", "sub", "span", "a", "BR", "P", "I", "B", "U",
+    "EM", "STRONG", "SUP", "SUB", "SPAN", "A",
+];
+
+/// A whole XML subtree as JSON, nothing dropped but empty values: a leaf is its
+/// text, a node is an object of its children (a repeated tag becomes an
+/// array), a non-empty attribute is `@name`, and the text beside attributes is
+/// `#text`. `None` when the subtree carries nothing.
+pub(crate) fn xml_tree_json(node: &XmlNode) -> Option<Value> {
+    let attrs = node.attrs.iter().filter(|(_, v)| !v.trim().is_empty());
+    let structural = node
+        .children
+        .iter()
+        .any(|c| !INLINE_TAGS.contains(&c.tag.as_str()));
+    let mut obj = serde_json::Map::new();
+    for (k, v) in attrs {
+        obj.insert(format!("@{k}"), Value::String(v.trim().to_string()));
+    }
+    if !structural {
+        let text = node.text();
+        if obj.is_empty() {
+            return text.map(Value::String);
+        }
+        if let Some(t) = text {
+            obj.insert("#text".to_string(), Value::String(t));
+        }
+        return Some(Value::Object(obj));
+    }
+    for child in &node.children {
+        if let Some(v) = xml_tree_json(child) {
+            push_json_child(&mut obj, &child.tag, v);
+        }
+    }
+    (!obj.is_empty()).then_some(Value::Object(obj))
+}
+
+/// Adds `v` under `tag`, a second occurrence turning the value into an array.
+pub(crate) fn push_json_child(obj: &mut serde_json::Map<String, Value>, tag: &str, v: Value) {
+    match obj.get_mut(tag) {
+        None => {
+            obj.insert(tag.to_string(), v);
+        }
+        Some(Value::Array(items)) => items.push(v),
+        Some(first) => {
+            let first = first.take();
+            obj.insert(tag.to_string(), Value::Array(vec![first, v]));
+        }
+    }
+}
+
+/// The text a [`xml_tree_json`] value holds: the string itself, the first of a
+/// repeated tag, or the `#text` beside attributes.
+pub(crate) fn json_text(v: &Value) -> Option<&str> {
+    match v {
+        Value::String(s) => Some(s),
+        Value::Array(items) => items.first().and_then(json_text),
+        Value::Object(o) => o.get("#text").and_then(Value::as_str),
+        _ => None,
+    }
+}
+
+/// Every text a [`xml_tree_json`] value holds under one tag, in document order.
+pub(crate) fn json_texts(v: Option<&Value>) -> Vec<String> {
+    match v {
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(json_text)
+            .map(str::to_string)
+            .collect(),
+        Some(v) => json_text(v).map(str::to_string).into_iter().collect(),
+        None => Vec::new(),
+    }
+}
+
 /// `source_fields` pour un payload XML opendata : tous les scalaires (feuilles)
 /// des nœuds `<Dossier>` et `<Audience>`, groupés `{ "Dossier": {…},
 /// "Audience": {…} }`.
 ///
-/// Pendant XML du `build_source_fields` JSON. Le texte intégral part dans
-/// `full_text` ; les sections et `visa_trim` se recalculent depuis `full_text`
-/// (`extract_sections_xml`), donc rien à rebaser ici. `metadata_header` (XML) ne lit
-/// que ces scalaires — d'où la conservation verbatim de **tous** les scalaires
-/// `Dossier`/`Audience`, et pas seulement les 6 lus aujourd'hui : le payload XML
-/// reste reconstructible hors texte intégral.
+/// The text goes to `full_text`, from which `extract_sections_xml` computes the
+/// sections again, so nothing is rebased here. `metadata_header` reads these
+/// scalars alone, and every one of them is kept, not only the 6 read today: the
+/// XML payload stays rebuildable but for its text.
 pub fn build_source_fields_xml(raw: &[u8]) -> Value {
     let root = build_tree(raw).unwrap_or_default();
     let mut obj = serde_json::Map::new();

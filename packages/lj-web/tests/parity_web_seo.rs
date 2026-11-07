@@ -48,13 +48,14 @@ fn fixture_detail() -> DecisionDetail {
              La haute juridiction renvoie l'affaire."
                 .to_string(),
         ),
+        summary_quote: None,
+        summary_body: None,
         jurisdiction_code: None,
         jurisdiction_name: Some("Conseil d'État".to_string()),
         court_place: None,
         date_lecture: Some("2024-03-12".to_string()),
         solution: None,
-        procedure: None,
-        office: None,
+        formation: Vec::new(),
         legal_domain: None,
         publication_codes: vec![],
         date_audience: None,
@@ -70,7 +71,6 @@ fn fixture_detail() -> DecisionDetail {
         source: None,
         chronology: Vec::new(),
         commentaires: vec![],
-        renvoyants: vec![],
         citantes: vec![],
         citantes_total: None,
     }
@@ -114,7 +114,11 @@ fn decision_route_head_matches_react_meta_contract() {
     let detail = fixture_detail();
     let title = detail.title.clone();
     let description = meta_description(&detail, &title);
-    let url = canonical_url(detail.jurisdiction_type, &detail.id);
+    let url = canonical_url(
+        detail.jurisdiction_type,
+        detail.jurisdiction_code.as_deref(),
+        &detail.id,
+    );
 
     let page_title = format!("{} - LibreJustice", seo_title(&detail));
     assert_eq!(
@@ -167,7 +171,11 @@ fn decision_jsonld_matches_react_graph() {
     let detail = fixture_detail();
     let title = detail.title.clone();
     let description = meta_description(&detail, &title);
-    let url = canonical_url(detail.jurisdiction_type, &detail.id);
+    let url = canonical_url(
+        detail.jurisdiction_type,
+        detail.jurisdiction_code.as_deref(),
+        &detail.id,
+    );
 
     let got = build_json_ld(&detail, &title, &description);
 

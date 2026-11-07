@@ -1,22 +1,22 @@
 //! European sources: the CEDH (HUDOC) and the CJUE (EUR-Lex). Each language
 //! version of a judgment is a provenance of its own, with its own text.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, Result};
 use futures::{StreamExt, TryStreamExt};
 
 use lj_core::decision::Decision;
 use lj_parse::{build_source_fields, parse_cedh, parse_cjue};
+use lj_pg::db::Connection;
 use lj_sources::cedh::CedhResult;
-use lj_store::db::Connection;
+use lj_sources::curia::CuriaClient;
 use lj_store::repository::DecisionRepository;
 use lj_vocab::languages::{eu_of_iso_639_1, iso_639_1_of_eu};
 
 use crate::config::Settings;
 
 use super::batch::drain_batch;
-use super::embed::build_embedder_opt;
 use super::{generate_public_id, Candidate, IngestCounts, IngestMode, WriteMode, BATCH_SIZE};
 
 /// Concurrence des pages de liste HUDOC d'une année.
@@ -31,9 +31,14 @@ async fn present_source_uids(conn: &Connection, uids: &[String]) -> Result<HashS
     Ok(states.into_keys().collect())
 }
 
-/// Première année balayée au bootstrap CEDH/CJUE. La CEDH rend des arrêts depuis
-/// 1960 (première affaire 1961) ; EUR-Lex secteur 6 depuis 1954.
-const EUROPE_START_YEAR: i32 = 1960;
+/// First year of the CEDH bootstrap: the Court's first judgments are of 1960.
+const CEDH_START_YEAR: i32 = 1960;
+/// First year of the CJUE bootstrap, the first of EUR-Lex sector 6.
+const CJUE_START_YEAR: i32 = 1954;
+/// An EUR-Lex text under this size may be its summary of a decision left out of the Reports.
+const SHORT_TEXT_BYTES: usize = 6_000;
+/// The languages a CELEX has only EUR-Lex's summary in, kept with its CDM predicates.
+const SUMMARY_LANGUAGES: &str = "eurlex_summary_languages";
 
 /// Année courante (UTC), borne haute des balayages CEDH/CJUE.
 fn current_year() -> i32 {
@@ -42,7 +47,7 @@ fn current_year() -> i32 {
         .format("%Y")
         .to_string()
         .parse()
-        .unwrap_or(EUROPE_START_YEAR)
+        .unwrap_or(CEDH_START_YEAR)
 }
 
 /// Construit le `source_fields` HTML : les métadonnées verbatim
@@ -73,14 +78,12 @@ fn hudoc_lang(raw: &str) -> Result<&'static str> {
 }
 
 /// The candidate of one language version, `lang` its Publications Office code in
-/// lowercase, written into `source_fields["lang"]`. `lead` when this version
-/// becomes the text its decision serves, the only one cut into passages.
+/// lowercase, written into `source_fields["lang"]`.
 fn html_candidate(
     decision: Decision,
     metadata: &serde_json::Value,
     body_text: &str,
     lang: &str,
-    lead: bool,
 ) -> Candidate {
     let mut source_fields = html_source_fields(metadata, &decision);
     source_fields["lang"] = serde_json::json!(lang);
@@ -94,8 +97,8 @@ fn html_candidate(
         raw_payload: Vec::new(),
         payload_format: "html".to_string(),
         write_mode: WriteMode::Full,
-        dila_fond: None,
-        passages: lead,
+        passages: true,
+        distinct: false,
     }
 }
 
@@ -104,7 +107,7 @@ fn html_candidate(
 pub(super) async fn europe_pool() -> Result<deadpool_postgres::Pool> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -126,7 +129,7 @@ async fn cedh_judgments(
         .map_err(|e| anyhow!("cedh results {year} start=0: {e}"))?;
     let (resultcount, first_rows) = parse_results(&first);
     let mut rows: Vec<CedhResult> = first_rows.into_iter().filter(is_judgment).collect();
-    // HUDOC caps a query at 10,000 results.
+    // HUDOC caps the results of a query.
     let year_end = (resultcount as usize).min(10_000);
     let pages: Vec<Vec<CedhResult>> = futures::stream::iter(
         (PAGE_SIZE..year_end)
@@ -159,7 +162,6 @@ async fn run_cedh(start_year: i32, end_year: i32) -> Result<()> {
     let pool = europe_pool().await?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
 
-    let (embedder, require_embeddings) = build_embedder_opt(&settings).await?;
     let client = CedhClient::new().with_body_cache(settings.cache_dir());
     let manifest_path = lj_sources::cedh::manifest_path(&settings.cache_dir());
     let mut manifest = CedhManifest::load(&manifest_path).map_err(|e| anyhow!("manifest: {e}"))?;
@@ -169,12 +171,6 @@ async fn run_cedh(start_year: i32, end_year: i32) -> Result<()> {
         let mut rows = cedh_judgments(&client, year).await?;
         let uids: Vec<String> = rows.iter().map(|r| format!("cedh/{}", r.itemid)).collect();
         let held = present_source_uids(&conn, &uids).await?;
-        let ecli = |r: &CedhResult| r.columns["ecli"].as_str().unwrap_or("").to_string();
-        let mut french: HashSet<String> = rows
-            .iter()
-            .filter(|r| r.language == "FRE" && held.contains(&format!("cedh/{}", r.itemid)))
-            .map(ecli)
-            .collect();
         rows.retain(|r| !held.contains(&format!("cedh/{}", r.itemid)));
         // French first: a judgment's first version creates the decision.
         rows.sort_by_key(|r| u8::from(r.language != "FRE"));
@@ -192,40 +188,19 @@ async fn run_cedh(start_year: i32, end_year: i32) -> Result<()> {
             }
             let decision = parse_cedh(&body, &row.columns, &row.itemid)
                 .map_err(|e| anyhow!("parse_cedh {}: {e}", row.itemid))?;
-            let lead = row.language == "FRE" || !french.contains(&ecli(row));
-            if row.language == "FRE" {
-                french.insert(ecli(row));
-            }
             candidates.push(html_candidate(
                 decision,
                 &row.columns,
                 &body,
                 hudoc_lang(&row.language)?,
-                lead,
             ));
             if candidates.len() >= BATCH_SIZE {
                 let batch = std::mem::take(&mut candidates);
-                drain_batch(
-                    &conn,
-                    embedder.as_ref(),
-                    batch,
-                    require_embeddings,
-                    IngestMode::MissingHash,
-                    &mut counts,
-                )
-                .await?;
+                drain_batch(&conn, batch, IngestMode::MissingHash, &mut counts).await?;
             }
         }
         if !candidates.is_empty() {
-            drain_batch(
-                &conn,
-                embedder.as_ref(),
-                candidates,
-                require_embeddings,
-                IngestMode::MissingHash,
-                &mut counts,
-            )
-            .await?;
+            drain_batch(&conn, candidates, IngestMode::MissingHash, &mut counts).await?;
         }
 
         manifest.mark_year(year);
@@ -269,16 +244,39 @@ fn cjue_procedure_languages(predicates: &serde_json::Value) -> Vec<&'static str>
         .collect()
 }
 
-/// The languages a CJUE judgment is wanted in: French, English and its
-/// languages of procedure.
-fn cjue_wanted_languages(predicates: &serde_json::Value) -> Vec<&'static str> {
-    let mut wanted = vec!["fr", "en"];
-    for iso in cjue_procedure_languages(predicates) {
-        if !wanted.contains(&iso) {
+/// The languages a CJUE decision is read in besides its languages of procedure.
+const CJUE_READ_LANGUAGES: [&str; 2] = ["fr", "en"];
+
+/// The languages a CJUE decision is wanted in: French and English when CELLAR publishes
+/// them, and its languages of procedure, less those EUR-Lex holds only its summary in.
+fn cjue_wanted_languages(
+    predicates: &serde_json::Value,
+    published: &[&'static str],
+) -> Vec<&'static str> {
+    let summaries: Vec<&str> = predicates[SUMMARY_LANGUAGES]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v.as_str())
+        .collect();
+    let mut wanted: Vec<&'static str> = Vec::new();
+    for iso in published
+        .iter()
+        .copied()
+        .filter(|l| CJUE_READ_LANGUAGES.contains(l))
+        .chain(cjue_procedure_languages(predicates))
+    {
+        if !wanted.contains(&iso) && !summaries.contains(&iso) {
             wanted.push(iso);
         }
     }
     wanted
+}
+
+/// The ISO 639-1 code of a Publications Office or Curia code (`FRA`, `FR`).
+fn iso_of_code(code: &str) -> Option<&'static str> {
+    iso_639_1_of_eu(code)
+        .or_else(|| eu_of_iso_639_1(&code.to_ascii_lowercase()).and_then(iso_639_1_of_eu))
 }
 
 /// The CDM predicates a provenance stores, without what the ingest adds per
@@ -286,23 +284,32 @@ fn cjue_wanted_languages(predicates: &serde_json::Value) -> Vec<&'static str> {
 fn stored_predicates(source_fields: &serde_json::Value) -> serde_json::Value {
     let mut p = source_fields.clone();
     if let Some(map) = p.as_object_mut() {
-        for key in ["sections", "lang", "resource_obtained_language", "objet"] {
+        for key in [
+            "sections",
+            "lang",
+            "resource_obtained_language",
+            "objet",
+            "text_source",
+            "curia_docid",
+        ] {
             map.remove(key);
         }
     }
     p
 }
 
-/// Ingests the CJUE judgments and orders (EUR-Lex) of a range of years, in
-/// French, in English and in their language of procedure, one provenance
-/// `cjue/{CELEX}/{lang}` per language.
+/// Ingests the CJUE judgments, orders and opinions of a range of years in every
+/// language CELLAR or Curia publishes them in, one provenance `cjue/{CELEX}/{lang}`
+/// per language.
 ///
 /// Per year, the SPARQL list deduplicated by CELEX (`sparql_page` →
-/// `parse_sparql`, OFFSET capped at 10,000). A CELEX whose wanted languages are
-/// all held costs no request. The predicates come from a provenance already
-/// held, else from `fetch_work_predicates`, which names the language of
-/// procedure. A language EUR-Lex does not serve is asked again at the next run.
-async fn run_cjue(start_year: i32, end_year: i32) -> Result<()> {
+/// `parse_sparql`, under the OFFSET cap), and the languages of each CELEX
+/// (`languages_of_year`). A CELEX whose wanted languages are all held costs no
+/// request. The predicates come from a provenance already held, else from
+/// `fetch_work_predicates`, which names the language of procedure. A language
+/// EUR-Lex does not serve is asked again at the next run. With `short`, a text
+/// held under [`SHORT_TEXT_BYTES`] is read again.
+async fn run_cjue(start_year: i32, end_year: i32, short: bool) -> Result<()> {
     use lj_sources::cjue::{
         extract_objet, parse_sparql, CjueClient, CjueManifest, PAGE_SIZE, THROTTLE,
     };
@@ -312,16 +319,24 @@ async fn run_cjue(start_year: i32, end_year: i32) -> Result<()> {
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 
-    let (embedder, require_embeddings) = build_embedder_opt(&settings).await?;
     let client = CjueClient::new();
+    let curia = CuriaClient::new().await?;
     let manifest_path = lj_sources::cjue::manifest_path(&settings.cache_dir());
     let mut manifest = CjueManifest::load(&manifest_path).map_err(|e| anyhow!("manifest: {e}"))?;
 
     let mut total = IngestCounts::default();
     let mut unserved = 0usize;
+    let mut from_curia = 0usize;
     for year in start_year..=end_year {
         let mut offset = 0usize;
         let mut counts = IngestCounts::default();
+        let published: HashMap<String, Vec<&'static str>> = client
+            .languages_of_year(year)
+            .await
+            .map_err(|e| anyhow!("cjue languages {year}: {e}"))?
+            .into_iter()
+            .map(|(celex, codes)| (celex, codes.iter().filter_map(|c| iso_of_code(c)).collect()))
+            .collect();
         loop {
             let page = client
                 .sparql_page(year, offset)
@@ -339,14 +354,21 @@ async fn run_cjue(start_year: i32, end_year: i32) -> Result<()> {
 
             let mut candidates: Vec<Candidate> = Vec::new();
             for row in &rows {
-                let (present, stored) = match held.get(&row.celex) {
-                    Some((langs, fields)) => (langs.clone(), Some(stored_predicates(fields))),
-                    None => (Vec::new(), None),
+                let published = published.get(&row.celex).map_or(&[][..], Vec::as_slice);
+                let (langs, stored) = match held.get(&row.celex) {
+                    Some((langs, fields)) => (langs.as_slice(), Some(stored_predicates(fields))),
+                    None => (&[][..], None),
                 };
+                let present: Vec<&str> = langs
+                    .iter()
+                    .filter(|(_, bytes)| !short || *bytes as usize >= SHORT_TEXT_BYTES)
+                    .map(|(lang, _)| lang.as_str())
+                    .collect();
+                let longest_held = langs.iter().map(|(_, b)| *b as usize).max().unwrap_or(0);
                 if let Some(p) = &stored {
-                    if cjue_wanted_languages(p)
+                    if cjue_wanted_languages(p, published)
                         .iter()
-                        .all(|l| present.iter().any(|h| h == l))
+                        .all(|l| present.contains(l))
                     {
                         continue;
                     }
@@ -373,13 +395,17 @@ async fn run_cjue(start_year: i32, end_year: i32) -> Result<()> {
                 let map = predicates.as_object_mut().expect("map_predicates → objet");
                 map.insert("case-law_ecli".into(), serde_json::json!(row.ecli));
                 map.insert("work_date_document".into(), serde_json::json!(row.date));
+                if let Some(title) = &row.title {
+                    map.insert(TITLE_FIELD.into(), serde_json::json!(title));
+                }
                 if let Some(original) = cjue_procedure_languages(&predicates).first() {
                     predicates["original_lang"] =
                         serde_json::json!(eu_of_iso_639_1(original).expect("official language"));
                 }
-                let mut fetched: Vec<(&'static str, String)> = Vec::new();
-                for iso in cjue_wanted_languages(&predicates) {
-                    if present.iter().any(|h| h == iso) {
+                let wanted = cjue_wanted_languages(&predicates, published);
+                let mut asked: Asked = Vec::new();
+                for &iso in &wanted {
+                    if present.contains(&iso) {
                         continue;
                     }
                     let eu = eu_of_iso_639_1(iso).expect("wanted languages are official");
@@ -392,22 +418,45 @@ async fn run_cjue(start_year: i32, end_year: i32) -> Result<()> {
                             None
                         }
                     };
-                    match body.filter(|b| !b.trim().is_empty()) {
-                        Some(body) => fetched.push((iso, body)),
+                    asked.push((iso, body.filter(|b| !b.trim().is_empty()), None));
+                }
+                let lacking = asked
+                    .iter()
+                    .any(|(_, body, _)| body.as_ref().is_none_or(|b| b.len() < SHORT_TEXT_BYTES));
+                if lacking || (wanted.is_empty() && present.is_empty()) {
+                    curia_texts(
+                        &curia,
+                        &row.celex,
+                        row.ecli.as_deref(),
+                        &wanted,
+                        &present,
+                        &mut asked,
+                    )
+                    .await;
+                }
+                let summary_languages = drop_eurlex_summaries(&mut asked, longest_held);
+                if !summary_languages.is_empty() {
+                    predicates[SUMMARY_LANGUAGES] = serde_json::json!(summary_languages);
+                }
+                let mut fetched: Vec<(&'static str, String, Option<u64>)> = Vec::new();
+                for (iso, body, docid) in asked {
+                    match body {
+                        Some(body) => fetched.push((iso, body, docid)),
                         None => {
                             unserved += 1;
                             counts.empty_skipped += 1;
                         }
                     }
                 }
-                // The authority's order: French, English, then the first code.
-                let mut served: Vec<&str> = present.iter().map(String::as_str).collect();
-                served.extend(fetched.iter().map(|(iso, _)| *iso));
-                served.sort_by_key(|l| (*l != "fr", *l != "en", *l));
-                for (iso, body) in fetched {
+                for (iso, body, docid) in fetched {
                     let eu = eu_of_iso_639_1(iso).expect("wanted languages are official");
                     let mut fields = predicates.clone();
                     fields["resource_obtained_language"] = serde_json::json!(eu);
+                    if let Some(docid) = docid {
+                        fields["text_source"] = serde_json::json!("curia");
+                        fields["curia_docid"] = serde_json::json!(docid);
+                        from_curia += 1;
+                    }
                     if iso == "fr" {
                         if let Some(objet) = extract_objet(&body) {
                             fields["objet"] = serde_json::json!(objet);
@@ -415,36 +464,19 @@ async fn run_cjue(start_year: i32, end_year: i32) -> Result<()> {
                     }
                     let decision = parse_cjue(&body, &fields, &row.celex, iso)
                         .map_err(|e| anyhow!("parse_cjue {}: {e}", row.celex))?;
-                    let lead = served.first() == Some(&iso);
-                    candidates.push(html_candidate(decision, &fields, &body, eu, lead));
+                    candidates.push(html_candidate(decision, &fields, &body, eu));
                 }
                 if candidates.len() >= BATCH_SIZE {
                     let batch = std::mem::take(&mut candidates);
-                    drain_batch(
-                        &conn,
-                        embedder.as_ref(),
-                        batch,
-                        require_embeddings,
-                        IngestMode::MissingHash,
-                        &mut counts,
-                    )
-                    .await?;
+                    drain_batch(&conn, batch, IngestMode::MissingHash, &mut counts).await?;
                 }
             }
             if !candidates.is_empty() {
-                drain_batch(
-                    &conn,
-                    embedder.as_ref(),
-                    candidates,
-                    require_embeddings,
-                    IngestMode::MissingHash,
-                    &mut counts,
-                )
-                .await?;
+                drain_batch(&conn, candidates, IngestMode::MissingHash, &mut counts).await?;
             }
 
             offset += PAGE_SIZE;
-            // OFFSET cappé 10 000 (EUR-Lex) : au-delà, la page suivante est vide.
+            // EUR-Lex caps OFFSET: past it, the next page is empty.
             if offset >= 10_000 {
                 break;
             }
@@ -472,19 +504,108 @@ async fn run_cjue(start_year: i32, end_year: i32) -> Result<()> {
         updated = total.updated,
         skipped = total.skipped,
         unserved,
+        from_curia,
         "ingest_cjue_total"
     );
     Ok(())
 }
 
-/// Bootstrap CEDH : balaye les années [[`from_year`] (défaut [`EUROPE_START_YEAR`]),
+/// The texts asked for a CELEX: language, text if served, Curia docid if Curia served it.
+type Asked = Vec<(&'static str, Option<String>, Option<u64>)>;
+
+/// Drops from `asked` the EUR-Lex texts that are the summary of their work, under
+/// [`SHORT_TEXT_BYTES`] and under half its longest text, the base's `longest_held`
+/// included, and returns their languages.
+fn drop_eurlex_summaries(asked: &mut Asked, longest_held: usize) -> Vec<&'static str> {
+    let longest = asked
+        .iter()
+        .filter_map(|(_, body, _)| body.as_ref().map(String::len))
+        .chain([longest_held])
+        .max()
+        .unwrap_or(0);
+    let mut summaries = Vec::new();
+    asked.retain(|(iso, body, docid)| {
+        let summary = docid.is_none()
+            && body
+                .as_ref()
+                .is_some_and(|b| b.len() < SHORT_TEXT_BYTES && 2 * b.len() < longest);
+        if summary {
+            summaries.push(*iso);
+        }
+        !summary
+    });
+    summaries
+}
+
+/// Asks Curia for every wanted language of `celex`, French and English included, it serves
+/// that the base lacks or EUR-Lex gave short: its text, with its docid, wins over none or
+/// over one under half its length.
+async fn curia_texts(
+    curia: &CuriaClient,
+    celex: &str,
+    ecli: Option<&str>,
+    wanted: &[&str],
+    present: &[&str],
+    asked: &mut Asked,
+) {
+    let document = match curia.find(celex, ecli).await {
+        Ok(Some(document)) => document,
+        Ok(None) => return,
+        Err(error) => {
+            tracing::warn!(%celex, %error, "curia listing failed, EUR-Lex text kept");
+            return;
+        }
+    };
+    let mut served: Vec<&'static str> = Vec::new();
+    for iso in document
+        .html
+        .iter()
+        .chain(&document.pdf)
+        .filter_map(|c| iso_of_code(c))
+        .filter(|iso| wanted.contains(iso) || CJUE_READ_LANGUAGES.contains(iso))
+    {
+        if !served.contains(&iso) {
+            served.push(iso);
+        }
+    }
+    for iso in served {
+        let held = asked.iter().position(|(l, _, _)| *l == iso);
+        let short = held.is_none_or(|i| {
+            asked[i]
+                .1
+                .as_ref()
+                .is_none_or(|b| b.len() < SHORT_TEXT_BYTES)
+        });
+        if present.contains(&iso) || !short {
+            continue;
+        }
+        let text = match curia.text(&document, iso).await {
+            Ok(Some(text)) => text,
+            Ok(None) => continue,
+            Err(error) => {
+                tracing::warn!(%celex, lang = iso, %error, "curia text failed, EUR-Lex text kept");
+                continue;
+            }
+        };
+        match held {
+            Some(i) => {
+                if asked[i].1.as_ref().is_none_or(|b| 2 * b.len() < text.len()) {
+                    asked[i] = (iso, Some(text), Some(document.docid));
+                }
+            }
+            None => asked.push((iso, Some(text), Some(document.docid))),
+        }
+    }
+}
+
+/// Bootstrap CEDH : balaye les années [[`from_year`] (défaut [`CEDH_START_YEAR`]),
 /// courante]. `from_year` cible un backfill sans re-lister le fonds ancien.
 pub async fn ingest_cedh(from_year: Option<i32>) -> Result<()> {
-    run_cedh(from_year.unwrap_or(EUROPE_START_YEAR), current_year()).await
+    run_cedh(from_year.unwrap_or(CEDH_START_YEAR), current_year()).await
 }
 
 /// Warms the disk cache of the CEDH bodies (`<cache_dir>/cedh/bodies/`) for
-/// the years [[`from_year`] (default [`EUROPE_START_YEAR`]), current], without
+/// the years [[`from_year`] (default [`CEDH_START_YEAR`]), current], without
 /// touching the base: `ingest-cedh` then reads them locally.
 pub async fn cache_cedh(from_year: Option<i32>) -> Result<()> {
     use lj_sources::cedh::CedhClient;
@@ -493,7 +614,7 @@ pub async fn cache_cedh(from_year: Option<i32>) -> Result<()> {
 
     let settings = Settings::from_env()?;
     let client = CedhClient::new().with_body_cache(settings.cache_dir());
-    let start_year = from_year.unwrap_or(EUROPE_START_YEAR);
+    let start_year = from_year.unwrap_or(CEDH_START_YEAR);
     let end_year = current_year();
 
     let mut total_fetched = 0usize;
@@ -534,28 +655,31 @@ pub async fn cache_cedh(from_year: Option<i32>) -> Result<()> {
     Ok(())
 }
 
-/// Bootstrap CJUE : balaye toutes les années [[`EUROPE_START_YEAR`], courante].
-pub async fn ingest_cjue() -> Result<()> {
-    run_cjue(EUROPE_START_YEAR, current_year()).await
+/// CJUE bootstrap over every year from [`CJUE_START_YEAR`]; with `short`, a text held
+/// under [`SHORT_TEXT_BYTES`] is read again.
+pub async fn ingest_cjue(short: bool) -> Result<()> {
+    run_cjue(CJUE_START_YEAR, current_year(), short).await
 }
 
-/// Daily CEDH sync over the sliding window `[N-1, N]`: new judgments, and the
-/// language versions HUDOC has published since the last run.
+/// Daily CEDH sync over the sliding window `[N-1, N]`: new judgments, the
+/// language versions HUDOC has published since the last run, and the legal summaries.
 pub async fn sync_cedh() -> Result<()> {
     let year = current_year();
-    run_cedh(year - 1, year).await
+    run_cedh(year - 1, year).await?;
+    super::court_summaries::sync_cedh_summaries(year - 1).await
 }
 
-/// Daily CJUE sync over the sliding window `[N-1, N]`: new judgments, and the
-/// languages EUR-Lex has published since the last run.
+/// Daily CJUE sync over the sliding window `[N-1, N]`: new judgments, the
+/// languages EUR-Lex has published since the last run, and the court's summaries.
 pub async fn sync_cjue() -> Result<()> {
     let year = current_year();
-    run_cjue(year - 1, year).await
+    run_cjue(year - 1, year, false).await?;
+    super::court_summaries::sync_cjue_summaries(year - 1).await
 }
 
-/// Page of the joined-cases catch-up, under the CELLAR cap of 10,000 sorted
-/// rows. A CELEX year weighs tens of links (78 in 1985), so one page answers it
-/// whole and the loop is only there to guard the outlier.
+/// Page of the joined-cases catch-up, under the CELLAR cap on sorted rows. A
+/// CELEX year weighs tens of links, so one page answers it whole and the loop is
+/// only there to guard the outlier.
 const JOINED_CASES_PAGE: usize = 2_000;
 
 /// First CELEX year swept for joined cases. Sector 6 opens in 1954, and the
@@ -604,7 +728,9 @@ pub async fn backfill_cjue_joined_cases(dry_run: bool) -> Result<()> {
                 })
                 .unzip();
             if !dry_run {
-                written += repo.set_source_fields_joined_cases(&uids, &values).await?;
+                written += repo
+                    .set_source_field("case-law_joins_case_court", &uids, &values)
+                    .await?;
             }
 
             offset += JOINED_CASES_PAGE;
@@ -616,20 +742,106 @@ pub async fn backfill_cjue_joined_cases(dry_run: bool) -> Result<()> {
     Ok(())
 }
 
+/// Where the CJUE provenances keep the CELLAR French title, which names the parties.
+const TITLE_FIELD: &str = "expression_title";
+
+/// Poses the CELLAR French title over the CJUE corpus ingested before the listing
+/// carried it. Writes no name: chain `reextract-fields --jurisdiction-type CJUE
+/// --field case_name`, then `--field search_title`.
+pub async fn backfill_cjue_titles(dry_run: bool) -> Result<()> {
+    use lj_sources::cjue::{parse_sparql, CjueClient, PAGE_SIZE, THROTTLE};
+
+    let pool = europe_pool().await?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    let repo = lj_store::repository::DecisionRepository::new(&conn);
+    let client = CjueClient::new();
+
+    let mut works = 0usize;
+    let mut titled = 0usize;
+    let mut written = 0u64;
+    for year in CJUE_START_YEAR..=current_year() {
+        let mut offset = 0usize;
+        while offset < 10_000 {
+            let page = client
+                .sparql_page(year, offset)
+                .await
+                .map_err(|e| anyhow!("cjue titles {year} offset={offset}: {e}"))?;
+            let rows = parse_sparql(&page);
+            if rows.is_empty() {
+                break;
+            }
+            works += rows.len();
+            let (uids, values): (Vec<String>, Vec<String>) = rows
+                .into_iter()
+                .filter_map(|row| Some((row.celex, row.title?)))
+                .inspect(|_| titled += 1)
+                .flat_map(|(celex, title)| {
+                    let value = serde_json::json!(title).to_string();
+                    lj_vocab::languages::EU_OFFICIAL_LANGUAGES
+                        .iter()
+                        .map(move |l| (format!("cjue/{celex}/{l}"), value.clone()))
+                })
+                .unzip();
+            if !dry_run {
+                written += repo.set_source_field(TITLE_FIELD, &uids, &values).await?;
+            }
+            offset += PAGE_SIZE;
+            tokio::time::sleep(THROTTLE).await;
+        }
+    }
+
+    tracing::info!(works, titled, written, dry_run, "backfill_cjue_titles");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn a_cjue_judgment_is_wanted_in_french_english_and_its_languages_of_procedure() {
+    fn a_cjue_decision_is_wanted_in_french_english_and_its_languages_of_procedure() {
         let one = serde_json::json!({
             "case-law_uses_procedure_language": "http://publications.europa.eu/resource/authority/language/DEU"
         });
-        assert_eq!(cjue_wanted_languages(&one), ["fr", "en", "de"]);
-        let french = serde_json::json!({"case-law_uses_procedure_language": "FRA"});
-        assert_eq!(cjue_wanted_languages(&french), ["fr", "en"]);
+        assert_eq!(cjue_wanted_languages(&one, &["fr", "da"]), ["fr", "de"]);
+        assert_eq!(
+            cjue_wanted_languages(&one, &["da", "en", "de", "fr"]),
+            ["en", "fr", "de"]
+        );
         let joined = serde_json::json!({"case-law_uses_procedure_language": ["ITA", "NLD"]});
         assert_eq!(cjue_procedure_languages(&joined), ["it", "nl"]);
-        assert_eq!(cjue_wanted_languages(&serde_json::json!({})), ["fr", "en"]);
+        assert_eq!(cjue_wanted_languages(&joined, &["it"]), ["it", "nl"]);
+        assert!(cjue_wanted_languages(&serde_json::json!({}), &[]).is_empty());
+        let summarised = serde_json::json!({
+            "case-law_uses_procedure_language": "ENG",
+            SUMMARY_LANGUAGES: ["da", "it"],
+        });
+        assert_eq!(
+            cjue_wanted_languages(&summarised, &["fr", "da", "it"]),
+            ["fr", "en"]
+        );
+    }
+
+    #[test]
+    fn a_short_eurlex_text_beside_a_long_one_is_its_summary_and_a_short_order_is_not() {
+        let text = |n: usize| Some("x".repeat(n));
+        let mut asked: Asked = vec![
+            ("fr", text(40_000), Some(1)),
+            ("en", text(4_000), None),
+            ("de", text(4_200), Some(1)),
+            ("it", None, None),
+        ];
+        assert_eq!(drop_eurlex_summaries(&mut asked, 0), ["en"]);
+        assert_eq!(
+            asked.iter().map(|a| a.0).collect::<Vec<_>>(),
+            ["fr", "de", "it"]
+        );
+
+        let mut order: Asked = vec![("fr", text(3_000), None), ("en", text(2_800), None)];
+        assert!(drop_eurlex_summaries(&mut order, 3_100).is_empty());
+        assert_eq!(order.len(), 2);
+
+        let mut beside_held: Asked = vec![("da", text(3_000), None)];
+        assert_eq!(drop_eurlex_summaries(&mut beside_held, 65_000), ["da"]);
     }
 }

@@ -1,82 +1,99 @@
-//! Hubs of the norms catalogue: catalogue aggregated by fond, years covered by a
-//! fond, a year's page of texts, under a jurisdiction, the SSR crawl paths
-//! `/norm-index/{juris}` → `/norm-index/{juris}/{fond}` →
-//! `/norm-index/{juris}/{fond}/{year}`.
-//!
-//! The nature → fond taxonomy and the browsing date live in the two SQL fragments
-//! below, the same expressions as the index serving them (the planner only matches
-//! an expression index on the exact tree). Any change = a new migration that
-//! reindexes. The fonds' labels and display order live in
-//! `lj_norm::referential_labels`.
+//! Hubs of the norms catalogue, `/norm-index/{juris}/{fond}/{year}`: a text's fond is
+//! its first type level read by `lj_norm::norm_fond`, its browsing date `text_date`.
+
+use std::collections::{BTreeMap, HashMap};
 
 use super::types::{NormHubPages, NormTextRow};
 use super::DecisionRepository;
 use crate::error::Result;
 
-/// Fond de parcours d'un texte — miroir exact de l'expression indexée.
-pub(super) const NORM_FOND_EXPR: &str = "CASE \
-    WHEN nature ILIKE 'code%' OR upper(nature) IN ('CODE', 'CONSTITUTION', 'ETAT_CIVIL') THEN 'codes' \
-    WHEN jurisdiction = 'UE' OR upper(nature) IN ('DIRECTIVE', 'DIRECTIVE_EURO', 'REGLEMENTEUROPEEN', 'REGLEMENT_EURO', 'DECISION_EURO', 'AVISEURO', 'ARRETEURO', 'ARRETEEURO', 'INSTRUCTIONEURO', 'DELIBERATIONEURO', 'DECLARATIONEURO', 'LETTREEURO') THEN 'textes-ue' \
-    WHEN jurisdiction = 'INTL' OR upper(nature) IN ('TRAITE', 'TI', 'PROTOCOLE') THEN 'traites' \
-    WHEN upper(nature) IN ('LOI', 'LOI_ORGANIQUE', 'LOI_CONSTIT', 'LOI_PROGRAMME', 'DECRET_LOI', 'ORDONNANCE') THEN 'lois' \
-    WHEN upper(nature) = 'DECRET' THEN 'decrets' \
-    WHEN upper(nature) = 'ARRETE' THEN 'arretes' \
-    WHEN upper(nature) IN ('IDCC', 'AVENANT', 'ACCORD', 'ACCORD_FONCTION_PUBLIQUE') THEN 'conventions-collectives' \
-    WHEN upper(nature) IN ('CIRCULAIRE', 'INSTRUCTION') THEN 'circulaires' \
-    WHEN upper(nature) = 'BOFIP' THEN 'bofip' \
-    ELSE 'autres' \
-  END";
+/// A text's first type level, `FR.LOI` in `{FR, FR.LOI, FR.LOI.ORGANIQUE}`.
+const FIRST_TYPE: &str = "jurisdiction_paths[2]";
 
-/// Date de parcours : première date VALIDE entre `date_texte` et `date_publi`
-/// (la DILA pose la sentinelle 2999-01-01 dans `date_texte` de certains JORF).
-/// Miroir exact de l'expression indexée.
-const NORM_BROWSE_DATE_EXPR: &str = "CASE \
-    WHEN date_texte >= DATE '1500-01-01' AND date_texte < DATE '2100-01-01' THEN date_texte \
-    WHEN date_publi >= DATE '1500-01-01' AND date_publi < DATE '2100-01-01' THEN date_publi \
-  END";
-
-/// Miroir du prédicat partiel de l'index.
+/// Mirror of the index's partial predicate.
 pub(super) const NORM_SCOPE: &str = "slug IS NOT NULL";
 
+/// The texts of a fond of `$1`, the fond's first types bound at `$2`.
+fn fond_filter(jurisdiction: &str, fond: &str) -> (String, Vec<String>) {
+    let (paths, untyped) = lj_norm::norm_fond::fond_paths(jurisdiction, fond);
+    let filter = match untyped {
+        true => format!("jurisdiction = $1 AND ({FIRST_TYPE} = ANY($2) OR {FIRST_TYPE} IS NULL)"),
+        false => format!("jurisdiction = $1 AND {FIRST_TYPE} = ANY($2)"),
+    };
+    (filter, paths)
+}
+
 impl DecisionRepository<'_> {
-    /// Volumes per `(jurisdiction, fond)`. Served behind `lj-api`'s 12 h cache; the
-    /// order and labels are set by the caller.
+    /// Volumes per `(jurisdiction, fond)`, behind `lj-api`'s 12 h cache.
     #[tracing::instrument(name = "db.norm_catalogue", skip(self), fields(db.system = "postgresql"))]
     pub async fn norm_catalogue(&self) -> Result<Vec<(String, String, i64)>> {
         let sql = format!(
-            "SELECT jurisdiction, {NORM_FOND_EXPR}, count(*) FROM legal_text \
+            "SELECT jurisdiction, {FIRST_TYPE}, count(*) FROM legal_text \
              WHERE {NORM_SCOPE} GROUP BY 1, 2"
         );
         let rows = self.conn.query(&sql, &[]).await?;
-        Ok(rows
-            .iter()
-            .map(|r| (r.get(0), r.get(1), r.get(2)))
+        let mut counts: HashMap<(String, &'static str), i64> = HashMap::new();
+        for r in &rows {
+            let jurisdiction: String = r.get(0);
+            let first_type: Option<String> = r.get(1);
+            let fond = lj_norm::norm_fond::fond(&jurisdiction, first_type.as_deref());
+            *counts.entry((jurisdiction, fond)).or_default() += r.get::<_, i64>(2);
+        }
+        Ok(counts
+            .into_iter()
+            .map(|((jurisdiction, fond), n)| (jurisdiction, fond.to_string(), n))
             .collect())
     }
 
-    /// Années couvertes par un fond, avec compteur, plus récente en tête ;
-    /// l'entrée `None` (textes sans date de parcours) arrive en dernier
-    /// (`/norm-index/{juris}/{fond}`). Vide si le fond est inconnu, le route
-    /// handler en fait un 404.
+    /// The years a fond covers, newest first, the undated texts last as `None`.
     #[tracing::instrument(name = "db.norm_fond_years", skip(self), fields(db.system = "postgresql"))]
     pub async fn norm_fond_years(
         &self,
         jurisdiction: &str,
         fond: &str,
     ) -> Result<Vec<(Option<i32>, i64)>> {
+        let (filter, paths) = fond_filter(jurisdiction, fond);
         let sql = format!(
-            "SELECT extract(year FROM {NORM_BROWSE_DATE_EXPR})::int, count(*) \
-             FROM legal_text WHERE {NORM_SCOPE} AND {NORM_FOND_EXPR} = $1 \
-               AND jurisdiction = $2 \
+            "SELECT extract(year FROM text_date)::int, count(*) \
+             FROM legal_text WHERE {NORM_SCOPE} AND {filter} \
              GROUP BY 1 ORDER BY 1 DESC NULLS LAST"
         );
-        let rows = self.conn.query(&sql, &[&fond, &jurisdiction]).await?;
+        let rows = self.conn.query(&sql, &[&jurisdiction, &paths]).await?;
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
-    /// Page de textes d'un fond×année, date décroissante — ou du bucket
-    /// « sans date » (`year = None`), ordre stable par id
-    /// (`/norm-index/{juris}/{fond}/{year}?page=N`).
+    /// How many texts a fond has in one year, or undated with `None`.
+    #[tracing::instrument(name = "db.norm_fond_year_total", skip(self), fields(db.system = "postgresql"))]
+    pub async fn norm_fond_year_total(
+        &self,
+        jurisdiction: &str,
+        fond: &str,
+        year: Option<i32>,
+    ) -> Result<i64> {
+        let (filter, paths) = fond_filter(jurisdiction, fond);
+        let row = match year {
+            Some(year) => {
+                let sql = format!(
+                    "SELECT count(*) FROM legal_text WHERE {NORM_SCOPE} AND {filter} \
+                       AND text_date >= make_date($3, 1, 1) \
+                       AND text_date < make_date($3 + 1, 1, 1)"
+                );
+                self.conn
+                    .query_one(&sql, &[&jurisdiction, &paths, &year])
+                    .await?
+            }
+            None => {
+                let sql = format!(
+                    "SELECT count(*) FROM legal_text WHERE {NORM_SCOPE} AND {filter} \
+                       AND text_date IS NULL"
+                );
+                self.conn.query_one(&sql, &[&jurisdiction, &paths]).await?
+            }
+        };
+        Ok(row.get(0))
+    }
+
+    /// A page of a fond's texts of one year, newest first, or of its undated ones by id.
     #[tracing::instrument(name = "db.norm_fond_year_texts", skip(self), fields(db.system = "postgresql"))]
     pub async fn norm_fond_year_texts(
         &self,
@@ -86,32 +103,29 @@ impl DecisionRepository<'_> {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<NormTextRow>> {
-        let sql = match year {
-            Some(_) => format!(
-                "SELECT slug, title, ({NORM_BROWSE_DATE_EXPR})::text, jurisdiction \
-                 FROM legal_text WHERE {NORM_SCOPE} AND {NORM_FOND_EXPR} = $1 \
-                   AND jurisdiction = $5 \
-                   AND {NORM_BROWSE_DATE_EXPR} >= make_date($2, 1, 1) \
-                   AND {NORM_BROWSE_DATE_EXPR} < make_date($2 + 1, 1, 1) \
-                 ORDER BY {NORM_BROWSE_DATE_EXPR} DESC, id LIMIT $3 OFFSET $4"
-            ),
-            None => format!(
-                "SELECT slug, title, NULL::text, jurisdiction \
-                 FROM legal_text WHERE {NORM_SCOPE} AND {NORM_FOND_EXPR} = $1 \
-                   AND jurisdiction = $4 \
-                   AND {NORM_BROWSE_DATE_EXPR} IS NULL \
-                 ORDER BY id LIMIT $2 OFFSET $3"
-            ),
-        };
+        let (filter, paths) = fond_filter(jurisdiction, fond);
         let rows = match year {
-            Some(y) => {
+            Some(year) => {
+                let sql = format!(
+                    "SELECT slug, title, text_date::text AS browse_date, jurisdiction \
+                     FROM legal_text WHERE {NORM_SCOPE} AND {filter} \
+                       AND text_date >= make_date($3, 1, 1) \
+                       AND text_date < make_date($3 + 1, 1, 1) \
+                     ORDER BY text_date DESC, id LIMIT $4 OFFSET $5"
+                );
                 self.conn
-                    .query(&sql, &[&fond, &y, &limit, &offset, &jurisdiction])
+                    .query(&sql, &[&jurisdiction, &paths, &year, &limit, &offset])
                     .await?
             }
             None => {
+                let sql = format!(
+                    "SELECT slug, title, NULL::text, jurisdiction \
+                     FROM legal_text WHERE {NORM_SCOPE} AND {filter} \
+                       AND text_date IS NULL \
+                     ORDER BY id LIMIT $3 OFFSET $4"
+                );
                 self.conn
-                    .query(&sql, &[&fond, &limit, &offset, &jurisdiction])
+                    .query(&sql, &[&jurisdiction, &paths, &limit, &offset])
                     .await?
             }
         };
@@ -126,50 +140,60 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// Fond et année de parcours d'un texte, pour le maillage retour de la
-    /// page du texte.
+    /// A text's fond and browsing year, for the link back from its page.
     #[tracing::instrument(name = "db.norm_fond_of_text", skip(self), fields(db.system = "postgresql"))]
     pub async fn norm_fond_of_text(&self, text_uid: &str) -> Result<Option<(String, Option<i32>)>> {
         let sql = format!(
-            "SELECT {NORM_FOND_EXPR}, extract(year FROM {NORM_BROWSE_DATE_EXPR})::int \
+            "SELECT jurisdiction, {FIRST_TYPE}, extract(year FROM text_date)::int \
              FROM legal_text WHERE text_uid = $1 AND {NORM_SCOPE}"
         );
         let rows = self.conn.query(&sql, &[&text_uid]).await?;
-        Ok(rows.first().map(|r| (r.get(0), r.get(1))))
+        Ok(rows.first().map(|r| {
+            let jurisdiction: String = r.get(0);
+            let first_type: Option<String> = r.get(1);
+            let fond = lj_norm::norm_fond::fond(&jurisdiction, first_type.as_deref());
+            (fond.to_string(), r.get(2))
+        }))
     }
 
-    /// Triples `(jurisdiction, fond, [(year token, page count)])` for the `normes`
-    /// section of the sitemaps, recent years first. The `codes` fond is left out:
-    /// its catalogue, without a year hub, is carried by the `pages` section.
+    /// `(jurisdiction, fond, [(year token, page count)])` for the sitemaps, newest
+    /// year first; `codes`, which has no year hub, is left out.
     #[tracing::instrument(name = "db.iter_norm_hubs_for_sitemap", skip(self), fields(db.system = "postgresql"))]
     pub async fn iter_norm_hubs_for_sitemap(&self, page_size: i64) -> Result<NormHubPages> {
-        // `$1::bigint` avant le float8 : sous `$1::float8` seul, Postgres infère
-        // le paramètre en float8 et refuse d'y sérialiser l'i64.
         let sql = format!(
-            "SELECT jurisdiction, {NORM_FOND_EXPR}, \
-                    extract(year FROM {NORM_BROWSE_DATE_EXPR})::int, \
-                    ceil(count(*)::float8 / $1::bigint::float8)::bigint \
-             FROM legal_text WHERE {NORM_SCOPE} \
-             GROUP BY 1, 2, 3 ORDER BY 1, 2, 3 DESC NULLS LAST"
+            "SELECT jurisdiction, {FIRST_TYPE}, extract(year FROM text_date)::int, count(*) \
+             FROM legal_text WHERE {NORM_SCOPE} GROUP BY 1, 2, 3"
         );
-        let rows = self.conn.query(&sql, &[&page_size]).await?;
-        let mut out: NormHubPages = Vec::new();
-        for r in rows {
+        let rows = self.conn.query(&sql, &[]).await?;
+        let mut counts: BTreeMap<(String, &'static str), BTreeMap<Option<i32>, i64>> =
+            BTreeMap::new();
+        for r in &rows {
             let jurisdiction: String = r.get(0);
-            let fond: String = r.get(1);
+            let first_type: Option<String> = r.get(1);
+            let fond = lj_norm::norm_fond::fond(&jurisdiction, first_type.as_deref());
             if fond == "codes" {
                 continue;
             }
-            let token = match r.get::<_, Option<i32>>(2) {
-                Some(y) => y.to_string(),
-                None => "sans-date".to_string(),
-            };
-            let bucket = (token, r.get(3));
-            match out.last_mut() {
-                Some((j, f, tokens)) if *j == jurisdiction && *f == fond => tokens.push(bucket),
-                _ => out.push((jurisdiction, fond, vec![bucket])),
-            }
+            *counts
+                .entry((jurisdiction, fond))
+                .or_default()
+                .entry(r.get(2))
+                .or_default() += r.get::<_, i64>(3);
         }
-        Ok(out)
+        Ok(counts
+            .into_iter()
+            .map(|((jurisdiction, fond), years)| {
+                let mut years: Vec<(Option<i32>, i64)> = years.into_iter().collect();
+                years.sort_by_key(|(year, _)| (year.is_none(), std::cmp::Reverse(*year)));
+                let tokens = years
+                    .into_iter()
+                    .map(|(year, n)| {
+                        let token = year.map_or_else(|| "sans-date".to_string(), |y| y.to_string());
+                        (token, (n + page_size - 1) / page_size)
+                    })
+                    .collect();
+                (jurisdiction, fond.to_string(), tokens)
+            })
+            .collect())
     }
 }

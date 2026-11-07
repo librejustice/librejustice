@@ -1,8 +1,7 @@
-//! `DecisionsFilterBar` — barre de filtres horizontale sous la barre de
-//! recherche : `Date ▾ · Juridiction ▾ · Publication ▾ · Matière ▾ ·
-//! Textes cités ▾ · Plus de filtres`. « Plus de filtres » étend la barre en
-//! place avec les dropdowns Office, Solution et Procédure (pas de modal) ;
-//! ils restent épinglés tant qu'un de leurs filtres est actif.
+//! `DecisionsFilterBar`: horizontal filter bar under the search bar,
+//! `Date ▾ · Juridiction ▾ · Publication ▾ · Solution ▾ · Plus de filtres`.
+//! « Plus de filtres » extends the bar in place with the Matière, Textes cités
+//! and Formation dropdowns (no modal).
 //!
 //! Sync bidirectionnelle facettes ↔ query params, mutations via `query_state`
 //! (replace=true, drop `page`).
@@ -12,13 +11,13 @@ use leptos_router::hooks::use_query_map;
 use lj_dtos::SearchFacets;
 
 use super::compact_search::{query_state, DraftQuery};
-use super::date_range_picker::DateRangePicker;
 use super::facet_widgets::{
     build_tree, prune_tree, CheckboxOption, FacetChecklist, FacetNode, FacetTree,
     FilterSearchInput, Nav, TreeRow,
 };
 use super::filter_dropdown::{FilterDropdown, OpenDropdown};
 use super::legal_instrument_filter::LegalInstrumentPanel;
+use crate::components::ui::DateRangePicker;
 
 #[component]
 pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> impl IntoView {
@@ -61,20 +60,37 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
     };
 
     // ── Sélections courantes (URL) ────────────────────────────────────────────
-    let offices = Signal::derive(move || get_all("office"));
     let seats = Signal::derive(move || get_all("seat"));
     let domaines = Signal::derive(move || get_all("legalDomain"));
     let solutions = Signal::derive(move || get_all("solution"));
-    let procedures = Signal::derive(move || get_all("procedure"));
+    let formations = Signal::derive(move || get_all("formation"));
     let pubs = Signal::derive(move || get_all("publication"));
     let lis = Signal::derive(move || get_all("legalInstrument"));
     let las = Signal::derive(move || get_all("legalArticle"));
     let date_from = Signal::derive(move || query_map.get().get("dateFrom").unwrap_or_default());
     let date_to = Signal::derive(move || query_map.get().get("dateTo").unwrap_or_default());
+    let parts = Signal::derive(move || query_state::parts_searched(&query_map.get()));
+    let has_query = Signal::derive(move || {
+        query_map
+            .get()
+            .get("q")
+            .is_some_and(|q| !q.trim().is_empty())
+    });
 
-    // ── Juridiction : the tree takes the depth the facet serves. `Memo` read by
-    // the per-row signals: computed once per change of facets or of input.
-    let jurisdiction_choices = Memo::new(move |_| facets.get().map(|f| f.seat).unwrap_or_default());
+    // ── Juridiction : the tree takes the depth the facet serves, from the court
+    // types down, the orders left out. `Memo` read by the per-row signals:
+    // computed once per change of facets or of input.
+    let jurisdiction_choices = Memo::new(move |_| {
+        facets
+            .get()
+            .map(|f| {
+                f.seat
+                    .into_iter()
+                    .filter(|c| c.parent.is_some())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
     // `build_tree` hangs off the facets alone, so a keystroke replays only the
     // pruning, which also says which rows the search unfolds.
     let jurisdiction_roots = Memo::new(move |_| build_tree(&jurisdiction_choices.get()));
@@ -100,34 +116,42 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
     let domaine_choices =
         Memo::new(move |_| facets.get().map(|f| f.legal_domain).unwrap_or_default());
 
-    let office_choices = Signal::derive(move || facets.get().map(|f| f.office).unwrap_or_default());
+    // ── Formation: the tree starts at the court types, as the Juridiction one does.
+    let formation_choices = Memo::new(move |_| {
+        facets
+            .get()
+            .map(|f| {
+                f.formation
+                    .into_iter()
+                    .filter(|c| c.parent.is_some())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default()
+    });
     let solution_choices =
         Signal::derive(move || facets.get().map(|f| f.solution).unwrap_or_default());
-    let procedure_choices =
-        Signal::derive(move || facets.get().map(|f| f.procedure).unwrap_or_default());
     let publication_choices =
         Signal::derive(move || facets.get().map(|f| f.publication).unwrap_or_default());
 
     // ── Compteurs actifs des boutons ─────────────────────────────────────────
     let jur_count = Signal::derive(move || seats.get().len());
-    let office_count = Signal::derive(move || offices.get().len());
     let domaine_count = Signal::derive(move || domaines.get().len());
     let dates_count = Signal::derive(move || {
         usize::from(!date_from.get().is_empty() || !date_to.get().is_empty())
     });
     let textes_count = Signal::derive(move || lis.get().len() + las.get().len());
     let solution_count = Signal::derive(move || solutions.get().len());
-    let procedure_count = Signal::derive(move || procedures.get().len());
+    let formation_count = Signal::derive(move || formations.get().len());
     let publication_count = Signal::derive(move || pubs.get().len());
-    let more_count = Signal::derive(move || {
-        offices.get().len() + solutions.get().len() + procedures.get().len() + pubs.get().len()
+    let part_count = Signal::derive(move || {
+        let n = parts.get().len();
+        if n == query_state::PARTS.len() {
+            0
+        } else {
+            n
+        }
     });
-
-    // « Plus de filtres » déplie Office + Solution + Procédure EN PLACE dans la
-    // barre ; un filtre actif dans ce groupe les épingle (on ne cache jamais un
-    // filtre appliqué) et le bouton de bascule disparaît.
     let more_expanded = RwSignal::new(false);
-    let show_more = Signal::derive(move || more_expanded.get() || more_count.get() > 0);
 
     view! {
         // Pas de grisage pendant un refetch : les dropdowns gardent les
@@ -210,88 +234,85 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                 />
             </FilterDropdown>
 
-            // Masqué quand la facette ne remonte rien (couverture domaine
-            // partielle du corpus) — sauf sélection active, qu'on ne cache pas.
-            <Show when=move || {
-                !domaine_choices.get().is_empty() || domaine_count.get() > 0
-            }>
-            <FilterDropdown id="legalDomain" label="Matière" active_count=domaine_count>
-                <FacetTree
-                    choices=domaine_choices
-                    selected=domaines
+            <FilterDropdown id="solution" label="Solution" active_count=solution_count>
+                <FacetChecklist
+                    choices=solution_choices
+                    selected=solutions
                     on_toggle=Callback::new(move |value: String| toggle(
-                        "legalDomain".to_string(),
+                        "solution".to_string(),
                         value,
                     ))
                 />
             </FilterDropdown>
+
+            <Show when=move || has_query.get()>
+                <FilterDropdown id="searchIn" label="Chercher dans" active_count=part_count>
+                    {query_state::PARTS
+                        .into_iter()
+                        .map(|(value, label, hint)| {
+                            view! {
+                                <CheckboxOption
+                                    label=label.to_string()
+                                    hint=Signal::derive(move || hint.map(str::to_string))
+                                    count=Signal::derive(|| 0)
+                                    selected=Signal::derive(move || parts.get().contains(&value))
+                                    on_toggle=Callback::new(move |_| {
+                                        nav.go(query_state::toggle_part(&effective_map(), value))
+                                    })
+                                />
+                            }
+                        })
+                        .collect_view()}
+                </FilterDropdown>
             </Show>
 
-            // Masqué quand la facette ne remonte rien : le mode parcours ne la sert
-            // pas. Sauf sélection active, qu'on ne cache pas.
-            <Show when=move || {
-                facets.get().is_some_and(|f| !f.legal_instrument.is_empty())
-                    || textes_count.get() > 0
-            }>
-            <FilterDropdown id="textes" label="Textes cités" active_count=textes_count>
-                <LegalInstrumentPanel
-                    facets=facets
-                    selected_instruments=lis
-                    selected_articles=las
-                    on_toggle_instrument=Callback::new(move |value: String| toggle(
-                        "legalInstrument".to_string(),
-                        value,
-                    ))
-                    on_toggle_article=Callback::new(move |value: String| toggle(
-                        "legalArticle".to_string(),
-                        value,
-                    ))
-                />
-            </FilterDropdown>
-            </Show>
-
-            <Show when=move || show_more.get()>
-                // Office du juge (JEX, JAF, JCP, JLD, magistrat désigné…) : axe
-                // séparé de la juridiction, en miroir du filtre `office_uid`.
-                // Masqué quand la facette est vide, sauf sélection.
+            <Show when=move || more_expanded.get()>
+                // The legal domain covers part of the corpus only, so the facet can be empty.
                 <Show when=move || {
-                    !office_choices.get().is_empty() || office_count.get() > 0
+                    !domaine_choices.get().is_empty() || domaine_count.get() > 0
                 }>
-                <FilterDropdown id="office" label="Office" active_count=office_count>
-                    <FacetChecklist
-                        choices=office_choices
-                        selected=offices
+                <FilterDropdown id="legalDomain" label="Matière" active_count=domaine_count>
+                    <FacetTree
+                        choices=domaine_choices
+                        selected=domaines
                         on_toggle=Callback::new(move |value: String| toggle(
-                            "office".to_string(),
+                            "legalDomain".to_string(),
                             value,
                         ))
                     />
                 </FilterDropdown>
                 </Show>
 
-                <FilterDropdown id="solution" label="Solution" active_count=solution_count>
-                    <FacetChecklist
-                        choices=solution_choices
-                        selected=solutions
-                        on_toggle=Callback::new(move |value: String| toggle(
-                            "solution".to_string(),
+                <Show when=move || {
+                    facets.get().is_some_and(|f| !f.legal_instrument.is_empty())
+                        || textes_count.get() > 0
+                }>
+                <FilterDropdown id="textes" label="Textes cités" active_count=textes_count>
+                    <LegalInstrumentPanel
+                        facets=facets
+                        selected_instruments=lis
+                        selected_articles=las
+                        on_toggle_instrument=Callback::new(move |value: String| toggle(
+                            "legalInstrument".to_string(),
+                            value,
+                        ))
+                        on_toggle_article=Callback::new(move |value: String| toggle(
+                            "legalArticle".to_string(),
                             value,
                         ))
                     />
                 </FilterDropdown>
+                </Show>
 
-                // Voie procédurale (référé, QPC, tri R. 222-1, renvoi
-                // préjudiciel…) : une valeur absente est la procédure
-                // contentieuse ordinaire, qui n'est donc pas un choix.
                 <Show when=move || {
-                    !procedure_choices.get().is_empty() || procedure_count.get() > 0
+                    !formation_choices.get().is_empty() || formation_count.get() > 0
                 }>
-                <FilterDropdown id="procedure" label="Procédure" active_count=procedure_count>
-                    <FacetChecklist
-                        choices=procedure_choices
-                        selected=procedures
+                <FilterDropdown id="formation" label="Formation" active_count=formation_count>
+                    <FacetTree
+                        choices=formation_choices
+                        selected=formations
                         on_toggle=Callback::new(move |value: String| toggle(
-                            "procedure".to_string(),
+                            "formation".to_string(),
                             value,
                         ))
                     />
@@ -300,19 +321,17 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
 
             </Show>
 
-            <Show when=move || { more_count.get() == 0 }>
-                <button
-                    type="button"
-                    on:click=move |_| more_expanded.update(|v| *v = !*v)
-                    class="flex shrink-0 items-center gap-1.5 rounded border border-[var(--color-rule)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]"
-                >
-                    <span class="whitespace-nowrap">
-                        {move || {
-                            if more_expanded.get() { "Moins de filtres" } else { "Plus de filtres" }
-                        }}
-                    </span>
-                </button>
-            </Show>
+            <button
+                type="button"
+                on:click=move |_| more_expanded.update(|v| *v = !*v)
+                class="flex shrink-0 items-center gap-1.5 rounded border border-[var(--color-rule)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]"
+            >
+                <span class="whitespace-nowrap">
+                    {move || {
+                        if more_expanded.get() { "Moins de filtres" } else { "Plus de filtres" }
+                    }}
+                </span>
+            </button>
         </div>
     }
 }

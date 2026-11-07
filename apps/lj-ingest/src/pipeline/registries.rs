@@ -8,6 +8,8 @@
 //! Denominations fold with `lj_fold::fold`, the same fold as the NER extraction
 //! and the SQL `lj_fold`: resolution compares folded to folded.
 
+use super::cnb_history::{parse_snapshot, HistRow};
+use super::cnb_reduced;
 use crate::config::Settings;
 use anyhow::{anyhow, Result};
 use lj_sources::error::SourceError;
@@ -74,7 +76,7 @@ pub async fn load_registries(source: RegistrySource, with_history: bool) -> Resu
     let settings = Settings::from_env()?;
     let dir = settings.cache_dir().join("registries");
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -288,7 +290,7 @@ fn sirene_nature(cat: &str) -> Option<&'static str> {
 
 async fn load_sirene(
     repo: &DecisionRepository<'_>,
-    conn: &lj_store::db::Connection,
+    conn: &lj_pg::db::Connection,
     dir: &Path,
     with_history: bool,
 ) -> Result<u64> {
@@ -455,7 +457,7 @@ async fn load_sirene(
 
 async fn load_rna(
     repo: &DecisionRepository<'_>,
-    conn: &lj_store::db::Connection,
+    conn: &lj_pg::db::Connection,
     dir: &Path,
 ) -> Result<u64> {
     let (_, path) = fetch(
@@ -512,10 +514,11 @@ async fn load_rna(
 // affiliations à la structure d'exercice (siren déclaré).
 // ---------------------------------------------------------------------------
 
-/// Ligne avocat du CSV riche (schéma data.gouv de juillet 2026).
+/// A lawyer row of a snapshot, under the identity it stands for.
 #[derive(Debug)]
 pub(super) struct AvocatRow {
-    pub(super) cnbf: String,
+    /// `cnb:{avCnbfCode}`, or what a snapshot without the code bridges to.
+    pub(super) uid: String,
     /// Nom de barreau brut (pour `forme`).
     pub(super) barreau: String,
     pub(super) barreau_slug: String,
@@ -612,7 +615,9 @@ fn close_open_spans(activity: &mut serde_json::Value, au: chrono::NaiveDate) {
 fn cnb_diff(
     rows: &[AvocatRow],
     existing: &[CnbEntityState],
+    kept: &HashSet<String>,
     snapshot: chrono::NaiveDate,
+    first_seen: Option<chrono::NaiveDate>,
 ) -> CnbDiff {
     let by_uid: std::collections::HashMap<&str, &CnbEntityState> =
         existing.iter().map(|s| (s.uid.as_str(), s)).collect();
@@ -625,10 +630,10 @@ fn cnb_diff(
     };
     let mut seen: HashSet<&str> = HashSet::with_capacity(rows.len());
     for r in rows {
-        let uid = format!("cnb:{}", r.cnbf);
-        if !seen.insert(&r.cnbf) {
+        if !seen.insert(&r.uid) {
             continue;
         }
+        let uid = r.uid.clone();
         let denomination = format!("{} {}", r.prenom, r.nom).trim().to_string();
         let surname = surname_key(&r.nom);
         let forme = Some(format!("avocat ({})", r.barreau));
@@ -647,7 +652,7 @@ fn cnb_diff(
                     ape: None,
                     barreau: Some(r.barreau_slug.clone()),
                     alt_denominations: Vec::new(),
-                    activity: Some(serde_json::json!([cnb_span(r.bar_entree)])),
+                    activity: Some(serde_json::json!([cnb_span(r.bar_entree.or(first_seen))])),
                 });
             }
             Some(state) => {
@@ -698,9 +703,9 @@ fn cnb_diff(
             }
         }
     }
-    let present: HashSet<String> = rows.iter().map(|r| format!("cnb:{}", r.cnbf)).collect();
+    let present: HashSet<&str> = rows.iter().map(|r| r.uid.as_str()).collect();
     for state in existing {
-        if state.active && !present.contains(&state.uid) {
+        if state.active && !present.contains(state.uid.as_str()) && !kept.contains(&state.uid) {
             diff.deactivated += 1;
             let mut activity = state
                 .activity
@@ -721,13 +726,16 @@ fn cnb_diff(
     diff
 }
 
+/// A CNB snapshot, by whether it carries `avCnbfCode`.
+pub(super) enum CnbRows {
+    Coded(Vec<AvocatRow>),
+    /// The format of every snapshot since 2022 but the one of 17/07/2026.
+    Reduced(Vec<HistRow>),
+}
+
 /// Télécharge le snapshot CNB courant et le parse (filtres pieds de fichier
 /// + identité). Partagé entre le reload upsert et le re-key one-shot.
-///
-/// `None` when the snapshot carries no `avCnbfCode`, the key of the registry.
-pub(super) async fn fetch_avocat_rows(
-    dir: &Path,
-) -> Result<Option<(Vec<AvocatRow>, chrono::NaiveDate)>> {
+pub(super) async fn fetch_avocat_rows(dir: &Path) -> Result<(CnbRows, chrono::NaiveDate)> {
     let (res, path) = fetch(
         "annuaire-des-avocats-de-france",
         dir,
@@ -744,8 +752,8 @@ pub(super) async fn fetch_avocat_rows(
         &mut header,
     )?;
     if !header.windows(10).any(|w| w == b"avCnbfCode") {
-        tracing::warn!(snapshot = %snapshot, file = %path.display(), "cnb snapshot without avCnbfCode");
-        return Ok(None);
+        let rows = tokio::task::block_in_place(|| parse_snapshot(&path))?;
+        return Ok((CnbRows::Reduced(rows), snapshot));
     }
 
     // Parse complet en mémoire : le diff a besoin du snapshot entier face à
@@ -779,7 +787,7 @@ pub(super) async fn fetch_avocat_rows(
             let siren = Some(field(rec, siren))
                 .filter(|s| s.len() == 9 && s.bytes().all(|b| b.is_ascii_digit()));
             rows.push(AvocatRow {
-                cnbf,
+                uid: format!("cnb:{cnbf}"),
                 barreau_slug: slug(&barreau),
                 barreau,
                 prenom: field(rec, prenom),
@@ -792,38 +800,63 @@ pub(super) async fn fetch_avocat_rows(
         })?;
         Ok(rows)
     })?;
-    Ok(Some((rows, snapshot)))
+    Ok((CnbRows::Coded(rows), snapshot))
 }
 
 async fn load_avocats(
     repo: &DecisionRepository<'_>,
-    conn: &lj_store::db::Connection,
+    conn: &lj_pg::db::Connection,
     dir: &Path,
 ) -> Result<u64> {
-    let Some((rows, snapshot)) = fetch_avocat_rows(dir).await? else {
-        return Ok(0);
-    };
+    let (snapshot_rows, snapshot) = fetch_avocat_rows(dir).await?;
     // L'UPDATE en masse du registre (index GIN d'entity) dépasse le
     // `statement_timeout` du pool.
     conn.batch_execute("BEGIN; SET LOCAL statement_timeout = 0")
         .await?;
     let existing = repo.entity_cnb_states().await?;
-    // L'upsert est clé sur le code CNBF : un stock legacy encore ACTIF
-    // signifie que le re-key n'a pas tourné — chaque reload dédoublerait le
-    // registre. Les legacy inactifs (réhydratés, sortis avant l'apparition du
-    // code) sont légitimes.
-    let legacy_active = existing
-        .iter()
-        .filter(|s| s.active && !s.uid[4..].bytes().all(|b| b.is_ascii_digit()))
-        .count();
-    if legacy_active > 0 {
-        anyhow::bail!(
-            "{legacy_active} uids cnb legacy actifs — lancer `lj-ingest rekey-cnb` \
-             avant le premier reload upsert"
-        );
-    }
+    let open = repo.affiliation_open_edges("cnb").await?;
+    let (rows, kept, first_seen) = match snapshot_rows {
+        CnbRows::Coded(rows) => {
+            // An active legacy uid is someone a coded snapshot lists under a code:
+            // left as is, each reload would hold them twice.
+            let legacy_active = existing
+                .iter()
+                .filter(|s| s.active && !s.uid[4..].bytes().all(|b| b.is_ascii_digit()))
+                .count();
+            if legacy_active > 0 {
+                anyhow::bail!(
+                    "{legacy_active} active legacy cnb uids: run `lj-ingest rekey-cnb` \
+                     before reloading a snapshot with avCnbfCode"
+                );
+            }
+            (rows, HashSet::new(), None)
+        }
+        CnbRows::Reduced(rows) => {
+            let bridged = cnb_reduced::bridge(rows, &existing, &open);
+            let c = &bridged.counts;
+            tracing::info!(
+                exact = c.exact,
+                siren = c.siren,
+                name = c.name,
+                new = c.new,
+                abstained = c.abstained,
+                kept = bridged.kept.len(),
+                %snapshot,
+                "cnb snapshot without avCnbfCode bridged"
+            );
+            if c.mapped_share() < cnb_reduced::MIN_MAPPED {
+                anyhow::bail!(
+                    "cnb snapshot {snapshot} maps {:.1} % of its rows onto known identities, \
+                     under {:.0} %: refusing to write",
+                    100.0 * c.mapped_share(),
+                    100.0 * cnb_reduced::MIN_MAPPED
+                );
+            }
+            (bridged.rows, bridged.kept, Some(snapshot))
+        }
+    };
 
-    let diff = cnb_diff(&rows, &existing, snapshot);
+    let diff = cnb_diff(&rows, &existing, &kept, snapshot, first_seen);
     for batch in diff.inserts.chunks(BATCH) {
         repo.entity_copy(batch).await?;
     }
@@ -831,7 +864,6 @@ async fn load_avocats(
 
     // Affiliations déclarées (source `cnb`) : diff des arêtes ouvertes contre le
     // siren de structure du snapshot.
-    let open = repo.affiliation_open_edges("cnb").await?;
     let open_by_uid: std::collections::HashMap<&str, (&str, Option<chrono::NaiveDate>)> = open
         .iter()
         .map(|(e, s, du)| (e.as_str(), (s.as_str(), *du)))
@@ -840,10 +872,7 @@ async fn load_avocats(
         std::collections::HashMap::new();
     for r in &rows {
         if let Some(siren) = &r.siren {
-            desired.insert(
-                format!("cnb:{}", r.cnbf),
-                (format!("siren:{siren}"), r.date_entree),
-            );
+            desired.insert(r.uid.clone(), (format!("siren:{siren}"), r.date_entree));
         }
     }
     let mut to_close: Vec<String> = Vec::new();
@@ -854,7 +883,7 @@ async fn load_avocats(
             None => to_insert.push(AffiliationEdge {
                 entity_uid: uid.clone(),
                 structure_uid: structure.clone(),
-                du: *du,
+                du: du.or(first_seen),
                 au: None,
             }),
             Some((open_structure, _)) if *open_structure != structure.as_str() => {
@@ -876,7 +905,7 @@ async fn load_avocats(
         }
     }
     for (uid, _, _) in &open {
-        if !desired.contains_key(uid) {
+        if !desired.contains_key(uid) && !kept.contains(uid) {
             to_close.push(uid.clone());
         }
     }
@@ -956,7 +985,7 @@ fn mail_key(email: Option<&String>) -> Option<String> {
 /// raison sociale, pliée `lj_fold::fold`.
 async fn load_avocats_conseils(
     repo: &DecisionRepository<'_>,
-    conn: &lj_store::db::Connection,
+    conn: &lj_pg::db::Connection,
     path: &Path,
 ) -> Result<u64> {
     let raw = std::fs::read_to_string(path).map_err(|e| {
@@ -1101,7 +1130,7 @@ mod tests {
     #[test]
     fn sirene_category_cabinets_apres_exclusions() {
         assert_eq!(
-            sirene_category("morale_privee", Some("69.10Z"), "scp bernal chevallier"),
+            sirene_category("morale_privee", Some("69.10Z"), "scp martin bernard"),
             "cabinets"
         );
         assert_eq!(
@@ -1136,7 +1165,7 @@ mod tests {
 
     fn row(cnbf: &str, barreau: &str, nom: &str, prenom: &str) -> AvocatRow {
         AvocatRow {
-            cnbf: cnbf.to_string(),
+            uid: format!("cnb:{cnbf}"),
             barreau: barreau.to_string(),
             barreau_slug: slug(barreau),
             nom: nom.to_string(),
@@ -1153,7 +1182,7 @@ mod tests {
             active,
             activity,
             barreau: Some("agen".to_string()),
-            denomination: "Dahab Azzouz".to_string(),
+            denomination: "Louise Bertin".to_string(),
             surname_key: None,
             forme: Some("avocat (AGEN)".to_string()),
         }
@@ -1162,28 +1191,35 @@ mod tests {
     #[test]
     fn cnb_diff_upsert_spec() {
         let snapshot = d("2026-07-17");
+        let none = HashSet::new();
 
-        let diff = cnb_diff(&[row("300730", "AGEN", "AZZOUZ", "Dahab")], &[], snapshot);
+        let diff = cnb_diff(
+            &[row("900001", "AGEN", "BERTIN", "Louise")],
+            &[],
+            &none,
+            snapshot,
+            None,
+        );
         assert_eq!(diff.inserts.len(), 1);
-        assert_eq!(diff.inserts[0].uid, "cnb:300730");
+        assert_eq!(diff.inserts[0].uid, "cnb:900001");
         assert_eq!(
             diff.inserts[0].activity,
             Some(serde_json::json!([{"du": "2019-01-01", "src": "cnb"}]))
         );
-        assert_eq!(diff.added_uids, vec!["cnb:300730"]);
+        assert_eq!(diff.added_uids, vec!["cnb:900001"]);
 
         let cur = state(
-            "cnb:300730",
+            "cnb:900001",
             true,
             Some(serde_json::json!([{"du": "2019-01-01", "src": "cnb"}])),
         );
         let mut cur = cur;
-        cur.denomination = "Dahab AZZOUZ".to_string();
-        let rows = [row("300730", "AGEN", "AZZOUZ", "Dahab")];
-        let diff = cnb_diff(&rows, std::slice::from_ref(&cur), snapshot);
+        cur.denomination = "Louise BERTIN".to_string();
+        let rows = [row("900001", "AGEN", "BERTIN", "Louise")];
+        let diff = cnb_diff(&rows, std::slice::from_ref(&cur), &none, snapshot, None);
         assert!(diff.inserts.is_empty() && diff.updates.is_empty());
 
-        let diff = cnb_diff(&[], std::slice::from_ref(&cur), snapshot);
+        let diff = cnb_diff(&[], std::slice::from_ref(&cur), &none, snapshot, None);
         assert_eq!(diff.deactivated, 1);
         assert_eq!(diff.updates.len(), 1);
         assert!(!diff.updates[0].active);
@@ -1193,13 +1229,13 @@ mod tests {
         );
 
         let gone = state(
-            "cnb:300730",
+            "cnb:900001",
             false,
             Some(serde_json::json!([{"du": "2019-01-01", "au": "2024-01-01", "src": "cnb"}])),
         );
-        let diff = cnb_diff(&rows, std::slice::from_ref(&gone), snapshot);
+        let diff = cnb_diff(&rows, std::slice::from_ref(&gone), &none, snapshot, None);
         assert_eq!(diff.reactivated, 1);
-        assert_eq!(diff.added_uids, vec!["cnb:300730"]);
+        assert_eq!(diff.added_uids, vec!["cnb:900001"]);
         assert_eq!(
             diff.updates[0].activity,
             Some(serde_json::json!([
@@ -1209,17 +1245,19 @@ mod tests {
         );
 
         let diff = cnb_diff(
-            &[row("300730", "LYON", "AZZOUZ", "Dahab")],
+            &[row("900001", "LYON", "BERTIN", "Louise")],
             std::slice::from_ref(&cur),
+            &none,
             snapshot,
+            None,
         );
         assert!(diff.inserts.is_empty());
         assert_eq!(diff.updates.len(), 1);
         assert_eq!(diff.updates[0].barreau.as_deref(), Some("lyon"));
         assert!(diff.updates[0].active);
 
-        let bare = state("cnb:300730", true, None);
-        let diff = cnb_diff(&rows, std::slice::from_ref(&bare), snapshot);
+        let bare = state("cnb:900001", true, None);
+        let diff = cnb_diff(&rows, std::slice::from_ref(&bare), &none, snapshot, None);
         assert_eq!(
             diff.updates[0].activity,
             Some(serde_json::json!([{"du": "2019-01-01", "src": "cnb"}]))
@@ -1227,21 +1265,36 @@ mod tests {
 
         let diff = cnb_diff(
             &[
-                row("300730", "AGEN", "AZZOUZ", "Dahab"),
-                row("300730", "LYON", "AZZOUZ", "Dahab"),
+                row("900001", "AGEN", "BERTIN", "Louise"),
+                row("900001", "LYON", "BERTIN", "Louise"),
             ],
             &[],
+            &none,
             snapshot,
+            None,
         );
         assert_eq!(diff.inserts.len(), 1);
         assert_eq!(diff.inserts[0].barreau.as_deref(), Some("agen"));
+
+        let kept = HashSet::from(["cnb:900001".to_string()]);
+        let diff = cnb_diff(&[], std::slice::from_ref(&cur), &kept, snapshot, None);
+        assert_eq!(diff.deactivated, 0);
+        assert!(diff.updates.is_empty());
+
+        let mut unsworn = row("900002", "AGEN", "BERTIN", "Louise");
+        unsworn.bar_entree = None;
+        let diff = cnb_diff(&[unsworn], &[], &none, snapshot, Some(snapshot));
+        assert_eq!(
+            diff.inserts[0].activity,
+            Some(serde_json::json!([{"du": "2026-07-17", "src": "cnb"}]))
+        );
     }
 
     #[test]
     fn cnb_csv_guards() {
         assert!(!is_cnbf("V1.8"));
         assert!(!is_cnbf(""));
-        assert!(is_cnbf("300730"));
+        assert!(is_cnbf("900001"));
         assert_eq!(parse_yyyymmdd("20190101"), Some(d("2019-01-01")));
         assert_eq!(parse_yyyymmdd("1"), None);
         assert_eq!(parse_yyyymmdd("20191301"), None);

@@ -68,7 +68,7 @@ impl Jeu {
 
 /// The catalogue's own publication date for a dataset. Two of the three sets
 /// are frozen, one moves, and a pass that finds the three dates it already
-/// walked would re-download 436 Mo to re-read its own last answer.
+/// walked would re-download them whole to re-read its own last answer.
 pub async fn modifie_le(jeu: &Jeu) -> Result<String> {
     let corps = super::send_text(
         super::client().get(format!("{CATALOGUE}/{}", jeu.id)),
@@ -157,8 +157,8 @@ pub struct AttributionDecp {
 }
 
 /// Downloads a notification window into `dir`, one file per dataset and start
-/// date, and keeps what is already there, an export weighing 128 Mo for the
-/// whole history. A cached file whose header misses a column was asked for
+/// date, and keeps what is already there, the export of the whole history being
+/// heavy. A cached file whose header misses a column was asked for
 /// another question, and answers this one with holes.
 pub async fn telecharger(dir: &Path, jeu: &Jeu, depuis: Date) -> Result<PathBuf> {
     let fichier = dir.join(format!("{}-{depuis}.csv", jeu.id));
@@ -338,7 +338,7 @@ mod tests {
     fn la_passe_se_saute_sur_le_catalogue_et_sur_la_fenetre() {
         let dir = std::env::temp_dir().join("decp_test_manifeste");
         std::fs::remove_dir_all(&dir).ok();
-        let vu: BTreeMap<String, String> = [("decp-2022-marches-valides", "2026-09-15T10:43:12Z")]
+        let vu: BTreeMap<String, String> = [("decp-2022-marches-valides", "2026-01-01T00:00:00Z")]
             .into_iter()
             .map(|(k, v)| (k.to_string(), v.to_string()))
             .collect();
@@ -359,7 +359,7 @@ mod tests {
         assert!(!relu.deja_vu(&vu, Date::constant(2022, 1, 1)));
 
         let bouge: BTreeMap<String, String> =
-            [("decp-2022-marches-valides", "2026-09-16T04:02:00Z")]
+            [("decp-2022-marches-valides", "2026-01-02T00:00:00Z")]
                 .into_iter()
                 .map(|(k, v)| (k.to_string(), v.to_string()))
                 .collect();

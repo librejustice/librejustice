@@ -8,7 +8,7 @@ use chrono::NaiveDate;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::Type;
 
-use super::types::{LegalLinkOwner, LegalLinkRow, ResolvedLegalLink};
+use super::types::{CitingText, LegalLinkOwner, LegalLinkRow, ResolvedLegalLink};
 use super::DecisionRepository;
 use crate::error::Result;
 
@@ -230,5 +230,61 @@ impl DecisionRepository<'_> {
             )
             .await?;
         Ok(n)
+    }
+
+    /// `(text_uid, num, num_key)` of each Légifrance article id found in base
+    /// (`LEGIARTI…`, `JORFARTI…`, `KALIARTI…`), whichever version carries it.
+    #[tracing::instrument(name = "db.articles_by_source_uids", skip_all, fields(db.system = "postgresql", uids = source_uids.len()))]
+    pub async fn articles_by_source_uids(
+        &self,
+        source_uids: &[String],
+    ) -> Result<std::collections::HashMap<String, (String, String, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT DISTINCT ON (source_uid) source_uid, text_uid, num, num_key \
+                 FROM legal_article WHERE source_uid = ANY($1) \
+                 ORDER BY source_uid, date_debut DESC NULLS LAST",
+                &[&source_uids],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get(0), (r.get(1), r.get(2), r.get(3))))
+            .collect())
+    }
+
+    /// The texts of the given natures, in force, whose declared edge cites the
+    /// article, by title.
+    #[tracing::instrument(name = "db.texts_citing_article", skip(self, natures), fields(db.system = "postgresql"))]
+    pub async fn texts_citing_article(
+        &self,
+        text_uid: &str,
+        num_key: &str,
+        natures: &[String],
+    ) -> Result<Vec<CitingText>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT DISTINCT t.nature, t.title, t.slug, t.jurisdiction, t.last_modified \
+                 FROM legal_link l JOIN legal_text t ON t.text_uid = l.owner_text_uid \
+                 WHERE l.target_text_uid = $1 AND l.target_num_key = $2 \
+                   AND l.verb = 'cite' AND l.direction = 'outgoing' \
+                   AND upper(t.nature) = ANY($3) AND t.slug IS NOT NULL \
+                   AND coalesce(t.status, 'VIGUEUR') = 'VIGUEUR' \
+                 ORDER BY t.title",
+                &[&text_uid, &num_key, &natures],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| CitingText {
+                nature: r.get(0),
+                title: r.get(1),
+                slug: r.get(2),
+                jurisdiction: r.get(3),
+                last_modified: r.get(4),
+            })
+            .collect())
     }
 }

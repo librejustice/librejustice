@@ -20,9 +20,8 @@ pub fn redact(bytes: &[u8], needles: &[String], rects: &[PageRect]) -> Result<Ou
     let mut document = PdfDocument::open(bytes)?;
     let mut removed = document.redact(targets_of(&anchors))?;
     // One pass per rectangle. Given several in the same plan, the engine blacks
-    // out their bounding box on a page drawn as an image: two boxes 150 pt apart
-    // took 13.6 % of a scanned page instead of 0.3 %. Twelve passes on one open
-    // document cost 658 ms.
+    // out their bounding box on a page drawn as an image, and with it the page
+    // between them.
     for rect in rects {
         removed += document.redact(rect_targets(std::slice::from_ref(rect)))?;
     }
@@ -277,7 +276,7 @@ pub fn scan_picture(engine: &Engine, index: usize) -> Result<Option<ScanPicture>
 }
 
 /// Whether page `index` names a picture, whose pixels may carry text the file
-/// does not. Read from its resources: drawing 694 pages took 6.9 s, this 0.1 ms.
+/// does not. Read from its resources, without drawing the page.
 pub fn names_picture(engine: &Engine, index: usize) -> Result<bool> {
     engine
         .page_names_picture(index)

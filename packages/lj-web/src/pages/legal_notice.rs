@@ -49,38 +49,11 @@ pub fn LegalNotice() -> impl IntoView {
 
             <Section title="Données publiées">
                 <p>
-                    "LibreJustice indexe les décisions de justice françaises rendues publiques par l'État : jurisprudence judiciaire (Cour de cassation, cours d'appel, tribunaux) diffusée via "
-                    <strong>"Judilibre"</strong>
-                    ", et jurisprudence administrative diffusée par l'"
-                    <strong>"Open Data du Conseil d'État"</strong>
-                    ". Ces données sont mises à disposition sous "
-                    <a
-                        class="text-[var(--color-accent)] underline-offset-4 hover:underline"
-                        href="https://www.etalab.gouv.fr/licence-ouverte-open-licence"
-                        rel="noreferrer"
-                        target="_blank"
-                    >
-                        "Licence Ouverte Etalab 2.0"
-                    </a>
+                    "Les données diffusées par LibreJustice proviennent de sources publiques et de sources dont la reprise est autorisée. Chacune est présentée, avec ses conditions de réutilisation, sur la page "
+                    <A href="/sources" attr:class="text-[var(--color-accent)] underline-offset-4 hover:underline">
+                        "Données & sources"
+                    </A>
                     "."
-                </p>
-                <p class="mt-3">
-                    "LibreJustice ne modifie pas le contenu des décisions et ne garantit ni l'exhaustivité ni l'actualité du corpus indexé. Pour toute référence officielle, consulter directement "
-                    <a
-                        class="text-[var(--color-accent)] underline-offset-4 hover:underline"
-                        href="https://www.legifrance.gouv.fr"
-                        rel="noreferrer"
-                        target="_blank"
-                    >
-                        "legifrance.gouv.fr"
-                    </a>
-                    "."
-                </p>
-            </Section>
-
-            <Section title="Responsabilité">
-                <p>
-                    "Les informations présentes sur ce site sont fournies à titre indicatif. Elles ne constituent pas un conseil juridique et ne sauraient engager la responsabilité de l'éditeur. L'éditeur ne peut garantir l'exactitude, l'exhaustivité ou l'actualité des données indexées."
                 </p>
             </Section>
 
@@ -95,15 +68,14 @@ pub fn LegalNotice() -> impl IntoView {
                     >
                         "code du site"
                     </a>
-                    " est publié sous licence Apache 2.0. Certains éléments, comme les polices de caractères et les outils qui lisent les documents scannés ou manuscrits, proviennent de tiers et restent sous "
+                    " est publié sous licence Apache 2.0. Les composants de tiers sur lesquels il s'appuie, bibliothèques, polices et outils de lecture des documents, restent sous "
                     <a
                         class="text-[var(--color-accent)] underline-offset-4 hover:underline"
-                        href="/third-party-licenses.txt"
-                        rel="external"
+                        href="/open-source"
                     >
                         "leurs propres licences"
                     </a>
-                    ". Les décisions de justice reproduites sont des documents publics soumis à la Licence Ouverte Etalab 2.0."
+                    "."
                 </p>
             </Section>
 

@@ -200,9 +200,8 @@ fn link_set(links: &[DecisionLinkRow]) -> HashSet<LinkFingerprint> {
 }
 
 /// Address without a docket: a cassation names the court and the date of the
-/// attacked arrêt, never its RG; the parties settle between the 42 arrêts that
-/// court and date return (1,100 right, 24 wrong out of 3,000, 3.5 ms per
-/// pending link).
+/// attacked arrêt, never its RG; the parties settle between the arrêts that
+/// court and date return.
 ///
 /// Natural persons stay out of the join: the pseudonym is reassigned per
 /// decision, so « Vincent X... » in cassation and « Vincent X... » in appeal
@@ -226,8 +225,8 @@ fn resolve_parties_sql(scope: &str) -> String {
               AND d.date_lecture = p.jour
               AND d.deleted_at IS NULL
              WHERE EXISTS (
-                 SELECT 1 FROM decision_party a
-                 JOIN decision_party b
+                 SELECT 1 FROM decision_actor a
+                 JOIN decision_actor b
                    ON b.decision_id = d.id AND b.quality = 'party'
                   AND b.nature IS DISTINCT FROM 'physique'
                   AND ((a.entity_uid IS NOT NULL AND a.entity_uid = b.entity_uid)

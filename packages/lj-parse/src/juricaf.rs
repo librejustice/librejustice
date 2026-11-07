@@ -231,36 +231,71 @@ fn country_label(iso: &str) -> &'static str {
     }
 }
 
-/// Classe de juridiction (colonne `decisions.jurisdiction_type`) depuis le
-/// segment cour de l'URN:LEX. Vocabulaire propre au fond international —
-/// jamais les types du contentieux français (TJ, CA…), un tribunal de Dakar
-/// n'est pas une juridiction française.
-fn jurisdiction_type(court: &str) -> String {
-    match court {
-        "cour.supreme" => "COUR_SUPREME".to_string(),
-        "cour.cassation" => "COUR_CASSATION".to_string(),
-        "cour.appel" => "COUR_APPEL".to_string(),
-        "conseil.constitutionnel" => "CONSEIL_CONSTIT".to_string(),
-        "cour.justice" => "COUR_JUSTICE".to_string(),
-        c if c.starts_with("cour.commune.justice.arbitrage") => "CCJA".to_string(),
-        c if c.starts_with("tribunal.grande.instance") => "TGI".to_string(),
-        c => c
-            .chars()
-            .map(|ch| {
-                if ch.is_ascii_alphanumeric() {
-                    ch.to_ascii_uppercase()
-                } else {
-                    '_'
-                }
-            })
-            .collect(),
-    }
+/// The foreign court types, by the leading words of the URN:LEX court segment.
+const COURT_FAMILIES: [(&[&str], &str); 21] = [
+    (&["cour", "supreme"], "COUR_SUPREME"),
+    (&["cour", "populaire", "supreme"], "COUR_SUPREME"),
+    (&["cour", "populaire", "centrale"], "COUR_SUPREME"),
+    (&["tribunal", "superieur", "justice"], "COUR_SUPREME"),
+    (&["cour", "cassation"], "COUR_CASSATION"),
+    (&["haute", "cour", "cassation"], "COUR_CASSATION"),
+    (&["conseil", "constitutionnel"], "COUR_CONSTITUTIONNELLE"),
+    (&["cour", "constitutionnelle"], "COUR_CONSTITUTIONNELLE"),
+    (
+        &["haute", "cour", "constitutionnelle"],
+        "COUR_CONSTITUTIONNELLE",
+    ),
+    (
+        &["haute", "cour", "constitutionelle"],
+        "COUR_CONSTITUTIONNELLE",
+    ),
+    (&["cour", "appel"], "COUR_APPEL"),
+    (&["cour", "administrative"], "COUR_ADMINISTRATIVE"),
+    (&["tribunal", "administratif"], "TRIBUNAL_ADMINISTRATIF"),
+    (
+        &["tribunal", "premiere", "instance"],
+        "TRIBUNAL_PREMIERE_INSTANCE",
+    ),
+    (
+        &["tribunal", "grande", "instance"],
+        "TRIBUNAL_PREMIERE_INSTANCE",
+    ),
+    (&["tribunal", "commerce"], "TRIBUNAL_COMMERCE"),
+    (&["cour", "criminelle"], "COUR_CRIMINELLE"),
+    (&["cour", "justice"], "COUR_JUSTICE"),
+    (&["cour", "commune", "justice", "arbitrage"], "CCJA"),
+    (
+        &["cour", "africaine", "droits", "homme"],
+        "COUR_DROITS_HOMME",
+    ),
+    (
+        &["cour", "interamericaine", "droits", "homme"],
+        "COUR_DROITS_HOMME",
+    ),
+];
+
+/// The court segment without its elisions and linking words, as most URNs already write it.
+fn plain_court(court: &str) -> String {
+    court
+        .split('.')
+        .map(|w| w.strip_prefix("d'").unwrap_or(w))
+        .filter(|w| !matches!(*w, "de" | "du" | "des"))
+        .collect::<Vec<_>>()
+        .join(".")
 }
 
-/// Construit la [`Decision`] canonique depuis l'identité URN:LEX + le texte.
-/// Partagé entre [`parse_juricaf`] (HTML frais) et
-/// [`Decision::from_source_fields`] (reconstruction depuis le stockage) — chemin
-/// linéaire unique.
+/// A parenthesised word of the court segment repeats the organisation.
+fn court_identity(country: &str, court: &str) -> Option<(&'static str, String)> {
+    let words: Vec<&str> = court.split('.').filter(|w| !w.starts_with('(')).collect();
+    let (head, kind) = COURT_FAMILIES
+        .iter()
+        .filter(|(head, _)| words.starts_with(head))
+        .max_by_key(|(head, _)| head.len())?;
+    let code = lj_vocab::courts::foreign_court_code(country, kind, &words[head.len()..]);
+    Some((kind, code))
+}
+
+/// `None` when the court is of no foreign type.
 fn decision_from_urn(
     slug: &str,
     country: &str,
@@ -268,24 +303,26 @@ fn decision_from_urn(
     date_seg: &str,
     num: &str,
     text: String,
-) -> Decision {
+) -> Option<Decision> {
+    let court = plain_court(court);
+    let (kind, code) = court_identity(country, &court)?;
     let numero = num.replace('.', "-");
     let country_lbl = country_label(country);
-    let court_lbl = court_label(court);
+    let court_lbl = court_label(&court);
     let jurisdiction_label = if country_lbl.is_empty() {
         court_lbl.clone()
     } else {
         format!("{court_lbl} ({country_lbl})")
     };
-    Decision {
+    Some(Decision {
         source_uid: format!("juricaf/{slug}"),
         member_name: slug.to_string(),
         ecli: None,
-        jurisdiction_source_code: Some(jurisdiction_code(country, court)),
+        jurisdiction_source_code: Some(code),
         chamber: None,
         nac: None,
         jurisdiction_name: Some(jurisdiction_label),
-        jurisdiction_type: Some(jurisdiction_type(court)),
+        jurisdiction_type: Some(kind.to_string()),
         jurisdiction_location: None,
         numero_dossier: Some(numero.clone()),
         numero_dossiers: Some(vec![numero]),
@@ -299,27 +336,15 @@ fn decision_from_urn(
         solution: None,
         publication_codes: Vec::new(),
         avocat_requerant: None,
+        listed_counsel: Vec::new(),
         themes: Vec::new(),
         attacked: None,
         texte_integral_raw: text.clone(),
         texte_integral_clean: text,
         sections: Vec::new(),
         metadata_header: String::new(),
-        visa_trim: String::new(),
         parse_warnings: Vec::new(),
-    }
-}
-
-/// Code juridiction canonique `{iso}_{cour}` (`sn_cour_supreme`) — clé du
-/// référentiel ouvert `jurisdiction`.
-fn jurisdiction_code(country: &str, court: &str) -> String {
-    format!(
-        "{country}_{}",
-        court
-            .chars()
-            .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
-            .collect::<String>()
-    )
+    })
 }
 
 /// Branche JuriCAF de [`Decision::from_source_fields`] : re-dérive la
@@ -340,11 +365,18 @@ pub(crate) fn from_source_fields_juricaf(
         panic!("source_fields juricaf: URN:LEX malformé {urn} ({source_uid})");
     };
     let slug = source_uid.strip_prefix("juricaf/").unwrap_or(source_uid);
-    decision_from_urn(slug, country, court, date_seg, num, full_text.to_string())
+    decision_from_urn(slug, country, court, date_seg, num, full_text.to_string()).unwrap_or_else(
+        || panic!("stored juricaf court of no foreign type: {court} ({source_uid})"),
+    )
 }
 
 /// Parse une page « arrêt » JuriCAF. `slug` = segment d'URL après `/arret/`
 /// (`SENEGAL-COURSUPREME-20241114-57`), pivot du `source_uid`.
+/// The country a page declares in `dc.coverage`, the name JuriCAF's country feed takes.
+pub fn juricaf_country(raw: &[u8]) -> Option<String> {
+    meta_content(&decode_page(raw), "dc.coverage").map(str::to_string)
+}
+
 pub fn parse_juricaf(slug: &str, raw: &[u8]) -> Result<JuricafParsed> {
     let html = decode_page(raw);
 
@@ -387,28 +419,45 @@ pub fn parse_juricaf(slug: &str, raw: &[u8]) -> Result<JuricafParsed> {
         )));
     }
 
+    let language = meta_content(&html, "dc.language").unwrap_or_default();
+    let lang = lj_vocab::languages::eu_of_iso_639_1(&language.to_ascii_lowercase())
+        .ok_or_else(|| CoreError::Xml(format!("juricaf {slug}: page language {language:?}")))?;
+
     let source_fields = json!({
         "urn_lex": urn,
         "juricaf_slug": slug,
         "country": country,
         "court": court,
         "title": title,
-        "lang": "fra",
+        "lang": lang,
         "source_url": format!("https://juricaf.org/arret/{slug}"),
     });
 
-    let decision = decision_from_urn(slug, country, court, date_seg, num, text);
+    let decision =
+        decision_from_urn(slug, country, court, date_seg, num, text).ok_or_else(|| {
+            CoreError::Xml(format!("juricaf {slug}: court of no foreign type: {court}"))
+        })?;
     let jurisdiction_label = decision
         .jurisdiction_name
         .clone()
         .expect("decision_from_urn pose toujours le nom");
 
     Ok(JuricafParsed {
-        jurisdiction_code: jurisdiction_code(country, court),
+        jurisdiction_code: decision
+            .jurisdiction_source_code
+            .clone()
+            .expect("decision_from_urn codes the court"),
         decision,
         source_fields,
         jurisdiction_label,
     })
+}
+
+fn meta_content<'a>(html: &'a str, name: &str) -> Option<&'a str> {
+    let rest = html
+        .split(&format!("<meta name=\"{name}\" content=\""))
+        .nth(1)?;
+    rest.split('"').next()
 }
 
 #[cfg(test)]
@@ -437,7 +486,8 @@ mod juricaf_tests {
     fn parse_extracts_urn_identity_and_text() {
         let html = format!(
             "<html><head><title>Sénégal, Cour suprême, 14 novembre 2024, 57</title>\
-             <meta content=\"urn:lex;sn;cour.supreme;arret;2024-11-14;57\"></head>\
+             <meta content=\"urn:lex;sn;cour.supreme;arret;2024-11-14;57\">\
+             <meta name=\"dc.language\" content=\"FR\" /></head>\
              <body><div id=\"arret\"><p>{}</p></div>Origine de la décision</body></html>",
             "LA COUR SUPRÊME, statuant en matière civile. ".repeat(10)
         );
@@ -450,5 +500,39 @@ mod juricaf_tests {
         assert_eq!(p.decision.date_lecture.as_deref(), Some("2024-11-14"));
         assert_eq!(p.jurisdiction_label, "Cour suprême (Sénégal)");
         assert!(p.decision.texte_integral_clean.contains("COUR SUPRÊME"));
+        assert_eq!(p.source_fields["lang"], "fra");
+    }
+
+    #[test]
+    fn a_court_segment_opens_with_its_type_and_ends_with_its_name() {
+        assert_eq!(
+            court_identity("sn", "cour.appel.dakar"),
+            Some(("COUR_APPEL", "sn_cour_appel_dakar".to_string()))
+        );
+        assert_eq!(
+            court_identity("ohada", "cour.commune.justice.arbitrage.(ohada)"),
+            Some(("CCJA", "ohada_ccja".to_string()))
+        );
+        assert_eq!(
+            court_identity("sn", "tribunal.grande.instance.hors.classe.dakar"),
+            Some((
+                "TRIBUNAL_PREMIERE_INSTANCE",
+                "sn_tribunal_premiere_instance_hors_classe_dakar".to_string()
+            ))
+        );
+        assert_eq!(
+            court_identity("ro", "haute.cour.cassation.justice"),
+            Some(("COUR_CASSATION", "ro_cour_cassation_justice".to_string()))
+        );
+        assert_eq!(
+            court_identity("ad", "tribunal.superieur.justice"),
+            Some(("COUR_SUPREME", "ad_cour_supreme".to_string()))
+        );
+        assert_eq!(court_identity("mc", "juge.tutelaire"), None);
+        assert_eq!(plain_court("cour.d'appel.de.cotonou"), "cour.appel.cotonou");
+        assert_eq!(
+            plain_court("cour.supreme.de.cassation"),
+            "cour.supreme.cassation"
+        );
     }
 }

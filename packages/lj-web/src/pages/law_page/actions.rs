@@ -1,6 +1,7 @@
 //! Action de l'article, en tête du rail gauche : copier sa référence humaine.
 
 use leptos::prelude::*;
+use lj_dtos::UiAction;
 
 #[component]
 pub(crate) fn ArticleActions(reference: String) -> impl IntoView {
@@ -31,6 +32,7 @@ pub(crate) fn ArticleActions(reference: String) -> impl IntoView {
                 aria-live="polite"
                 aria-label="Copier la référence"
                 title="Copier la référence"
+                data-usage=UiAction::NormCopyReference.as_str()
                 class="inline-flex shrink-0 items-center gap-2 rounded-sm border border-[var(--color-rule)] px-3 py-1.5 text-xs text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
             >
                 {move || {

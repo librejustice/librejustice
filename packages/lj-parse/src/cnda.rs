@@ -38,25 +38,6 @@ pub fn clean_ocr_markdown(md: &str) -> String {
     clean_texte(&stripped)
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// PDF natif-texte → recollage déterministe. `pdftotext` rend un texte fidèle mais
-// conserve les retours de ligne visuels (une phrase est coupée en plusieurs
-// lignes) et répète les en-têtes/pieds de page. On reconstruit les paragraphes
-// logiques par règles : nouveau paragraphe à chaque marqueur structurel CNDA ou
-// après une fin de clause (`;`/`.`/`:`), pour rendre le texte à l'identique du
-// chemin OCR (`ligne = paragraphe`).
-// ─────────────────────────────────────────────────────────────────────────────
-
-/// Début d'un nouveau paragraphe logique CNDA : marqueurs du gabarit (visas,
-/// considérants, dispositif, articles, signataires) + numérotation, en tête de
-/// ligne.
-static CNDA_PARA_START_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?i)^(Vu\b|Considérant\b|Sur\b|Après\b|D\s*[ÉE]\s*C\s*I\s*D\s*E\b|DÉCIDE\b|DECIDE\b|Article\s|ARTICLE\s|Art\.\s|M\.\s|Mme\b|Mlle\b|MM\.\s|N°\s*\d|n°\s*\d|Lu\b|Délibéré\b|En conséquence\b|PAR CES MOTIFS\b|La présente\b|La République\b|\d+\.\s|\d+\)\s|[a-z]\)\s)",
-    )
-    .unwrap()
-});
-
 /// Ligne d'en-tête/pied de page répétée (numéro de page, `n° NNNN` seul, filets,
 /// bandeau juridiction, liste N° multi-requêtes `N° 17010844 – 18044574, …`
 /// rappelée en tête de chaque page) — retirée du flux. N'est supprimée que si
@@ -80,68 +61,29 @@ static CNDA_HEADER_PURE_RE: LazyLock<Regex> = LazyLock::new(|| {
 static CNDA_DECIDE_LINE_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)^\s*D\s*[ÉE]\s*C\s*I\s*D\s*E\s*:?\s*$").unwrap());
 
-/// Algorithme : form-feeds → sauts de ligne ; suppression des lignes d'en-tête/
-/// pied (motif pur, ou répétées ≥ 3×) ; rejointure ligne→ligne sauf nouveau
-/// paragraphe sur marqueur ([`CNDA_PARA_START_RE`]) ou après une fin de clause
-/// (`;`/`.`/`:`) ; dispositif normalisé `DECIDE :` ; recollage des césures de
-/// fin de ligne (`mot-` + minuscule → `mot`).
+/// The CNDA's page headers dropped and its `D É C I D E` written `DECIDE :` on a line of its own,
+/// where the dispositif is found, then [`reflow_page_text`](crate::reflow_page_text).
 pub fn reflow_cnda_pdf_text(raw: &str) -> String {
     let normalized = raw.replace('\u{c}', "\n");
     let lines: Vec<&str> = normalized.lines().map(str::trim).collect();
-
     let mut freq: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
-    for l in &lines {
-        if !l.is_empty() {
-            *freq.entry(*l).or_insert(0) += 1;
-        }
+    for l in lines.iter().filter(|l| !l.is_empty()) {
+        *freq.entry(l).or_default() += 1;
     }
-
-    let mut out: Vec<String> = Vec::new();
-    let mut buf = String::new();
-    let flush = |buf: &mut String, out: &mut Vec<String>| {
-        if !buf.is_empty() {
-            out.push(std::mem::take(buf));
-        }
-    };
-
-    for line in lines {
-        if line.is_empty() {
-            // Une ligne vide ne ferme pas un paragraphe en cours : `pdftotext` en insère une
-            // à chaque frontière de page, en plein milieu d'une phrase à cheval sur deux
-            // pages. La fin de paragraphe réelle est portée par la ponctuation finale
-            // (`;`/`.`/`:`) ou un marqueur.
-            continue;
-        }
-        if CNDA_HEADER_PURE_RE.is_match(line)
-            || (CNDA_HEADER_NOISE_RE.is_match(line) && freq.get(line).copied().unwrap_or(0) >= 3)
-        {
-            continue;
-        }
-        if CNDA_DECIDE_LINE_RE.is_match(line) {
-            flush(&mut buf, &mut out);
-            out.push("DECIDE :".to_string());
-            continue;
-        }
-        let new_para = CNDA_PARA_START_RE.is_match(line)
-            || buf.ends_with(';')
-            || buf.ends_with('.')
-            || buf.ends_with(':');
-        if new_para {
-            flush(&mut buf, &mut out);
-            buf.push_str(line);
-        } else if buf.is_empty() {
-            buf.push_str(line);
-        } else if buf.ends_with('-') && line.starts_with(|c: char| c.is_lowercase()) {
-            // Césure de fin de ligne : recolle sans espace, retire le tiret.
-            buf.pop();
-            buf.push_str(line);
-        } else {
-            buf.push(' ');
-            buf.push_str(line);
-        }
-    }
-    flush(&mut buf, &mut out);
-    out.join("\n")
+    let kept: Vec<&str> = lines
+        .iter()
+        .filter(|l| {
+            !(CNDA_HEADER_PURE_RE.is_match(l) || CNDA_HEADER_NOISE_RE.is_match(l) && freq[*l] >= 3)
+        })
+        .map(|l| {
+            if CNDA_DECIDE_LINE_RE.is_match(l) {
+                "\nDECIDE :\n"
+            } else {
+                l
+            }
+        })
+        .collect();
+    crate::reflow_page_text(&kept.join("\n"))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -490,8 +432,8 @@ fn cnda_fiche_from_source_fields(source_fields: &Value) -> Value {
 /// identical to [`parse_cnda`] from `(full_text, source_fields)`. Exact
 /// counterpart of [`build_source_fields_cnda`].
 ///
-/// [`parse_cnda`] leaves `metadata_header` and `visa_trim` empty, so the chunk
-/// depends on `texte_integral_clean` alone (= `full_text`, stored verbatim).
+/// [`parse_cnda`] leaves `metadata_header` empty, so the chunk depends on
+/// `texte_integral_clean` alone (= `full_text`, stored verbatim).
 /// `solution_uid` does not fit in `Decision` and does not pass through here: it
 /// lives in `source_fields`.
 ///
@@ -536,9 +478,8 @@ pub fn cnda_solution_uid_from_source_fields(
 /// Erreur franche si le numéro est vide, ou — avec PDF — si aucune des 8
 /// sections n'est détectée ou si la date de lecture est introuvable.
 ///
-/// **Contrat de stabilité du chunk** : `metadata_header` et `visa_trim` sont
-/// posés vides, donc aucune métadonnée n'entre dans le chunk. Dates, ECLI,
-/// classement, formation et URLs restent modifiables sans re-embed.
+/// `metadata_header` is left empty, so no metadata enters the chunk: dates, ECLI,
+/// classification, formation and URLs change without a re-embed.
 pub fn parse_cnda(
     pdf_text: &str,
     fiche: &Value,
@@ -625,11 +566,11 @@ pub fn parse_cnda(
             solution: dispositif,
             publication_codes: importance.map(|i| vec![i]).unwrap_or_default(),
             avocat_requerant: None,
+            listed_counsel: Vec::new(),
             texte_integral_raw: pdf_text.to_string(),
             texte_integral_clean: pdf_text.to_string(),
             sections,
             metadata_header: String::new(),
-            visa_trim: String::new(),
             themes: Vec::new(),
             attacked: None,
             parse_warnings: Vec::new(),
@@ -694,11 +635,11 @@ pub fn parse_cnda(
             solution: None,
             publication_codes: Vec::new(),
             avocat_requerant: None,
+            listed_counsel: Vec::new(),
             texte_integral_raw: abstract_text.to_string(),
             texte_integral_clean: full_text,
             sections: Vec::new(),
             metadata_header: String::new(),
-            visa_trim: String::new(),
             themes: Vec::new(),
             attacked: None,
             parse_warnings: vec!["cnda:fiche_only_no_pdf".to_string()],
@@ -1104,15 +1045,12 @@ mod tests {
         );
     }
 
-    /// Contrat anti-re-embed : les trois champs qui composent le chunk
-    /// (`texte_integral_clean`, `metadata_header`, `visa_trim`) sont posés tels que le
-    /// chunk = `texte_integral_clean` seul. `metadata_header` et `visa_trim` sont
-    /// vides ⇒ aucune métadonnée n'entre dans le chunk. Vaut PDF et fiche-only.
+    /// `metadata_header` is empty, so the chunk is `texte_integral_clean` alone and
+    /// no metadata enters it, with a PDF as without.
     #[test]
     fn cnda_metadata_never_enters_chunk() {
         let out = parse_cnda(&cnda_pdf_text(), &cnda_fiche(), "26006334").expect("parse PDF");
         assert_eq!(out.decision.metadata_header, "");
-        assert_eq!(out.decision.visa_trim, "");
         assert_eq!(out.decision.texte_integral_clean, cnda_pdf_text());
         assert_eq!(out.decision.date_lecture.as_deref(), Some("2026-05-12"));
         assert!(!out.decision.texte_integral_clean.is_empty());
@@ -1124,20 +1062,18 @@ mod tests {
         });
         let out = parse_cnda("", &fiche, "25001234").expect("parse fiche-only");
         assert_eq!(out.decision.metadata_header, "");
-        assert_eq!(out.decision.visa_trim, "");
         assert_eq!(out.decision.date_lecture.as_deref(), Some("2025-04-05"));
     }
 
-    /// Stabilité de reconstruction : les trois champs qui déterminent le chunk sont
-    /// une fonction déterministe de l'entrée — re-parser le même `(pdf_text, fiche,
-    /// numero)` rend des champs identiques.
+    /// Re-parsing the same `(pdf_text, fiche, numero)` gives the same fields the
+    /// chunk is cut from.
     #[test]
     fn cnda_chunk_fields_are_deterministic() {
         let run = || {
             let d = parse_cnda(&cnda_pdf_text(), &cnda_fiche(), "26006334")
                 .expect("parse")
                 .decision;
-            (d.texte_integral_clean, d.metadata_header, d.visa_trim)
+            (d.texte_integral_clean, d.metadata_header)
         };
         assert_eq!(run(), run());
     }

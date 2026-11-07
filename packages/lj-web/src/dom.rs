@@ -17,42 +17,6 @@ pub async fn copy_text(text: &str) -> bool {
         .is_ok()
 }
 
-/// Graine de navigation décision (origine recherche + prev/next), portée d'un
-/// rechargement à l'autre dans la portée d'un onglet.
-///
-/// `sessionStorage` et pas `localStorage` : la graine est un contexte de
-/// navigation, pas une préférence. `localStorage` serait partagé par tous les
-/// onglets — deux recherches ouvertes se voleraient leur retour —, survivrait à
-/// la fermeture du navigateur et laisserait les termes de recherche sur le
-/// disque. `sessionStorage` survit au F5 et n'est recopié dans un nouvel onglet
-/// que par `window.open` ; un onglet ouvert au clic milieu repart donc sans
-/// graine, sans conséquence — l'onglet de la liste reste ouvert derrière, c'est
-/// lui le retour.
-///
-/// L'accès échoue quand le stockage est refusé (mode privé strict, cookies
-/// bloqués) et quand le quota est plein : on rend `None` / on ne fait rien, la
-/// graine en mémoire tient alors jusqu'au rechargement.
-fn session_storage() -> Option<web_sys::Storage> {
-    web_sys::window()?.session_storage().ok().flatten()
-}
-
-fn cle(id: &str) -> String {
-    format!("lj-nav:{id}")
-}
-
-/// Graine persistée pour cette décision, `None` si l'onglet n'en a pas ou si le
-/// stockage est refusé.
-pub fn nav_seed_get(id: &str) -> Option<String> {
-    session_storage()?.get_item(&cle(id)).ok().flatten()
-}
-
-/// Persiste la graine de cette décision pour la durée de l'onglet.
-pub fn nav_seed_set(id: &str, json: &str) {
-    if let Some(storage) = session_storage() {
-        let _ = storage.set_item(&cle(id), json);
-    }
-}
-
 // ── Géométrie de la sélection de texte ──────────────────────────────────────
 
 #[wasm_bindgen]

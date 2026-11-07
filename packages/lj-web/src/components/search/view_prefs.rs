@@ -3,7 +3,7 @@
 //! le tri IA y reste, puisqu'il change la réponse.
 
 use leptos::prelude::*;
-use lj_dtos::QueryMode;
+use lj_dtos::{QueryMode, UiAction};
 
 /// Vue de contenu d'une carte de résultat.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -17,6 +17,13 @@ pub enum CardView {
 /// l'auto, un changement de filtre, de tri ou de page le garde.
 #[derive(Clone, Copy)]
 pub struct CardViewPref(pub RwSignal<Option<(String, CardView)>>);
+
+impl CardViewPref {
+    /// Pins `view` on `query`, as the toggle does, for a search about to open.
+    pub fn pin(self, query: String, view: CardView) {
+        self.0.set(Some((query, view)));
+    }
+}
 
 /// À appeler une fois dans `App` : la racine survit aux navigations, donc le
 /// choix survit à un aller-retour vers une décision.
@@ -80,7 +87,7 @@ pub fn ViewControls(
         "flex flex-wrap items-center gap-2"
     };
     view! {
-        <div class=class>
+        <div class=class data-usage=UiAction::SearchView.as_str()>
             <CardViewToggle query=query mode=mode />
             <RerankToggle active=rerank on_toggle=on_rerank mode=served reranked=reranked />
             {children.map(|c| c())}
@@ -204,7 +211,7 @@ fn RerankToggle(
         if par_date.get() {
             "Le tri IA ne s'applique pas à un classement par date, qui impose déjà son ordre."
         } else if hors_mode.get() {
-            "Le tri IA ne s'applique qu'à une recherche sémantique : une recherche à opérateurs classe par correspondance aux termes saisis, une recherche par référence par l'identité de la décision."
+            "Le tri IA ne s'applique qu'au mode Reformulation : une recherche à opérateurs classe par correspondance aux termes saisis, une recherche par référence par l'identité de la décision."
         } else if renonce.get() {
             "Le tri IA n'a pas trié cette liste : trop peu de résultats, ou le service était saturé. Le classement affiché est celui du score de recherche."
         } else if active.get() {

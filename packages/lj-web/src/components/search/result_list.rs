@@ -10,6 +10,8 @@ use super::view_prefs::CardView;
 pub fn ResultList(
     hits: Vec<SearchHit>,
     all_hit_paths: Vec<String>,
+    /// The query whose terms the opened decision highlights.
+    highlight: Option<String>,
     page: u32,
     page_size: u32,
     #[prop(into)] default_view: Signal<CardView>,
@@ -31,6 +33,7 @@ pub fn ResultList(
                         page=page
                         page_size=page_size
                         hit_paths=all_hit_paths.clone()
+                        highlight=highlight.clone()
                         default_view=default_view
                         animate=animate
                     />

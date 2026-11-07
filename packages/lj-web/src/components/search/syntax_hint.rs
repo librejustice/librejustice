@@ -9,7 +9,9 @@
 
 use leptos::html;
 use leptos::prelude::*;
+use lj_dtos::UiAction;
 
+use super::mode_select::DECISION_MODES;
 use crate::helpers::cn;
 
 const OPERATORS: &[(&str, &str)] = &[
@@ -21,10 +23,15 @@ const OPERATORS: &[(&str, &str)] = &[
     ("*", "troncature"),
 ];
 
-/// Moteur documenté par l'aide. Les capacités diffèrent : le moteur décisions
-/// a deux modes et des opérateurs ; le moteur textes est un classement par
-/// mots-clés (pas d'opérateurs) qui comprend les textes nommés et les numéros
-/// d'articles.
+const DESIGNATIONS: &[(&str, &str)] = &[
+    ("19-22.015", "numéro de pourvoi ou de requête"),
+    ("1922015", "le même, sans séparateurs"),
+    ("ECLI:FR:CCASS:2022:CO00288", "ECLI"),
+    ("CE 20 octobre 1989", "cour et date"),
+    ("arrêt Nicolo", "nom d'usage"),
+];
+
+/// The engine the help documents: textes has no operators and no semantic mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum HelpCorpus {
     #[default]
@@ -86,7 +93,12 @@ pub fn SyntaxHint(
     ]);
 
     view! {
-        <button type="button" on:click=open class=trigger_class>
+        <button
+            type="button"
+            on:click=open
+            class=trigger_class
+            data-usage=UiAction::SearchSyntaxHelp.as_str()
+        >
             "Aide à la recherche"
             <span aria-hidden="true" class="opacity-60">
                 "?"
@@ -125,7 +137,8 @@ pub fn SyntaxHint(
     }
 }
 
-/// Corps de l'aide décisions : les deux modes du moteur + les opérateurs.
+/// The decisions help: the four modes as their pills word them, how to name one
+/// decision, the operators.
 fn decisions_help() -> AnyView {
     view! {
         <section class="flex flex-col gap-2">
@@ -133,50 +146,63 @@ fn decisions_help() -> AnyView {
                 "Modes de recherche"
             </h4>
             <dl class="flex flex-col gap-1.5 text-xs">
-                <div class="flex gap-2">
-                    <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">"Sémantique"</dt>
-                    <dd class="text-[var(--color-ink-muted)]">
-                        "Répond à votre demande et trouve des décisions pertinentes même sans la présence stricte des mots de celle-ci. Mode par défaut."
-                    </dd>
-                </div>
-                <div class="flex gap-2">
-                    <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">"Lexicale"</dt>
-                    <dd class="text-[var(--color-ink-muted)]">
-                        "Correspondance stricte sur les mots-clés et opérateurs. Activé automatiquement dès qu'un opérateur est détecté dans la requête."
-                    </dd>
-                </div>
+                {DECISION_MODES
+                    .iter()
+                    .map(|(_, label, tooltip)| {
+                        view! {
+                            <div class="flex gap-2">
+                                <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">
+                                    {*label}
+                                </dt>
+                                <dd class="text-[var(--color-ink-muted)]">{*tooltip}</dd>
+                            </div>
+                        }
+                    })
+                    .collect::<Vec<_>>()}
             </dl>
+        </section>
+        <section class="flex flex-col gap-2">
+            <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
+                "Trouver une décision précise"
+            </h4>
+            {code_chips(DESIGNATIONS)}
         </section>
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
                 "Tri IA"
             </h4>
             <p class="text-xs text-[var(--color-ink-muted)]">
-                "Actif par défaut en sémantique : une IA réordonne les 50 premiers résultats selon votre question."
+                "Actif par défaut en mode Reformulation : une IA réordonne les 50 premiers résultats selon votre question."
             </p>
         </section>
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
                 "Opérateurs booléens"
             </h4>
-            <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs">
-                {OPERATORS
-                    .iter()
-                    .map(|(token, meaning)| {
-                        view! {
-                            <span class="inline-flex items-center gap-1.5">
-                                <code class="rounded-xs bg-[var(--color-vellum)] px-1.5 py-0.5 font-mono text-[0.72rem] text-[var(--color-ink)]">
-                                    {*token}
-                                </code>
-                                <span class="text-[var(--color-ink-muted)]">{*meaning}</span>
-                            </span>
-                        }
-                    })
-                    .collect::<Vec<_>>()}
-            </div>
+            {code_chips(OPERATORS)}
         </section>
     }
     .into_any()
+}
+
+fn code_chips(items: &'static [(&'static str, &'static str)]) -> impl IntoView {
+    view! {
+        <div class="flex flex-wrap gap-x-4 gap-y-2 text-xs">
+            {items
+                .iter()
+                .map(|(token, meaning)| {
+                    view! {
+                        <span class="inline-flex items-center gap-1.5">
+                            <code class="rounded-xs bg-[var(--color-vellum)] px-1.5 py-0.5 font-mono text-[0.72rem] text-[var(--color-ink)]">
+                                {*token}
+                            </code>
+                            <span class="text-[var(--color-ink-muted)]">{*meaning}</span>
+                        </span>
+                    }
+                })
+                .collect::<Vec<_>>()}
+        </div>
+    }
 }
 
 /// Corps de l'aide textes : classement par mots-clés, sans opérateurs — les

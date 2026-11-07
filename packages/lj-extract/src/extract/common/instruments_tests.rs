@@ -121,8 +121,7 @@ fn normalize_instrument_canonical_foreign_and_conventions() {
         normalize_instrument("Convention de lugano du 30 octobre 2007"),
         "Convention de Lugano du 30 octobre 2007"
     );
-    // Rome (obligations contractuelles) : formes courtes datées/sous-titrées
-    // convergent vers le titre long de la GT ; le Statut de Rome (CPI) est exclu.
+    // Short Rome Convention forms converge on its long title; the ICC Statute stays out.
     let rome =
         "Convention de Rome du 19 juin 1980 sur la loi applicable aux obligations contractuelles";
     for v in [
@@ -285,10 +284,7 @@ fn german_native_code_names_converge_to_french_form() {
 
 #[test]
 fn foreign_code_overcapture_truncated_after_gentile() {
-    // Sur-capture de la borne droite de citation : la prose qui suit le gentilé
-    // est happée dans l'identité. Le code étranger n'étant pas snappé (garde
-    // droit étranger), la queue survivait et éclatait l'identité. On tronque
-    // après le gentilé : toutes ces graphies convergent vers le code étranger nu.
+    // Prose captured past the gentilé is cut after it: every spelling converges on the bare code.
     for (raw, want) in [
         ("Code civil allemand à la suite", "Code civil allemand"),
         ("Code civil suisse agissant", "Code civil suisse"),

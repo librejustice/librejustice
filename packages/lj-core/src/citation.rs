@@ -81,6 +81,11 @@ const COURT_WORDS: &[&str] = &[
 /// day and its month, the articles.
 const CITATION_WORDS: &[&str] = &[
     "arret",
+    "arrets",
+    "dit",
+    "dite",
+    "dits",
+    "dites",
     "decision",
     "jugement",
     "ordonnance",
@@ -196,6 +201,78 @@ pub fn remainder_cites(words: &[&str], seats: &HashSet<String>) -> bool {
         && rest.iter().all(|w| is_citation_word(w, seats))
 }
 
+/// The words that designate on their own, without a court beside them.
+const DESIGNATING_WORDS: &[&str] = &[
+    "arret",
+    "arrets",
+    "jurisprudence",
+    "affaire",
+    "dit",
+    "dite",
+    "dits",
+    "dites",
+    "c",
+    "contre",
+    "v",
+    "vs",
+];
+
+/// The words a name must hold, and whether the query writes a court or a
+/// designating word. A seat counts unless a court is named: « Cassis de Dijon ».
+pub fn distinctive_words<'a>(words: &[&'a str], seats: &HashSet<String>) -> (Vec<&'a str>, bool) {
+    let (court, rest) = match strip_court(words) {
+        Some((_, rest)) => (true, rest),
+        None => (false, words.to_vec()),
+    };
+    let no_seat = HashSet::new();
+    let seats = if court { seats } else { &no_seat };
+    let designates = court
+        || rest
+            .iter()
+            .any(|w| COURT_WORDS.contains(w) || DESIGNATING_WORDS.contains(w));
+    let distinctive = rest
+        .into_iter()
+        .filter(|w| !w.is_empty() && !is_citation_word(w, seats))
+        .collect();
+    (distinctive, designates)
+}
+
+const GLUE_WORDS: &[&str] = &["de", "du", "des", "d", "l", "la", "le", "les", "en", "et"];
+
+/// A key glued by an article to a distinctive word outside it is a piece of
+/// another name: « cassis » in « Cassis de Dijon », « loos » in « Van Gend en Loos ».
+pub fn key_is_glued(words: &[&str], key: &str, distinctive: &[&str]) -> bool {
+    let key: Vec<&str> = key.split(' ').collect();
+    let Some(start) = (0..words.len().saturating_sub(key.len() - 1))
+        .find(|&i| words[i..i + key.len()] == key[..])
+    else {
+        return false;
+    };
+    let end = start + key.len();
+    let glued = |glue: Option<&&str>, word: Option<&&str>| {
+        glue.is_some_and(|g| GLUE_WORDS.contains(g))
+            && word.is_some_and(|w| distinctive.contains(w))
+    };
+    (start >= 2 && glued(words.get(start - 1), words.get(start - 2)))
+        || glued(words.get(end), words.get(end + 1))
+}
+
+/// The words of a case name key that distinguish it: « commune beziers » for
+/// « commune de beziers ii ».
+pub fn name_words(key: &str) -> Vec<&str> {
+    let none = HashSet::new();
+    key.split(' ')
+        .filter(|w| !w.is_empty() && !is_citation_word(w, &none))
+        .collect()
+}
+
+/// Whether these words only point at the name beside them: « l'arrêt », « dite ».
+pub fn only_designates(words: &[&str]) -> bool {
+    words
+        .iter()
+        .all(|w| DESIGNATING_WORDS.contains(w) || GLUE_WORDS.contains(w))
+}
+
 /// The words of a folded query outside `key`, one of its contiguous n-grams.
 /// Every word when the key is not there.
 pub fn words_around<'a>(words: &[&'a str], key: &str) -> Vec<&'a str> {
@@ -215,11 +292,13 @@ pub fn words_around<'a>(words: &[&'a str], key: &str) -> Vec<&'a str> {
 /// A day written in full: `28 décembre 2009`, `1er avril 2025`, `17/07/2024`,
 /// `2024-07-17`. A year alone is not a day.
 static DAY_RE: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(concat!(
+    use crate::docket_key::SLASH;
+    Regex::new(&[
         r"\b(?:(?P<d1>1er|\d{1,2}) (?P<m1>janvier|fevrier|mars|avril|mai|juin|juillet|aout|septembre|octobre|novembre|decembre) (?P<y1>\d{4})",
-        r"|(?P<d2>\d{1,2})/(?P<m2>\d{1,2})/(?P<y2>\d{4})",
+        &format!(r"|(?P<d2>\d{{1,2}}){SLASH}(?P<m2>\d{{1,2}}){SLASH}(?P<y2>\d{{4}})"),
         r"|(?P<y3>\d{4})-(?P<m3>\d{2})-(?P<d3>\d{2}))\b",
-    ))
+    ]
+    .concat())
     .unwrap()
 });
 
@@ -291,6 +370,73 @@ mod tests {
         remainder_cites(&words_around(&mots, cle), sieges)
     }
 
+    fn distinctive(q: &str, cities: &[&str]) -> (Vec<String>, bool) {
+        let folded = case_name_key(q);
+        let words: Vec<&str> = folded.split(' ').collect();
+        let (distinctive, designates) = distinctive_words(&words, &seats(cities));
+        let distinctive = distinctive.into_iter().map(str::to_string).collect();
+        (distinctive, designates)
+    }
+
+    #[test]
+    fn a_name_is_read_from_the_words_beside_the_citation() {
+        for (q, words, designates) in [
+            ("arrêt Nicolo", vec!["nicolo"], true),
+            ("Nicolo", vec!["nicolo"], false),
+            ("CE, Ass., 20 octobre 1989, Nicolo", vec!["nicolo"], true),
+            ("jurisprudence Tropic", vec!["tropic"], true),
+            ("arrêts dits Jacques Vabre", vec!["jacques", "vabre"], true),
+            ("arrêt Cassis de Dijon", vec!["cassis", "dijon"], true),
+            ("Marckx c. Belgique", vec!["marckx", "belgique"], true),
+            ("Béziers II", vec!["beziers"], false),
+            (
+                "Danthony consultation irrégulière",
+                vec!["danthony", "consultation", "irreguliere"],
+                false,
+            ),
+        ] {
+            assert_eq!(
+                distinctive(q, &[]),
+                (words.iter().map(|w| w.to_string()).collect(), designates),
+                "query {q:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_seat_distinguishes_unless_a_court_is_named() {
+        let dijon = &["dijon"];
+        assert_eq!(
+            distinctive("Cassis de Dijon", dijon).0,
+            vec!["cassis", "dijon"]
+        );
+        assert_eq!(
+            distinctive("CA Dijon Lamotte", dijon),
+            (vec!["lamotte".to_string()], true)
+        );
+    }
+
+    #[test]
+    fn a_key_glued_to_another_distinctive_word_is_a_piece_of_another_name() {
+        for (q, key, glued) in [
+            ("arrêt Cassis de Dijon", "cassis", true),
+            ("arrêt Van Gend en Loos", "loos", true),
+            ("arrêt Van Gend en Loos", "van gend en loos", false),
+            ("Commune de Cassis", "commune de cassis", false),
+            ("arrêt Cassis", "cassis", false),
+            ("arrêt Blanco de 1873", "blanco", false),
+        ] {
+            let folded = case_name_key(q);
+            let words: Vec<&str> = folded.split(' ').collect();
+            let (distinctive, _) = distinctive_words(&words, &seats(&[]));
+            assert_eq!(
+                key_is_glued(&words, key, &distinctive),
+                glued,
+                "query {q:?}, key {key:?}"
+            );
+        }
+    }
+
     #[test]
     fn la_juridiction_autour_du_nom_en_fait_une_citation() {
         let aucun = seats(&[]);
@@ -302,14 +448,14 @@ mod tests {
                 "commune de beziers",
                 true,
             ),
-            ("Cass. civ. 1re, 12 mai 2021, Marzouk", "marzouk", true),
+            ("Cass. civ. 1re, 3 mars 2021, Durand", "durand", true),
             ("Béziers II", "beziers", false),
             ("Béziers 2001", "beziers", false),
             ("arrêt Béziers", "beziers", false),
             ("Béziers", "beziers", false),
             ("Béziers conseil municipal", "beziers", false),
             (
-                "Béziers conseil d'État loyauté contractuelle",
+                "Béziers conseil d'État résiliation du contrat",
                 "beziers",
                 false,
             ),
@@ -347,7 +493,7 @@ mod tests {
             let (k, r) = strip_court(&m).unwrap_or_else(|| panic!("{q}"));
             assert_eq!((k, r), (kind, rest), "requête {q:?}");
         }
-        for q in ["section", "chambre sociale", "expulsion locative"] {
+        for q in ["section", "chambre sociale", "bail commercial"] {
             let m = mots(q);
             let m: Vec<&str> = m.iter().map(String::as_str).collect();
             assert!(strip_court(&m).is_none(), "requête {q:?}");
@@ -357,18 +503,20 @@ mod tests {
     #[test]
     fn le_jour_ecrit_en_entier_se_lit() {
         for (q, jour) in [
-            ("cour d'appel de toulouse 23 avril 1998", Some("1998-04-23")),
+            ("cour d'appel de toulouse 14 mai 1997", Some("1997-05-14")),
             (
-                "TJ Versailles, 1er avril 2025, n° 25/00033",
-                Some("2025-04-01"),
+                "TJ Versailles, 1er juin 2024, n° 24/01234",
+                Some("2024-06-01"),
             ),
-            ("décision du 12/03/2024 sur le permis", Some("2024-03-12")),
-            ("2024-07-17", Some("2024-07-17")),
+            ("décision du 15/06/2021 sur le permis", Some("2021-06-15")),
+            ("2021-07-01", Some("2021-07-01")),
             ("29 février 2024", Some("2024-02-29")),
             ("29 février 2023", None),
             ("conseil d'état 1920", None),
             ("Béziers 2001", None),
-            ("14 avril au 13 juillet 2027", Some("2027-07-13")),
+            ("2 mai au 30 juin 2026", Some("2026-06-30")),
+            ("Cour d'appel de Rennes 28/02/ 2020", Some("2020-02-28")),
+            ("ordonnance du 07 / 03 / 2023", Some("2023-03-07")),
         ] {
             assert_eq!(query_day(q).as_deref(), jour, "requête {q:?}");
         }
@@ -378,18 +526,18 @@ mod tests {
     fn la_cour_et_le_jour_designent_sans_nom_ni_numero() {
         let sieges = seats(&["toulouse", "paris", "nimes"]);
         for (q, cite) in [
-            ("cour d'appel de toulouse 23 avril 1998", true),
-            ("caa paris 17 juillet 2024", true),
-            ("tribunal judiciaire de paris 8 janvier 2025", true),
+            ("cour d'appel de toulouse 14 mai 1997", true),
+            ("caa paris 5 février 2024", true),
+            ("tribunal judiciaire de paris 20 octobre 2023", true),
             ("CE, Sect., 28 décembre 2009", true),
-            ("Conseil d'État 2024 expulsion", false),
+            ("Conseil d'État 2023 permis de construire", false),
             ("conseil d'état 1920", false),
             (
-                "cour d'appel nîmes 12 avril 2022 congés trimestriels",
+                "cour d'appel nîmes 9 mars 2021 heures supplémentaires",
                 false,
             ),
             ("loi du 26 janvier 2024 immigration", false),
-            ("23 avril 1998", false),
+            ("14 mai 1997", false),
         ] {
             assert_eq!(cites_a_day(q, &sieges), cite, "requête {q:?}");
         }

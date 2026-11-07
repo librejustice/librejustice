@@ -20,15 +20,15 @@ aho-corasick = { version = "1" }
 any_spawner = { version = "0.3", default-features = false, features = ["futures-executor", "tokio", "wasm-bindgen"] }
 async-compression = { version = "0.4", default-features = false, features = ["brotli", "gzip", "tokio", "zstd"] }
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
-aws-lc-sys = { version = "0.41", default-features = false, features = ["prebuilt-nasm"] }
+aws-lc-sys = { version = "0.45", default-features = false, features = ["prebuilt-nasm"] }
 axum = { version = "0.8", features = ["macros", "multipart", "ws"] }
 block-buffer = { version = "0.12", default-features = false, features = ["zeroize"] }
 brotli = { version = "8" }
 brotli-decompressor = { version = "5" }
 bytemuck = { version = "1", default-features = false, features = ["aarch64_simd", "derive", "extern_crate_alloc", "min_const_generics"] }
+chrono = { version = "0.4", features = ["serde"] }
 cipher = { version = "0.4", default-features = false, features = ["alloc", "block-padding", "rand_core"] }
 compression-codecs = { version = "0.4", default-features = false, features = ["brotli", "gzip", "zstd"] }
-concurrent-queue = { version = "2" }
 const-oid = { version = "0.9", default-features = false, features = ["db", "std"] }
 constant_time_eq = { version = "0.4" }
 crossbeam-epoch = { version = "0.9" }
@@ -51,18 +51,18 @@ futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["js", "std"] }
-getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hashbrown = { version = "0.17" }
 hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
 hmac = { version = "0.13", default-features = false, features = ["zeroize"] }
 hyper = { version = "1", features = ["http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
 idna = { version = "1" }
-itertools = { version = "0.10" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 leptos = { version = "0.8", default-features = false, features = ["nonce", "ssr"] }
 libc = { version = "0.2" }
 log = { version = "0.4", default-features = false, features = ["std"] }
+md-5 = { version = "0.11" }
 memchr = { version = "2", features = ["use_std"] }
 miniz_oxide = { version = "0.8", features = ["simd"] }
 nom = { version = "7" }
@@ -73,8 +73,10 @@ once_cell = { version = "1" }
 percent-encoding = { version = "2" }
 ppv-lite86 = { version = "0.2", default-features = false, features = ["simd", "std"] }
 proc-macro2 = { version = "1", features = ["nightly", "span-locations"] }
+quick-xml = { version = "0.41", features = ["overlapped-lists", "serialize"] }
 quote = { version = "1" }
 rand-274715c4dabd11b0 = { package = "rand", version = "0.9" }
+rand-93f6ce9d446188ac = { package = "rand", version = "0.10" }
 rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", features = ["small_rng"] }
 rand_chacha = { version = "0.3" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
@@ -83,7 +85,7 @@ read-fonts = { version = "0.41", features = ["experimental_font_api"] }
 regex = { version = "1" }
 regex-automata = { version = "0.4", default-features = false, features = ["dfa-build", "dfa-onepass", "hybrid", "meta", "nfa-backtrack", "perf-inline", "perf-literal", "std", "unicode"] }
 regex-syntax = { version = "0.8" }
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "cookies", "form", "gzip", "json", "query", "rustls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "cookies", "form", "gzip", "http2", "json", "query", "rustls", "stream"] }
 rustls-pki-types = { version = "1", features = ["std"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
@@ -98,7 +100,7 @@ smallvec = { version = "1", default-features = false, features = ["const_new"] }
 socket2 = { version = "0.6", default-features = false, features = ["all"] }
 spin = { version = "0.9", default-features = false, features = ["once", "spin_mutex"] }
 stable_deref_trait = { version = "1" }
-syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
+syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-traits", "full", "visit", "visit-mut"] }
 thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-human-readable", "serde-well-known"] }
 tinyvec = { version = "1", features = ["rustc_1_57", "std"] }
@@ -128,7 +130,8 @@ digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["m
 either = { version = "1", features = ["use_std"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["js", "std"] }
 hashbrown = { version = "0.17" }
-itertools = { version = "0.10" }
+itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 leptos_macro = { version = "0.8", default-features = false, features = ["axum", "ssr"] }
 libc = { version = "0.2" }
 memchr = { version = "2", features = ["use_std"] }
@@ -136,7 +139,6 @@ nom = { version = "7" }
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 once_cell = { version = "1" }
 percent-encoding = { version = "2" }
-proc-macro-error2 = { version = "2" }
 proc-macro2 = { version = "1", features = ["nightly", "span-locations"] }
 quote = { version = "1" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
@@ -162,7 +164,9 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["const_xx
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
+getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper = { version = "1", default-features = false, features = ["client"] }
+hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 rustix = { version = "1", features = ["fs"] }
 tower-http = { version = "0.6", default-features = false, features = ["follow-redirect"] }

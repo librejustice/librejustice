@@ -11,7 +11,7 @@ use deadpool_postgres::Client;
 use serde_json::Value;
 use tokio_postgres::types::ToSql;
 
-use lj_dtos::SearchRequest;
+use lj_dtos::{SearchMode, SearchRequest, SortOrder};
 
 use super::filters::{
     as_refs, build_array_filter_queries, enum_uids, jt_codes, legal_domain_uids, nonempty, present,
@@ -19,22 +19,20 @@ use super::filters::{
 };
 use super::hydrate::FacetCounters;
 
-/// Aggregation tree. The seat axis is flat: a path carries its own hierarchy,
-/// so one `terms` renders the 2,362 nodes of the corpus where the
+/// Aggregation tree. The seat and formation axes are flat: a path carries its own
+/// hierarchy, so one `terms` renders every seat node of the corpus where the
 /// type/court/chamber nest asked for three.
 ///
-/// Sizes set with margin on the real vocabulary (2,362 paths, 43 domains, 14
-/// solutions, 9 offices, 13 procedures, 32 codes): `sum_other_doc_count` is 0
-/// everywhere, citations excepted, truncated by nature. The seat cap is global
-/// now, no longer nested under a court: at 300 it would truncate the tree with
-/// no error and no log, measured at 684 ms at 4,000.
+/// Sizes set with margin over the vocabulary: `sum_other_doc_count` is 0
+/// everywhere, citations excepted, truncated by nature. The seat cap is global,
+/// not nested under a court: below the seat vocabulary it truncates the tree with
+/// no error and no log.
 fn agg() -> &'static str {
     r#"{
   "seat": {"terms": {"field": "seat_paths", "size": 4000}},
   "dom": {"terms": {"field": "legal_domain_uid", "size": 100}},
   "sol": {"terms": {"field": "solution_uid", "size": 50}},
-  "off": {"terms": {"field": "office_uid", "size": 30}},
-  "pro": {"terms": {"field": "procedure_uid", "size": 30}},
+  "form": {"terms": {"field": "formation_paths", "size": 200}},
   "pub": {"terms": {"field": "publication_codes", "size": 50}},
   "jour": {"date_histogram": {"field": "date_lecture", "fixed_interval": "1d", "min_doc_count": 1}},
   "inst": {"terms": {"field": "legal_instruments", "size": 30}},
@@ -57,14 +55,16 @@ fn date_range(req: &SearchRequest, next_idx: &mut usize, params: &mut Params) ->
     Some(expr)
 }
 
-/// La question, en union des deux jambes lexicales. Sans le titre, une décision
-/// que seul son nom d'usage désigne serait servie par la jambe titre et comptée
-/// zéro : la facette afficherait 0 sous un résultat visible.
+/// The question in the parts asked. Run in every part, it takes the title too:
+/// without it, a decision only its usual name designates would be served and
+/// counted zero. The lexical mode and a date order ask every word, as `ET` does.
 fn question(req: &SearchRequest, next_idx: &mut usize, params: &mut Params) -> Option<String> {
-    if req.query.trim().is_empty() {
+    if super::query::query_lacks_searchable_terms(&req.query) {
         return None;
     }
-    let boolean = super::query::is_boolean_query(&req.query);
+    let boolean = req.mode == SearchMode::Lexical
+        || req.sort != SortOrder::Relevance
+        || super::query::is_boolean_query(&req.query);
     let body = if boolean {
         super::query::translate_boolean(&req.query)
     } else {
@@ -72,6 +72,11 @@ fn question(req: &SearchRequest, next_idx: &mut usize, params: &mut Params) -> O
     };
     let bi = *next_idx;
     params.push(Box::new(body) as Box<dyn ToSql + Sync + Send>);
+    let parts = super::filters::parts_query(req, &format!("${bi}::text"));
+    if !super::filters::every_part(req) {
+        *next_idx += 1;
+        return Some(parts);
+    }
     let title_expr = if boolean {
         params
             .push(Box::new(super::query::translate_boolean(&req.query))
@@ -86,9 +91,7 @@ fn question(req: &SearchRequest, next_idx: &mut usize, params: &mut Params) -> O
     };
     *next_idx += 2;
     Some(format!(
-        "paradedb.boolean(should => ARRAY[\
-         paradedb.parse_with_field('full_text', ${bi}::text), {title_expr}], \
-         minimum_should_match => 1)"
+        "paradedb.boolean(should => ARRAY[{parts}, {title_expr}], minimum_should_match => 1)"
     ))
 }
 
@@ -175,14 +178,6 @@ fn filter_parts(req: &SearchRequest, next_idx: &mut usize, params: &mut Params) 
             present(&req.solution).map(|v| enum_uids("solution", v)),
         ),
         (
-            "procedure_uid",
-            present(&req.procedure).map(|v| enum_uids("procedure", v)),
-        ),
-        (
-            "office_uid",
-            present(&req.office).map(|v| enum_uids("office", v)),
-        ),
-        (
             "legal_domain_uid",
             present(&req.legal_domain).map(legal_domain_uids),
         ),
@@ -212,7 +207,7 @@ pub(crate) enum Scope<'a> {
 
 /// Which values the aggregate counts. `Keys` names them: `include` bounds the
 /// term dictionary and the predicate gains their union, without which the scan
-/// covers the whole corpus (785 ms against 380 under a question).
+/// covers the whole corpus.
 pub(crate) enum Aggs<'a> {
     /// The eight axes of the panel, each capped at the head of its vocabulary.
     All,
@@ -315,7 +310,7 @@ pub(crate) async fn aggregate_facets(
         }
     };
     let predicate_params = params.len();
-    // The index carries tokens, not labels, and the catalogue is 1.3 M rows: the
+    // The index carries tokens, not labels, and the catalogue is large: the
     // title joins in the same statement rather than in memory.
     params.push(Box::new(aggs.tree()) as Box<dyn ToSql + Sync + Send>);
     let agg = format!("${idx}::text::json");
@@ -449,16 +444,11 @@ fn doc_count(b: &Value) -> i64 {
 }
 
 fn accumulate_counters(json: &Value, c: &mut FacetCounters, sign: i64) -> i64 {
-    for seat in buckets(json, "seat") {
-        if let Some(path) = bucket_key(&seat) {
-            *c.seats.entry(path).or_insert(0) += sign * doc_count(&seat);
-        }
-    }
     for (axe, dest) in [
+        ("seat", &mut c.seats),
+        ("form", &mut c.formation),
         ("dom", &mut c.domain),
         ("sol", &mut c.solution),
-        ("off", &mut c.office),
-        ("pro", &mut c.procedure),
     ] {
         for b in buckets(json, axe) {
             if let Some(uid) = bucket_key(&b) {
@@ -466,9 +456,8 @@ fn accumulate_counters(json: &Value, c: &mut FacetCounters, sign: i64) -> i64 {
             }
         }
     }
-    // L'agrégat rend un seau par code source, la facette une valeur par groupe.
-    // La somme est exacte parce qu'aucune décision ne porte deux codes du même
-    // groupe : mesuré 0 sur les deux groupes qui en réunissent plusieurs.
+    // The aggregate returns one bucket per source code, the facet one value per
+    // group. The sum is exact because no decision carries two codes of one group.
     for b in buckets(json, "pub") {
         let Some(code) = bucket_key(&b) else { continue };
         for key in lj_core::publication::publication_keys(&[code]) {
@@ -495,8 +484,8 @@ fn accumulate_counters(json: &Value, c: &mut FacetCounters, sign: i64) -> i64 {
             *c.instrument.counts.entry(uid).or_insert(0) += sign * doc_count(&b);
         }
     }
-    // Le composite porte son instrument en préfixe, ce qui range les articles
-    // sous leur texte sans imbriquer les deux axes : imbriqués, 6 s contre 0,7.
+    // The composite carries its instrument as a prefix, which files the articles
+    // under their text without nesting the two axes, which runs several times slower.
     for b in buckets(json, "art") {
         let Some(composite) = bucket_key(&b) else {
             continue;
@@ -597,12 +586,12 @@ mod tests {
         );
     }
 
-    /// The question counted 3,059,020 decisions under a list of 5 for « Béziers
-    /// conseil d'État » (07/09/2026), matching on either token of the title.
+    /// The served ids count without the question, which matches on either token
+    /// of the title and would count far more decisions than were served.
     #[test]
     fn les_servies_se_comptent_sans_la_question() {
         let r = req(serde_json::json!({
-            "query": "beziers conseil d'etat", "jurisdictionType": ["CE"],
+            "query": "dupont conseil d'etat", "jurisdictionType": ["CE"],
         }));
         let mut params: Params = Vec::new();
         let mut idx = 1usize;
@@ -676,10 +665,10 @@ mod tests {
     fn les_axes_referentiels_portent_l_uid_complet() {
         let mut params: Params = Vec::new();
         let r = req(serde_json::json!({
-            "query": "", "solution": ["REJET"], "procedure": ["QPC"], "office": ["JEX"],
+            "query": "", "solution": ["REJET"], "formation": ["FR.TJ.JEX", "FR.CC.RESTREINTE"],
         }));
         let p = build_predicate(&r, &mut 1, &mut params);
-        for field in ["solution_uid", "procedure_uid", "office_uid"] {
+        for field in ["solution_uid", "formation_paths"] {
             assert!(p.contains(&format!("paradedb.term('{field}'")), "{p}");
         }
         assert_eq!(params.len(), 3);
@@ -692,7 +681,7 @@ mod tests {
                 {"key": "CC", "doc_count": 30},
                 {"key": "CC.SOCIALE", "doc_count": 18}]},
             "sol": {"buckets": [{"key": "solution:REJET", "doc_count": 25}]},
-            "pro": {"buckets": [{"key": "procedure:QPC", "doc_count": 4}]},
+            "form": {"buckets": [{"key": "FR.TJ.JEX", "doc_count": 4}]},
             "pub": {"buckets": [{"key": "b", "doc_count": 7}, {"key": "n", "doc_count": 3}]},
             "jour": {"buckets": [
                 {"key_as_string": "2024-03-01T00:00:00Z", "doc_count": 5},
@@ -706,7 +695,7 @@ mod tests {
         assert_eq!(c.seats["CC"], 30);
         assert_eq!(c.seats["CC.SOCIALE"], 18);
         assert_eq!(c.solution["solution:REJET"], 25);
-        assert_eq!(c.procedure["procedure:QPC"], 4);
+        assert_eq!(c.formation["FR.TJ.JEX"], 4);
         assert_eq!(c.publication["publication:PUBLIE_BULLETIN"], 7);
         assert_eq!(c.publication["publication:INEDIT_BULLETIN"], 3);
         assert_eq!(c.year["2024"], 11);

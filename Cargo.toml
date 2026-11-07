@@ -4,7 +4,6 @@ resolver = "2"
 # given, whatever members are present. A folder of `packages/` or `apps/` with
 # no Cargo.toml fails the load, unless it is excluded here.
 members = ["packages/*", "apps/*"]
-exclude = ["apps/lj-pybench"]
 
 [workspace.package]
 edition = "2021"
@@ -17,7 +16,11 @@ rust-version = "1.96"
 tokio = { version = "1", features = ["full"] }
 # Combinateurs de futures (join_all concurrent sur une seule task, sans spawn).
 futures = "0.3"
-axum = { version = "0.8", features = ["macros"] }
+bytes = "1"
+# S3 client of `lj-bucket`, on the workspace's reqwest 0.13 and aws-lc-rs.
+object_store = { version = "0.14", default-features = false, features = ["aws"] }
+sevenz-rust2 = { version = "0.23", default-features = false }
+axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 # Trait de corps HTTP (`Frame`, `SizeHint`) : version d'axum 0.8 / hyper 1.
 http-body = "1"
@@ -92,8 +95,7 @@ memchr = "2"
 # Diff de rédactions d'articles pour le comparateur de versions.
 similar = { version = "3", features = ["unicode"] }
 html-escape = "0.2"
-# FxHash : hasher non-cryptographique des index de snap citations (lj-extract,
-# lookups de chaînes courtes sur le hot-path — SipHash y pesait ~15 % du profil).
+# FxHash: lj-extract's citation snap indexes, short keys on a hot path where SipHash weighs.
 rustc-hash = "2"
 
 # Parallélisme
@@ -116,15 +118,15 @@ thiserror = "2"
 # feature rustls deja activee sur `reqwest` (unification additive cargo).
 tracing = { version = "0.1", features = ["log"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-tracing-opentelemetry = "0.33"
-opentelemetry = "0.32"
-opentelemetry-otlp = { version = "0.32", features = ["http-proto", "reqwest-blocking-client"] }
-opentelemetry_sdk = { version = "0.32", features = ["rt-tokio"] }
+tracing-opentelemetry = "0.34"
+opentelemetry = "0.33"
+opentelemetry-otlp = { version = "0.33", features = ["http-proto", "reqwest-blocking-client"] }
+opentelemetry_sdk = { version = "0.33", features = ["rt-tokio"] }
 # Bridge logs tracing -> OpenTelemetry Logs (export OTLP direct).
-opentelemetry-appender-tracing = "0.32"
+opentelemetry-appender-tracing = "0.33"
 # Layer axum : spans serveur HTTP nommes {method} {route} + semconv OTel
 # (http.route / http.response.status_code) attendus par l'observabilité.
-axum-tracing-opentelemetry = "0.38"
+axum-tracing-opentelemetry = "0.42"
 # base64 : en-tete Authorization Basic des exporteurs OTLP/HTTP Grafana Cloud.
 base64 = "0.22"
 # libc : `statvfs(3)` pour l'occupation du disque dans `host_metrics`. Seule des
@@ -184,10 +186,10 @@ chrono = { version = "0.4", features = ["serde"] }
 # every crate: the ssr/hydrate features fan out from lj-web. wasm-bindgen is
 # pinned exactly: it MUST equal the `wasm-bindgen` CLI in ~/.local/bin, called
 # by cargo-leptos and by `redact-wasm` (WASM_BINDGEN_VERSION in the bootstrap).
-leptos = { version = "0.8.19", default-features = false }
-leptos_router = { version = "0.8.13", default-features = false }
-leptos_meta = { version = "0.8.6", default-features = false }
-leptos_axum = { version = "0.8.9", default-features = false }
+leptos = { version = "0.8.22", default-features = false }
+leptos_router = { version = "0.8.17", default-features = false }
+leptos_meta = { version = "0.8.7", default-features = false }
+leptos_axum = { version = "0.8.10", default-features = false }
 leptos-fetch = { version = "0.4.10", default-features = false }
 # Exécuteur des taches Leptos. DOIT resoudre vers la meme version que celle
 # tiree par leptos : c'est un `OnceLock` statique, deux versions donneraient
@@ -206,6 +208,7 @@ send_wrapper = { version = "0.6", features = ["futures"] }
 
 # Workspace-internal crates
 lj-annonces = { path = "packages/lj-annonces" }
+lj-bucket = { path = "packages/lj-bucket" }
 lj-chunk = { path = "packages/lj-chunk" }
 lj-core = { path = "packages/lj-core" }
 lj-parse = { path = "packages/lj-parse" }
@@ -217,6 +220,7 @@ lj-extract = { path = "packages/lj-extract" }
 lj-extract-rows = { path = "packages/lj-extract-rows" }
 lj-quantum = { path = "packages/lj-quantum" }
 lj-fold = { path = "packages/lj-fold" }
+lj-gazette = { path = "packages/lj-gazette" }
 lj-vocab = { path = "packages/lj-vocab" }
 lj-summary = { path = "packages/lj-summary" }
 lj-suggest = { path = "packages/lj-suggest" }
@@ -230,6 +234,7 @@ lj-pdf = { path = "packages/lj-pdf", default-features = false }
 lj-office = { path = "packages/lj-office" }
 lj-telemetry = { path = "packages/lj-telemetry" }
 lj-store = { path = "packages/lj-store" }
+lj-pg = { path = "packages/lj-pg" }
 lj-sources = { path = "packages/lj-sources" }
 lj-sources-annonces = { path = "packages/lj-sources-annonces" }
 lj-llm = { path = "packages/lj-llm" }
@@ -320,9 +325,8 @@ codegen-units = 16
 incremental = true
 overflow-checks = true
 
-# opt-0 on the four crates almost every build recompiles: lj-web drops from
-# 84 s to 33 s, lj-server from 35 s to 11 s, lj-ingest from 117 s to 22 s, and
-# SSR render is 1.6 times slower where it dominates, on the code tables.
+# opt-0 on the four crates almost every build recompiles: they build several
+# times faster, and SSR render is slower where it dominates, on the code tables.
 # External dependencies stay opt-3, cached. `wasm-release.package.lj-web` below
 # keeps the bundle out of it.
 [profile.release.package.lj-web]
@@ -356,30 +360,30 @@ strip = true
 [profile.wasm-release.package.lj-web]
 opt-level = "z"
 
-# tachys forké : `AnyView` remplit `hydrate_async` pour chaque type erasé sous
-# le seul `cfg(hydrate)`, alors que seules les routes lazy l'atteignent — un
-# quart du bundle brotli en code mort. Le fork backporte leptos-rs/leptos#4438
-# sur la 0.2.15 publiée ; un `[patch]` sur le monorepo amont ferait entrer un
-# second `reactive_graph` dans le graphe. À retirer en 0.9, où le gate est
-# amont.
+# Forked tachys: `AnyView` fills `hydrate_async` for every erased type under
+# `cfg(hydrate)` alone, while only lazy routes reach it, dead code in the
+# bundle. The fork backports leptos-rs/leptos#4438 onto the
+# published 0.2.19; a `[patch]` on the upstream monorepo would bring a second
+# `reactive_graph` into the graph. A leptos bump that needs a newer tachys drops
+# this patch with a mere warning, so the fork is rebased first. Remove in 0.9,
+# where the gate is upstream.
 [patch.crates-io]
-tachys = { git = "https://github.com/librejustice/tachys", rev = "d71bd7442162751080e5ff63d41af45e9a699e75" }
+tachys = { git = "https://github.com/librejustice/tachys", rev = "b815cf230eb3e62f52d7b132f7ec264aef1113de" }
 
 # Un seul profil de développement, partagé par tout le monde : un réglage qui
 # diffère d'un poste à l'autre donne deux jeux d'artefacts pour le même code, et
 # un worktree neuf recompile alors tout le graphe.
 #
-# Le debuginfo pilote le coût — `debug = 2` pèse près de 40 % du codegen de
-# `lj-web` et alourdit le lien. On y perd `fichier:ligne` dans un backtrace ; le
-# message d'un `assert!` les porte encore, et une session de débogage qui a
-# besoin des numéros passe `CARGO_PROFILE_DEV_DEBUG=line-tables-only`.
+# Debuginfo drives the cost: `debug = 2` weighs heavily on `lj-web`'s codegen
+# and slows the link. A backtrace loses `file:line`; an `assert!` message still
+# carries them, and a debugging session that needs them sets
+# `CARGO_PROFILE_DEV_DEBUG=line-tables-only`.
 [profile.dev]
 debug = 0
 
 # The redaction module draws pages as SVG, and decodes and re-encodes their
-# images: those crates at opt-3, the rest at opt-z. Measured on 24/09/2026, 1 396
-# KB brotli against 1 658 at opt-3 throughout and 1 262 at opt-z throughout,
-# where the heaviest page of a 211-image PDF draws in 348 ms against 209 here.
+# images: those crates at opt-3, the rest at opt-z, a bundle smaller than opt-3
+# throughout that draws an image-heavy page faster than opt-z throughout.
 # The slow reader spends its time in tract's kernels, at opt-3 throughout.
 [profile.htr-release]
 inherits = "wasm-release"

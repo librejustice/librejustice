@@ -61,10 +61,8 @@ fn walk_members(
 }
 
 /// Same contract as [`for_each_member`] for the members `keep(name)` accepts,
-/// and it never materialises the body of the others. Measured on the LEGI global
-/// stock, where the guard holds a thousand members out of 5.25 M: 10 min 03 down
-/// to 5 min 50. What is left is the gzip decompression, which a `.tar.gz` cannot
-/// skip.
+/// and it never materialises the body of the others. What is left is the gzip
+/// decompression, which a `.tar.gz` cannot skip.
 pub fn for_each_member_filtered(
     tar_path: &Path,
     mut keep: impl FnMut(&str) -> bool,

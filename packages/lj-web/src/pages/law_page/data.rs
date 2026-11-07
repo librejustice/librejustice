@@ -401,10 +401,12 @@ pub async fn fetch_compare(key: CompareKey) -> Result<lj_dtos::LawCompareRespons
 }
 
 /// Lit les segments `code`/`num`/`date` de la route `/norm/{juris}/{code}/{num}[/{date}]`.
-pub fn article_key() -> Signal<ArticleKey> {
+/// A memo rather than a derived signal: leaving the article disposes it, and the
+/// view's pending effects then have no live source to rerun on.
+pub fn article_key() -> Memo<ArticleKey> {
     let params = leptos_router::hooks::use_params_map();
     let query = leptos_router::hooks::use_query_map();
-    Signal::derive(move || {
+    Memo::new(move |_| {
         let p = params.read();
         let (num, date) = match NormNode::parse(&p.get("rest").unwrap_or_default()) {
             NormNode::Article { num, date } => (num, date),

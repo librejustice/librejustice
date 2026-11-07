@@ -431,7 +431,7 @@ impl LinkSnapshot {
             // suisse) ; la famille nue les réunit. Toutes les familles, pas seulement
             // les codes.
             if let Some(iso) = t.jurisdiction.as_deref() {
-                if !matches!(iso, "FR" | "UE" | "INTL") {
+                if !matches!(iso, "FR" | "EU" | "INTL") {
                     foreign_owner.insert(t.text_uid.clone(), iso.to_string());
                     let fams = home_families(&folded_tk, iso);
                     for head in family_heads(&fams) {
@@ -885,20 +885,44 @@ pub fn link_citation_analyzed(
 /// adoption intra-document, gate d'acte individuel) : tous voient la forme
 /// canonique.
 pub(crate) fn strip_circulaire_qualifier(text_key: &str) -> Option<String> {
-    let mut words = text_key.split_whitespace();
-    let head = words.next()?;
+    let words: Vec<&str> = text_key.split_whitespace().collect();
+    let (head, rest) = words.split_first()?;
     if fold(head) != "circulaire" {
         return None;
     }
-    let qual = words.next()?;
-    if !matches!(fold(qual).as_str(), "ministerielle" | "interministerielle") {
-        return None;
-    }
-    let rest: Vec<&str> = words.collect();
+    let qualifier = rest
+        .first()
+        .is_some_and(|w| matches!(fold(w).as_str(), "ministerielle" | "interministerielle"));
+    let rest = &rest[if qualifier { 1 } else { author_len(rest)? }..];
     if rest.is_empty() {
         return None;
     }
     Some(format!("{head} {}", rest.join(" ")))
+}
+
+/// Words of the author a circulaire names before its date, « du ministre de
+/// l'intérieur », up to the « du » the date opens with.
+fn author_len(words: &[&str]) -> Option<usize> {
+    let folded: Vec<String> = words.iter().map(|w| fold(w)).collect();
+    let mut at = match folded.first()?.as_str() {
+        "du" | "des" => 1,
+        "de" if folded.get(1).is_some_and(|w| w == "la") => 2,
+        _ => return None,
+    };
+    if folded
+        .get(at)
+        .is_some_and(|w| w == "premier" || w == "premiere")
+    {
+        at += 1;
+    }
+    if !matches!(
+        folded.get(at)?.as_str(),
+        "ministre" | "ministres" | "ministere"
+    ) {
+        return None;
+    }
+    (at + 1..folded.len().saturating_sub(1))
+        .find(|&i| folded[i] == "du" && folded[i + 1].starts_with(|c: char| c.is_ascii_digit()))
 }
 
 /// Cœur de la résolution texte, jambes 3 à 9.
@@ -1527,7 +1551,7 @@ mod tests {
                     "Règlement (UE) n° 604/2013 du Parlement européen et du Conseil",
                     "Règlement (UE) n° 604/2013",
                     "REGLEMENT",
-                    Some("UE"),
+                    Some("EU"),
                     50,
                 ),
                 text(

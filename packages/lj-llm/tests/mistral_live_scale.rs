@@ -1,7 +1,7 @@
 //! `cargo test -p lj-llm --test mistral_live_scale -- --ignored --nocapture`, one
-//! offline key. `/v1/conversations` announces a token ceiling and no request one, so
-//! what a key is worth in calls a minute is that ceiling divided by what a call
-//! bills: asking for one token buys the large allowance a paid account sits in.
+//! key. `/v1/conversations` announces a token ceiling and no request one, so what a
+//! key is worth in calls a minute is that ceiling divided by what a call bills:
+//! asking for one token makes each call as cheap as it gets.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -17,14 +17,14 @@ const RUN_SECS: f64 = 20.0;
 const MARGIN: f64 = 2.0;
 
 /// Throughput a pool reaches with the drivers the measured demand asks for, against
-/// the one driver per key it used to get. The gap is the quota that a fixed driver
-/// count leaves unspent.
+/// one driver per key. The gap is the quota that a fixed driver count leaves
+/// unspent.
 #[tokio::test(flavor = "multi_thread")]
-#[ignore = "calls the live Mistral API on the offline account"]
+#[ignore = "calls the live Mistral API"]
 async fn a_pool_serves_what_its_quota_pays_for_only_with_the_drivers_it_asks() {
     let slot = std::env::var("LIBREJUSTICE_BENCH_MISTRAL_SLOT").unwrap_or_else(|_| "4".into());
     let key = std::env::var(format!("LIBREJUSTICE_MISTRAL_OFFLINE_KEY{slot}"))
-        .unwrap_or_else(|_| panic!("slot {slot} absent de .env.mistral"));
+        .unwrap_or_else(|_| panic!("LIBREJUSTICE_MISTRAL_OFFLINE_KEY{slot} is unset"));
     let client =
         Arc::new(MistralClient::new(vec![key], MODEL.to_string()).expect("client mistral"));
 

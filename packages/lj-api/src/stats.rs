@@ -2,7 +2,7 @@
 //! rows of `corpus_counts`, the snapshot `precompute` writes every night. The
 //! legal side is the whole corpus, every `legal_text` of every nature, not the
 //! browsable `/codes` catalogue alone. No process cache: the snapshot is the
-//! cache, and an indexed read of three rows is ~1 ms.
+//! cache, and an indexed read of three rows is cheap.
 
 use lj_dtos::CorpusStatsResponse;
 use lj_store::repository::DecisionRepository;

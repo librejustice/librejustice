@@ -1,12 +1,14 @@
-use axum::extract::State;
+use axum::extract::{Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::Json;
 use lj_dtos::{
-    ActivitySource, EntitySearchReport, ReadKind, ReadReport, SearchContext, SearchEngine,
+    ActivitySource, EntitySearchReport, LandingReport, ReadKind, ReadReport, SearchContext,
+    SearchEngine, UiAction,
 };
 use opentelemetry::KeyValue;
 
 use crate::auth::OptionalUser;
+use crate::ratelimit::Cost;
 use crate::state::AppState;
 use crate::usage::Caller;
 
@@ -44,11 +46,11 @@ fn count(kind: ReadKind, surface: Surface, provenance: &'static str) {
         );
 }
 
-pub fn served(kind: ReadKind, surface: Surface, caller: &Caller, reference: &str) {
+pub fn served(kind: ReadKind, surface: Surface, caller: &Caller, reference: &str, document: &str) {
     if !caller.first_party {
         count(kind, surface, "direct");
     }
-    caller.record_read(kind, reference);
+    caller.record_read(kind, reference, document_path(document));
 }
 
 fn browser(state: &AppState, user: Option<&str>, headers: &HeaderMap) -> Caller {
@@ -63,13 +65,9 @@ fn browser(state: &AppState, user: Option<&str>, headers: &HeaderMap) -> Caller 
     .pseudonymise(&identity, state.pseudonymiser.as_ref(), headers)
 }
 
-async fn within_budget(state: &AppState, headers: &HeaderMap) -> bool {
+async fn within_budget(state: &AppState, headers: &HeaderMap, cost: Cost) -> bool {
     let budget_key = crate::ratelimit::caller_key(None, headers);
-    state
-        .budgets
-        .take(crate::ratelimit::Cost::ReadReport, budget_key.as_ref())
-        .await
-        != crate::ratelimit::Verdict::Exhausted
+    state.budgets.take(cost, budget_key.as_ref()).await != crate::ratelimit::Verdict::Exhausted
 }
 
 pub async fn report(
@@ -78,11 +76,15 @@ pub async fn report(
     headers: HeaderMap,
     Json(report): Json<ReadReport>,
 ) -> StatusCode {
-    if !within_budget(&state, &headers).await {
+    if !within_budget(&state, &headers, Cost::ReadReport).await {
         return StatusCode::TOO_MANY_REQUESTS;
     }
     let caller = browser(&state, user.as_deref(), &headers);
-    caller.record_read(report.kind, &report.reference);
+    caller.record_read(
+        report.kind,
+        &report.reference,
+        document_path(&report.document),
+    );
     if caller.first_party {
         return StatusCode::NO_CONTENT;
     }
@@ -107,7 +109,7 @@ pub async fn report_entity_search(
     headers: HeaderMap,
     Json(report): Json<EntitySearchReport>,
 ) -> StatusCode {
-    if !within_budget(&state, &headers).await {
+    if !within_budget(&state, &headers, Cost::ReadReport).await {
         return StatusCode::TOO_MANY_REQUESTS;
     }
     browser(&state, user.as_deref(), &headers).record_search(
@@ -122,6 +124,86 @@ pub async fn report_entity_search(
     StatusCode::NO_CONTENT
 }
 
+pub async fn report_landing(
+    State(state): State<AppState>,
+    OptionalUser(user): OptionalUser,
+    headers: HeaderMap,
+    Json(report): Json<LandingReport>,
+) -> StatusCode {
+    if !within_budget(&state, &headers, Cost::LandingReport).await {
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
+    let referrer = report.referrer.as_deref().and_then(host_of);
+    browser(&state, user.as_deref(), &headers).record_landing(
+        page_kind(&report.path),
+        referrer.as_deref(),
+        report.utm_source.as_deref().and_then(utm_value).as_deref(),
+        report
+            .utm_campaign
+            .as_deref()
+            .and_then(utm_value)
+            .as_deref(),
+    );
+    StatusCode::NO_CONTENT
+}
+
+pub async fn report_action(
+    State(state): State<AppState>,
+    OptionalUser(user): OptionalUser,
+    headers: HeaderMap,
+    Path(action): Path<UiAction>,
+) -> StatusCode {
+    if !within_budget(&state, &headers, Cost::ActionReport).await {
+        return StatusCode::TOO_MANY_REQUESTS;
+    }
+    browser(&state, user.as_deref(), &headers).record_action(action);
+    StatusCode::NO_CONTENT
+}
+
+fn page_kind(path: &str) -> &'static str {
+    match path
+        .trim_start_matches('/')
+        .split('/')
+        .next()
+        .unwrap_or_default()
+    {
+        "" => "home",
+        "decision" => "decision",
+        "norm" => "norm",
+        "entity" => "entity",
+        "notice" => "notice",
+        "decision-index" | "norm-index" | "notice-index" | "entity-index" => "index",
+        "decision-search" | "norm-search" | "notice-search" | "entity-search" => "search",
+        "login" | "reset-password" | "confirm" | "login-link" | "email-change"
+        | "authorize-mcp" => "auth",
+        "profile" | "bookmarks" => "account",
+        "tools" | "redact" => "tool",
+        "sources" | "feedback" | "api-guide" | "mcp-guide" | "legal-notice" | "privacy"
+        | "terms" | "open-source" => "info",
+        _ => "unknown",
+    }
+}
+
+fn host_of(url: &str) -> Option<String> {
+    url::Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
+}
+
+fn utm_value(raw: &str) -> Option<String> {
+    let value = raw.trim().to_ascii_lowercase();
+    let allowed = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
+    (!value.is_empty() && value.len() <= 40 && value.chars().all(allowed)).then_some(value)
+}
+
+fn document_path(url: &str) -> &str {
+    let path = match url.split_once("://") {
+        Some((_, rest)) => rest.find('/').map_or("", |i| &rest[i..]),
+        None => url,
+    };
+    path.split(['?', '#']).next().unwrap_or_default()
+}
+
 fn own_host(web_base_url: &str) -> String {
     url::Url::parse(web_base_url)
         .ok()
@@ -133,10 +215,7 @@ fn provenance(referrer: Option<&str>, utm_source: Option<&str>, own_host: &str) 
     if let Some(utm) = utm_source.map(str::trim).filter(|u| !u.is_empty()) {
         return origin_of(&utm.to_ascii_lowercase()).unwrap_or("other");
     }
-    let Some(host) = referrer
-        .and_then(|r| url::Url::parse(r).ok())
-        .and_then(|u| u.host_str().map(str::to_ascii_lowercase))
-    else {
+    let Some(host) = referrer.and_then(host_of) else {
         return "direct";
     };
     if host == own_host || host.ends_with(&format!(".{own_host}")) {
@@ -231,7 +310,7 @@ mod tests {
             de("https://librejustice.fr/decision-search?q=bail"),
             "internal"
         );
-        assert_eq!(de("https://beta.librejustice.fr/"), "internal");
+        assert_eq!(de("https://www.librejustice.fr/"), "internal");
     }
 
     #[test]
@@ -241,6 +320,47 @@ mod tests {
             provenance(Some("n'importe quoi"), None, "librejustice.fr"),
             "direct"
         );
+    }
+
+    #[test]
+    fn le_type_de_page_se_lit_sur_le_premier_segment() {
+        assert_eq!(page_kind("/"), "home");
+        assert_eq!(page_kind("/decision/fr/W2MaOjgp4jgf"), "decision");
+        assert_eq!(page_kind("/norm/fr/code-civil/1240"), "norm");
+        assert_eq!(page_kind("/decision-index/fr/ca_rennes/2004"), "index");
+        assert_eq!(page_kind("/norm-search"), "search");
+        assert_eq!(page_kind("/authorize-mcp"), "auth");
+        assert_eq!(page_kind("/login"), "auth");
+        assert_eq!(
+            page_kind("/legislation/article-222-7-du-code-penal"),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn un_document_se_nomme_par_son_chemin() {
+        assert_eq!(
+            document_path("https://librejustice.fr/decision/fr/W2MaOjgp4jgf"),
+            "/decision/fr/W2MaOjgp4jgf"
+        );
+        assert_eq!(
+            document_path("https://librejustice.fr/norm/fr/code-civil/1240?date=2020-01-01#al2"),
+            "/norm/fr/code-civil/1240"
+        );
+        assert_eq!(
+            document_path("/norm/fr/code-civil/1240"),
+            "/norm/fr/code-civil/1240"
+        );
+        assert_eq!(document_path(""), "");
+    }
+
+    #[test]
+    fn un_utm_hors_de_son_alphabet_est_ecarte() {
+        assert_eq!(utm_value(" ChatGPT.com "), Some("chatgpt.com".to_string()));
+        assert_eq!(utm_value("campagne-2"), Some("campagne-2".to_string()));
+        assert_eq!(utm_value("jean.dupont@exemple.fr"), None);
+        assert_eq!(utm_value(&"a".repeat(41)), None);
+        assert_eq!(utm_value("  "), None);
     }
 
     #[test]

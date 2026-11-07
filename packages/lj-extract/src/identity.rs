@@ -92,7 +92,7 @@ pub fn decision_canonical_ref(d: &Decision) -> Option<String> {
                 .min()?;
             Some(format!("cc|{pourvoi}|{date}"))
         }
-        "CA" | "TJ" | "TCOM" => {
+        "CA" | "TJ" | "TCOM" | "CPH" => {
             // RG scopé au tribunal : la `location` (code Judilibre) est requise.
             let location = d
                 .jurisdiction_location
@@ -209,11 +209,11 @@ mod tests {
             solution: None,
             publication_codes: vec![],
             avocat_requerant: None,
+            listed_counsel: Vec::new(),
             texte_integral_raw: String::new(),
             texte_integral_clean: String::new(),
             sections: vec![],
             metadata_header: String::new(),
-            visa_trim: String::new(),
             themes: Vec::new(),
             attacked: None,
             parse_warnings: vec![],

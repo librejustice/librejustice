@@ -4,5 +4,6 @@
 
 pub mod body_tok;
 pub mod collocations;
+pub mod highlight;
 pub mod suggest;
 pub mod usage;

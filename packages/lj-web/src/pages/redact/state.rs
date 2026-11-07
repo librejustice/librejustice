@@ -85,6 +85,17 @@ pub enum Reading {
     Failed(String),
 }
 
+/// Whether every file the tool may need is held in the page, so the network
+/// can be cut before a document is dropped.
+#[derive(Clone, PartialEq, Debug, Default)]
+pub enum Offline {
+    #[default]
+    Online,
+    Loading(f64),
+    Ready,
+    Failed(String),
+}
+
 /// One string to remove. `kind` is where it came from: a rule, or the user.
 /// `label` is what the user set in its place, `None` keeping the computed one;
 /// empty erases the string.
@@ -217,6 +228,7 @@ pub struct Session {
     /// Where the reader is, or why it stopped. A reading that fails leaves the
     /// document open and says so in place of the button.
     pub reading: RwSignal<Option<Reading>>,
+    pub offline: RwSignal<Offline>,
 }
 
 impl Default for Session {
@@ -257,6 +269,7 @@ impl Session {
             to_read: RwSignal::new(Vec::new()),
             eye: RwSignal::new(Eye::Fast),
             reading: RwSignal::new(None),
+            offline: RwSignal::new(Offline::Online),
         }
     }
 

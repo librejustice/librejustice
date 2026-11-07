@@ -25,6 +25,7 @@
 use anyhow::{anyhow, Result};
 use chrono::{Datelike, NaiveDate};
 
+use lj_norm::text_identity::celex_text_uid;
 use lj_sources::cjue::CjueClient;
 use lj_store::repository::{DecisionRepository, EuTwin};
 
@@ -104,29 +105,6 @@ fn celex_candidates(nature: &str, slashnum: &str) -> Vec<String> {
     out
 }
 
-/// text_uid canonique depuis un CELEX validé : `32016R0679` → `EU/REG/679-2016`
-/// (format des entrées REGLEMENT existantes), `31977L0388` → `EU/DIR/388-1977`.
-fn text_uid_from_celex(celex: &str) -> Option<String> {
-    let ch: Vec<char> = celex.chars().collect();
-    if ch.len() < 7 || ch[0] != '3' {
-        return None;
-    }
-    let year: String = ch[1..5].iter().collect();
-    let letter = ch[5];
-    let seq: String = ch[6..].iter().collect();
-    if !year.chars().all(|c| c.is_ascii_digit()) || !seq.chars().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let seq_trim = seq.trim_start_matches('0');
-    let seq_trim = if seq_trim.is_empty() { "0" } else { seq_trim };
-    let kind = match letter {
-        'R' => "REG",
-        'L' => "DIR",
-        _ => return None,
-    };
-    Some(format!("EU/{kind}/{seq_trim}-{year}"))
-}
-
 /// Dataset path of an act: one file per `text_uid`, stable name, the only shape
 /// the on-disk registry of `sync-eu-law` can read back.
 fn dataset_path(dir: &std::path::Path, text_uid: &str) -> std::path::PathBuf {
@@ -149,7 +127,7 @@ fn ecrire_dataset(
     let doc = serde_json::json!({
         "text_uid": text_uid,
         "source": "eur-lex",
-        "jurisdiction": "UE",
+        "jurisdiction": "EU",
         "title": title,
         "nature": nature_db,
         "translation": "officiel",
@@ -169,7 +147,7 @@ pub async fn ingest_eu_catalog(limit: Option<usize>) -> Result<()> {
     std::fs::create_dir_all(&dir).map_err(|e| anyhow!("mkdir {}: {e}", dir.display()))?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0").await?;
     let repo = DecisionRepository::new(&conn);
@@ -194,7 +172,7 @@ pub async fn ingest_eu_catalog(limit: Option<usize>) -> Result<()> {
         let candidates = celex_candidates(nature, slashnum);
         let mut done = false;
         for celex in &candidates {
-            let Some(text_uid) = text_uid_from_celex(celex) else {
+            let Some(text_uid) = celex_text_uid(celex) else {
                 continue;
             };
             let path = dataset_path(&dir, &text_uid);
@@ -253,21 +231,15 @@ pub(crate) const PREMIERE_ANNEE: i32 = 1952;
 /// hundred rows, the weekly full sweep catches what it still misses.
 const RECOUVREMENT_JOURS: i64 = 30;
 
-/// What a registry pass did: whether it swept the whole registry, and the acts
-/// it brought in.
-pub struct CatalogPass {
-    pub full: bool,
-    pub entered: Vec<String>,
-}
-
 /// Brings in every act of the EUR-Lex registry the corpus lacks. The only door
 /// through which an uncited act arrives, since [`ingest_eu_catalog`] sees only
 /// what our decisions name. Two cadences: the delta asks the acts CELLAR
 /// registered since the watermark of the eu-law manifest, the full pass sweeps
 /// the registry year by year, and is the bootstrap when the watermark is absent.
 /// Loads right away, one file per transaction, otherwise nothing exists in the
-/// database.
-pub async fn sync_eu_catalog(full: bool, limit: Option<usize>) -> Result<CatalogPass> {
+/// database. The full pass then stamps CELLAR's end of validity on the acts with
+/// no article.
+pub async fn sync_eu_catalog(full: bool, limit: Option<usize>) -> Result<()> {
     let settings = Settings::from_env()?;
     let dir = settings.legal_corpus_dir();
     std::fs::create_dir_all(&dir).map_err(|e| anyhow!("mkdir {}: {e}", dir.display()))?;
@@ -285,7 +257,7 @@ pub async fn sync_eu_catalog(full: bool, limit: Option<usize>) -> Result<Catalog
     };
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
     // Disk alone would lie: an act loaded from another machine has no dataset
@@ -325,7 +297,7 @@ pub async fn sync_eu_catalog(full: bool, limit: Option<usize>) -> Result<Catalog
             };
             let pleine = page.len() >= lj_sources::cjue::PAGE_SIZE;
             for (celex, date, title) in &page {
-                let Some(text_uid) = text_uid_from_celex(celex) else {
+                let Some(text_uid) = celex_text_uid(celex) else {
                     continue; // corrigendum, unnumbered act: not a corpus text
                 };
                 vus += 1;
@@ -381,6 +353,9 @@ pub async fn sync_eu_catalog(full: bool, limit: Option<usize>) -> Result<Catalog
     }
 
     let full = since.is_none();
+    if full {
+        stamp_eu_validity(&repo, &client).await?;
+    }
     tracing::info!(
         full,
         since = ?since,
@@ -397,10 +372,54 @@ pub async fn sync_eu_catalog(full: bool, limit: Option<usize>) -> Result<Catalog
         },
         n = ecrits.len()
     );
-    Ok(CatalogPass {
-        full,
-        entered: ecrits.into_iter().map(|(_, uid)| uid).collect(),
-    })
+    Ok(())
+}
+
+/// Stamps CELLAR's end of validity on every European text with no article.
+async fn stamp_eu_validity(repo: &DecisionRepository<'_>, client: &CjueClient) -> Result<()> {
+    let texts = repo
+        .eu_texts_without_articles()
+        .await
+        .map_err(|e| anyhow!("eu_texts_without_articles: {e}"))?;
+    let by_celex: std::collections::HashMap<String, (String, Option<String>)> = texts
+        .into_iter()
+        .filter_map(|(uid, status)| {
+            Some((lj_norm::text_identity::text_uid_celex(&uid)?, (uid, status)))
+        })
+        .collect();
+    let bases: Vec<String> = by_celex.keys().cloned().collect();
+    let ends = client
+        .acts_end_of_validity(&bases)
+        .await
+        .map_err(|e| anyhow!("acts_end_of_validity: {e}"))?;
+    let today = chrono::Utc::now().date_naive();
+    let (mut expired, mut restored) = (Vec::new(), Vec::new());
+    for (celex, end) in &ends {
+        let Some((uid, status)) = by_celex.get(celex) else {
+            continue;
+        };
+        match (*end < today, status.as_deref() == Some("ABROGE")) {
+            (true, false) => expired.push(uid.clone()),
+            (false, true) => restored.push(uid.clone()),
+            _ => {}
+        }
+    }
+    let abrogated = repo
+        .set_texts_status(&expired, Some("ABROGE"))
+        .await
+        .map_err(|e| anyhow!("set_texts_status: {e}"))?;
+    let in_force = repo
+        .set_texts_status(&restored, None)
+        .await
+        .map_err(|e| anyhow!("set_texts_status: {e}"))?;
+    tracing::info!(
+        texts = by_celex.len(),
+        ends = ends.len(),
+        abrogated,
+        in_force,
+        "sync-eu-catalog: CELLAR's ends of validity stamped"
+    );
+    Ok(())
 }
 
 /// Nature the DILA title announces, in the vocabulary [`celex_candidates`]
@@ -429,7 +448,7 @@ pub async fn sync_eu_jorf(limit: Option<usize>) -> Result<()> {
     std::fs::create_dir_all(&dir).map_err(|e| anyhow!("mkdir {}: {e}", dir.display()))?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0").await?;
     let repo = DecisionRepository::new(&conn);
@@ -453,7 +472,7 @@ pub async fn sync_eu_jorf(limit: Option<usize>) -> Result<()> {
         let candidates = celex_candidates(nature, &slashnum);
         let uids: Vec<(String, String)> = candidates
             .iter()
-            .filter_map(|c| text_uid_from_celex(c).map(|u| (c.clone(), u)))
+            .filter_map(|c| celex_text_uid(c).map(|u| (c.clone(), u)))
             .collect();
         // The corpus has both numbering conventions on `EU/…`: an act already
         // there under either form is the target, minting would open a second.
@@ -527,12 +546,11 @@ pub async fn sync_eu_jorf(limit: Option<usize>) -> Result<()> {
 }
 
 /// Base CELEX of a notice: a consolidated series is `0{corps}-{AAAAMMJJ}` and
-/// only the sector 3 form names an act, which is what `text_uid_from_celex`
-/// reads.
+/// only the sector 3 form names an act, which is what `celex_text_uid` reads.
 fn canonical_uid_from_notice(celex: &str) -> Option<String> {
     match lj_sources::cjue::parse_consolidated_celex(celex) {
-        Some(r) => text_uid_from_celex(&format!("3{}", r.body)),
-        None => text_uid_from_celex(celex),
+        Some(r) => celex_text_uid(&format!("3{}", r.body)),
+        None => celex_text_uid(celex),
     }
 }
 
@@ -607,7 +625,7 @@ pub async fn merge_eu_swapped_uids(apply: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let dir = settings.legal_corpus_dir();
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0").await?;
     let repo = DecisionRepository::new(&conn);
@@ -810,22 +828,6 @@ mod tests {
                 twin("EU/REG/2024-2019", Some("02019R2024-20210501"), 14),
             )),
             None
-        );
-    }
-
-    #[test]
-    fn text_uid_matches_existing_format() {
-        assert_eq!(
-            text_uid_from_celex("32016R0679").as_deref(),
-            Some("EU/REG/679-2016")
-        );
-        assert_eq!(
-            text_uid_from_celex("31977L0388").as_deref(),
-            Some("EU/DIR/388-1977")
-        );
-        assert_eq!(
-            text_uid_from_celex("32001R0044").as_deref(),
-            Some("EU/REG/44-2001")
         );
     }
 }

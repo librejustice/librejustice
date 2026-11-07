@@ -1,11 +1,8 @@
 # ── security headers contract ────────────────────────────────────────────────
 # Source oracle: apps/lj-server/src/main.rs (async fn security_headers)
 #
-# Ces en-têtes sont posés par un middleware que rien ne teste par ailleurs, et
-# leur disparition est muette : le site répond 200 à l'identique. `Strict-
-# Transport-Security` était conditionné à `settings.tls_cert_path.is_some()` —
-# sortir le TLS du binaire l'aurait éteint sans un seul signal. D'où
-# ce contrat, joué contre la cible live après tout deploy.
+# These headers are set by a middleware nothing else tests, and the site
+# answers 200 with or without them. This contract runs against the live target.
 
 GET {{base}}/admin/health
 HTTP 200

@@ -1,1 +1,0 @@
-ALTER TABLE decisions ALTER COLUMN full_text SET COMPRESSION lz4;

@@ -24,7 +24,7 @@ const PAGE: i64 = 2_000;
 pub async fn extract_text_refs() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // Mêmes réglages de session que le reextract décisions : la passe est
     // idempotente (un crash rejoue), les FK ciblent le catalogue lu de la

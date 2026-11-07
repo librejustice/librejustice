@@ -19,8 +19,8 @@ use wasm_bindgen_futures::JsFuture;
 
 use super::bridge;
 use super::state::{
-    Check, Eye, Format, Hit, Hits, Needle, PageWord, Reading, Rect, Session, Status, TextBlock,
-    Verdict, View,
+    Check, Eye, Format, Hit, Hits, Needle, Offline, PageWord, Reading, Rect, Session, Status,
+    TextBlock, Verdict, View,
 };
 
 thread_local! {
@@ -36,6 +36,19 @@ thread_local! {
     static PICTURE: RefCell<Option<web_sys::ImageBitmap>> = const { RefCell::new(None) };
     static PRODUCED: RefCell<Option<(String, Vec<u8>)>> = const { RefCell::new(None) };
     static WATCH: RefCell<Option<Watch>> = const { RefCell::new(None) };
+    /// Where the tool's files come from, when the page's own origin serves none.
+    static FILES: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+pub fn fetch_files_from(origin: String) {
+    FILES.with(|slot| *slot.borrow_mut() = Some(origin));
+}
+
+fn file_url(path: &str) -> String {
+    FILES.with(|slot| match &*slot.borrow() {
+        Some(origin) => format!("{origin}{path}"),
+        None => path.to_string(),
+    })
 }
 
 fn window() -> Option<web_sys::Window> {
@@ -57,7 +70,7 @@ fn load(global: &str, src: &str) {
         return;
     };
     let _ = script.set_attribute("type", "module");
-    let _ = script.set_attribute("src", src);
+    let _ = script.set_attribute("src", &file_url(src));
     if let Some(root) = document.document_element() {
         let _ = root.append_child(&script);
     }
@@ -178,20 +191,6 @@ fn web_page(bytes: &[u8]) -> bool {
         || (head.starts_with('<') && (head.contains("<html") || head.contains("<body")))
 }
 
-fn mime_of(name: &str) -> &'static str {
-    match name.to_ascii_lowercase().rsplit('.').next().unwrap_or("") {
-        "pdf" => "application/pdf",
-        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "odt" => "application/vnd.oasis.opendocument.text",
-        "doc" => "application/msword",
-        "htm" | "html" => "text/html",
-        "png" => "image/png",
-        "jpg" | "jpeg" => "image/jpeg",
-        "webp" => "image/webp",
-        _ => "application/octet-stream",
-    }
-}
-
 fn produced_name(name: &str, format: Format) -> String {
     let (stem, extension) = match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, extension),
@@ -258,7 +257,7 @@ pub fn adopt(session: Session, file: web_sys::File) {
 /// and the rules have nothing left to say about it.
 async fn ingest(session: Session, name: &str, bytes: Vec<u8>, propose: bool) -> Result<(), String> {
     let format = sniff(&bytes)
-        .ok_or("ni un PDF, ni un document Word ou OpenDocument, ni une image que je sache lire")?;
+        .ok_or("seuls les PDF, les documents Word ou OpenDocument et les images s'ouvrent ici")?;
     session.name.set(name.to_string());
     session.format.set(format);
     session.read_by_eye.set(false);
@@ -415,7 +414,7 @@ async fn fetch_all(urls: &[String]) -> Result<Vec<js_sys::Uint8Array>, String> {
         |_| "les polices ou les tables du document n'ont pas pu être chargées".to_string();
     let requests = js_sys::Array::new();
     for url in urls {
-        requests.push(&window.fetch_with_str(url));
+        requests.push(&window.fetch_with_str(&file_url(url)));
     }
     let responses: js_sys::Array = JsFuture::from(js_sys::Promise::all(&requests))
         .await
@@ -813,19 +812,120 @@ async fn svg_image(svg: &str) -> Result<web_sys::HtmlImageElement, String> {
     Ok(picture)
 }
 
+const READERS: [(&str, &str); 2] = [("ljOcrReady", "/ocr.js"), ("ljHtrReady", "/htr.js")];
+
 /// The reader of `session`, loaded once, its progress shown on `session`.
 async fn text_reader(session: Session) -> Result<JsValue, String> {
     let (global, src) = match session.eye.get_untracked() {
-        Eye::Fast => ("ljOcrReady", "/ocr.js"),
-        Eye::Slow => ("ljHtrReady", "/htr.js"),
+        Eye::Fast => READERS[0],
+        Eye::Slow => READERS[1],
     };
-    load(global, src);
-    posed(global).await?;
-    let reader = bridge::reader(global).await?;
+    let reader = loaded_reader(global, src).await?;
     bridge::watch_progress(&reader, move |stage, at| {
         session.reading.set(Some(Reading::Stage(stage, at)));
     });
     Ok(reader)
+}
+
+async fn loaded_reader(global: &str, src: &str) -> Result<JsValue, String> {
+    load(global, src);
+    posed(global).await?;
+    bridge::reader(global).await
+}
+
+/// Megabytes each step of the offline preparation downloads, brotli: the
+/// module, the fonts, the CMaps, the fast reader, the slow one.
+const STEPS: [f64; 5] = [1.5, 11.8, 0.7, 1.4, 13.0];
+
+/// Fetch into the page every file the tool may ask for, and start both readers,
+/// so the network can be cut before a document is dropped.
+pub fn prepare(session: Session) {
+    if matches!(
+        session.offline.get_untracked(),
+        Offline::Loading(_) | Offline::Ready
+    ) {
+        return;
+    }
+    session.offline.set(Offline::Loading(0.0));
+    leptos::task::spawn_local(async move {
+        session.offline.set(match fetch_everything(session).await {
+            Ok(()) => Offline::Ready,
+            Err(why) => Offline::Failed(why),
+        });
+    });
+}
+
+async fn fetch_everything(session: Session) -> Result<(), String> {
+    let report = move |step: usize, at: f64| {
+        let before: f64 = STEPS[..step].iter().sum();
+        let total: f64 = STEPS.iter().sum();
+        let done = before + STEPS[step] * at.clamp(0.0, 1.0);
+        session.offline.set(Offline::Loading(done / total));
+    };
+    let module = module_ready().await?;
+
+    let fonts: Vec<String> = listing("/redactor/fonts")
+        .await?
+        .into_iter()
+        .filter(|file| FONTS.with(|fonts| !fonts.borrow().contains_key(file)))
+        .collect();
+    let urls: Vec<String> = fonts
+        .iter()
+        .map(|file| format!("/redactor/fonts/{file}"))
+        .collect();
+    let fetched = fetch_counted(&urls, |at| report(1, at)).await?;
+    FONTS.with(|slot| slot.borrow_mut().extend(fonts.into_iter().zip(fetched)));
+
+    let cmaps: Vec<String> = listing("/redactor/cmaps")
+        .await?
+        .into_iter()
+        .filter(|name| CMAPS.with(|cmaps| !cmaps.borrow().contains(name)))
+        .collect();
+    let urls: Vec<String> = cmaps
+        .iter()
+        .map(|name| format!("/redactor/cmaps/{name}.cmap"))
+        .collect();
+    for (name, bytes) in cmaps
+        .iter()
+        .zip(fetch_counted(&urls, |at| report(2, at)).await?)
+    {
+        bridge::add_cmap(&module, name, &bytes)?;
+        CMAPS.with(|slot| slot.borrow_mut().insert(name.clone()));
+    }
+
+    for (step, (global, src)) in (3..).zip(READERS) {
+        let reader = loaded_reader(global, src).await?;
+        bridge::watch_progress(&reader, move |_, at| report(step, at));
+        bridge::warm(&reader).await?;
+        report(step, 1.0);
+    }
+    Ok(())
+}
+
+/// The names a folder of the tool lists in its `index.txt`.
+async fn listing(folder: &str) -> Result<Vec<String>, String> {
+    let index = fetch_all(&[format!("{folder}/index.txt")]).await?;
+    let text = String::from_utf8(index[0].to_vec())
+        .map_err(|_| format!("{folder}/index.txt n'est pas du texte"))?;
+    Ok(text
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_string)
+        .collect())
+}
+
+/// `fetch_all` by batches, each reporting how far through `urls` it got.
+async fn fetch_counted(
+    urls: &[String],
+    report: impl Fn(f64),
+) -> Result<Vec<js_sys::Uint8Array>, String> {
+    let mut fetched = Vec::with_capacity(urls.len());
+    for batch in urls.chunks(8) {
+        fetched.extend(fetch_all(batch).await?);
+        report(fetched.len() as f64 / urls.len() as f64);
+    }
+    Ok(fetched)
 }
 
 /// The words of every page of `sheet`, each box on its page: y up on a PDF
@@ -1236,12 +1336,9 @@ fn canvas_element() -> Result<web_sys::HtmlCanvasElement, String> {
         .map_err(|_| "canevas impossible".to_string())
 }
 
-/// Hand the produced file to the browser's download path.
-pub fn download() {
-    let Some((name, bytes)) = PRODUCED.with(|slot| slot.borrow().clone()) else {
-        return;
-    };
-    let Ok(blob) = blob_of(&bytes, mime_of(&name)) else {
+/// Hand a file to the browser's download path.
+pub fn save(name: &str, bytes: &[u8]) {
+    let Ok(blob) = blob_of(bytes, lj_vocab::files::media_type(name)) else {
         return;
     };
     let Ok(url) = web_sys::Url::create_object_url_with_blob(&blob) else {
@@ -1252,7 +1349,7 @@ pub fn download() {
         .and_then(|a| a.dyn_into::<web_sys::HtmlAnchorElement>().ok())
     {
         anchor.set_href(&url);
-        anchor.set_download(&name);
+        anchor.set_download(name);
         anchor.click();
     }
     let _ = web_sys::Url::revoke_object_url(&url);
@@ -1261,6 +1358,11 @@ pub fn download() {
 /// The file waiting to be downloaded, and its size.
 pub fn produced() -> bool {
     PRODUCED.with(|slot| slot.borrow().is_some())
+}
+
+/// The name and bytes of the file the last anonymisation produced.
+pub fn produced_file() -> Option<(String, Vec<u8>)> {
+    PRODUCED.with(|slot| slot.borrow().clone())
 }
 
 struct Watch {

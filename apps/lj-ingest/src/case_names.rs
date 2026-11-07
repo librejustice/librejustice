@@ -6,24 +6,19 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use anyhow::Result;
 use chrono::NaiveDate;
-use lj_core::case_names::short_case_name_key;
+use lj_core::case_names::{case_name_key, short_case_name_key, SHORT_NAME_RARITY};
+use lj_core::citation::name_words;
 use lj_extract::ordinal::{
     ordinal_occurrences, ordinal_winners, unresolved_anchors, Candidate, Occurrence, ROMANS,
 };
 use lj_store::repository::{DecisionRepository, ElectedCaseName};
 
-/// Rarity threshold of a name, in decisions writing it. Elected names go from 4
-/// (Duvignères) to 5 829 (Boulay), the parsing scrap from 48 493 (Loire) up;
-/// « Ville de Paris » and « La Poste » pass 10 000, « Commune de Béziers » makes 470.
+/// Rarity threshold of a name, in decisions writing it: every elected name sits under it,
+/// parsing scrap and parties like « Ville de Paris » or « La Poste » above.
 pub const NOM_TROP_COURANT: i64 = 10_000;
 
-/// Rarity threshold of a short key, a place or a company written far more than
-/// cited: Béziers 13 760, Agen 15 144, Chambéry 29 085, la Garde 253 518. Under
-/// it, the keys fire on 0.55 % of 60 days of queries, above it « garde à vue » too.
-pub const NOM_COURT_TROP_COURANT: i64 = 20_000;
-
 /// Adds to every entry the short key its keys derive, unless the corpus writes it
-/// in [`NOM_COURT_TROP_COURANT`] decisions or more. Returns how many were refused.
+/// in [`SHORT_NAME_RARITY`] decisions or more. Returns how many were refused.
 pub async fn add_short_keys(
     repo: &DecisionRepository<'_>,
     by_decision: &mut BTreeMap<i64, ElectedCaseName>,
@@ -34,7 +29,7 @@ pub async fn add_short_keys(
         .collect();
     let uniques: Vec<&str> = shorts.iter().map(String::as_str).collect();
     let courants: HashSet<String> = repo
-        .frequent_names(&uniques, NOM_COURT_TROP_COURANT)
+        .frequent_names(&uniques, SHORT_NAME_RARITY)
         .await?
         .into_iter()
         .collect();
@@ -155,4 +150,43 @@ pub async fn add_ordinal_keys(
         }
     }
     Ok(learnt)
+}
+
+/// Whether the name in place stays over the one `writer` brings, which then adds keys alone:
+/// it holds every word of it and more. A writer of higher rank keeps it anyway.
+pub fn keeps(name: &str, source: &str, incoming: &str, writer: &str) -> bool {
+    let words = |n: &str| -> HashSet<String> {
+        name_words(&case_name_key(n))
+            .into_iter()
+            .map(str::to_string)
+            .collect()
+    };
+    let (held, given) = (words(name), words(incoming));
+    source != writer && held.is_superset(&given) && held.len() > given.len()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_name_in_place_stays_when_it_says_more() {
+        for (name, source, incoming, kept) in [
+            (
+                "Compagnie Air France c/ Epoux Barbier",
+                "renvoi",
+                "Époux Barbier",
+                true,
+            ),
+            ("Abbé", "renvoi", "Abbé Bouteyre", false),
+            ("Pelletier", "ce-list", "Pelletier", false),
+            ("Nicolo", "wikimedia", "Nicolo", false),
+        ] {
+            assert_eq!(
+                keeps(name, source, incoming, "wikimedia"),
+                kept,
+                "{name:?} against {incoming:?}"
+            );
+        }
+    }
 }

@@ -1,1 +1,0 @@
-DROP INDEX idx_decision_sources_active;

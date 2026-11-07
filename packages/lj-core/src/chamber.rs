@@ -40,6 +40,11 @@ pub const SPECIALTY_LABELS: &[(&str, &str, Agreement)] = &[
         Agreement::Adjective("commerciale"),
     ),
     (
+        "matiere:COMMERCIALE_FINANCIERE_ECONOMIQUE",
+        "Chambre commerciale, financière et économique",
+        Agreement::Adjective("commerciale, financière et économique"),
+    ),
+    (
         "matiere:CRIMINELLE",
         "Chambre criminelle",
         Agreement::Adjective("criminelle"),
@@ -313,12 +318,14 @@ impl Solemn {
 }
 
 /// Historic renamings, read by the path derivation alone: the seat stores the
-/// identity the source wrote, the path carries the current one. `SS` is the
-/// prefix of the sub-sections the Conseil d'État turned into chambers in 2016.
+/// name of its date, the path one key per room. `SS` is the prefix of the
+/// sub-sections the Conseil d'État turned into chambers in 2016, and the
+/// commercial chamber of the Cour de cassation took its full name in 1989.
 const RENAMED: &[(&str, &str)] = &[
     ("CRR", "CNDA"),
     ("SS", "C"),
     ("CHAMBRES_REUNIES", "ASSEMBLEE_PLENIERE"),
+    ("COMMERCIALE_FINANCIERE_ECONOMIQUE", "COMMERCIALE"),
 ];
 
 fn renamed(token: &str) -> &str {
@@ -348,15 +355,39 @@ fn folded(uid: &'static str) -> &'static str {
         .map_or(uid, |(_, to)| *to)
 }
 
-/// The trunk of a seat path: the court type, then the court when its code names
-/// one. A filter translating a jurisdiction into the path axis derives it here,
-/// so a translated value and an indexed path can never disagree.
+/// The legal order a court sits in, the first segment of its seat paths: its
+/// type's, or for a foreign court the place its code starts with.
+pub fn jurisdiction_order(jurisdiction_type: &str, jurisdiction_code: Option<&str>) -> String {
+    match renamed(jurisdiction_type) {
+        "CJUE" | "COMEU" => "EU".to_string(),
+        "CEDH" => "INTL".to_string(),
+        "ADLC" | "CA" | "CAA" | "CC" | "CE" | "CNDA" | "CNIL" | "CONSTIT" | "CPH" | "DDD"
+        | "TA" | "TC" | "TCOM" | "TJ" => "FR".to_string(),
+        foreign if lj_vocab::courts::is_foreign(foreign) => lj_vocab::courts::foreign_order(
+            jurisdiction_code
+                .unwrap_or_else(|| panic!("a foreign court without a code: {foreign}")),
+        ),
+        other => panic!("court type without a legal order: {other}"),
+    }
+}
+
+/// The trunk of a seat path: the legal order, the court type, then the court
+/// when its code names one. A filter translating a jurisdiction into the path
+/// axis derives it here, so a translated value and an indexed path can never
+/// disagree.
 pub fn jurisdiction_trunk(jurisdiction_type: &str, jurisdiction_code: Option<&str>) -> Vec<String> {
     if jurisdiction_type.is_empty() {
         return Vec::new();
     }
-    let mut trunk = vec![renamed(jurisdiction_type).to_string()];
-    trunk.extend(court_token(jurisdiction_type, jurisdiction_code));
+    let mut trunk = vec![
+        jurisdiction_order(jurisdiction_type, jurisdiction_code),
+        renamed(jurisdiction_type).to_string(),
+    ];
+    let code = match lj_vocab::courts::is_foreign(jurisdiction_type) {
+        true => jurisdiction_code.map(lj_vocab::courts::foreign_court_rest),
+        false => jurisdiction_code,
+    };
+    trunk.extend(court_token(jurisdiction_type, code));
     trunk
 }
 
@@ -497,10 +528,8 @@ impl Seat {
     /// The division the rooms sit in, when the court has one. A composed
     /// numbering names it in its FIRST number: « Chambre 1-5 » is the fifth room
     /// of the first division, which Paris writes « Pôle 1 - Chambre 5 » on the
-    /// same decision, the same day, for the same room. Unfolding the pair into
-    /// two rooms instead put that number where a chamber goes, and it collided
-    /// with the chamber that really carries it: 27 351 decisions sat under a
-    /// node reading « 1re chambre » at Aix, of which 25 963 were « Chambre 1-x ».
+    /// same decision, the same day, for the same room. Unfolded into two rooms,
+    /// that number would sit where a chamber goes, on the chamber that carries it.
     fn division(&self) -> Option<String> {
         match (self.container, self.chamber) {
             (Some(Container::Pole(n)), _) => Some(format!("P{n}")),
@@ -554,23 +583,14 @@ impl Seat {
     /// The matter-only room, its streams folded into their room.
     fn folded_token(&self) -> Option<String> {
         let folds = matches!(self.jurisdiction_type.as_str(), "CA" | "TJ");
-        let mut uids: Vec<&str> = Vec::new();
-        for uid in self
-            .specialty
-            .iter()
-            .map(|u| if folds { folded(u) } else { u })
-        {
-            if !uids.contains(&uid) {
-                uids.push(uid);
+        let mut tokens: Vec<&str> = Vec::new();
+        for uid in &self.specialty {
+            let token = renamed(suffix(if folds { folded(uid) } else { uid }));
+            if !tokens.contains(&token) {
+                tokens.push(token);
             }
         }
-        (!uids.is_empty()).then(|| {
-            uids.iter()
-                .copied()
-                .map(suffix)
-                .collect::<Vec<_>>()
-                .join("_")
-        })
+        (!tokens.is_empty()).then(|| tokens.join("_"))
     }
 }
 
@@ -638,9 +658,10 @@ fn letter(s: &str) -> Option<char> {
 }
 
 /// Label of the LAST node of a path, the tree already showing its ancestors.
-/// `None` on a jurisdiction type and on a court, which the API resolves from its
-/// own referential, and on anything outside the grammar of a segment.
+/// `None` on an order, a jurisdiction type and a court, which the API resolves
+/// from its own referential, and on anything outside the grammar of a segment.
 pub fn seat_path_label(path: &str) -> Option<String> {
+    let (_, path) = path.split_once('.')?;
     let segment = path.rsplit('.').next()?;
     if !path.contains('.') && crate::titles::jurisdiction_type_label(segment).is_some() {
         return None;
@@ -669,6 +690,10 @@ pub fn seat_path_label(path: &str) -> Option<String> {
     // cour d'appel has a chambre sociale.
     if uids == ["matiere:SOCIALE"] && path.starts_with("TJ.") {
         return Some("Pôle social".to_string());
+    }
+    // One node holds the room under both its names, and shows the current one.
+    if uids == ["matiere:COMMERCIALE"] && path.starts_with("CC.") {
+        return specialty_label("matiere:COMMERCIALE_FINANCIERE_ECONOMIQUE").map(str::to_string);
     }
     let mut label = specialty_label(uids[0])?.to_string();
     if let Some(rest) = qualifier(&uids[1..]) {
@@ -758,35 +783,35 @@ mod tests {
     /// One seat per shape of room, each with the set `paths()` must unfold.
     fn paths_table() -> Vec<(Seat, Vec<&'static str>)> {
         vec![
-            (court("CNDA", "cnda"), vec!["CNDA"]),
+            (court("CNDA", "cnda"), vec!["FR", "FR.CNDA"]),
             (
                 Seat {
                     chamber: Some(ChamberId::Number(1)),
                     specialty: vec!["matiere:CIVILE"],
                     ..court("CC", "cc")
                 },
-                vec!["CC", "CC.C1_CIVILE"],
+                vec!["FR", "FR.CC", "FR.CC.C1_CIVILE"],
             ),
             (
                 Seat {
                     specialty: vec!["matiere:SOCIALE"],
                     ..court("CC", "cc")
                 },
-                vec!["CC", "CC.SOCIALE"],
+                vec!["FR", "FR.CC", "FR.CC.SOCIALE"],
             ),
             (
                 Seat {
                     specialty: vec!["matiere:PRUD_HOMALE", "matiere:SOCIALE"],
                     ..court("CA", "ca_angers")
                 },
-                vec!["CA", "CA.ANGERS", "CA.ANGERS.SOCIALE"],
+                vec!["FR", "FR.CA", "FR.CA.ANGERS", "FR.CA.ANGERS.SOCIALE"],
             ),
             (
                 Seat {
                     specialty: vec!["matiere:PROTECTION_SOCIALE"],
                     ..court("TJ", "tj_marseille")
                 },
-                vec!["TJ", "TJ.MARSEILLE", "TJ.MARSEILLE.SOCIALE"],
+                vec!["FR", "FR.TJ", "FR.TJ.MARSEILLE", "FR.TJ.MARSEILLE.SOCIALE"],
             ),
             (
                 Seat {
@@ -794,14 +819,24 @@ mod tests {
                     specialty: vec!["matiere:PROTECTION_SOCIALE"],
                     ..court("CA", "ca_rennes")
                 },
-                vec!["CA", "CA.RENNES", "CA.RENNES.C9_PROTECTION_SOCIALE"],
+                vec![
+                    "FR",
+                    "FR.CA",
+                    "FR.CA.RENNES",
+                    "FR.CA.RENNES.C9_PROTECTION_SOCIALE",
+                ],
             ),
             (
                 Seat {
                     specialty: vec!["matiere:PROTECTION_SOCIALE"],
                     ..court("TA", "ta_nimes")
                 },
-                vec!["TA", "TA.NIMES", "TA.NIMES.PROTECTION_SOCIALE"],
+                vec![
+                    "FR",
+                    "FR.TA",
+                    "FR.TA.NIMES",
+                    "FR.TA.NIMES.PROTECTION_SOCIALE",
+                ],
             ),
             (
                 Seat {
@@ -809,7 +844,13 @@ mod tests {
                     chamber: Some(ChamberId::Number(6)),
                     ..court("CA", "ca_paris")
                 },
-                vec!["CA", "CA.PARIS", "CA.PARIS.P5", "CA.PARIS.P5.C6"],
+                vec![
+                    "FR",
+                    "FR.CA",
+                    "FR.CA.PARIS",
+                    "FR.CA.PARIS.P5",
+                    "FR.CA.PARIS.P5.C6",
+                ],
             ),
             (
                 Seat {
@@ -817,7 +858,13 @@ mod tests {
                     chamber: Some(ChamberId::Number(1)),
                     ..court("TA", "ta_paris")
                 },
-                vec!["TA", "TA.PARIS", "TA.PARIS.SC1", "TA.PARIS.SC1.C1"],
+                vec![
+                    "FR",
+                    "FR.TA",
+                    "FR.TA.PARIS",
+                    "FR.TA.PARIS.SC1",
+                    "FR.TA.PARIS.SC1.C1",
+                ],
             ),
             (
                 Seat {
@@ -825,7 +872,12 @@ mod tests {
                     specialty: vec!["matiere:CIVILE", "matiere:COMMERCIALE"],
                     ..court("CA", "ca_besancon")
                 },
-                vec!["CA", "CA.BESANCON", "CA.BESANCON.C1_CIVILE_COMMERCIALE"],
+                vec![
+                    "FR",
+                    "FR.CA",
+                    "FR.CA.BESANCON",
+                    "FR.CA.BESANCON.C1_CIVILE_COMMERCIALE",
+                ],
             ),
             (
                 Seat {
@@ -833,7 +885,7 @@ mod tests {
                     specialty: vec!["matiere:COMMERCIALE"],
                     ..court("CA", "ca_angers")
                 },
-                vec!["CA", "CA.ANGERS", "CA.ANGERS.CD_COMMERCIALE"],
+                vec!["FR", "FR.CA", "FR.CA.ANGERS", "FR.CA.ANGERS.CD_COMMERCIALE"],
             ),
             (
                 Seat {
@@ -844,10 +896,11 @@ mod tests {
                     ..court("TJ", "tj_paris")
                 },
                 vec![
-                    "TJ",
-                    "TJ.PARIS",
-                    "TJ.PARIS.P6",
-                    "TJ.PARIS.P6.C3_PROTECTION_SOCIALE",
+                    "FR",
+                    "FR.TJ",
+                    "FR.TJ.PARIS",
+                    "FR.TJ.PARIS.P6",
+                    "FR.TJ.PARIS.P6.C3_PROTECTION_SOCIALE",
                 ],
             ),
             (
@@ -857,10 +910,11 @@ mod tests {
                     ..court("CA", "ca_aix_en_provence")
                 },
                 vec![
-                    "CA",
-                    "CA.AIX_EN_PROVENCE",
-                    "CA.AIX_EN_PROVENCE.P1",
-                    "CA.AIX_EN_PROVENCE.P1.C2",
+                    "FR",
+                    "FR.CA",
+                    "FR.CA.AIX_EN_PROVENCE",
+                    "FR.CA.AIX_EN_PROVENCE.P1",
+                    "FR.CA.AIX_EN_PROVENCE.P1.C2",
                 ],
             ),
             (
@@ -870,49 +924,49 @@ mod tests {
                     letter: Some('B'),
                     ..court("TA", "ta_paris")
                 },
-                vec!["TA", "TA.PARIS", "TA.PARIS.C2"],
+                vec!["FR", "FR.TA", "FR.TA.PARIS", "FR.TA.PARIS.C2"],
             ),
             (
                 Seat {
                     section: Some(8),
                     ..court("TA", "ta_paris")
                 },
-                vec!["TA", "TA.PARIS"],
+                vec!["FR", "FR.TA", "FR.TA.PARIS"],
             ),
             (
                 Seat {
                     joined: Some(Joined::SubSections(vec![3, 5])),
                     ..court("CE", "ce")
                 },
-                vec!["CE", "CE.C3", "CE.C5"],
+                vec!["FR", "FR.CE", "FR.CE.C3", "FR.CE.C5"],
             ),
             (
                 Seat {
                     joined: Some(Joined::SubSections(vec![3])),
                     ..court("CE", "ce")
                 },
-                vec!["CE", "CE.C3"],
+                vec!["FR", "FR.CE", "FR.CE.C3"],
             ),
             (
                 Seat {
                     joined: Some(Joined::Chambers(vec![3, 8])),
                     ..court("CE", "ce")
                 },
-                vec!["CE", "CE.C3", "CE.C8"],
+                vec!["FR", "FR.CE", "FR.CE.C3", "FR.CE.C8"],
             ),
             (
                 Seat {
                     solemn: Some(Solemn::Assemblee),
                     ..court("CE", "ce")
                 },
-                vec!["CE", "CE.ASSEMBLEE"],
+                vec!["FR", "FR.CE", "FR.CE.ASSEMBLEE"],
             ),
             (
                 Seat {
                     solemn: Some(Solemn::ChambresReunies),
                     ..court("CC", "cc")
                 },
-                vec!["CC", "CC.ASSEMBLEE_PLENIERE"],
+                vec!["FR", "FR.CC", "FR.CC.ASSEMBLEE_PLENIERE"],
             ),
         ]
     }
@@ -1200,15 +1254,15 @@ mod tests {
     #[test]
     fn the_depth_follows_the_jurisdiction() {
         let cases = [
-            (court("CNDA", "cnda"), "CNDA", 1),
+            (court("CNDA", "cnda"), "FR.CNDA", 2),
             (
                 Seat {
                     chamber: Some(ChamberId::Number(1)),
                     specialty: vec!["matiere:CIVILE"],
                     ..court("CC", "cc")
                 },
-                "CC.C1_CIVILE",
-                2,
+                "FR.CC.C1_CIVILE",
+                3,
             ),
             (
                 Seat {
@@ -1216,8 +1270,8 @@ mod tests {
                     chamber: Some(ChamberId::Number(6)),
                     ..court("CA", "ca_paris")
                 },
-                "CA.PARIS.P5.C6",
-                4,
+                "FR.CA.PARIS.P5.C6",
+                5,
             ),
             (
                 Seat {
@@ -1225,8 +1279,8 @@ mod tests {
                     chamber: Some(ChamberId::Number(1)),
                     ..court("TA", "ta_paris")
                 },
-                "TA.PARIS.SC1.C1",
-                4,
+                "FR.TA.PARIS.SC1.C1",
+                5,
             ),
         ];
         for (seat, deepest, depth) in cases {
@@ -1246,7 +1300,7 @@ mod tests {
             joined: Some(Joined::SubSections(vec![1, 4])),
             ..court("CE", "ce")
         };
-        assert_eq!(one.paths(), ["CE", "CE.C1", "CE.C4"]);
+        assert_eq!(one.paths(), ["FR", "FR.CE", "FR.CE.C1", "FR.CE.C4"]);
         assert_eq!(one.paths(), other.paths());
     }
 
@@ -1298,16 +1352,40 @@ mod tests {
     #[test]
     fn the_social_stream_labels_its_room_by_court() {
         assert_eq!(
-            seat_path_label("CA.ANGERS.SOCIALE").as_deref(),
+            seat_path_label("FR.CA.ANGERS.SOCIALE").as_deref(),
             Some("Chambre sociale")
         );
         assert_eq!(
-            seat_path_label("TJ.MARSEILLE.SOCIALE").as_deref(),
+            seat_path_label("FR.TJ.MARSEILLE.SOCIALE").as_deref(),
             Some("Pôle social")
         );
         assert_eq!(
-            seat_path_label("CA.RENNES.C9_PROTECTION_SOCIALE").as_deref(),
+            seat_path_label("FR.CA.RENNES.C9_PROTECTION_SOCIALE").as_deref(),
             Some("9e chambre, protection sociale")
+        );
+    }
+
+    #[test]
+    fn the_commercial_chamber_keeps_one_node_under_its_two_names() {
+        let named = |uid| Seat {
+            specialty: vec![uid],
+            ..court("CC", "cc")
+        };
+        let before = named("matiere:COMMERCIALE");
+        let after = named("matiere:COMMERCIALE_FINANCIERE_ECONOMIQUE");
+        assert_eq!(before.label().as_deref(), Some("Chambre commerciale"));
+        assert_eq!(
+            after.label().as_deref(),
+            Some("Chambre commerciale, financière et économique")
+        );
+        assert_eq!(before.paths(), after.paths());
+        assert_eq!(
+            seat_path_label("FR.CC.COMMERCIALE").as_deref(),
+            Some("Chambre commerciale, financière et économique")
+        );
+        assert_eq!(
+            seat_path_label("FR.CA.ANGERS.COMMERCIALE").as_deref(),
+            Some("Chambre commerciale")
         );
     }
 
@@ -1328,33 +1406,54 @@ mod tests {
         ];
         for (segment, expected) in cases {
             assert_eq!(
-                seat_path_label(segment).as_deref(),
+                seat_path_label(&format!("FR.CA.PARIS.{segment}")).as_deref(),
                 Some(expected),
                 "{segment}"
             );
         }
-        for segment in [
-            "CA",
-            "CC",
-            "CE",
-            "TJ",
-            "PARIS",
-            "AIX_EN_PROVENCE",
-            "",
-            "S3",
-            "LD",
+        for path in [
+            "FR",
+            "FR.CA",
+            "FR.CC",
+            "FR.CE",
+            "FR.TJ",
+            "FR.CA.PARIS",
+            "FR.CA.AIX_EN_PROVENCE",
+            "FR.CA.PARIS.",
+            "FR.CA.PARIS.S3",
+            "FR.CA.PARIS.LD",
         ] {
-            assert!(seat_path_label(segment).is_none(), "{segment}");
+            assert!(seat_path_label(path).is_none(), "{path}");
         }
     }
 
     #[test]
     fn a_jurisdiction_translates_into_the_trunk_of_its_paths() {
-        assert_eq!(jurisdiction_trunk("CA", Some("ca_paris")), ["CA", "PARIS"]);
-        assert_eq!(jurisdiction_trunk("TJ", Some("tj_nice")), ["TJ", "NICE"]);
-        assert_eq!(jurisdiction_trunk("CC", Some("cc")), ["CC"]);
-        assert_eq!(jurisdiction_trunk("CE", None), ["CE"]);
-        assert_eq!(jurisdiction_trunk("CRR", Some("crr")), ["CNDA"]);
+        assert_eq!(
+            jurisdiction_trunk("CA", Some("ca_paris")),
+            ["FR", "CA", "PARIS"]
+        );
+        assert_eq!(
+            jurisdiction_trunk("TJ", Some("tj_nice")),
+            ["FR", "TJ", "NICE"]
+        );
+        assert_eq!(jurisdiction_trunk("CC", Some("cc")), ["FR", "CC"]);
+        assert_eq!(jurisdiction_trunk("CE", None), ["FR", "CE"]);
+        assert_eq!(jurisdiction_trunk("CRR", Some("crr")), ["FR", "CNDA"]);
+        assert_eq!(jurisdiction_trunk("CJUE", None), ["EU", "CJUE"]);
+        assert_eq!(jurisdiction_trunk("CEDH", None), ["INTL", "CEDH"]);
+        assert_eq!(
+            jurisdiction_trunk("COUR_SUPREME", Some("sn_cour_supreme")),
+            ["SN", "COUR_SUPREME"]
+        );
+        assert_eq!(
+            jurisdiction_trunk("COUR_APPEL", Some("sn_cour_appel_dakar")),
+            ["SN", "COUR_APPEL", "DAKAR"]
+        );
+        assert_eq!(
+            jurisdiction_trunk("CCJA", Some("ohada_ccja")),
+            ["OHADA", "CCJA"]
+        );
         assert!(jurisdiction_trunk("", Some("ca_paris")).is_empty());
         for (seat, chemins) in paths_table() {
             let trunk =
@@ -1384,7 +1483,7 @@ mod tests {
         };
         assert_eq!(
             composed.paths().last().map(String::as_str),
-            Some("CA.AIX_EN_PROVENCE.P1.C2")
+            Some("FR.CA.AIX_EN_PROVENCE.P1.C2")
         );
         assert_eq!(composed.label().as_deref(), Some("Chambre 1-2"));
     }
@@ -1395,19 +1494,22 @@ mod tests {
             solemn: Some(Solemn::ChambresReunies),
             ..court("CC", "cc")
         };
-        assert_eq!(reunies.paths(), ["CC", "CC.ASSEMBLEE_PLENIERE"]);
+        assert_eq!(reunies.paths(), ["FR", "FR.CC", "FR.CC.ASSEMBLEE_PLENIERE"]);
         assert_eq!(reunies.label().as_deref(), Some("Chambres réunies"));
         let sub_sections = Seat {
             joined: Some(Joined::SubSections(vec![3, 5])),
             ..court("CE", "ce")
         };
-        assert_eq!(sub_sections.paths(), ["CE", "CE.C3", "CE.C5"]);
+        assert_eq!(
+            sub_sections.paths(),
+            ["FR", "FR.CE", "FR.CE.C3", "FR.CE.C5"]
+        );
         assert_eq!(
             sub_sections.label().as_deref(),
             Some("Sous-sections 3/5 réunies")
         );
         let crr = court("CRR", "crr");
-        assert_eq!(crr.paths(), ["CNDA"]);
+        assert_eq!(crr.paths(), ["FR", "FR.CNDA"]);
         assert_eq!(crr.jurisdiction_type, "CRR");
     }
 

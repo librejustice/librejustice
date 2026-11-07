@@ -3,16 +3,15 @@
 //! CRP) et fond des décisions elles-mêmes.
 //!
 //! Deux canaux, sans auth :
-//! - `xsearch?type=json` filtré `SourceStr4=<FOND>&SourceInt1=<année>` et paginé
-//!   par `PageNumber` (20 hits/page servis par le serveur ; `PageSize`/`SkipCount`
-//!   sont ignorés). L'année d'un hit est celle de la date de lecture de la
-//!   décision parente : analyses et conclusions d'une même décision tombent dans
-//!   la même tranche annuelle. Sans filtre d'année, la réponse porte la facette
-//!   `anneeDateDeLecture` comptée sur la sélection entière : le fond se recense
-//!   en une requête.
-//! - `downloadFilePagePlugin` pour l'HTML plein d'une analyse AJCE (le hit JSON
-//!   ne porte que les titres analytiques tronqués à 1 544 car. ; les sommaires
-//!   complets ne sont que dans l'HTML). L'`Id` garde son pipe non URL-encodé.
+//! - `xsearch?type=json` filtered by `SourceStr4=<FOND>&SourceInt1=<année>` and
+//!   paged by `PageNumber`, the server setting the page size (`PageSize` and
+//!   `SkipCount` are ignored). A hit's year is the reading date of its parent
+//!   decision: the analyses and conclusions of one decision fall in the same year.
+//!   Without a year filter, the response carries the `anneeDateDeLecture` facet
+//!   counted over the whole selection: the fond is counted in one request.
+//! - `downloadFilePagePlugin` for the full HTML of an AJCE analysis (the JSON hit
+//!   carries only the analytic titles, truncated; the full summaries are only in
+//!   the HTML). The `Id` keeps its pipe un-URL-encoded.
 //!
 //! Encoding boundary: the HTML is decoded here, latin-1 or UTF-8 depending on
 //! what the bytes carry, plus the `0x19` cleanup (mis-mapped Windows-1252
@@ -37,11 +36,11 @@ pub const THROTTLE: Duration = Duration::from_millis(500);
 /// Fonds ArianeWeb énumérés.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ArianeFond {
-    /// Analyses du CE (~108 k, HTML).
+    /// Analyses of the CE (HTML).
     Ajce,
-    /// Conclusions du rapporteur public (~9 k, PDF — jamais téléchargé).
+    /// Conclusions of the rapporteur public (PDF, never downloaded).
     Crp,
-    /// Décisions elles-mêmes (~166 k, HTML).
+    /// The decisions themselves (HTML).
     Dce,
 }
 
@@ -55,7 +54,7 @@ impl ArianeFond {
     }
 }
 
-/// Une page de résultats `xsearch` (pagination serveur : 20 hits/page).
+/// A page of `xsearch` results, its size set by the server.
 #[derive(Debug, Deserialize)]
 pub struct ArianeSearchPage {
     #[serde(rename = "TotalCount")]
@@ -220,10 +219,9 @@ pub fn http_client() -> Result<reqwest::blocking::Client> {
         .map_err(SourceError::from)
 }
 
-/// Recensement d'un fond, année par année, en **une** requête : la facette
-/// `anneeDateDeLecture` est comptée par le serveur sur la sélection entière, pas
-/// sur les 20 hits servis. Les nœuds hors plage sont des années fautives du
-/// fond (`211341`), écartées ici.
+/// Census of a fond, year by year, in **one** request: the server counts the
+/// `anneeDateDeLecture` facet over the whole selection, not over the hits served.
+/// Nodes out of range are faulty years of the fond (`211341`), dropped here.
 pub fn census_by_year(
     client: &reqwest::blocking::Client,
     fond: ArianeFond,
@@ -285,9 +283,9 @@ pub fn search_page(
         .map_err(|e| SourceError::Invalid(format!("xsearch {} {year} p{page}: {e}", fond.as_str())))
 }
 
-/// HTML décodé d'une analyse AJCE, via cache disque (`<dir>/<millier>/<num>.html`,
-/// shardé — ~108 k fichiers). Renvoie `(html, fetched)` où `fetched` dit si le
-/// réseau a été touché (l'appelant throttle dans ce cas seulement).
+/// Decoded HTML of an AJCE analysis, through a sharded disk cache
+/// (`<dir>/<millier>/<num>.html`). Returns `(html, fetched)`, `fetched` saying
+/// whether the network was touched (the caller throttles only then).
 pub fn ajce_html_cached(
     client: &reqwest::blocking::Client,
     cache_dir: &Path,
@@ -356,10 +354,8 @@ pub fn dce_html_cached(
 
 /// Sinequa serves its recent documents in UTF-8 and the older ones in latin-1,
 /// under the same `Content-Type`, so the encoding is read off the bytes and not
-/// off the header: accented French latin-1 is not valid UTF-8. Measured
-/// 10/09/2026 over the whole cache, 166 AJCE sheets out of 107 828 are UTF-8,
-/// all of them past number 170 000. The `0x19` is a typographic apostrophe
-/// Sinequa mis-maps, in both encodings.
+/// off the header: accented French latin-1 is not valid UTF-8. The `0x19` is a
+/// typographic apostrophe Sinequa mis-maps, in both encodings.
 pub fn decode_ariane_html(raw: &[u8]) -> String {
     match std::str::from_utf8(raw) {
         Ok(text) => text.replace('\u{19}', "\u{2019}"),

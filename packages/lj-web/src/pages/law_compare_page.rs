@@ -12,6 +12,7 @@ use lj_dtos::{
     LawCompareSegment,
 };
 
+use crate::components::ui::{DropdownSelect, SelectOption};
 use crate::helpers::{format_article_num, format_iso_date};
 use crate::pages::law_page::data::{compare_key, fetch_compare, sendable, PageError};
 use crate::pages::law_page::set_cache_control;
@@ -65,6 +66,9 @@ pub fn LawComparePage() -> impl IntoView {
 
 #[component]
 fn CompareError(err: PageError) -> impl IntoView {
+    if err.status == 404 {
+        crate::pages::not_found::signaler_lien_mort();
+    }
     let eyebrow = if err.status == 404 {
         "Introuvable"
     } else {
@@ -216,41 +220,38 @@ fn CompareLoaded(cmp: LawCompareResponse) -> impl IntoView {
     let to_key = version_url_key(&to);
     let base = format!("{text}/{num_key}/compare");
 
+    let options: Vec<SelectOption> = versions
+        .iter()
+        .map(|v| SelectOption {
+            value: version_url_key(v),
+            label: version_label(v),
+        })
+        .collect();
     let selector = |label: &'static str, selected: String, other: String, other_is_to: bool| {
         let navigate = use_navigate();
         let base = base.clone();
-        let options = versions
-            .iter()
-            .map(|v| {
-                let key = version_url_key(v);
-                let is_selected = key == selected;
-                view! {
-                    <option value=key selected=is_selected>
-                        {version_label(v)}
-                    </option>
-                }
-            })
-            .collect_view();
+        let on_change = Callback::new(move |picked: String| {
+            let href = if other_is_to {
+                format!("{base}/{picked}/{other}")
+            } else {
+                format!("{base}/{other}/{picked}")
+            };
+            navigate(&href, Default::default());
+        });
         view! {
-            <label class="flex min-w-0 flex-1 flex-col gap-1">
+            <div class="flex min-w-0 flex-1 flex-col gap-1">
                 <span class="text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
                     {label}
                 </span>
-                <select
-                    class="h-10 w-full rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-2 text-sm text-[var(--color-ink)]"
-                    on:change=move |ev| {
-                        let picked = event_target_value(&ev);
-                        let href = if other_is_to {
-                            format!("{base}/{picked}/{other}")
-                        } else {
-                            format!("{base}/{other}/{picked}")
-                        };
-                        navigate(&href, Default::default());
-                    }
-                >
-                    {options}
-                </select>
-            </label>
+                <DropdownSelect
+                    value=selected
+                    on_change=on_change
+                    options=options.clone()
+                    aria_label=label
+                    class="w-full"
+                    field=true
+                />
+            </div>
         }
     };
 

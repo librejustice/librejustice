@@ -1,0 +1,103 @@
+jurisdiction	type	label
+FR	ACCORD	Accord
+FR	ACCORD_FONCTION_PUBLIQUE	Accord de la fonction publique
+FR	ANNONCES	Annonces judiciaires et légales
+FR	ARRANGEMENT	Arrangement
+FR	ARRET	Arrêt
+FR	ARRETE	Arrêté
+FR	ARRETEEURO	Arrêté européen
+FR	ARRETEURO	Arrêt européen
+FR	AVENANT	Avenant
+FR	AVIS	Avis
+FR	AVISEURO	Avis européen
+FR	BOFIP	BOFiP (doctrine fiscale)
+FR	CHARTE	Charte
+FR	CIRCULAIRE	Circulaire
+FR	CITATION	Citation
+FR	CODE	Code
+FR	COMMUNIQUE	Communiqué
+FR	CONSTITUTION	Constitution
+FR	CONVENTION	Convention
+FR	DECISION	Décision
+FR	DECISION_CC	Décision du Conseil constitutionnel
+FR	DECISION_EURO	Décision européenne
+FR	DECLARATION	Déclaration
+FR	DECLARATIONEURO	Déclaration européenne
+FR	DECRET	Décret
+FR	DECRET_LOI	Décret-loi
+FR	DELIBERATION	Délibération
+FR	DELIBERATIONEURO	Délibération européenne
+FR	DIRECTIVE	Directive
+FR	DIRECTIVE_EURO	Directive européenne
+FR	EXEQUATUR	Exequatur
+FR	FICHE_PRATIQUE	Fiche pratique (Service-Public)
+FR	IDCC	Convention collective
+FR	INFORMATION	Information
+FR	INFORMATIONS_CESE	Informations du CESE
+FR	INFORMATIONS_DIVERSES	Informations diverses
+FR	INFORMATIONS_PARLEMENTAIRES	Informations parlementaires
+FR	INSTRUCTION	Instruction
+FR	INSTRUCTIONEURO	Instruction européenne
+FR	LETTRE	Lettre
+FR	LETTREEURO	Lettre européenne
+FR	LISTE	Liste
+FR	LOI	Loi
+FR	LOI.CONSTIT	Loi constitutionnelle
+FR	LOI.ORGANIQUE	Loi organique
+FR	LOI.PROGRAMME	Loi de programmation
+FR	MEMOIRE	Mémoire
+FR	OBSERVATION	Observations
+FR	ORDONNANCE	Ordonnance
+FR	PROTOCOLE	Protocole
+FR	RAPPORT	Rapport
+FR	RECOMMANDATION	Recommandation
+FR	REGLEMENT	Règlement
+FR	REGLEMENTEUROPEEN	Règlement européen
+FR	REMISE	Remise de lettres de créance
+FR	RESULTATS	Résultats
+FR	SAISINE	Saisine
+FR	TABLEAU	Tableau
+FR	TI	Texte conventionnel isolé
+FR	TRAITE	Traité
+FR	VOCABULAIRE	Vocabulaire
+EU	AGREEMENT	Accord
+EU	CHARTER	Charte
+EU	CONVENTION	Convention
+EU	DECISION	Décision
+EU	DECLARATION	Déclaration
+EU	DIRECTIVE	Directive
+EU	LETTER	Lettre
+EU	PROTOCOL	Protocole
+EU	REGULATION	Règlement
+EU	TREATY	Traité
+INTL	ACT	Acte
+INTL	AGREEMENT	Accord
+INTL	AMENDMENT	Avenant
+INTL	ANNEX	Annexe
+INTL	ARRANGEMENT	Arrangement
+INTL	CHARTER	Charte
+INTL	CODE	Code
+INTL	CONSTITUTION	Constitution
+INTL	CONVENTION	Convention
+INTL	COVENANT	Pacte
+INTL	DECISION	Décision
+INTL	DECLARATION	Déclaration
+INTL	DENUNCIATION	Dénonciation
+INTL	EXCHANGE_OF_LETTERS	Échange de lettres
+INTL	EXCHANGE_OF_NOTES	Échange de notes
+INTL	INSTRUMENT	Instrument
+INTL	LETTER	Lettre
+INTL	MEASURE	Mesure
+INTL	MEMORANDUM	Mémorandum
+INTL	PROCES_VERBAL	Procès-verbal
+INTL	PROTOCOL	Protocole
+INTL	RECOMMENDATION	Recommandation
+INTL	REGULATION	Règlement
+INTL	RESOLUTION	Résolution
+INTL	STATUTE	Statut
+INTL	TREATY	Traité
+*	CODE	Code
+*	CONSTITUTION	Constitution
+*	DECREE	Décret
+*	LAW	Loi
+*	ORDINANCE	Ordonnance

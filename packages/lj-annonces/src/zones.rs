@@ -28,21 +28,21 @@ pub enum Zone {
     UnionEuropeenne,
 }
 
-use lj_vocab::{ZONE_FRANCE, ZONE_UE};
+use lj_vocab::{ZONE_EU, ZONE_FRANCE};
 
 impl Zone {
     pub fn code(&self) -> &str {
         match self {
             Zone::Departement(d) => d,
             Zone::FranceEntiere => ZONE_FRANCE,
-            Zone::UnionEuropeenne => ZONE_UE,
+            Zone::UnionEuropeenne => ZONE_EU,
         }
     }
 
     pub fn parse(code: &str) -> Option<Zone> {
         match code {
             ZONE_FRANCE => Some(Zone::FranceEntiere),
-            ZONE_UE => Some(Zone::UnionEuropeenne),
+            ZONE_EU => Some(Zone::UnionEuropeenne),
             d if REGION_DU_DEP.contains_key(d) => Some(Zone::Departement(d.to_string())),
             _ => None,
         }
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn les_deux_valeurs_sans_lieu_ne_collisionnent_pas_avec_un_departement() {
         assert_eq!(Zone::parse("fr"), Some(Zone::FranceEntiere));
-        assert_eq!(Zone::parse("ue"), Some(Zone::UnionEuropeenne));
+        assert_eq!(Zone::parse("eu"), Some(Zone::UnionEuropeenne));
         assert_eq!(
             Zone::parse("973"),
             Some(Zone::Departement("973".to_string()))

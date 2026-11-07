@@ -143,6 +143,14 @@ pub fn watch_progress(reader: &JsValue, callback: impl Fn(String, f64) + 'static
     closure.forget();
 }
 
+/// Start the reader's workers and fetch what they read with, before any page.
+pub async fn warm(reader: &JsValue) -> Result<(), String> {
+    let promise: js_sys::Promise = call(reader, "prepare", &[])?
+        .dyn_into()
+        .map_err(|_| "le lecteur n'a pas rendu de promesse".to_string())?;
+    JsFuture::from(promise).await.map(|_| ()).map_err(why)
+}
+
 /// Read one page image and hand back the words it carries.
 pub async fn read(reader: &JsValue, image: &JsValue, page: usize) -> Result<Vec<Word>, String> {
     let promise: js_sys::Promise = call(

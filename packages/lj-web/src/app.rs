@@ -9,11 +9,11 @@ use crate::components::AppShell;
 use crate::pages::{
     AnnoncesCataloguePage, AnnoncesDepartementPage, AnnoncesPage, AnnuaireDirectoryPage,
     AnnuairePage, ApiGuide, AuthorizeMcpPage, BookmarksPage, CodeCataloguePage, ConfirmPage,
-    CorpusPage, DecisionPage, EmailChangePage, EntityPage, FeedbackPage, JuridictionHubPage,
-    JuridictionYearPage, JuridictionsPage, Landing, LawCodePage, LegalNotice, LoginLinkPage,
-    LoginPage, MarchePage, McpGuide, NormFondPage, NormNodePage, NormYearPage, NormesPage,
-    NotFound, Privacy, ProfilePage, RedactPage, ResetPasswordPage, SearchPage, SourcesPage,
-    TextesPage, ToolsPage,
+    ContributePage, CorpusPage, DecisionPage, EmailChangePage, EntityPage, FeedbackPage,
+    JuridictionHubPage, JuridictionYearPage, JuridictionsPage, Landing, LawCodePage, LegalNotice,
+    LoginLinkPage, LoginPage, MarchePage, McpGuide, NormFondPage, NormNodePage, NormYearPage,
+    NormesPage, NotFound, OpenSource, Privacy, ProfilePage, RedactPage, ResetPasswordPage,
+    SearchPage, SourcesPage, Terms, TextesPage, ToolsPage,
 };
 use crate::seo::site_default;
 
@@ -457,6 +457,10 @@ pub fn App() -> impl IntoView {
                         ssr=SsrMode::PartiallyBlocked
                     />
                     <Route path=StaticSegment("bookmarks") view=BookmarksPage />
+                    <Route
+                        path=(StaticSegment("decision"), StaticSegment("contribute"))
+                        view=ContributePage
+                    />
                     // ── Pages statiques publiques ──
                     <Route path=StaticSegment("feedback") view=FeedbackPage />
                     <Route path=StaticSegment("tools") view=ToolsPage />
@@ -465,6 +469,8 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("mcp-guide") view=McpGuide />
                     <Route path=StaticSegment("legal-notice") view=LegalNotice />
                     <Route path=StaticSegment("privacy") view=Privacy />
+                    <Route path=StaticSegment("terms") view=Terms />
+                    <Route path=StaticSegment("open-source") view=OpenSource />
                     // Pas de route catch-all : un `WildcardSegment` masquerait les assets
                     // statiques (`/pkg/*`, `/favicon.svg`) qui doivent atteindre le
                     // `file_and_error_handler`. Le no-match est couvert par

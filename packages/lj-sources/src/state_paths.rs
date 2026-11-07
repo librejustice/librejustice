@@ -20,6 +20,8 @@ pub(crate) const JUDILIBRE_DIR: &str = "judilibre";
 pub(crate) const OPENDATA_DIR: &str = "opendata_conseil_etat";
 pub(crate) const CEDH_DIR: &str = "cedh";
 pub(crate) const CNDA_DIR: &str = "cnda";
+pub(crate) const DDD_DIR: &str = "ddd";
+pub(crate) const ADLC_DIR: &str = "adlc";
 pub(crate) const CJUE_DIR: &str = "cjue";
 pub(crate) const EU_LAW_DIR: &str = "eu_law";
 pub(crate) const PRESSE_DIR: &str = "presse";
@@ -107,6 +109,16 @@ impl StatePaths {
     /// `ingest/cache/cnda` — décisions CNDA.
     pub fn cnda(&self) -> PathBuf {
         self.cache().join(CNDA_DIR)
+    }
+
+    /// `ingest/cache/ddd`, the catalogue of the Défenseur des droits.
+    pub fn ddd(&self) -> PathBuf {
+        self.cache().join(DDD_DIR)
+    }
+
+    /// `ingest/cache/adlc`, the dataset of the Autorité de la concurrence.
+    pub fn adlc(&self) -> PathBuf {
+        self.cache().join(ADLC_DIR)
     }
 
     /// `ingest/cache/cjue` — arrêts CJUE.

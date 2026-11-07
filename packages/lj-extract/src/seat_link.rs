@@ -261,9 +261,9 @@ fn room_key(seat: &Seat) -> Option<String> {
     bare.paths().pop()
 }
 
-/// The court of a room path: its second segment.
+/// The court of a room path: its first three segments, order, type and court.
 fn court_of(path: &str) -> String {
-    path.splitn(3, '.').take(2).collect::<Vec<_>>().join(".")
+    path.splitn(4, '.').take(3).collect::<Vec<_>>().join(".")
 }
 
 /// The matters the last segment of a room path carries, as the path derivation
@@ -299,7 +299,7 @@ fn registry_matters(
     let axes = match jurisdiction_type {
         "TA" | "CAA" | "CE" => parse_formation(jt, None, None, None, formation),
         "CC" => parse_formation(jt, chamber, None, None, formation),
-        "CA" | "TJ" | "TCOM" => parse_formation(jt, None, chamber, None, formation),
+        "CA" | "TJ" | "TCOM" | "CPH" => parse_formation(jt, None, chamber, None, formation),
         _ => return None,
     };
     Some(axes.chamber.specialty)
@@ -500,10 +500,10 @@ mod tests {
         row
     }
 
-    /// The five courts of the rule, measured in production on 01/09/2026, plus
-    /// the Cassation, whose registry field names the matter as a code.
+    /// The five courts of the rule, plus the Cassation, whose registry field names
+    /// the matter as a code.
     #[test]
-    fn the_measured_courts_name_their_rooms() {
+    fn the_courts_of_the_rule_name_their_rooms() {
         let caen = SeatVocabulary::new([
             row(seat("ca_caen", 2, &["CIVILE"]), "2ème Chambre civile"),
             row(seat("ca_caen", 2, &["SOCIALE"]), "2ème chambre sociale"),
@@ -619,7 +619,7 @@ mod tests {
         }
     }
 
-    /// The registry keys of TA Paris and TA Melun on 03/09/2026: the tribunal's
+    /// The registry keys of TA Paris and TA Melun: the tribunal's
     /// own site says every chamber of Paris hears foreigners' cases and Melun
     /// dedicates a single-judge chamber to removals.
     #[test]
@@ -704,9 +704,8 @@ mod tests {
             .specialty
             .is_empty());
 
-        // The judicial bare form is a short spelling of the same room:
-        // Basse-Terre writes « 1ère Chambre » 865 times and « 1ère chambre
-        // civile » 78 times for its one civil chamber.
+        // The judicial bare form is a short spelling of the same room: Basse-Terre
+        // writes both « 1ère Chambre » and « 1ère chambre civile » for its one civil chamber.
         let basse_terre = SeatVocabulary::new([
             row(seat("ca_basse_terre", 1, &[]), "1ère Chambre"),
             row(
@@ -722,7 +721,7 @@ mod tests {
         );
     }
 
-    /// The keys of TJ Grenoble and TJ Colmar on 04/09/2026: cabinets under a
+    /// The keys of TJ Grenoble and TJ Colmar: cabinets under a
     /// number at Grenoble, a short spelling at Colmar.
     #[test]
     fn a_tribunal_keys_its_cabinets_under_the_number() {
@@ -756,7 +755,7 @@ mod tests {
         );
     }
 
-    /// Melun, Colmar, Orléans, Montpellier and Besançon on 04/09/2026.
+    /// Melun, Colmar, Orléans, Montpellier and Besançon.
     #[test]
     fn a_court_that_renamed_a_room_keeps_one_room() {
         let melun = SeatVocabulary::new([
@@ -768,8 +767,8 @@ mod tests {
                     &["ETRANGERS"],
                     "Reconduite à la frontière",
                 ),
-                (2022, 7),
-                (2024, 8),
+                (2022, 1),
+                (2024, 6),
             ),
             dated(
                 ta_row(
@@ -779,13 +778,13 @@ mod tests {
                     &["ETRANGERS"],
                     "12ème chambre, éloignement",
                 ),
-                (2024, 8),
-                (2026, 8),
+                (2024, 6),
+                (2026, 6),
             ),
             dated(
                 ta_row("ta_melun", None, Some(1), &[], "1ère chambre"),
-                (2022, 7),
-                (2026, 8),
+                (2022, 1),
+                (2026, 6),
             ),
         ]);
         let resolved = melun.resolve(&ta_row(
@@ -799,7 +798,7 @@ mod tests {
         assert_eq!(resolved.specialty, matters(&["ETRANGERS"]));
         assert_eq!(
             resolved.paths().pop().as_deref(),
-            Some("TA.MELUN.C12_ETRANGERS"),
+            Some("FR.TA.MELUN.C12_ETRANGERS"),
             "the handover month is a succession"
         );
 
@@ -808,53 +807,53 @@ mod tests {
         let colmar = SeatVocabulary::new([
             dated(
                 silent(row(seat("ca_colmar", 4, &["SOCIALE"]), "")),
-                (2002, 2),
-                (2021, 9),
+                (2002, 1),
+                (2021, 6),
             )
             .clone()
             .into_unnumbered(),
             dated(
                 row(seat("ca_colmar", 4, &["SOCIALE"]), "Chambre 4 A"),
-                (2022, 4),
-                (2026, 8),
+                (2022, 1),
+                (2026, 6),
             ),
             dated(
                 row(seat("ca_colmar", 8, &[]), "Chambre 8"),
                 (2002, 1),
-                (2026, 8),
+                (2026, 6),
             ),
         ]);
         let old = silent(row(seat("ca_colmar", 4, &["SOCIALE"]), "")).into_unnumbered();
         assert_eq!(
             colmar.resolve(&old).paths().pop().as_deref(),
-            Some("CA.COLMAR.C4_SOCIALE")
+            Some("FR.CA.COLMAR.C4_SOCIALE")
         );
 
-        // Orléans keys « Chambre Commerciale »; the body of 84 decisions with no
+        // Orléans keys « Chambre Commerciale »; the body of its decisions with no
         // key wrote « 2e chambre commerciale », and the court leaves no number
         // bare.
         let orleans = SeatVocabulary::new([
             dated(
                 row(seat("ca_orleans", 2, &["COMMERCIALE"]), "").into_unnumbered(),
-                (2000, 9),
-                (2026, 8),
+                (2000, 1),
+                (2026, 6),
             )
             .keyed("Chambre Commerciale"),
             dated(
                 silent(row(seat("ca_orleans", 2, &["COMMERCIALE"]), "")),
-                (2018, 3),
-                (2021, 9),
+                (2018, 1),
+                (2021, 6),
             ),
             dated(
                 row(seat("ca_orleans", 1, &["CIVILE"]), "1ère chambre civile"),
-                (2000, 9),
-                (2026, 8),
+                (2000, 1),
+                (2026, 6),
             ),
         ]);
         let numbered = silent(row(seat("ca_orleans", 2, &["COMMERCIALE"]), ""));
         assert_eq!(
             orleans.resolve(&numbered).paths().pop().as_deref(),
-            Some("CA.ORLEANS.COMMERCIALE")
+            Some("FR.CA.ORLEANS.COMMERCIALE")
         );
 
         // Montpellier's single judge and its 7th chamber sit in the same
@@ -868,8 +867,8 @@ mod tests {
                     &["ETRANGERS"],
                     "PROCEDURES 96 H H / 48 H",
                 ),
-                (2022, 7),
-                (2026, 8),
+                (2022, 1),
+                (2026, 6),
             ),
             dated(
                 ta_row(
@@ -879,8 +878,8 @@ mod tests {
                     &["ETRANGERS"],
                     "7ème chambre OQTF 6 mois",
                 ),
-                (2025, 6),
-                (2026, 7),
+                (2025, 1),
+                (2026, 6),
             ),
         ]);
         assert_eq!(
@@ -895,7 +894,7 @@ mod tests {
                 .paths()
                 .pop()
                 .as_deref(),
-            Some("TA.MONTPELLIER.ETRANGERS")
+            Some("FR.TA.MONTPELLIER.ETRANGERS")
         );
 
         // Besançon has two chambers hearing civil cases: nowhere to fold.
@@ -903,7 +902,7 @@ mod tests {
             dated(
                 silent(row(seat("ca_besancon", 1, &["CIVILE"]), "")).into_unnumbered(),
                 (2001, 1),
-                (2021, 12),
+                (2021, 6),
             ),
             dated(
                 row(
@@ -911,12 +910,12 @@ mod tests {
                     "1ère Chambre",
                 ),
                 (2018, 1),
-                (2026, 8),
+                (2026, 6),
             ),
             dated(
                 row(seat("ca_besancon", 2, &["CIVILE"]), "2ème chambre civile"),
                 (2018, 1),
-                (2026, 8),
+                (2026, 6),
             ),
         ]);
         assert_eq!(
@@ -925,7 +924,7 @@ mod tests {
                 .paths()
                 .pop()
                 .as_deref(),
-            Some("CA.BESANCON.CIVILE")
+            Some("FR.CA.BESANCON.CIVILE")
         );
     }
 
@@ -946,23 +945,23 @@ mod tests {
     #[test]
     fn a_room_path_carries_its_matters_in_its_last_segment() {
         for (path, expected) in [
-            ("CA.COLMAR.C4_SOCIALE", vec!["SOCIALE"]),
-            ("CA.COLMAR.SOCIALE", vec!["SOCIALE"]),
+            ("FR.CA.COLMAR.C4_SOCIALE", vec!["SOCIALE"]),
+            ("FR.CA.COLMAR.SOCIALE", vec!["SOCIALE"]),
             (
-                "CA.BESANCON.CIVILE_COMMERCIALE",
+                "FR.CA.BESANCON.CIVILE_COMMERCIALE",
                 vec!["CIVILE", "COMMERCIALE"],
             ),
             (
-                "CA.BESANCON.C1_CIVILE_COMMERCIALE",
+                "FR.CA.BESANCON.C1_CIVILE_COMMERCIALE",
                 vec!["CIVILE", "COMMERCIALE"],
             ),
-            ("TA.NIMES.PROTECTION_SOCIALE", vec!["PROTECTION_SOCIALE"]),
-            ("CA.CAYENNE.CD_EXPROPRIATION", vec!["EXPROPRIATION"]),
+            ("FR.TA.NIMES.PROTECTION_SOCIALE", vec!["PROTECTION_SOCIALE"]),
+            ("FR.CA.CAYENNE.CD_EXPROPRIATION", vec!["EXPROPRIATION"]),
         ] {
             assert_eq!(room_matters(path), Some(matters(&expected)), "{path}");
         }
-        assert_eq!(room_matters("CA.PARIS.P1.C11"), None);
-        assert_eq!(room_matters("TCOM.PARIS.CHAMBRE_MIXTE"), None);
+        assert_eq!(room_matters("FR.CA.PARIS.P1.C11"), None);
+        assert_eq!(room_matters("FR.TCOM.PARIS.CHAMBRE_MIXTE"), None);
     }
 
     /// A room made nameless by one aberrant decision gets its name back when the

@@ -30,8 +30,8 @@ use crate::text::{
 const MAX_FORM_XOBJECT_DEPTH: usize = 16;
 
 /// Operations run inside forms, Type3 glyphs, tiles and soft masks, per page.
-/// Forms that each call the next ten times reach 10^7 rectangles from 2 KB;
-/// the heaviest page of a 1,698-file corpus runs 430 k operations in all.
+/// Forms that each call the next ten times reach 10^7 rectangles from 2 KB,
+/// where a real page stays well under the cap.
 const MAX_NESTED_OPERATIONS: usize = 2_000_000;
 
 /// One glyph of a shown string, before the text matrix moves past it.

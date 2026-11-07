@@ -53,8 +53,8 @@ pub fn AnnuairePage() -> impl IntoView {
     let stats = stats_resource();
 
     let title = "Annuaire des entités - LibreJustice";
-    let description = "Parcourez les entreprises, personnes publiques, associations, avocats et \
-                       cabinets des registres français. Fiches de contentieux par entité.";
+    let description = "Retrouvez les décisions où apparaît une entreprise, une personne publique, \
+                       une association, un avocat ou un cabinet.";
     let url = format!("{CANONICAL_BASE}/entity-search");
 
     view! {
@@ -78,8 +78,8 @@ pub fn AnnuairePage() -> impl IntoView {
                             "Entités des registres"
                         </h1>
                         <p class="max-w-prose text-[var(--color-ink-muted)]">
-                            "Entreprises, personnes publiques, associations, avocats et cabinets "
-                            "des registres français. Chaque fiche agrège leur contentieux."
+                            "Les entreprises, personnes publiques, associations, avocats et cabinets "
+                            "des registres français."
                         </p>
                     </header>
 

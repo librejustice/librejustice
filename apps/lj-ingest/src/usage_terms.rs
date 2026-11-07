@@ -15,8 +15,8 @@ use crate::config::Settings;
 
 pub async fn run(chunks: usize, min_citations: i64, workers: usize) -> Result<()> {
     let settings = Settings::from_env()?;
-    let pool = lj_store::db::build_pool(&settings.db_url, workers)
-        .map_err(|e| anyhow!("build_pool: {e}"))?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, workers).map_err(|e| anyhow!("build_pool: {e}"))?;
 
     let identities = {
         let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;

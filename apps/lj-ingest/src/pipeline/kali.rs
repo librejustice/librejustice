@@ -84,7 +84,7 @@ fn kali_title_path(art: &lj_extract::kali::KaliArticle, tete: Option<&str>) -> O
 /// [`LegalArticleRow`] depuis un [`lj_extract::kali::KaliArticle`] : `text_uid` =
 /// KALICONT (la convention), identité `(text_uid, num_key, date_debut)`, provenance
 /// `source_uid` = KALIARTI. `tete` = pièce de tête du conteneur.
-fn kali_article_row(
+pub(super) fn kali_article_row(
     art: lj_extract::kali::KaliArticle,
     content_checksum: u64,
     tete: Option<&str>,
@@ -157,7 +157,7 @@ pub async fn ingest_kali(
 ) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // The end-of-pass steps are full-table passes, and an ingest is an offline batch
     // rather than a served request.
@@ -235,8 +235,8 @@ async fn ingest_kali_tarball(
         ParseErr,
     }
 
-    // Lecture+parsing (gzip+tar+XML CPU sync) en thread bloquant, BORNÉE par un
-    // canal : RAM ~constante (le stock a ~480 k membres). Le DB reste côté async.
+    // Reading and parsing (gzip, tar, XML: sync CPU) in a blocking thread, BOUNDED
+    // by a channel, so RAM stays flat whatever the stock. The DB stays async.
     let (tx, mut rx) = tokio::sync::mpsc::channel::<KaliMsg>(KALI_BATCH_SIZE * 4);
     let tar_path = path.to_path_buf();
     let filtre: std::collections::HashSet<String> = textes.iter().cloned().collect();
@@ -443,7 +443,7 @@ pub async fn sync_kali() -> Result<()> {
             .map_err(|e| anyhow!("sync_dila kali: {e}"))?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // Le refresh `code_title` final est un UPDATE-jointure pleine table (scan de tout
     // `legal_article`) : il dépasse le statement_timeout par défaut → on le lève pour
@@ -515,9 +515,8 @@ pub async fn sync_kali() -> Result<()> {
     Ok(())
 }
 
-/// Recueils requalifiés par passage. Borne la RAM : les articles du lot sont
-/// tenus en mémoire le temps d'un parcours du cache, ~1,4 ko par article et
-/// ~170 articles par recueil.
+/// Collections requalified per pass. Bounds the RAM: the batch's articles are held
+/// in memory for one walk of the cache.
 const REQUALIF_LOT: i64 = 200;
 
 /// Les recueils du fond dans `legal_text`. Les pièces n'y sont pas des textes,
@@ -614,7 +613,7 @@ fn prefixe_de_piece(piece: Option<&str>, tete: &str) -> String {
 pub async fn requalifier_kali(lot: i64) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await

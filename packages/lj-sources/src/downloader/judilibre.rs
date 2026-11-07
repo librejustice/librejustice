@@ -1,18 +1,19 @@
-//! Sync incrémental Judilibre (HTTP async, mono-thread).
+//! Sync incrémental Judilibre (HTTP async).
 
 use super::calendar::{list_target_months, month_bounds};
 use super::http::path_with_added_extension;
 use super::manifest::{JurState, Manifest, MonthState};
 use crate::error::{Result, SourceError};
 use crate::judilibre::{extract_query_param, JudilibreClient};
-use chrono::Utc;
+use chrono::{Datelike, Utc};
 use flate2::write::GzEncoder;
 use flate2::Compression;
+use futures::stream::{self, StreamExt};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 // ----------------------------------------------------------------------------
 // Constantes Judilibre
@@ -22,13 +23,25 @@ use crate::state_paths::JUDILIBRE_DIR;
 pub(super) const UNDATED_BUCKET: &str = "undated";
 const ARCHIVE_KEY: &str = "archive";
 const DEFAULT_BATCH_SIZE: i64 = 1000;
-const DEFAULT_JURISDICTIONS: &[&str] = &["cc", "ca", "tj", "tcom"];
+/// `/decision` calls in flight.
+const FETCH_CONCURRENCY: usize = 16;
+/// `/scan` calls in flight.
+const LIST_CONCURRENCY: usize = 4;
 
-fn archive_cutoff(jur: &str) -> Option<&'static str> {
+/// Upper bound of a jurisdiction's one-shot `/scan` into `archive.jsonl.gz`.
+#[derive(Clone, Copy)]
+enum Archive {
+    Until(&'static str),
+    WholeStock,
+}
+
+/// `WholeStock` for a jurisdiction the taxonomy serves and neither table knows.
+fn archive(jur: &str) -> Option<Archive> {
     match jur {
-        "cc" => Some("1986-10-31"),
-        "ca" => Some("2010-07-31"),
-        _ => None,
+        "cc" => Some(Archive::Until("1986-10-31")),
+        "ca" => Some(Archive::Until("2010-07-31")),
+        _ if monthly_start(jur).is_some() => None,
+        _ => Some(Archive::WholeStock),
     }
 }
 
@@ -57,15 +70,12 @@ fn yyyymm_of(decision: &Value) -> String {
 }
 
 // ----------------------------------------------------------------------------
-// sync_judilibre (HTTP async, mono-thread)
+// sync_judilibre (HTTP async)
 // ----------------------------------------------------------------------------
 
-/// Sync incrémental Judilibre depuis `date_start_iso` (`YYYY-MM-DD`).
-///
-/// Pour chaque juridiction de [`DEFAULT_JURISDICTIONS`] : bootstrap archive (≤
-/// cutoff) + bootstrap mensuel (mois > cutoff) via `/scan`, puis incrémental
-/// global via `/transactionalhistory`. Append-only sur `.jsonl.gz`, reprise au
-/// cursor. Mono-thread, ordre séquentiel.
+/// One-shot `/scan` bootstrap per jurisdiction of the API taxonomy, then one
+/// `/transactionalhistory` increment covering every jurisdiction, served or not
+/// by the taxonomy. Append-only `.jsonl.gz`, resumed at the cursor.
 pub async fn sync_judilibre(
     client: &JudilibreClient,
     data_dir: &Path,
@@ -79,17 +89,20 @@ pub async fn sync_judilibre(
     let mut manifest = Manifest::load(&manifest_path)?;
     let mut bootstrap_started_at: Option<String> = None;
 
-    for jur in DEFAULT_JURISDICTIONS {
-        let jur = *jur;
+    for jur in client.jurisdictions().await? {
+        let jur = jur.as_str();
         let mut state = manifest
             .jurisdictions
             .remove(jur)
             .unwrap_or_else(|| JurState::new(jur));
 
-        let cutoff = archive_cutoff(jur);
-        let cutoff_yyyymm = cutoff.map(|c| format!("{}{}", &c[0..4], &c[5..7]));
+        let archive = archive(jur);
+        let cutoff_yyyymm = match archive {
+            Some(Archive::Until(c)) => Some(format!("{}{}", &c[0..4], &c[5..7])),
+            _ => None,
+        };
 
-        let archive_needs_bootstrap = cutoff.is_some()
+        let archive_needs_bootstrap = archive.is_some()
             && !state
                 .months
                 .get(ARCHIVE_KEY)
@@ -123,7 +136,7 @@ pub async fn sync_judilibre(
             bootstrap_started_at = Some(server_now(client).await?);
         }
 
-        if let Some(cutoff_date) = cutoff {
+        if let Some(archive) = archive {
             let archive_done = state
                 .months
                 .get(ARCHIVE_KEY)
@@ -134,7 +147,7 @@ pub async fn sync_judilibre(
                     client,
                     &source_dir,
                     jur,
-                    cutoff_date,
+                    archive,
                     &mut state,
                     &mut manifest,
                     &manifest_path,
@@ -260,85 +273,104 @@ pub fn parse_decision_line(line: &[u8]) -> Result<Value> {
     Ok(sonic_rs::from_slice(line)?)
 }
 
-/// Lit les ids présents dans `tombstones.jsonl` (set). Fichier absent = vide.
-fn read_tombstone_ids(path: &Path) -> Result<std::collections::HashSet<String>> {
-    let mut ids = std::collections::HashSet::new();
-    if !path.exists() {
-        return Ok(ids);
-    }
-    for line in fs::read_to_string(path)?.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Ok(v) = serde_json::from_str::<Value>(line) {
-            if let Some(id) = v.get("id").and_then(|v| v.as_str()) {
-                ids.insert(id.to_string());
+/// `tombstones.jsonl` read once and rewritten once per page, each line kept as
+/// written.
+pub(super) struct Tombstones {
+    path: PathBuf,
+    lines: Vec<(String, String)>,
+    ids: HashSet<String>,
+    dirty: bool,
+}
+
+impl Tombstones {
+    pub(super) fn load(data_dir: &Path) -> Result<Self> {
+        let path = data_dir.join("tombstones.jsonl");
+        let mut lines = Vec::new();
+        let mut ids = HashSet::new();
+        if path.exists() {
+            for line in fs::read_to_string(&path)?.lines() {
+                let line = line.trim();
+                if line.is_empty() {
+                    continue;
+                }
+                let id = serde_json::from_str::<Value>(line)
+                    .ok()
+                    .and_then(|v| v.get("id").and_then(Value::as_str).map(str::to_string))
+                    .ok_or_else(|| {
+                        SourceError::Invalid(format!("tombstones.jsonl: no id in {line}"))
+                    })?;
+                if ids.insert(id.clone()) {
+                    lines.push((id, line.to_string()));
+                }
             }
         }
+        Ok(Self {
+            path,
+            lines,
+            ids,
+            dirty: false,
+        })
     }
-    Ok(ids)
-}
 
-/// Marque un id comme supprimé. Idempotent : ne ré-append pas un id déjà
-/// tombstoned (évite la croissance par doublons sur des `deleted` répétés).
-pub(super) fn append_tombstone(data_dir: &Path, decision_id: &str) -> Result<()> {
-    let path = data_dir.join("tombstones.jsonl");
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    #[cfg(test)]
+    fn contains(&self, decision_id: &str) -> bool {
+        self.ids.contains(decision_id)
     }
-    if read_tombstone_ids(&path)?.contains(decision_id) {
-        return Ok(());
-    }
-    let line = serde_json::json!({
-        "id": decision_id,
-        "deleted_at": Manifest::now_iso_seconds(),
-    });
-    let mut file = fs::OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(path)?;
-    writeln!(file, "{line}")?;
-    Ok(())
-}
 
-/// Annule la tombstone d'un id. Une décision supprimée puis re-créée côté
-/// Judilibre (`deleted` suivi d'un `created`/`updated`) doit redevenir vivante.
-/// Réécriture atomique sans l'id ; no-op (sans réécriture) s'il est absent.
-fn remove_tombstone(data_dir: &Path, decision_id: &str) -> Result<()> {
-    let path = data_dir.join("tombstones.jsonl");
-    if !path.exists() {
-        return Ok(());
-    }
-    let content = fs::read_to_string(&path)?;
-    let mut kept = String::with_capacity(content.len());
-    let mut found = false;
-    for line in content.lines() {
-        let id = serde_json::from_str::<Value>(line.trim())
-            .ok()
-            .and_then(|v| v.get("id").and_then(|v| v.as_str()).map(str::to_string));
-        if id.as_deref() == Some(decision_id) {
-            found = true;
-            continue;
+    /// Marks an id deleted; a second `deleted` for it adds nothing.
+    pub(super) fn add(&mut self, decision_id: &str) {
+        if self.ids.insert(decision_id.to_string()) {
+            let line = serde_json::json!({
+                "id": decision_id,
+                "deleted_at": Manifest::now_iso_seconds(),
+            });
+            self.lines.push((decision_id.to_string(), line.to_string()));
+            self.dirty = true;
         }
-        kept.push_str(line);
-        kept.push('\n');
     }
-    if !found {
-        return Ok(());
+
+    /// Revives an id Judilibre created or updated after deleting it.
+    pub(super) fn remove(&mut self, decision_id: &str) {
+        if self.ids.remove(decision_id) {
+            self.lines.retain(|(id, _)| id != decision_id);
+            self.dirty = true;
+        }
     }
-    let tmp = path_with_added_extension(&path, "tmp");
-    fs::write(&tmp, kept.as_bytes())?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
+
+    pub(super) fn save(&mut self) -> Result<()> {
+        if !self.dirty {
+            return Ok(());
+        }
+        if let Some(parent) = self.path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        let mut out = String::new();
+        for (_, line) in &self.lines {
+            out.push_str(line);
+            out.push('\n');
+        }
+        let tmp = path_with_added_extension(&self.path, "tmp");
+        fs::write(&tmp, out.as_bytes())?;
+        fs::rename(&tmp, &self.path)?;
+        self.dirty = false;
+        Ok(())
+    }
 }
 
-/// Bootstrap archive : décisions ≤ `cutoff_date` dans `archive.jsonl.gz`.
+/// Marks one id deleted in `data_dir/tombstones.jsonl`.
+#[cfg(test)]
+pub(super) fn append_tombstone(data_dir: &Path, decision_id: &str) -> Result<()> {
+    let mut tombstones = Tombstones::load(data_dir)?;
+    tombstones.add(decision_id);
+    tombstones.save()
+}
+
+/// One-shot `/scan` into `archive.jsonl.gz`, bounded by `archive`.
 async fn bootstrap_archive(
     client: &JudilibreClient,
     data_dir: &Path,
     jurisdiction: &str,
-    cutoff_date: &str,
+    archive: Archive,
     state: &mut JurState,
     manifest: &mut Manifest,
     manifest_path: &Path,
@@ -368,9 +400,11 @@ async fn bootstrap_archive(
         let mut params = vec![
             ("jurisdiction", jurisdiction.to_string()),
             ("date_type", "creation".to_string()),
-            ("date_end", cutoff_date.to_string()),
             ("batch_size", DEFAULT_BATCH_SIZE.to_string()),
         ];
+        if let Archive::Until(cutoff_date) = archive {
+            params.push(("date_end", cutoff_date.to_string()));
+        }
         if let Some(cursor) = &month.cursor {
             params.push(("searchAfter", cursor.clone()));
         }
@@ -491,8 +525,79 @@ async fn bootstrap_month(
     Ok(())
 }
 
-/// Process `/transactionalhistory` global multi-juridictions. Mono-thread :
-/// les `client.decision(id)` sont séquentiels.
+/// What one round of `/decision` calls left in the cache.
+#[derive(Debug, Default)]
+pub struct Fetched {
+    pub written: usize,
+    /// Ids whose call failed, to be asked again.
+    pub failed: Vec<String>,
+    /// Ids `/decision` answers 404 for.
+    pub gone: Vec<String>,
+}
+
+/// Fetches `ids` through `/decision`, `FETCH_CONCURRENCY` calls in flight, and
+/// appends each decision to `<jur>/<yyyymm>.jsonl.gz`, recording its month.
+async fn fetch_into_cache(
+    client: &JudilibreClient,
+    data_dir: &Path,
+    manifest: &mut Manifest,
+    ids: &[String],
+) -> Result<Fetched> {
+    let responses: Vec<(&String, Result<Value>)> = stream::iter(ids)
+        .map(|id| async move { (id, client.decision(id).await) })
+        .buffered(FETCH_CONCURRENCY)
+        .collect()
+        .await;
+
+    let mut fetched = Fetched::default();
+    let mut groups: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
+    for (id, response) in responses {
+        match response {
+            Ok(decision) => {
+                let jur = match decision.get("jurisdiction").and_then(|v| v.as_str()) {
+                    Some(j) if !j.is_empty() => j.to_string(),
+                    _ => {
+                        tracing::warn!(id = %id, "judilibre_decision_without_jurisdiction");
+                        continue;
+                    }
+                };
+                let yyyymm = yyyymm_of(&decision);
+                groups.entry((jur, yyyymm)).or_default().push(decision);
+            }
+            Err(SourceError::JudilibreApi { status: 404, .. }) => {
+                tracing::warn!(id = %id, "judilibre_decision_gone");
+                fetched.gone.push(id.clone());
+            }
+            Err(e) => {
+                tracing::error!(id = %id, error = %e, "judilibre_decision_fetch_failed");
+                fetched.failed.push(id.clone());
+            }
+        }
+    }
+
+    for ((jur, yyyymm), decisions) in &groups {
+        let path = data_dir.join(jur).join(format!("{yyyymm}.jsonl.gz"));
+        append_decisions(&path, decisions)?;
+        let state = manifest
+            .jurisdictions
+            .entry(jur.clone())
+            .or_insert_with(|| JurState::new(jur));
+        let month = state
+            .months
+            .entry(yyyymm.clone())
+            .or_insert_with(|| MonthState {
+                bootstrapped: true,
+                ..Default::default()
+            });
+        update_max_update_date(month, decisions);
+        fetched.written += decisions.len();
+    }
+    Ok(fetched)
+}
+
+/// Process `/transactionalhistory` global multi-juridictions. The ids a
+/// previous pass failed to fetch are asked first; an id that fails again waits
+/// for the next pass, the cursor moving on without it.
 async fn incremental_global(
     client: &JudilibreClient,
     data_dir: &Path,
@@ -501,6 +606,24 @@ async fn incremental_global(
 ) -> Result<()> {
     if manifest.history_watermark.is_none() && manifest.history_cursor.is_none() {
         return Ok(());
+    }
+
+    if !manifest.history_failed.is_empty() {
+        let ids: Vec<String> = std::mem::take(&mut manifest.history_failed)
+            .into_iter()
+            .collect();
+        let fetched = fetch_into_cache(client, data_dir, manifest, &ids).await?;
+        manifest
+            .history_failed
+            .extend(fetched.failed.iter().cloned());
+        manifest.save(manifest_path)?;
+        tracing::warn!(
+            retried = ids.len(),
+            written = fetched.written,
+            gone = fetched.gone.len(),
+            still_failing = fetched.failed.len(),
+            "judilibre_history_retry"
+        );
     }
 
     let mut cursor = manifest.history_cursor.clone();
@@ -520,7 +643,8 @@ async fn incremental_global(
         minus_one_hour_iso(&wm)
     };
 
-    let mut seen_ids: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut tombstones = Tombstones::load(data_dir)?;
+    let mut seen_ids: HashSet<String> = HashSet::new();
     let mut written = 0usize;
 
     loop {
@@ -563,49 +687,19 @@ async fn incremental_global(
             // ops étant chronologiques, le dernier événement de l'id l'emporte.
             // `seen_ids` ne dédup plus que les fetchs.
             if action == Some("deleted") {
-                append_tombstone(data_dir, &decision_id)?;
+                tombstones.add(&decision_id);
                 continue;
             }
-            remove_tombstone(data_dir, &decision_id)?;
+            tombstones.remove(&decision_id);
             if seen_ids.insert(decision_id.clone()) {
                 to_fetch.push(decision_id);
             }
         }
+        tombstones.save()?;
 
-        let mut groups: BTreeMap<(String, String), Vec<Value>> = BTreeMap::new();
-        for did in &to_fetch {
-            match client.decision(did).await {
-                Ok(decision) => {
-                    let jur = match decision.get("jurisdiction").and_then(|v| v.as_str()) {
-                        Some(j) if !j.is_empty() => j.to_string(),
-                        _ => continue,
-                    };
-                    let yyyymm = yyyymm_of(&decision);
-                    groups.entry((jur, yyyymm)).or_default().push(decision);
-                }
-                Err(e) => {
-                    tracing::error!(id = did, error = %e, "judilibre_decision_fetch_failed");
-                }
-            }
-        }
-
-        for ((jur, yyyymm), decisions) in &groups {
-            let path = data_dir.join(jur).join(format!("{yyyymm}.jsonl.gz"));
-            append_decisions(&path, decisions)?;
-            let state = manifest
-                .jurisdictions
-                .entry(jur.clone())
-                .or_insert_with(|| JurState::new(jur));
-            let month = state
-                .months
-                .entry(yyyymm.clone())
-                .or_insert_with(|| MonthState {
-                    bootstrapped: true,
-                    ..Default::default()
-                });
-            update_max_update_date(month, decisions);
-            written += decisions.len();
-        }
+        let fetched = fetch_into_cache(client, data_dir, manifest, &to_fetch).await?;
+        written += fetched.written;
+        manifest.history_failed.extend(fetched.failed);
 
         let new_cursor =
             extract_query_param(page.get("next_page").and_then(|v| v.as_str()), "from_id");
@@ -632,6 +726,203 @@ async fn incremental_global(
         }
     }
     Ok(())
+}
+
+/// A decision-date window of `/scan`, both bounds included, as `YYYY-MM-DD`.
+pub type Slice = (String, String);
+
+/// One slice before 1950, then one per year, the last open-ended.
+pub fn year_slices() -> Vec<Slice> {
+    let this_year = Utc::now().date_naive().year();
+    let mut years: Vec<Slice> = vec![("0001-01-01".into(), "1949-12-31".into())];
+    years.extend((1950..=this_year).map(|y| {
+        let end = if y == this_year {
+            "9999-12-31".to_string()
+        } else {
+            format!("{y}-12-31")
+        };
+        (format!("{y}-01-01"), end)
+    }));
+    years
+}
+
+/// The twelve months of a year slice, December keeping the slice's end.
+pub fn month_slices((start, end): &Slice) -> Vec<Slice> {
+    let year = &start[0..4];
+    (1..=12)
+        .map(|month| {
+            let (month_start, month_end) = month_bounds(&format!("{year}{month:02}"));
+            let month_end = if month == 12 { end.clone() } else { month_end };
+            (month_start, month_end)
+        })
+        .collect()
+}
+
+/// The `total` `/scan` announces for each slice of a court, `LIST_CONCURRENCY`
+/// calls in flight.
+pub async fn slice_totals(
+    client: &JudilibreClient,
+    jurisdiction: &str,
+    slices: Vec<Slice>,
+) -> Result<Vec<(Slice, usize)>> {
+    stream::iter(slices)
+        .map(|slice| async move {
+            let n = slice_total(client, jurisdiction, Some(&slice)).await?;
+            Ok::<_, SourceError>((slice, n))
+        })
+        .buffer_unordered(LIST_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect()
+}
+
+/// The ids of these slices of a court, read through the abridged `/scan`.
+pub async fn list_slices(
+    client: &JudilibreClient,
+    jurisdiction: &str,
+    slices: Vec<Slice>,
+) -> Result<Vec<String>> {
+    let listed: Vec<Vec<String>> = stream::iter(slices)
+        .map(|slice| async move { list_slice(client, jurisdiction, &slice).await })
+        .buffer_unordered(LIST_CONCURRENCY)
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .collect::<Result<_>>()?;
+    Ok(listed.into_iter().flatten().collect())
+}
+
+/// The `total` `/scan` announces for a whole court.
+pub async fn court_total(client: &JudilibreClient, jurisdiction: &str) -> Result<usize> {
+    slice_total(client, jurisdiction, None).await
+}
+
+/// The `total` `/scan` announces for a court, within `slice` when given.
+async fn slice_total(
+    client: &JudilibreClient,
+    jurisdiction: &str,
+    slice: Option<&Slice>,
+) -> Result<usize> {
+    let mut params = vec![
+        ("jurisdiction", jurisdiction.to_string()),
+        ("batch_size", "1".to_string()),
+        ("abridged", "true".to_string()),
+    ];
+    if let Some((start, end)) = slice {
+        params.push(("date_start", start.clone()));
+        params.push(("date_end", end.clone()));
+        params.push(("date_type", "creation".to_string()));
+    }
+    let page = client.scan(&params).await?;
+    Ok(page.get("total").and_then(Value::as_u64).unwrap_or(0) as usize)
+}
+
+/// The ids of one slice, page after page. A slice that moves while it is read
+/// can fall short of the `total` its first page announced.
+async fn list_slice(
+    client: &JudilibreClient,
+    jurisdiction: &str,
+    (start, end): &Slice,
+) -> Result<Vec<String>> {
+    let mut ids = Vec::new();
+    let mut cursor: Option<String> = None;
+    let total = loop {
+        let mut params = vec![
+            ("jurisdiction", jurisdiction.to_string()),
+            ("batch_size", DEFAULT_BATCH_SIZE.to_string()),
+            ("abridged", "true".to_string()),
+            ("date_start", start.clone()),
+            ("date_end", end.clone()),
+            ("date_type", "creation".to_string()),
+        ];
+        if let Some(c) = &cursor {
+            params.push(("searchAfter", c.clone()));
+        }
+        let page = client.scan(&params).await?;
+        let total = page.get("total").and_then(Value::as_u64).unwrap_or(0) as usize;
+        let results = page_results(&page);
+        ids.extend(
+            results
+                .iter()
+                .filter_map(|d| d.get("id").and_then(Value::as_str))
+                .map(str::to_string),
+        );
+        cursor = extract_query_param(
+            page.get("next_batch").and_then(|v| v.as_str()),
+            "searchAfter",
+        );
+        if cursor.is_none() || results.is_empty() {
+            break total;
+        }
+    };
+    if ids.len() != total {
+        tracing::warn!(
+            jurisdiction,
+            start,
+            end,
+            listed = ids.len(),
+            total,
+            "judilibre_slice_listed_short"
+        );
+    }
+    Ok(ids)
+}
+
+/// Fetches into the cache the ids the reconciliation found missing, lifting
+/// their tombstones, and records them in `reconciled`.
+pub async fn reconcile_fetch(
+    client: &JudilibreClient,
+    data_dir: &Path,
+    ids: &[String],
+) -> Result<Fetched> {
+    let source_dir = data_dir.join(JUDILIBRE_DIR);
+    let manifest_path = source_dir.join("manifest.json");
+    let mut manifest = Manifest::load(&manifest_path)?;
+    let mut tombstones = Tombstones::load(&source_dir)?;
+    for id in ids {
+        tombstones.remove(id);
+    }
+    tombstones.save()?;
+    let fetched = fetch_into_cache(client, &source_dir, &mut manifest, ids).await?;
+    manifest.reconciled.extend(
+        ids.iter()
+            .filter(|id| !fetched.failed.contains(id))
+            .cloned(),
+    );
+    manifest.save(&manifest_path)?;
+    Ok(fetched)
+}
+
+/// Tombstones `ids` once `/decision` answers 404 for each; returns those it
+/// marked.
+pub async fn reconcile_tombstone(
+    client: &JudilibreClient,
+    data_dir: &Path,
+    ids: &[String],
+) -> Result<Vec<String>> {
+    let source_dir = data_dir.join(JUDILIBRE_DIR);
+    let mut tombstones = Tombstones::load(&source_dir)?;
+    let responses: Vec<(&String, Result<Value>)> = stream::iter(ids)
+        .map(|id| async move { (id, client.decision(id).await) })
+        .buffered(FETCH_CONCURRENCY)
+        .collect()
+        .await;
+    let mut marked = Vec::new();
+    for (id, response) in responses {
+        match response {
+            Err(SourceError::JudilibreApi { status: 404, .. }) => {
+                tombstones.add(id);
+                marked.push(id.clone());
+            }
+            Ok(_) => tracing::warn!(id = %id, "judilibre_reconcile_served_but_unlisted"),
+            Err(e) => {
+                tracing::error!(id = %id, error = %e, "judilibre_decision_fetch_failed")
+            }
+        }
+    }
+    tombstones.save()?;
+    Ok(marked)
 }
 
 /// `results` d'une page `/scan` (liste, vide par défaut).
@@ -704,15 +995,16 @@ mod tests {
         append_tombstone(dir.path(), "a").unwrap(); // idempotent : pas de doublon
         append_tombstone(dir.path(), "b").unwrap();
         let path = dir.path().join("tombstones.jsonl");
-        assert_eq!(read_tombstone_ids(&path).unwrap().len(), 2);
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 2);
 
-        remove_tombstone(dir.path(), "a").unwrap(); // résurrection de "a"
-        let ids = read_tombstone_ids(&path).unwrap();
-        assert!(!ids.contains("a"));
-        assert!(ids.contains("b"));
-
-        remove_tombstone(dir.path(), "zzz").unwrap(); // absent = no-op
-        assert_eq!(read_tombstone_ids(&path).unwrap().len(), 1);
+        let mut tombstones = Tombstones::load(dir.path()).unwrap();
+        tombstones.remove("a"); // résurrection de "a"
+        tombstones.remove("zzz"); // absent = no-op
+        tombstones.save().unwrap();
+        let reloaded = Tombstones::load(dir.path()).unwrap();
+        assert!(!reloaded.contains("a"));
+        assert!(reloaded.contains("b"));
+        assert_eq!(fs::read_to_string(&path).unwrap().lines().count(), 1);
     }
 
     #[test]
@@ -728,7 +1020,9 @@ mod tests {
         .unwrap();
 
         append_tombstone(dir.path(), "d").unwrap(); // deleted
-        remove_tombstone(dir.path(), "d").unwrap(); // puis re-created
+        let mut tombstones = Tombstones::load(dir.path()).unwrap();
+        tombstones.remove("d"); // puis re-created
+        tombstones.save().unwrap();
 
         let mut manifest = Manifest::default();
         manifest

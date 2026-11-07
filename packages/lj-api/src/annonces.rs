@@ -2,13 +2,14 @@
 //! consultation, le catalogue de crawl par département, la section de la fiche
 //! entité, et les flux d'alerte RSS/ICS.
 //!
-//! Le fond en table (`marche`) est servi ici ; les fonds à API publique
-//! (`bodacc`, `joafe`) sont dispatchés vers leur proxy live.
+//! The `marche` fond is served here, `bodacc` and `joafe` by their own module
+//! over their tables.
 //!
 //! Facets first, and no embeddings over one-line objects: `q` is a BM25 match of
 //! every word on the title or the buyer. A page and its axes are served from
 //! `annonces_cache` (TTL 15 min).
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use lj_dtos::{
@@ -23,8 +24,8 @@ use lj_store::repository::{
     AnnonceAxe, AnnonceFiltre, AnnonceOrdre, AnnonceRow, DecisionRepository, EntityAnnonceRow,
 };
 use lj_vocab::{
-    zone_est_departement, ANNONCE_FOND_BODACC, ANNONCE_FOND_JOAFE, ANNONCE_FOND_MARCHE,
-    ZONE_FRANCE, ZONE_SANS, ZONE_UE,
+    zone_est_departement, ANNONCE_FOND_BODACC, ANNONCE_FOND_JOAFE, ANNONCE_FOND_MARCHE, ZONE_EU,
+    ZONE_FRANCE, ZONE_SANS,
 };
 use tracing::instrument;
 
@@ -82,9 +83,8 @@ fn fonds_actifs(req: &AnnonceSearchRequest) -> Vec<&'static str> {
         .collect()
 }
 
-/// Dispatch par fond. Chaque backend rend sa page et son total, jamais
-/// entrelacés : un score SQL et un score ODS ne se comparent pas. Un backend
-/// amont en panne retire son groupe et laisse les autres répondre.
+/// Dispatch by fond. Each backend gives its page and its total, never
+/// interleaved with another's; a backend down removes its group alone.
 async fn load_search(
     state: &AppState,
     req: &AnnonceSearchRequest,
@@ -277,8 +277,7 @@ fn completer_selection(
     }
 }
 
-/// Les axes longs se lisent par le poids. Le rail n'en montre que les premières
-/// lignes. Les facettes ODS arrivent déjà dans cet ordre.
+/// Long axes read by weight: the rail shows their first lines alone.
 fn par_poids(mut choices: Vec<FacetChoice>) -> Vec<FacetChoice> {
     choices.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.label.cmp(&b.label)));
     choices
@@ -370,6 +369,23 @@ pub async fn detail(state: &AppState, uid: &str) -> Result<AnnonceDetailResponse
         repo.annonce_canaux(&row.uid),
         repo.annonce_entites(&row.uid)
     )?;
+    let lot_sirens: Vec<String> = row
+        .details
+        .pointer("/resultat/lots")
+        .and_then(|v| v.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|l| l.get("siren")?.as_str().map(str::to_string))
+        .collect();
+    let registered: HashSet<String> = if lot_sirens.is_empty() {
+        HashSet::new()
+    } else {
+        repo.denominations_par_siren(&lot_sirens)
+            .await?
+            .into_iter()
+            .map(|(siren, _)| siren)
+            .collect()
+    };
     Ok(AnnonceDetailResponse {
         liens: liens_from(&row),
         lots_ouverts: lots_ouverts_from(&row),
@@ -390,7 +406,7 @@ pub async fn detail(state: &AppState, uid: &str) -> Result<AnnonceDetailResponse
                 devise: m.get("devise").and_then(|d| d.as_str()).map(str::to_string),
             })
         }),
-        resultat: resultat_from(&row),
+        resultat: resultat_from(&row, &registered),
         annonce: hit_from(&row),
         canaux_detail: canaux
             .into_iter()
@@ -407,8 +423,11 @@ pub async fn detail(state: &AppState, uid: &str) -> Result<AnnonceDetailResponse
                 let (ns, id) = e.entity_uid.split_once(':')?;
                 Some(AnnonceEntiteDto {
                     role: e.role,
+                    href: e
+                        .denomination
+                        .is_some()
+                        .then(|| lj_vocab::entity_path(ns, id)),
                     label: e.denomination.unwrap_or_else(|| e.entity_uid.clone()),
-                    href: lj_vocab::entity_path(ns, id),
                 })
             })
             .collect(),
@@ -492,8 +511,7 @@ fn role_label(role: &str) -> &str {
 // ── Projection ligne → contrat ──────────────────────────────────────────────
 
 /// Whether a source published a code. It lands in two places, the listing's
-/// `cpv` and the notice page's, and 4 228 of the 15 923 open markets carrying a
-/// division on 17/09/2026 had it in the second alone.
+/// `cpv` and the notice page's, and a market may carry it in the second alone.
 fn code_cpv_publie(details: &serde_json::Value) -> bool {
     let pose = |v: Option<&serde_json::Value>| v.is_some_and(|v| !v.is_null());
     pose(details.get("cpv")) || pose(details.get("detail").and_then(|d| d.get("cpv")))
@@ -605,7 +623,7 @@ fn lots_ouverts_from(row: &AnnonceRow) -> Vec<AnnonceLotOuvertDto> {
 /// Le bloc attribution d'une fiche de marché — ce qui rend `attribue` vrai. Les
 /// lots viennent de `details.resultat`, posé par l'ingest sur la ligne de la
 /// consultation qu'ils clôturent.
-fn resultat_from(row: &AnnonceRow) -> Option<AnnonceResultatDto> {
+fn resultat_from(row: &AnnonceRow, registered: &HashSet<String>) -> Option<AnnonceResultatDto> {
     let r = row.details.get("resultat")?;
     let texte =
         |v: &serde_json::Value, k: &str| v.get(k).and_then(|x| x.as_str()).map(str::to_string);
@@ -617,7 +635,9 @@ fn resultat_from(row: &AnnonceRow) -> Option<AnnonceResultatDto> {
                 .filter_map(|l| {
                     Some(AnnonceLotDto {
                         titulaire: texte(l, "titulaire")?,
-                        href: texte(l, "siren").map(|s| lj_vocab::entity_path("siren", &s)),
+                        href: texte(l, "siren")
+                            .filter(|s| registered.contains(s))
+                            .map(|s| lj_vocab::entity_path("siren", &s)),
                         description: texte(l, "description"),
                         montant: l.get("montant").and_then(|v| v.as_f64()),
                         devise: texte(l, "devise"),
@@ -708,7 +728,7 @@ fn liens_from(row: &AnnonceRow) -> Vec<AnnonceLienDto> {
 fn zone_nom(code: &str) -> String {
     match code {
         ZONE_FRANCE => "France entière".to_string(),
-        ZONE_UE => "Union européenne".to_string(),
+        ZONE_EU => "Union européenne".to_string(),
         ZONE_SANS => "Zone indéterminée".to_string(),
         d => departement_label(d).unwrap_or(d).to_string(),
     }
@@ -1237,8 +1257,7 @@ mod tests {
         );
     }
 
-    /// JOAFE parutions ship with no unitary PDF, so a whole batch used to share
-    /// one empty `guid` and a reader kept a single entry out of it.
+    /// A notice with no link keeps its own `guid` and writes no empty `<link>`.
     #[test]
     fn sans_lien_chaque_entree_garde_son_identite() {
         let sans_cible = |uid: &str| AnnonceHit {

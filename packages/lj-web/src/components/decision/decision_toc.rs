@@ -5,14 +5,20 @@
 //! `toc_spy_dom` mesure le DOM, `resolve_scroll_spy` résout, et les signals
 //! pilotent le markup.
 use leptos::prelude::*;
-use lj_dtos::ChronologyEntry;
+use lj_dtos::{ChronologyEntry, UiAction};
 
 use crate::components::hover_preview::{HoverPreview, PreviewKind};
 use crate::helpers::{cn, format_iso_date};
 use crate::pages::decision_page::sections::TocEntry;
 
 #[component]
-pub fn DecisionToc(sections: Vec<TocEntry>, chronology: Vec<ChronologyEntry>) -> impl IntoView {
+pub fn DecisionToc(
+    sections: Vec<TocEntry>,
+    chronology: Vec<ChronologyEntry>,
+    /// Occurrences of the searched terms under each entry.
+    #[prop(into)]
+    hits: Signal<Vec<usize>>,
+) -> impl IntoView {
     let chronology_view = chronology_block(chronology);
     if sections.is_empty() {
         return view! {
@@ -44,12 +50,13 @@ pub fn DecisionToc(sections: Vec<TocEntry>, chronology: Vec<ChronologyEntry>) ->
 
     let items = sections
         .into_iter()
-        .map(move |section| {
+        .enumerate()
+        .map(move |(i, section)| {
             let id = StoredValue::new(section.id.clone());
             let is_active = move || id.with_value(|id| active.get().as_deref() == Some(id.as_str()));
             let link_class = move || {
                 cn([
-                    "block rounded-r-md py-1.5 pl-8 pr-3 text-sm no-underline transition-colors",
+                    "flex items-baseline justify-between gap-2 rounded-r-md py-1.5 pl-8 pr-3 text-sm no-underline transition-colors",
                     if is_active() {
                         "bg-[var(--color-vellum)] text-[var(--color-accent)]"
                     } else {
@@ -60,18 +67,39 @@ pub fn DecisionToc(sections: Vec<TocEntry>, chronology: Vec<ChronologyEntry>) ->
             let href = format!("#{}", section.id);
             let aria_current = move || is_active().then_some("true");
             let click_id = section.id.clone();
+            let usage = section.usage.as_str();
             let on_anchor_click = move |ev: leptos::ev::MouseEvent| {
                 on_click.with_value(|f| f(ev, click_id.clone()));
             };
+            let count = move || {
+                hits.with(|h| h.get(i).copied()).filter(|&n| n > 0).map(|n| {
+                    let title = if n == 1 {
+                        "1 occurrence des termes recherchés".to_string()
+                    } else {
+                        format!("{n} occurrences des termes recherchés")
+                    };
+                    let label = title.clone();
+                    view! {
+                        <span
+                            title=title
+                            class="shrink-0 rounded-full bg-[var(--color-accent-soft)] px-1.5 text-xs tabular-nums text-[var(--color-ink-muted)]"
+                        >
+                            <span aria-hidden="true">{n}</span>
+                            <span class="sr-only">{label}</span>
+                        </span>
+                    }
+                })
+            };
             view! {
-                <li>
+                <li data-usage=usage>
                     <a
                         href=href
                         aria-current=aria_current
                         on:click=on_anchor_click
                         class=link_class
                     >
-                        {section.title}
+                        <span>{section.title}</span>
+                        {count}
                     </a>
                 </li>
             }
@@ -154,7 +182,11 @@ fn chronology_block(chronology: Vec<ChronologyEntry>) -> Option<impl IntoView> {
                     .filter(|_| !entry.current)
                 {
                     Some((id, jurisdiction_type)) => {
-                        let href = lj_dtos::decision_path(jurisdiction_type, &id);
+                        let href = lj_dtos::decision_path(
+                            jurisdiction_type,
+                            entry.jurisdiction_code.as_deref(),
+                            &id,
+                        );
                         view! {
                             <HoverPreview kind=PreviewKind::Decision { id }>
                                 <a href=href class="group block no-underline">
@@ -203,7 +235,7 @@ fn chronology_block(chronology: Vec<ChronologyEntry>) -> Option<impl IntoView> {
             })
             .collect_view();
         view! {
-            <div class="flex flex-col gap-3">
+            <div class="flex flex-col gap-3" data-usage=UiAction::DecisionChronology.as_str()>
                 <p class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
                     "Chronologie de l'affaire"
                 </p>

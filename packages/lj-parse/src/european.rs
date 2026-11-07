@@ -17,22 +17,21 @@ fn json_str_nonempty<'a>(obj: &'a Value, key: &str) -> Option<&'a str> {
         .filter(|s| !s.is_empty())
 }
 
-/// Section markers of the European drafting, kept out of the French set so that
-/// neither vocabulary can fire on the other: « PROCÉDURE / EN FAIT / EN DROIT »
-/// open a line on 70 to 78 % of the 15 683 CEDH decisions, « Par ces motifs » on
-/// 66 % of the 41 127 CJUE ones, and « Motifs de l'arrêt » on half of the 30 984
-/// CJUE judgments, the 10 143 advocate general opinions carrying none of them.
+/// Section markers of the European drafting, French and English, kept out of the
+/// French set so that neither vocabulary can fire on the other.
 static EUROPE_SECTION_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
     vec![
         (
             "procedure",
-            Regex::new(r"(?m)^[ \t]*(?:PROCÉDURE|Procédure et conclusions des parties)[ \t]*$")
+            Regex::new(
+                r"(?m)^[ \t]*(?:PROCÉDURE|PROCEDURE|Procédure et conclusions des parties)[ \t]*$",
+            )
                 .unwrap(),
         ),
         (
             "expose",
             Regex::new(
-                r"(?m)^[ \t]*(?:EN FAIT|Antécédents du litige|Les faits à l['’]origine du litige)[ \t]*$",
+                r"(?m)^[ \t]*(?:EN FAIT|THE FACTS|SUBJECT MATTER OF THE CASE|OBJET DE L['’]AFFAIRE|Antécédents du litige|Les faits à l['’]origine du litige|Le cadre juridique|Les antécédents du litige|Le litige au principal(?: et (?:la|les) questions? préjudicielles?)?)[ \t]*$",
             )
             .unwrap(),
         ),
@@ -40,10 +39,41 @@ static EUROPE_SECTION_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock:
             "motivations",
             Regex::new(r"(?mi)^[ \t]*EN DROIT[ \t]*$").unwrap(),
         ),
+        (
+            "motivations",
+            Regex::new(r"(?m)^[ \t]*(?:(?:AS TO )?THE LAW|THE COURT['’]S ASSESSMENT|APPRÉCIATION DE LA COUR)[ \t]*$").unwrap(),
+        ),
+        // The advocates general head their opinions in roman numerals; a line
+        // ending on a page number belongs to the table of contents of the old ones.
+        (
+            "expose",
+            Regex::new(
+                r"(?m)^[ \t]*[IVX]+[ \t]*[.\x{2013}\x{2014}-][ \t]*(?:Le cadre|Le contexte|Les? faits?|Le litige|Les antécédents|La procédure|Les questions? préjudicielles?|Le droit applicable)(?:[^\n]{0,100}?[^\d\n])?[ \t]*$",
+            )
+            .unwrap(),
+        ),
+        (
+            "motivations",
+            Regex::new(
+                r"(?m)^[ \t]*[IVX]+[ \t]*[.\x{2013}\x{2014}-][ \t]*(?:Analyse|Appréciation|Examen|Discussion|En droit|Réponses? aux questions|Sur (?:les|la) questions?|Sur le pourvoi|Sur le recours|Sur la recevabilité|Sur le fond)(?:[^\n]{0,100}?[^\d\n])?[ \t]*$",
+            )
+            .unwrap(),
+        ),
+        (
+            "motivations",
+            Regex::new(
+                r"(?m)^[ \t]*(?:Sur (?:les|la) questions? préjudicielles?|Sur la demande de décision préjudicielle|Sur le pourvoi|Sur le recours|Sur la recevabilité[^\n]{0,60}|Sur le fond)[ \t]*$",
+            )
+            .unwrap(),
+        ),
+        (
+            "motivations",
+            Regex::new(r"(?m)^[ \t]*(?:ALLEGED VIOLATIONS? OF|SUR (?:LA|LES) VIOLATIONS? ALLÉGUÉES? DE)\b").unwrap(),
+        ),
         // EUR-Lex layout, where the heading is also a table-of-contents entry at
-        // the head of the document: over 122 CJUE judgments, the title appears
-        // either zero or exactly two times, and the trailing long line tells the
-        // real one, 60 of 60 with no hit on CEDH nor on advocate general opinions.
+        // the head of the document: in a CJUE judgment the title appears either
+        // zero or exactly two times, and the trailing long line tells the real
+        // one, with no hit on CEDH nor on advocate general opinions.
         (
             "motivations",
             Regex::new(
@@ -55,11 +85,190 @@ static EUROPE_SECTION_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock:
             "dispositif",
             Regex::new(r"(?mi)^[ \t]*PAR CES MOTIFS").unwrap(),
         ),
+        // The reasoning itself opens paragraphs on « For these reasons, the Court
+        // finds »: the mixed case is the operative part only when the vote follows.
+        (
+            "dispositif",
+            Regex::new(
+                r"(?m)^[ \t]*(?:FOR THESE REASONS|For these reasons, the Court,? (?:unanimously|by a majority|by \w+ votes))",
+            )
+            .unwrap(),
+        ),
     ]
 });
 
-fn extract_sections_europe(cleaned_text: &str) -> Vec<DecisionSection> {
+/// A heading line opening on `words`, numbered in roman figures or not. No
+/// closing punctuation, no page number of a contents line.
+fn heading(kind: &'static str, words: &str) -> (&'static str, Regex) {
+    let re = format!(
+        r"(?m)^[ \t]*(?:[IVX]+[ \t]*[.\x{{2013}}\x{{2014}}-]+[ \t]*)?(?:{words})\b(?:[^\n]{{0,80}}?[^\d\n.:;,])?[ \t]*$"
+    );
+    (kind, Regex::new(&re).unwrap())
+}
+
+/// The headings advocates general write unnumbered, or under other words than
+/// the judgments'.
+static OPINION_SECTION_PATTERNS: LazyLock<Vec<(&'static str, Regex)>> = LazyLock::new(|| {
+    let mut patterns = EUROPE_SECTION_PATTERNS.clone();
+    patterns.extend([
+        heading(
+            "expose",
+            r"Introduction|(?:L['’])?[Oo]bjet du litige|(?:Le )?[Cc]adre (?:juridique|normatif|réglementaire)|(?:La|Les) (?:législation|réglementation|dispositions)|Le droit (?:de l['’]Union|communautaire|national|applicable)|(?:Les )?[Ff]aits|(?:Les )?[Aa]ntécédents",
+        ),
+        heading("procedure", r"(?:La )?[Pp]rocédure"),
+        heading(
+            "moyens",
+            r"(?:Les )?(?:[Mm]oyens et )?[Aa]rguments des parties|(?:Bref )?[Rr]ésumé des (?:principaux )?arguments|Observations (?:des parties|présentées|soumises)",
+        ),
+        heading(
+            "motivations",
+            r"Analyse|Appréciation|Examen|Discussion|(?:Sur la )?[Rr]ecevabilité|(?:Au|Sur le) fond|(?:Observations|Remarques) (?:liminaires|préliminaires)",
+        ),
+    ]);
+    patterns
+});
+
+type Markers = Vec<(&'static str, Regex)>;
+
+/// The CJUE in the languages it is shown in when French is missing: the
+/// headings of its judgments, orders and opinions, the formula its operative
+/// part opens on, and the heading over it, which a contents line also reads.
+static CJUE_FOREIGN_PATTERNS: LazyLock<Vec<(&'static str, Markers)>> = LazyLock::new(|| {
+    let set = |headings: [(&'static str, &str); 4], operative: &str, over: &str| {
+        let mut patterns: Vec<(&'static str, Regex)> = headings
+            .into_iter()
+            .map(|(kind, words)| heading(kind, words))
+            .collect();
+        patterns.push((
+            "dispositif",
+            Regex::new(&format!(r"(?m)^[ \t]*(?:{operative})\b")).unwrap(),
+        ));
+        patterns.push((
+            "dispositif",
+            Regex::new(&format!(r"(?m)^[^\n]{{40,}}\n[ \t]*({over})[ \t]*$")).unwrap(),
+        ));
+        patterns
+    };
+    vec![
+        (
+            "en",
+            set(
+                [
+                    ("procedure", r"Procedure|Proceedings"),
+                    (
+                        "expose",
+                        r"Background to the dispute|Legal (?:context|framework)|(?:The )?[Ff]acts|The dispute in the main proceedings|Introduction",
+                    ),
+                    ("moyens", r"Arguments of the parties|Forms of order sought"),
+                    (
+                        "motivations",
+                        r"Assessment of the Court|Findings of the Court|Law|Admissibility|Substance|The appeal|Consideration of the questions? referred|Analysis|Assessment",
+                    ),
+                ],
+                r"On those grounds",
+                "Operative part",
+            ),
+        ),
+        (
+            "it",
+            set(
+                [
+                    ("procedure", r"Procedimento"),
+                    (
+                        "expose",
+                        r"Fatti|Antefatti|Contesto normativo|Quadro (?:normativo|giuridico)|Procedimento principale e questioni? pregiudizial[ei]",
+                    ),
+                    ("moyens", r"Argomenti delle parti"),
+                    (
+                        "motivations",
+                        r"In diritto|Sull['’]impugnazione|Sulla ricevibilità|Nel merito|Giudizio del Tribunale|Valutazione del Tribunale|Sulle questioni pregiudiziali|Analisi",
+                    ),
+                ],
+                r"Per questi motivi",
+                "Dispositivo",
+            ),
+        ),
+        (
+            "de",
+            set(
+                [
+                    ("procedure", r"Verfahren|Anträge der Parteien"),
+                    (
+                        "expose",
+                        r"Sachverhalt|Vorgeschichte des Rechtsstreits|Rechtlicher Rahmen|Rechtsrahmen|Ausgangsverfahren",
+                    ),
+                    ("moyens", r"Vorbringen der Parteien"),
+                    (
+                        "motivations",
+                        r"Rechtliche Würdigung|Würdigung durch (?:das Gericht|den Gerichtshof)|Zum Rechtsmittel|Zur Zulässigkeit|Zur Begründetheit|Zu den Vorlagefragen",
+                    ),
+                ],
+                r"Aus diesen Gründen",
+                "Tenor",
+            ),
+        ),
+        (
+            "es",
+            set(
+                [
+                    ("procedure", r"Procedimiento|Pretensiones de las partes"),
+                    (
+                        "expose",
+                        r"Hechos|Antecedentes del litigio|Marco jurídico|Litigio principal",
+                    ),
+                    (
+                        "moyens",
+                        r"(?:Resumen de las )?[Aa]legaciones de las partes",
+                    ),
+                    (
+                        "motivations",
+                        r"Fundamentos de Derecho|Sobre la admisibilidad|Sobre el fondo|Apreciación del Tribunal|Sobre el recurso de casación|Sobre las cuestiones prejudiciales|Análisis",
+                    ),
+                ],
+                r"En virtud de todo lo expuesto",
+                "Parte dispositiva",
+            ),
+        ),
+    ]
+});
+
+pub(crate) fn extract_sections_europe(cleaned_text: &str) -> Vec<DecisionSection> {
     sections_from_markers(cleaned_text, &EUROPE_SECTION_PATTERNS, false)
+}
+
+/// The sections of a CJUE text in `lang`. The reasoning runs to the operative
+/// part: a heading of facts, procedure or arguments inside it heads a part of it.
+fn cjue_sections(cleaned_text: &str, celex: &str, lang: &str) -> Vec<DecisionSection> {
+    let patterns: &[(&'static str, Regex)] =
+        match CJUE_FOREIGN_PATTERNS.iter().find(|(l, _)| *l == lang) {
+            Some((_, patterns)) => patterns,
+            None if celex_is_opinion(celex) => &OPINION_SECTION_PATTERNS,
+            None => &EUROPE_SECTION_PATTERNS,
+        };
+    let mut out: Vec<DecisionSection> = Vec::new();
+    let mut reasoning = false;
+    for section in sections_from_markers(cleaned_text, patterns, false) {
+        match out.last_mut() {
+            Some(previous) if reasoning && section.kind != "dispositif" => {
+                previous.end_char = section.end_char;
+                previous.text = char_slice(cleaned_text, previous.start_char, previous.end_char)
+                    .trim()
+                    .to_string();
+            }
+            _ => {
+                reasoning |= section.kind == "motivations";
+                out.push(section);
+            }
+        }
+    }
+    out
+}
+
+/// An advocate general's opinion or view: `CC`/`CP` in the CELEX, a bare `C`
+/// before the number in the older ones (`61990C0090`).
+fn celex_is_opinion(celex: &str) -> bool {
+    let b = celex.as_bytes();
+    b.get(5) == Some(&b'C') && matches!(b.get(6), Some(b'C' | b'P' | b'0'..=b'9'))
 }
 
 /// Values of a CDM predicate, whose builder emits a scalar on a single value and
@@ -159,11 +368,11 @@ pub fn parse_cedh(
         solution: None,
         publication_codes: Vec::new(),
         avocat_requerant: None,
+        listed_counsel: Vec::new(),
         texte_integral_raw: body_text.to_string(),
         texte_integral_clean: body_text.to_string(),
         sections,
         metadata_header: String::new(),
-        visa_trim: String::new(),
         themes: Vec::new(),
         attacked: None,
         parse_warnings: Vec::new(),
@@ -196,7 +405,7 @@ fn celex_court_letter(celex: &str) -> Option<char> {
 
 /// Usual case number of a CELEX (`62020CJ0560` → `C-560/20`), the raw CELEX when
 /// the shape is not recognised.
-fn celex_to_case_number(celex: &str) -> String {
+pub fn celex_to_case_number(celex: &str) -> String {
     match (celex_court_letter(celex), celex_number_year(celex)) {
         (Some(court), Some((number, yy))) => format!("{court}-{number}/{yy}"),
         _ => celex.to_string(),
@@ -223,9 +432,9 @@ const JOINED_CASE_URI: &str = "/resource/case/";
 /// Cases the judgment settles alongside its own, read from the CDM predicate
 /// `case-law_joins_case_court`. CELLAR names them three ways and only the number
 /// and the year hold across the three: the court letter of the CELEX URI says
-/// `CJ` where the work is a `TJ` (10 links of 4,507, measured 08/09/2026), so it
-/// comes from the work that judges. A cellar UUID that `dossier_identifier` did
-/// not resolve, a one-digit year or a label name no case.
+/// `CJ` where the work is a `TJ` at times, so it comes from the work that judges. A
+/// cellar UUID that `dossier_identifier` did not resolve, a one-digit year or a label
+/// name no case.
 fn joined_case_numbers(predicates: &Value, celex: &str) -> Vec<String> {
     let Some(court) = celex_court_letter(celex) else {
         return Vec::new();
@@ -273,7 +482,7 @@ pub fn parse_cjue(
         return Err(CoreError::Xml(format!("CJUE {celex}: corps vide")));
     }
 
-    let sections = extract_sections_europe(body_text);
+    let sections = cjue_sections(body_text, celex, lang);
 
     let case_number = celex_to_case_number(celex);
     let mut dossiers = vec![case_number.clone()];
@@ -305,11 +514,11 @@ pub fn parse_cjue(
         solution: None,
         publication_codes: Vec::new(),
         avocat_requerant: None,
+        listed_counsel: Vec::new(),
         texte_integral_raw: body_text.to_string(),
         texte_integral_clean: body_text.to_string(),
         sections,
         metadata_header: String::new(),
-        visa_trim: String::new(),
         themes: Vec::new(),
         attacked: None,
         parse_warnings: Vec::new(),
@@ -403,6 +612,46 @@ pub fn cjue_case_name(full_text: &str) -> Option<String> {
     names_a_party(&name).then_some(name)
 }
 
+/// The parties a CELLAR French title names in its second `#` field, the final full
+/// stop dropped unless it ends an abbreviation (« e.a. », « S.A. »).
+pub fn cjue_title_case_name(title: &str) -> Option<String> {
+    let parties = title.split('#').nth(1)?.trim();
+    let last = parties.rsplit(' ').next().unwrap_or_default();
+    let name = match parties.strip_suffix('.') {
+        Some(name) if !last[..last.len() - 1].contains('.') => name,
+        _ => parties,
+    };
+    names_a_party(name).then(|| name.to_string())
+}
+
+/// The heading a regulation or a directive opens on, whatever its case and accents.
+static ACT_HEADING: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)^\s*(?:r[eéè]glement|directive)\b").expect("act heading regex")
+});
+
+/// A CELLAR French act from its heading on: EUR-Lex's notice and the OJ page head dropped.
+pub fn eurlex_act_text(text: &str) -> &str {
+    let lines: Vec<&str> = text.split_inclusive('\n').take(EURLEX_HEAD_LINES).collect();
+    let notice = lines
+        .iter()
+        .any(|l| l.trim() == "Avis juridique important")
+        .then(|| {
+            let stars = |l: &&str| l.trim().len() >= 3 && l.trim().bytes().all(|b| b == b'*');
+            lines.iter().position(stars).or_else(|| {
+                lines
+                    .iter()
+                    .position(|l| l.trim_start().starts_with("Journal officiel n"))
+            })
+        })
+        .flatten()
+        .map_or(0, |i| i + 1);
+    let start = lines[notice..]
+        .iter()
+        .position(|l| ACT_HEADING.is_match(l))
+        .map_or(notice, |i| notice + i);
+    &text[lines[..start].iter().map(|l| l.len()).sum::<usize>()..]
+}
+
 /// `true` si `source_uid` provient d'une source HTML européenne : préfixe
 /// `cedh/` (HUDOC) ou `cjue/` (EUR-Lex), posé par [`parse_cedh`] /
 /// [`parse_cjue`]. Discriminant de famille du dispatch
@@ -420,8 +669,8 @@ pub(crate) fn source_uid_is_html_europe(source_uid: &str) -> bool {
 /// the sections again from `full_text`).
 ///
 /// The parity is structural: these parsers set `texte_integral_clean =
-/// texte_integral_raw = body_text` (no cleaning) and `metadata_header =
-/// visa_trim = ""`, so the chunk depends on `full_text` alone (stored verbatim).
+/// texte_integral_raw = body_text` (no cleaning) and `metadata_header = ""`, so
+/// the chunk depends on `full_text` alone (stored verbatim).
 /// The dedicated parser runs again on `(full_text, source_fields, pk)`, `pk`
 /// (`itemid`/`celex`) derived from the `source_uid` (`cedh/<itemid>` /
 /// `cjue/<celex>/<lang>`).
@@ -453,6 +702,110 @@ mod tests {
     use serde_json::json;
 
     // ── CEDH / CJUE ────────────────────────────────────────────────────────
+
+    /// Each section's kind and first line.
+    fn kinds_at(text: &str) -> Vec<(String, String)> {
+        extract_sections_europe(text)
+            .into_iter()
+            .map(|s| {
+                let head = s.text.lines().next().unwrap_or("").to_string();
+                (s.kind, head)
+            })
+            .collect()
+    }
+
+    #[test]
+    fn english_judgment_opens_its_operative_part_on_the_vote_only() {
+        let text = "CASE OF X v. POLAND\nPROCEDURE\n1. The case originated in an application.\nTHE FACTS\n2. The applicant was born in 1980.\nTHE LAW\n3. The applicant complained under Article 5.\nFor these reasons, the Court finds that there has been a violation of Article 5 § 3.\nFOR THESE REASONS, THE COURT, UNANIMOUSLY,\nDeclares the application admissible;";
+        let kinds = kinds_at(text);
+        let names: Vec<&str> = kinds.iter().map(|(k, _)| k.as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "preamble",
+                "procedure",
+                "expose",
+                "motivations",
+                "dispositif"
+            ]
+        );
+        assert_eq!(kinds[4].1, "FOR THESE REASONS, THE COURT, UNANIMOUSLY,");
+    }
+
+    #[test]
+    fn advocate_general_headings_skip_the_table_of_contents() {
+        let text = "CONCLUSIONS DE L'AVOCAT GÉNÉRAL\nSOMMAIRE\nII \u{2014} Le cadre juridique 3-5\nIV \u{2014} Analyse 6-9\nI. Introduction\n1. La présente affaire porte sur la directive.\nII. Le cadre juridique\n2. L'article 1er de la directive dispose.\nIII. Les faits au principal et la question préjudicielle\n3. Le requérant a saisi la juridiction de renvoi.\nIV. Analyse\n4. La question porte sur l'article 2.\nV. Conclusion\n5. Je propose à la Cour de répondre comme suit.";
+        let kinds = kinds_at(text);
+        assert_eq!(
+            kinds,
+            [
+                ("preamble", "CONCLUSIONS DE L'AVOCAT GÉNÉRAL"),
+                ("expose", "II. Le cadre juridique"),
+                ("motivations", "IV. Analyse"),
+            ]
+            .map(|(k, h)| (k.to_string(), h.to_string()))
+        );
+    }
+
+    #[test]
+    fn opinion_headings_need_no_number_and_late_arguments_stay_in_the_analysis() {
+        let text = "Conclusions de l'avocat général\nLes dispositions pertinentes sont les suivantes :\nLa législation nationale applicable\n1. La loi dispose.\nLa procédure devant la Cour\n2. La Commission a introduit un recours.\nV -- Appréciation\n3. Le recours est fondé.\nObservations des parties\n4. L'Irlande conteste.\nConclusion\n5. Je propose à la Cour de condamner l'Irlande.";
+        let sections = cjue_sections(text, "61997C0358", "fr");
+        let heads: Vec<(&str, &str)> = sections
+            .iter()
+            .map(|s| (s.kind.as_str(), s.text.lines().next().unwrap_or("")))
+            .collect();
+        assert_eq!(
+            heads,
+            [
+                ("preamble", "Conclusions de l'avocat général"),
+                ("expose", "La législation nationale applicable"),
+                ("procedure", "La procédure devant la Cour"),
+                ("motivations", "V -- Appréciation"),
+            ]
+        );
+        assert!(sections[3].text.contains("L'Irlande conteste"));
+        assert_eq!(sections[3].end_char, char_len(text));
+
+        assert!(celex_is_opinion("61990C0090"));
+        assert!(celex_is_opinion("62010CC0342"));
+        assert!(!celex_is_opinion("62004TJ0162"));
+        assert!(!celex_is_opinion("62011CO0348"));
+        assert!(!celex_is_opinion("61999B0073"));
+    }
+
+    #[test]
+    fn a_foreign_judgment_is_cut_past_its_contents_and_keeps_its_reasoning_whole() {
+        let heads = |text: &str, lang: &str| -> Vec<(String, String)> {
+            cjue_sections(text, "61994TJ0140", lang)
+                .into_iter()
+                .map(|s| (s.kind, s.text.lines().next().unwrap_or("").to_string()))
+                .collect()
+        };
+        let spanish = "SENTENCIA DEL TRIBUNAL DE PRIMERA INSTANCIA\nPartes\nMotivación de la sentencia\nDecisión sobre las costas\nParte dispositiva\nHechos\n1 El demandante es funcionario de la Comisión desde 1990.\nProcedimiento y pretensiones de las partes\n2 Mediante escrito presentado en la Secretaría del Tribunal.\nSobre el fondo\n3 Procede desestimar el recurso por infundado en su totalidad.\nParte dispositiva\nEn virtud de todo lo expuesto,\nEL TRIBUNAL decide:";
+        assert_eq!(
+            heads(spanish, "es"),
+            [
+                ("preamble", "SENTENCIA DEL TRIBUNAL DE PRIMERA INSTANCIA"),
+                ("expose", "Hechos"),
+                ("procedure", "Procedimiento y pretensiones de las partes"),
+                ("motivations", "Sobre el fondo"),
+                ("dispositif", "Parte dispositiva"),
+            ]
+            .map(|(k, h)| (k.to_string(), h.to_string()))
+        );
+        let italian = "ORDINANZA DEL TRIBUNALE\nFatti e procedimento in primo grado\n1 Il ricorrente è un dipendente.\nSull'impugnazione\nProcedimento e conclusioni delle parti\n2 Il ricorrente chiede l'annullamento.\n3 L'impugnazione è respinta.\nPer questi motivi,\nIL TRIBUNALE così provvede:";
+        assert_eq!(
+            heads(italian, "it"),
+            [
+                ("preamble", "ORDINANZA DEL TRIBUNALE"),
+                ("expose", "Fatti e procedimento in primo grado"),
+                ("motivations", "Sull'impugnazione"),
+                ("dispositif", "Per questi motivi,"),
+            ]
+            .map(|(k, h)| (k.to_string(), h.to_string()))
+        );
+    }
 
     #[test]
     fn cedh_maps_fields_ecli_appno_list_and_type() {
@@ -825,6 +1178,36 @@ mod tests {
         assert_eq!(cjue_case_name(&anonyme), None);
     }
 
+    #[test]
+    fn cjue_title_case_name_reads_the_second_field() {
+        assert_eq!(
+            cjue_title_case_name(
+                "Ordonnance du Tribunal (deuxième chambre) du 6 août 2024.#Sparkasse \
+                 Oberösterreich Bank AG contre Conseil de résolution unique.#Union bancaire.#\
+                 Affaire T-408/23."
+            )
+            .as_deref(),
+            Some("Sparkasse Oberösterreich Bank AG contre Conseil de résolution unique")
+        );
+        assert_eq!(
+            cjue_title_case_name(
+                "Arrêt de la Cour.#XU e.a. contre Credit Europe Bank N.V.#Affaire C-1/19."
+            )
+            .as_deref(),
+            Some("XU e.a. contre Credit Europe Bank N.V.")
+        );
+        assert_eq!(
+            cjue_title_case_name(
+                "Conclusions de l'avocat général Mme J. Kokott, présentées le 4 juin 2020."
+            ),
+            None
+        );
+        assert_eq!(
+            cjue_title_case_name("Arrêt de la Cour.#NK.#Affaire C-231/18."),
+            None
+        );
+    }
+
     // ── Round-trip `from_source_fields` ⟷ parse direct ───────────────────────
 
     #[test]
@@ -860,5 +1243,20 @@ mod tests {
         let rebuilt =
             Decision::from_source_fields(&orig.texte_integral_clean, &sf, &orig.source_uid);
         assert_eq!(orig, rebuilt);
+    }
+
+    #[test]
+    fn an_eu_act_drops_the_eurlex_notice_and_the_journal_page_head() {
+        let notice = "EUR-Lex - 31983R0642 - FR\nAvis juridique important\n|\n31983R0642\nRèglement (CEE) no 642/83 du Conseil du 15 mars 1983\nJournal officiel n° L 076 du 22/03/1983 p. 0001 - 0001\nédition spéciale espagnole: chapitre 03 tome 29 p. 0156\n*****\nRÈGLEMENT (CEE) No 642/83 DU CONSEIL\ndu 15 mars 1983";
+        assert!(eurlex_act_text(notice).starts_with("RÈGLEMENT (CEE) No 642/83 DU CONSEIL\n"));
+        let xhtml = "L_202500078FR.000101.fmx.xml\nJournal officiel\nde l'Union européenne\nFR\nSérie L\n2025/78\n15.1.2025\nRÈGLEMENT D’EXÉCUTION (UE) 2025/78 DE LA COMMISSION";
+        assert!(eurlex_act_text(xhtml).starts_with("RÈGLEMENT D’EXÉCUTION"));
+        let pdf = "N0 L 168 / 16\nJournal officiel des Communautés européennes\n15 . 6 . 82\nI\n(Actes dont la publication est une condition de leur applicabilité)\nREGLEMENT (CEE) N° 1510/82 DE LA COMMISSION";
+        assert!(eurlex_act_text(pdf).starts_with("REGLEMENT (CEE) N° 1510/82"));
+        let directive = "Journal officiel des Communautés européennes 11 . 4. 69\nDIRECTIVE DU CONSEIL\ndu 28 mars 1969";
+        assert!(eurlex_act_text(directive).starts_with("DIRECTIVE DU CONSEIL"));
+        let untitled =
+            "Journal officiel des Communautés européennes\nLE CONSEIL DES COMMUNAUTÉS EUROPÉENNES,";
+        assert_eq!(eurlex_act_text(untitled), untitled);
     }
 }

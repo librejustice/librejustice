@@ -1,11 +1,11 @@
 //! Downloader HUDOC (CEDH) — I/O réseau au bord lj-sources.
 //!
 //! API publique sans auth, deux endpoints :
-//! - **liste** : `sort` obligatoire (sinon 404), `length` cappé sous 500,
-//!   fenêtre globale de 10 000 → partition par année. HUDOC publie un document
-//!   par version linguistique : l'orchestrateur regroupe par affaire et retient
-//!   le FR s'il existe, sinon l'EN. `select` projette côté serveur, et la
-//!   sérialisation est creuse — seules les clés non vides reviennent ;
+//! - **list**: `sort` required (else 404), `length` capped, and a capped global
+//!   window, hence a partition by year. HUDOC publishes one document per language
+//!   version: the orchestrator groups by case and keeps the FR if any, else the
+//!   EN. `select` projects server side, and the serialisation is sparse, only the
+//!   non-empty keys coming back;
 //! - **corps** : HTML converti du DOCX, strippé au bord.
 //!
 //! Le parsing métier vit dans `lj-core`. Le watermark est persisté par fond
@@ -30,7 +30,7 @@ pub const THROTTLE: Duration = Duration::from_millis(250);
 /// Épuisées, un corps est différé (skip) ; une page de liste est une erreur
 /// franche, la sauter trouerait l'année en silence.
 const CEDH_RETRIES: u32 = 4;
-/// `length` par page (cappé <500 côté serveur).
+/// `length` per page, under the server's cap.
 pub const PAGE_SIZE: usize = 200;
 /// Colonnes projetées dans `select`, séparées par virgule (CSV). HUDOC
 /// n'honore pas le séparateur `;` : le `select` est alors ignoré et chaque
@@ -51,6 +51,14 @@ fn year_query(year: i32) -> String {
     format!(
         "contentsitename=ECHR AND (NOT (doctype=PR OR doctype=HFCOMOLD OR doctype=HECOMOLD)) \
 AND (languageisocode=\"FRE\" OR languageisocode=\"ENG\") \
+AND (kpdate:[{year}-01-01T00:00:00.0Z TO {year}-12-31T23:59:59.0Z])"
+    )
+}
+
+/// The Registry's legal summaries of the decisions dated in `year`, in French and in English.
+fn legal_summaries_query(year: i32) -> String {
+    format!(
+        "contentsitename=ECHR AND documentcollectionid2=\"CLIN\" \
 AND (kpdate:[{year}-01-01T00:00:00.0Z TO {year}-12-31T23:59:59.0Z])"
     )
 }
@@ -82,17 +90,14 @@ impl CedhClient {
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         // No User-Agent. Cloudflare in front of HUDOC waves through what reads as an
-        // HTTP library and challenges the rest: on 23/09/2026 a browser profile got
-        // 403 on 3 requests of 6, an unknown UA on every one, no UA on none.
+        // HTTP library and challenges the rest.
         let client = ClientBuilder::new(
             reqwest::Client::builder()
                 // Unbounded, a connection HUDOC accepts and never honours parks
-                // `send().await`: 28/08/2026, `sync-cedh` held its 3600 s watchdog without
-                // writing a line. Past the bound the request errors and the retry departs.
+                // `send().await`. Past the bound the request errors and the retry departs.
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(120))
-                // A pooled connection freezes on this path: 31/08/2026, bodies lost in
-                // waves of 5 within one second, spaced by the exact timeout, no 429.
+                // A pooled connection freezes on this path.
                 .pool_max_idle_per_host(0)
                 .build()
                 .expect("reqwest client build"),
@@ -122,12 +127,29 @@ impl CedhClient {
         })
     }
 
-    /// Une page de la liste FR d'une année. `sort` posé (obligatoire), `start`
-    /// décalé de `PAGE_SIZE`. Réponse brute `{resultcount, results:[{columns}]}`.
+    /// Drops the cached body of `itemid`, which the next [`Self::body_text`] fetches again.
+    pub fn forget_body(&self, itemid: &str) -> Result<()> {
+        match self.body_cache_path(itemid).map(fs::remove_file) {
+            Some(Err(e)) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
+    }
+
+    /// A page of the documents of a year, raw `{resultcount, results:[{columns}]}`.
     pub async fn results_page(&self, year: i32, start: usize) -> Result<Value> {
+        self.query_page(year_query(year), start).await
+    }
+
+    /// A page of the legal summaries of a year, in the shape of [`Self::results_page`].
+    pub async fn legal_summaries_page(&self, year: i32, start: usize) -> Result<Value> {
+        self.query_page(legal_summaries_query(year), start).await
+    }
+
+    /// `sort` is mandatory: HUDOC answers 404 without it.
+    async fn query_page(&self, query: String, start: usize) -> Result<Value> {
         let url = format!("{}/app/query/results", self.base_url);
         let params: [(&str, String); 5] = [
-            ("query", year_query(year)),
+            ("query", query),
             ("select", SELECT_COLUMNS.to_string()),
             ("sort", "kpdate Descending".to_string()),
             ("start", start.to_string()),
@@ -285,9 +307,9 @@ pub struct CedhResult {
     pub columns: Value,
 }
 
-/// Parse une réponse `results` HUDOC en lignes exploitables (drop des lignes
-/// sans `itemid`, PK obligatoire). `resultcount` rendu à part pour que
-/// l'orchestrateur sache quand il a tout vu (fenêtre 10 000 par année).
+/// Parses a HUDOC `results` response into usable rows, dropping those without
+/// `itemid`, the mandatory PK. `resultcount` comes back apart, so the orchestrator
+/// knows when it has seen everything under the capped window of a year.
 ///
 /// Le champ `rank` (score de pertinence du moteur de recherche HUDOC, hors
 /// `select`, injecté dans chaque résultat) est retiré des colonnes : il varie
@@ -392,14 +414,14 @@ mod tests {
     #[test]
     fn parse_results_extracts_itemid_doctype_and_columns() {
         let resp = json!({
-            "resultcount": 76307,
+            "resultcount": 5000,
             "results": [
                 { "columns": { "itemid": "001-250438", "doctype": "HFJUD", "appno": "1234/16", "languageisocode": "FRE" } },
                 { "columns": { "itemid": "002-14552", "doctype": "CLINF" } },
             ]
         });
         let (count, rows) = parse_results(&resp);
-        assert_eq!(count, 76307);
+        assert_eq!(count, 5000);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].itemid, "001-250438");
         assert_eq!(rows[0].doctype, "HFJUD");
@@ -414,7 +436,7 @@ mod tests {
         let resp = json!({
             "resultcount": 1,
             "results": [
-                { "columns": { "itemid": "001-1", "doctype": "HFJUD", "rank": 1.79255 } },
+                { "columns": { "itemid": "001-1", "doctype": "HFJUD", "rank": 1.5 } },
             ]
         });
         let (_, rows) = parse_results(&resp);

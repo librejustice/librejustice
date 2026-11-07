@@ -18,7 +18,7 @@ USER root
 # arm64) et VectorChord publie les deux .deb — on pioche celui qui correspond
 # à l'hôte de build (amd64 sur x86, arm64 sur les VM Axion/Graviton).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl ca-certificates \
+    && apt-get install -y --no-install-recommends curl ca-certificates "postgresql-${PG_MAJOR}-repack" \
     && arch="$(dpkg --print-architecture)" \
     && curl -fsSL "https://github.com/tensorchord/VectorChord/releases/download/${VCHORD_VERSION}/postgresql-${PG_MAJOR}-vchord_${VCHORD_VERSION}-1_${arch}.deb" \
         -o /tmp/vchord.deb \

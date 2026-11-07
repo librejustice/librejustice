@@ -13,10 +13,11 @@ use lj_dtos::PlaceCorpusResponse;
 
 use crate::api::ApiClient;
 use crate::components::own_page_description;
-use crate::helpers::format_iso_date;
+use crate::components::ui::DatePicker;
+use crate::helpers::{format_iso_date, today_iso};
 use crate::pages::juridictions_page::{fmt_count, set_cache_control, HubError, HubSkeleton};
 use crate::pages::law_page::data::{fetch_places, sendable, PageError};
-use crate::pages::law_page::{place_groups, PlacePicker};
+use crate::pages::law_page::{place_groups, PlacePicker, NORM_FIRST_YEAR, NORM_YEARS_AHEAD};
 
 #[component]
 pub fn CorpusPage() -> impl IntoView {
@@ -106,8 +107,8 @@ fn CorpusLoaded(
                     {format!("Ce qui s'applique en {place_label}")}
                 </h1>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    {format!("Au {le_jour}, {count} y ont un état applicable. ")}
-                    "Le compte porte sur le texte entier, un seul de ses articles suffisant à l'y faire entrer, et chaque groupe montre quelques titres quand il en tient trop pour être listé."
+                    {format!("Au {le_jour}, {count} s'y appliquent. ")}
+                    "Un texte compte dès qu'un de ses articles s'applique. Un groupe trop long n'affiche que quelques titres."
                 </p>
                 <div class="flex flex-wrap items-end gap-4">
                     <CorpusPlacePicker date=date />
@@ -200,26 +201,25 @@ fn CorpusDate(#[prop(into)] date: Signal<Option<String>>, place: String) -> impl
     } else {
         format!("?place={place}")
     };
+    let navigate = use_navigate();
+    let on_change = Callback::new(move |picked: String| {
+        navigate(
+            &format!("/norm-index/fr/in-force/{picked}{suffix}"),
+            Default::default(),
+        );
+    });
     view! {
-        <label class="flex flex-col gap-1">
+        <div class="flex flex-col gap-1">
             <span class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
                 "Au"
             </span>
-            <input
-                type="date"
-                class="h-9 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-2 text-sm text-[var(--color-ink)]"
-                prop:value=move || date.get().unwrap_or_default()
-                on:change=move |ev| {
-                    let picked = event_target_value(&ev);
-                    let navigate = use_navigate();
-                    let path = if picked.is_empty() {
-                        "/norm-index/fr/in-force".to_string()
-                    } else {
-                        format!("/norm-index/fr/in-force/{picked}")
-                    };
-                    navigate(&format!("{path}{suffix}"), Default::default());
-                }
+            <DatePicker
+                value=Signal::derive(move || date.get().unwrap_or_else(today_iso))
+                on_change=on_change
+                aria_label="Au"
+                first_year=NORM_FIRST_YEAR
+                years_ahead=NORM_YEARS_AHEAD
             />
-        </label>
+        </div>
     }
 }

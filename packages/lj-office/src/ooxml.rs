@@ -905,17 +905,16 @@ fn splice(bytes: &mut Vec<u8>, mut edits: Vec<(Range<usize>, Vec<u8>)>) {
     *bytes = out;
 }
 
-/// What a package may unpack to, every entry together. The largest of 4 000
-/// word-processing files unpacks to 133 MB; a zip bomb, to whatever it claims.
+/// What a package may unpack to, every entry together: well above a real
+/// document, where a zip bomb unpacks to whatever it claims.
 pub const MAX_UNPACKED: u64 = 512 << 20;
 
 /// Entries a package may hold, which keeps a part number within the `u16` an
-/// anchor carries. The same files peak at 1 714.
+/// anchor carries.
 pub const MAX_ENTRIES: usize = 20_000;
 
-/// Characters a package may carry, text and rewritten attributes together.
-/// The longest of 6 800 word-processing files carries 3.4 million, and peaks
-/// at 1.9 GB from opening to redaction.
+/// Characters a package may carry, text and rewritten attributes together,
+/// which bounds the memory from opening to redaction.
 pub const MAX_CHARACTERS: usize = 4 << 20;
 
 /// Every entry of a ZIP package, in order, refused past `left` bytes unpacked.

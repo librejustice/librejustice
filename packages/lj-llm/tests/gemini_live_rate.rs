@@ -10,9 +10,9 @@ const SYSTEM: &str = "Réponds par un seul mot.";
 const USER: &str = "Quelle est la capitale de la France ?";
 
 /// What a learnt bucket converges to against the real service, which no fixture can
-/// state: the free tier announces 15 requests a minute per project and per model, a
-/// bucket that has learnt it holds within a cut of that, and one that ratcheted to
-/// the floor serves one a minute, which is what prod was measured at on 18/09/2026.
+/// state: the service announces a ceiling per project and per model, a bucket that
+/// has learnt it holds within a cut of that, and one that ratcheted to the floor
+/// serves one a minute.
 #[tokio::test(flavor = "multi_thread")]
 #[ignore = "calls the live Gemini API and spends one key's daily quota"]
 async fn a_learnt_bucket_holds_near_the_announced_ceiling() {

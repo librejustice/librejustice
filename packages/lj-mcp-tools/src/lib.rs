@@ -7,16 +7,21 @@ use serde_json::{json, Value};
 
 use lj_dtos::Domain;
 
+pub mod redact;
+pub mod rpc;
+
 pub const SERVER_INSTRUCTIONS: &str =
     "Search French and European case law: all French courts plus, among \
-others, the CNDA, the Conseil constitutionnel, CNIL sanctions, the \
-CEDH and the CJUE. The engine understands meaning, not just keywords: \
+others, the CNDA, the Conseil constitutionnel, the CNIL, the \
+Défenseur des droits, the CEDH and the CJUE; and read legal texts at any date: codes, laws, \
+Journal officiel, collective agreements, EU law, treaties, foreign \
+codes. The engine understands meaning, not just keywords: \
 phrase the query as a natural question or a list of descriptive terms; \
 synonyms and reformulations are handled. Typical workflow: \
 search_decisions for a shortlist, then get_decision to read candidates \
-in full. Previews only orient: never judge relevance, quote, or state \
-what a decision holds from one, as the matched passage may be a \
-party's argument, not the court's ruling. Iterate by refining the \
+in full. Previews, facets and chronologies are machine-made and only \
+orient: never judge relevance, quote, or state what a decision holds \
+from them. Iterate by refining the \
 query or filters. Open any `url` with the matching tool: /decision/ \
 links with get_decision, /norm/ links with get_norm. When \
 mentioning a decision, hyperlink its `title` (or a conventional \
@@ -152,14 +157,6 @@ fn search_decisions_schema() -> Value {
                 json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Solution::ALL)}}),
                 json!({"description": "Filter by the ruling of the operative part (référentiel solution). REJET / IRRECEVABILITE / DESISTEMENT / NON_LIEU_A_STATUER are procedural or negative endings; CONFIRMATION / INFIRMATION* / REFORMATION are appeal outcomes; CASSATION* is cassation-specific; ANNULATION covers administrative annulment; SATISFACTION_TOTALE / SATISFACTION_PARTIELLE cover first-instance civil rulings granting the claim."}),
             ),
-            "procedure": nullable(
-                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Procedure::ALL)}}),
-                json!({"description": "Filter by procedural track (référés, QPC, EU referral, révision, tierce opposition…). Absent value = ordinary contentious procedure."}),
-            ),
-            "office": nullable(
-                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Office::ALL)}}),
-                json!({"description": "Filter by specialised judge/office (JLD, JAF, JCP, JEX, juge des enfants, premier président, magistrat désigné). Absent value = ordinary bench."}),
-            ),
             "legal_domain": nullable(
                 json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&Domain::ALL)}}),
                 json!({"description": "Filter by legal domain (curated domain tree): 9 roots and their leaves (e.g. CIVIL_DROIT_LOCATIF). Selecting a root also matches all its leaves."}),
@@ -170,7 +167,11 @@ fn search_decisions_schema() -> Value {
             ),
             "seat": nullable(
                 json!({"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 60}}),
-                json!({"description": "Restrict to one or more seats, as a dotted path from the court type down to the room: \"CA\" (a whole type), \"CA.PARIS\" and \"TJ.BORDEAUX\" (one court), \"CC.C1_CIVILE\", \"CA.PARIS.P5.C3\", \"TJ.LYON.SOCIALE\", \"TJ.PARIS.REFERES\", \"TA.MARSEILLE.C5\" (one room). A path matches itself and everything below it, so start at the type and go deeper. Types: TJ (tribunal judiciaire), CA (cour d'appel), CC (Cour de cassation), TCOM (tribunal des activités économiques), TA (tribunal administratif), CAA (cour administrative d'appel), CE (Conseil d'État), CNDA (asylum), CONSTIT (Conseil constitutionnel), TC (Tribunal des conflits), CNIL (sanctions), CEDH and CJUE (European courts). Take the paths from facets.seat."}),
+                json!({"description": "Restrict to one or more seats, as a dotted path from the legal order down to the room: \"FR\" (an order), \"FR.CA\" (a type), \"FR.CA.PARIS\" (a court), \"FR.CC.C1_CIVILE\", \"FR.CA.PARIS.P5.C3\", \"FR.TJ.PARIS.REFERES\" (a room), \"EU.CJUE\", \"INTL.CEDH\". A path matches itself and everything below it, so start at the order and go deeper. Types: TJ (tribunal judiciaire), CA (cour d'appel), CC (Cour de cassation), TCOM (tribunal des activités économiques), CPH (conseil de prud'hommes), TA (tribunal administratif), CAA (cour administrative d'appel), CE (Conseil d'État), CNDA (asylum), CONSTIT (Conseil constitutionnel), TC (Tribunal des conflits), CNIL, DDD, CEDH and CJUE. Take the paths from facets.seat."}),
+            ),
+            "formation": nullable(
+                json!({"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 60}}),
+                json!({"description": "Restrict to the formation that decided, as a path under the court type: \"FR.TJ.JEX\", \"FR.TJ.JAF\", \"FR.TJ.JLD\", \"FR.TA.JUGE_REFERES\", \"FR.CC.RESTREINTE\". Take the paths from facets.formation."}),
             ),
             "legal_instrument": nullable(
                 json!({"type": "array", "maxItems": 10, "items": {"type": "string", "maxLength": 100}}),
@@ -178,7 +179,7 @@ fn search_decisions_schema() -> Value {
             ),
             "legal_article": nullable(
                 json!({"type": "array", "maxItems": 20, "items": {"type": "string", "maxLength": 140}}),
-                json!({"description": "Restrict to decisions citing a specific article of a specific code, as a composite key \"<instrument>|<article>\" where <instrument> is a slug or an exact text name, resolved like legal_instrument (e.g. \"code-civil|1240\", \"code-de-justice-administrative|L761-1\"). The instrument prefix is required: the same article number exists in several codes."}),
+                json!({"description": "Restrict to decisions citing a specific article of a specific code, as a composite key \"<instrument>|<article>\" where <instrument> is a slug or an exact text name, resolved like legal_instrument (e.g. \"code-civil|1240\", \"code-de-justice-administrative|L761-1\"). The instrument prefix is required: the same article number exists in several codes. It can be used, for instance, to recover a kind of référé with \"code-de-justice-administrative|L521-3\" or a QPC with \"constitution-du-4-octobre-1958|61-1\"."}),
             ),
             "date_from": nullable(
                 json!({"type": "string"}),
@@ -187,6 +188,10 @@ fn search_decisions_schema() -> Value {
             "date_to": nullable(
                 json!({"type": "string"}),
                 json!({"description": "Latest decision date, inclusive (YYYY-MM-DD)."}),
+            ),
+            "search_in": nullable(
+                json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::DecisionPart::ALL)}}),
+                json!({"description": "Parts searched, all when absent: headnote (the court's sommaire or analyse), judgment (the decision without its annexes), annexes (the moyens annexés of Cour de cassation judgments)."}),
             ),
             "mode": {
                 "type": "string",
@@ -198,7 +203,7 @@ fn search_decisions_schema() -> Value {
                 "type": "string",
                 "enum": ["relevance", "date_desc", "date_asc"],
                 "default": "relevance",
-                "description": "Result ordering. Use 'relevance' (default) unless the user wants chronological order.",
+                "description": "Result ordering. Use 'relevance' (default) unless the user wants chronological order. A date order excludes mode 'semantic'.",
             },
             "limit": {
                 "type": "integer",
@@ -231,7 +236,7 @@ fn get_decision_schema() -> Value {
     })
 }
 
-/// Three doors to an article, plus `date`. No root combinator says which one is
+/// Three doors to an article, plus `as_of`. No root combinator says which one is
 /// required: that is checked in `law_target` instead.
 fn get_norm_schema() -> Value {
     json!({
@@ -250,11 +255,11 @@ fn get_norm_schema() -> Value {
                 "type": "string",
                 "description": "Lowercase article key, alongside `code` (\"l761-1\" for L. 761-1, \"1240\" for 1240).",
             },
-            "textId": {
+            "text_id": {
                 "type": "string",
-                "description": "Légifrance id: an article (LEGIARTI, JORFARTI, KALIARTI), a text (LEGITEXT, JORFTEXT) or a section (LEGISCTA).",
+                "description": "Légifrance id: an article (LEGIARTI, JORFARTI, KALIARTI), a text (LEGITEXT, JORFTEXT) or a section (LEGISCTA); or a BOFiP id (BOI-…), with `article` for one paragraph.",
             },
-            "date": nullable(
+            "as_of": nullable(
                 json!({"type": "string"}),
                 json!({"description": "Consultation date (YYYY-MM-DD): returns the version in force at that date. Omit for the version currently in force."}),
             ),
@@ -266,7 +271,6 @@ fn search_norms_schema() -> Value {
     json!({
         "type": "object",
         "additionalProperties": false,
-        "required": ["query"],
         "properties": {
             "query": {
                 "type": "string",
@@ -280,9 +284,13 @@ fn search_norms_schema() -> Value {
             ),
             "jurisdiction": nullable(
                 json!({"type": "string"}),
-                json!({"description": "Filter by country/legal order, as an ISO 3166 alpha-2 country code: \"FR\" (France, the bulk of the corpus) or a foreign code (\"SN\", \"DZ\", \"MA\", \"VN\", \"PE\", …); plus \"UE\" for EU law and \"INTL\" for treaties/international law."}),
+                json!({"description": "Filter by country/legal order, as an ISO 3166 alpha-2 country code: \"FR\" (France, the bulk of the corpus) or a foreign code (\"SN\", \"DZ\", \"MA\", \"VN\", \"PE\", …); plus \"EU\" for EU law and \"INTL\" for treaties/international law. A dotted path narrows to a type of text: \"FR.LOI\", \"FR.DECRET\", \"EU.DIRECTIVE\", \"INTL.TREATY\", as in facets.jurisdiction."}),
             ),
-            "date": nullable(
+            "valid_from": nullable(
+                json!({"type": "string"}),
+                json!({"description": "Earliest entry into force (YYYY-MM-DD) of the versions served, which are those in force at `as_of`, else today. A text's publication counts as its first version."}),
+            ),
+            "as_of": nullable(
                 json!({"type": "string"}),
                 json!({"description": "Consultation date (YYYY-MM-DD): searches the versions valid at that date (point-in-time, same semantics as get_norm). Omit to search the versions currently in force."}),
             ),
@@ -317,19 +325,19 @@ pub fn search_output_schema() -> Value {
                     "properties": {
                         "title": {"type": "string"},
                         "url": {"type": "string"},
-                        "officialUrl": nullable(json!({"type": "string"}), json!({})),
-                        "aiSummary": nullable(json!({"type": "string"}), json!({})),
+                        "official_url": nullable(json!({"type": "string"}), json!({})),
+                        "ai_summary": nullable(json!({"type": "string"}), json!({})),
+                        "court_summary": nullable(json!({"type": "string"}), json!({})),
                         "snippet": nullable(json!({"type": "string"}), json!({})),
                         "chars": {"type": "integer"},
-                        "dateLecture": nullable(json!({"type": "string"}), json!({"format": "date"})),
-                        "docketNumbers": nullable(json!({"items": {"type": "string"}, "type": "array"}), json!({})),
+                        "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
+                        "docket_numbers": nullable(json!({"items": {"type": "string"}, "type": "array"}), json!({})),
                         "seat": nullable(json!({"type": "string"}), json!({})),
                         "solution": nullable(json!({"type": "string"}), json!({})),
-                        "procedure": nullable(json!({"type": "string"}), json!({})),
-                        "office": nullable(json!({"type": "string"}), json!({})),
-                        "legalDomain": nullable(json!({"type": "string"}), json!({})),
+                        "formation": {"type": "array", "items": {"type": "string"}},
+                        "legal_domain": nullable(json!({"type": "string"}), json!({})),
                         "publication": {"type": "array", "items": {"type": "string"}},
-                        "citedArticles": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}},
+                        "cited_articles": {"type": "object", "additionalProperties": {"type": "array", "items": {"type": "string"}}},
                     },
                 },
             },
@@ -358,23 +366,21 @@ pub fn get_decision_output_schema() -> Value {
     json!({
         "additionalProperties": false,
         "type": "object",
-        "required": ["title", "url", "jurisdictionType", "text"],
+        "required": ["title", "url", "jurisdiction_type", "text"],
         "properties": {
             "title": {"type": "string"},
             "url": {"type": "string"},
-            "officialUrl": nullable(json!({"type": "string"}), json!({})),
-            "dateLecture": nullable(json!({"type": "string"}), json!({"format": "date"})),
-            "docketNumbers": nullable(json!({"items": {"type": "string"}, "type": "array"}), json!({})),
-            "jurisdictionType": {"type": "string"},
-            "jurisdictionCode": nullable(json!({"type": "string"}), json!({})),
+            "official_url": nullable(json!({"type": "string"}), json!({})),
+            "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "docket_numbers": nullable(json!({"items": {"type": "string"}, "type": "array"}), json!({})),
+            "jurisdiction_type": {"type": "string"},
+            "jurisdiction_code": nullable(json!({"type": "string"}), json!({})),
             "seat": nullable(json!({"type": "string"}), json!({})),
             "solution": nullable(json!({"type": "string"}), json!({})),
-            "procedure": nullable(json!({"type": "string"}), json!({})),
-            "office": nullable(json!({"type": "string"}), json!({})),
-            "legalDomain": nullable(json!({"type": "string"}), json!({})),
+            "formation": {"type": "array", "items": {"type": "string"}},
+            "legal_domain": nullable(json!({"type": "string"}), json!({})),
             "publication": {"type": "array", "items": {"type": "string"}},
-            "appellateFate": nullable(json!({"type": "string"}), json!({})),
-            "caseChronology": {
+            "case_chronology": {
                 "type": "array",
                 "items": {
                     "additionalProperties": false,
@@ -385,11 +391,11 @@ pub fn get_decision_output_schema() -> Value {
                         "url": nullable(json!({"type": "string"}), json!({})),
                         "current": {"type": "boolean"},
                         "solution": nullable(json!({"type": "string"}), json!({})),
-                        "linkToNext": nullable(json!({"type": "string"}), json!({})),
+                        "link_to_next": nullable(json!({"type": "string"}), json!({})),
                     },
                 },
             },
-            "commentaires": {
+            "commentaries": {
                 "type": "array",
                 "items": commentaire_schema(),
             },
@@ -406,7 +412,7 @@ fn commentaire_schema() -> Value {
         "type": "object",
         "required": ["kind"],
         "properties": {
-            "kind": {"type": "string", "enum": ["conclusions", "note"]},
+            "kind": {"type": "string", "enum": ["summary", "conclusions", "note"]},
             "author": nullable(json!({"type": "string"}), json!({})),
             "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
             "title": nullable(json!({"type": "string"}), json!({})),
@@ -414,8 +420,8 @@ fn commentaire_schema() -> Value {
             "volume": nullable(json!({"type": "string"}), json!({})),
             "issue": nullable(json!({"type": "string"}), json!({})),
             "pages": nullable(json!({"type": "string"}), json!({})),
-            "access": nullable(json!({"type": "string", "enum": ["libre", "abonnes"]}), json!({})),
             "url": nullable(json!({"type": "string"}), json!({})),
+            "body": nullable(json!({"type": "string"}), json!({})),
         },
     })
 }
@@ -442,17 +448,17 @@ pub fn get_norm_output_schema() -> Value {
         "required": ["code", "title", "url", "versions"],
         "properties": {
             "code": {"type": "string"},
-            "num": {"type": "string"},
-            "articleCount": {"type": "integer"},
+            "number": {"type": "string"},
+            "article_count": {"type": "integer"},
             "articles": {
                 "type": "array",
                 "items": {
                     "additionalProperties": false,
                     "type": "object",
-                    "required": ["kind", "num", "url"],
+                    "required": ["kind", "number", "url"],
                     "properties": {
                         "kind": {"type": "string", "enum": ["article", "section"]},
-                        "num": {"type": "string"},
+                        "number": {"type": "string"},
                         "url": {"type": "string"},
                         "section": {"type": "string"},
                         "text": {"type": "string"},
@@ -462,12 +468,13 @@ pub fn get_norm_output_schema() -> Value {
             "omitted": {"type": "integer"},
             "title": {"type": "string"},
             "url": {"type": "string"},
-            "etat": nullable(json!({"type": "string"}), json!({})),
-            "dateDebut": nullable(json!({"type": "string"}), json!({"format": "date"})),
-            "dateFin": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "status": nullable(json!({"type": "string"}), json!({})),
+            "valid_from": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "valid_to": nullable(json!({"type": "string"}), json!({"format": "date"})),
             "text": nullable(json!({"type": "string"}), json!({})),
-            "sourceUrl": nullable(json!({"type": "string"}), json!({})),
-            "nota": nullable(json!({"type": "string"}), json!({})),
+            "source_url": nullable(json!({"type": "string"}), json!({})),
+            "note": nullable(json!({"type": "string"}), json!({})),
             "section": {
                 "additionalProperties": false,
                 "type": "object",
@@ -477,15 +484,16 @@ pub fn get_norm_output_schema() -> Value {
                     "url": {"type": "string"},
                 },
             },
-            "commentaires": {
+            "commentaries": {
                 "type": "array",
                 "items": commentaire_schema(),
             },
-            "modifiedBy": {
+            "modified_by": {
+                "description": "Texts that created, modified or repealed this article.",
                 "type": "array",
                 "items": linked_text_ref_schema(),
             },
-            "travauxParlementaires": {
+            "legislative_history": {
                 "type": "array",
                 "items": linked_text_ref_schema(),
             },
@@ -494,11 +502,11 @@ pub fn get_norm_output_schema() -> Value {
                 "items": {
                     "additionalProperties": false,
                     "type": "object",
-                    "required": ["etat", "dateDebut"],
+                    "required": ["status", "valid_from"],
                     "properties": {
-                        "etat": {"type": "string"},
-                        "dateDebut": {"type": "string", "format": "date"},
-                        "dateFin": nullable(json!({"type": "string"}), json!({"format": "date"})),
+                        "status": {"type": "string"},
+                        "valid_from": {"type": "string", "format": "date"},
+                        "valid_to": nullable(json!({"type": "string"}), json!({"format": "date"})),
                     },
                 },
             },
@@ -525,8 +533,10 @@ pub fn search_norms_output_schema() -> Value {
                         "title": {"type": "string"},
                         "url": {"type": "string"},
                         "snippet": {"type": "string"},
-                        "titlePath": nullable(json!({"type": "string"}), json!({})),
+                        "title_path": nullable(json!({"type": "string"}), json!({})),
                         "source": {"type": "string"},
+                        "valid_from": nullable(json!({"type": "string"}), json!({"format": "date"})),
+                        "valid_to": nullable(json!({"type": "string"}), json!({"format": "date"})),
                     },
                 },
             },
@@ -567,9 +577,9 @@ const PUBLICATION_CODES: &[&str] = &[
 // ── Tool descriptions ────────────────────────────────────────────────────────
 
 const SEARCH_DECISIONS_DESC: &str = "Search decisions by meaning and keywords combined. Returns a \
-shortlist: `title`, `url`, an overview (`aiSummary`: AI-written \
-summary of what the decision is about, a machine paraphrase never \
-quotable as the court's words; or `snippet`: the verbatim passage \
+shortlist: `title`, `url`, an overview (`ai_summary`: AI-written \
+summary of what the decision is about; `court_summary`: the court's own \
+summary; or `snippet`: the verbatim passage \
 where your keywords matched) and metadata; get_decision reads the \
 full text. Put constraints in the structured filters (jurisdiction, \
 dates, articles, codes), keep the query for the legal issue. Values \
@@ -578,7 +588,7 @@ carries a `facets` block: per filter name, a map of filter value to \
 decision count under the current query. Reuse those keys verbatim to \
 refine. \
 Hit metadata fields carry the same tokens under the same names: a \
-hit's `seat`, `legalDomain` or `solution` passes back \
+hit's `seat`, `legal_domain` or `solution` passes back \
 verbatim into the matching filter.";
 
 const GET_DECISION_DESC: &str = "Fetch the full text and metadata of a decision by its `url`. The \
@@ -586,24 +596,19 @@ text carries inline markdown links to cited articles (/norm/, open with \
 get_norm) and cited decisions (/decision/, open with \
 get_decision); a citation spanning several articles (« articles 3 à 6 \
 », « et suivants ») links its first article and appends the others as \
-labelled links right after the span. `appellateFate` states in one line what became of THIS \
-decision on review (INFIRMATION = reversed, it no longer stands; \
-CONFIRMATION = upheld): read it before citing the decision as \
-authority. `caseChronology` lists the prior AND subsequent \
-decisions of the same case (appeal, pourvoi, renvoi). An absent fate \
-or chronology never proves no recourse exists, \
-only that none is linked in the corpus. `commentaires` links out to the \
-rapporteur public's conclusions and the court's related documents: \
-context, never the ruling, so quote the decision text and not a \
-commentaire.";
+labelled links right after the span. `case_chronology` lists the prior AND \
+subsequent decisions of the same case (appeal, pourvoi, renvoi), each \
+with its solution. `commentaries` lists documents around the decision \
+(the court's summary, conclusions, reports…). `official_url` is the \
+decision at its official publisher, proof of its authenticity.";
 
 const GET_NORM_DESC: &str = "Fetch a legal text, or one of its articles, as it stood on a given \
-date. Returns the version in force at `date` (omit for today): full \
+date. Returns the version in force at `as_of` (omit for today): full \
 text, status, validity dates, and the timeline of all versions: say \
 which version you quote. The text carries inline markdown links to \
 cross-referenced articles (/norm/, open with get_norm; when \
-served at a date, the links point to the same date). `commentaires` \
-links out to commentary anchored on the article. `num` absent means \
+served at a date, the links point to the same date). `commentaries` \
+links out to commentary anchored on the article. `number` absent means \
 you hold the whole text; \
 the `url` of an article's `section`, or of a `section` entry of \
 `articles`, returns all its articles at once.";
@@ -614,56 +619,37 @@ number with no code named; returns a shortlist with highlighted \
 snippets and the exact `total`. Query in French, descriptive terms (« \
 délai de recours contentieux refus implicite »); put the code in the \
 `code` filter (slug or exact name), keep the query for the subject. \
+With no `query`, hits are whole texts, the most recently changed first. \
 The response carries a `facets` block (`code`, `jurisdiction`): per \
 filter name, a map of filter value to article count, reuse those keys \
 verbatim to refine. Chain a hit into get_norm with its \
-`url`, plus `date` when the dispute is governed by an earlier version.";
+`url`, plus `as_of` when the dispute is governed by an earlier version.";
 
 const LAW_URL_DESC: &str = "A librejustice.fr article URL \
-`/norm/{juridiction}/{code}/{article}`: take it from a search_norms hit \
-or an inline citation link, or compose it: {juridiction} is the enacting state \
+`/norm/{jurisdiction}/{code}/{article}`: take it from a search_norms hit \
+or an inline citation link, or compose it: {jurisdiction} is the enacting state \
 as ISO 3166-1 alpha-2 lowercase (\"fr\", \"be\"), \"eu\" for the Union, its \
 treaties included, \"intl\" for a treaty signed outside it (the ECHR, a \
 bilateral accord), {code} is the code slug (\"code-civil\", as in \
 facets.legal_instrument), {article} the lowercase article key (\"l761-1\" for \
-L. 761-1, \"1240\" for 1240). `/norm/{juridiction}/{code}` alone addresses the \
+L. 761-1, \"1240\" for 1240). `/norm/{jurisdiction}/{code}` alone addresses the \
 text itself, which is how a text with no articles (circulaire, publication \
 decree) is read.";
 
-const SEARCH_QUERY_DESC: &str = "French query, the primary input. Two regimes, pick the right \
-tool for the job: \
-(a) Natural language or descriptive keywords for legal-issue \
-searches; the engine handles synonyms and reformulations. \
-Examples: \
-« responsabilité hôpital infection nosocomiale » ; \
-« étranger malade soins inaccessibles dans son pays d'origine » ; \
-« licenciement discrimination syndicale charge de la preuve ». \
-(b) Quoted exact phrases and ET / OU / SAUF operators for a \
-named entity (company, municipality, person), a precise legal \
-formula, or the direction of a holding: semantic matching \
-ignores negations (« n'est pas X » ranks like « est X »), and \
-only an exact phrase targets which way the court ruled. Examples: \
-« \"Société Générale\" » ; \
-« \"commune de Saint-Denis\" SAUF Réunion » ; \
-« \"force majeure\" ET épidémie ». \
-Using operators or quotes switches the engine to keyword-only \
-matching for the whole query (no synonyms), so do not mix the \
-two regimes.";
+const SEARCH_QUERY_DESC: &str = "The primary input, in the language of the decisions \
+sought: a question or descriptive keywords on a legal issue (« licenciement discrimination syndicale charge de la preuve »), \
+with quoted phrases for a name or a precise formula \
+(« \"Société Générale\" responsabilité du banquier »); \
+a boolean formula (« \"force majeure\" ET épidémie SAUF grippe »); \
+or a reference (« 21PA01295 », « CE 13 juillet 2016 », « Czabaj »).";
 
-const SEARCH_MODE_DESC: &str = "'auto' is the right choice in almost all cases, it picks \
-the regime from the query shape. \
-auto: combines meaning and keyword matching on plain queries; \
-switches to keyword-only when the query contains ET / OU / \
-SAUF or quoted phrases. \
-lexical: force keyword-only matching. Every term becomes \
-required and nothing recovers a miss, so it fits a string you \
-expect word for word (a consecrated formula, the direction of a \
-holding, a party named in the text) and an empty answer is then \
-an answer. \
-reference: force the lookup by identity, on the docket number, \
-the case name, or the court and the date. \
-semantic: force the meaning+keyword hybrid even on quoted or \
-operator queries (where auto would fall back to keyword-only).";
+const SEARCH_MODE_DESC: &str = "'auto' is the right choice in almost all cases. \
+auto: automatically switches among 'semantic', 'lexical' and 'reference'. \
+semantic: meaning + keyword hybrid, quoted phrases filter presence. \
+lexical: keyword-only, every word required, quoted phrases exact, \
+ET / AND / OU / OR / SAUF / NOT / PROCHE5 / NEAR5 / répar*. \
+reference: lookup by identity, on the docket number, the ECLI, the case name, \
+or the court and the date.";
 
 #[cfg(test)]
 mod tests {
@@ -684,6 +670,8 @@ mod tests {
     }
 
     /// The standalone server reads `data/mcp-tools.json`; `LIBREJUSTICE_BLESS_MCP_TOOLS=1` rewrites it.
+    /// The output schemas are also copied by hand into `packages/lj-web/public/openapi.json`,
+    /// which `pytest mcp` holds equal to this file.
     #[test]
     fn the_committed_surface_matches_the_definitions() {
         let path = concat!(env!("CARGO_MANIFEST_DIR"), "/data/mcp-tools.json");

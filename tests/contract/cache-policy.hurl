@@ -1,10 +1,8 @@
 # ── politique de cache du HTML ───────────────────────────────────────────────
-# Source oracle : apps/lj-server/src/main.rs (html_cache_policy) + pages SSR
-# (`ResponseOptions`). Le défaut est private, no-store ; une page publique
-# déclare son cache elle-même. L'accident verrouillé ici est silencieux dans
-# les deux sens : un défaut redevenu public servirait l'HTML d'un visiteur à un
-# autre, une page document redevenue privée éteindrait le cache edge sans un
-# signal.
+# Source oracle: apps/lj-server/src/main.rs (html_cache_policy) + SSR pages
+# (`ResponseOptions`). The default is private, no-store; a public page declares
+# its own cache. Both directions are locked: a private page stays out of shared
+# caches, and a document page stays cacheable at the edge.
 
 # Écrans d'auth : le défaut privé, sans déclaration.
 GET {{base}}/login
@@ -46,7 +44,7 @@ header "Cache-Control" == "public, max-age=0, must-revalidate, s-maxage=300"
 
 # Page document : publique dans tous les cas — 7 j de CDN, ou 5 min tant que le
 # résumé manque (decision_page.rs), d'où l'assertion sur le préfixe.
-GET {{base}}/internal/search?q=usufruit&limit=1
+GET {{base}}/internal/search?query=usufruit&limit=1
 HTTP 200
 [Captures]
 decision_id: jsonpath "$.hits[0].id"

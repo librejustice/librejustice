@@ -15,14 +15,12 @@ use std::time::Duration;
 
 /// Plafond mémoire du cache résultats, en octets.
 const SEARCH_CACHE_MAX_BYTES: u64 = 150 * 1024 * 1024;
-/// Plafond mémoire du cache textes, en octets (réponse mesurée : 53 ko à
-/// `limit=50`).
+/// Memory cap of the texts cache, in bytes.
 const TEXTES_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// Overhead moka par entrée, ajouté au poids pesé.
 const ENTRY_OVERHEAD: usize = 128;
-/// Plafond mémoire du cache parcours, en octets. Une entrée est un total et un
-/// jeu de facettes exhaustif : 421 Kio sous le filtre le plus large, dont 376
-/// pour les 2 208 valeurs de l'axe juridiction.
+/// Memory cap of the browse cache, in bytes. An entry is a total and an exhaustive
+/// set of facets, the jurisdiction axis its largest part.
 const BROWSE_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 /// Plafond du cache rerank, en nombre d'entrées.
 const RERANK_CACHE_MAX_ENTRIES: u64 = 50_000;
@@ -38,8 +36,7 @@ const REGISTRE_CACHE_MAX_ENTRIES: u64 = 20_000;
 /// Plafond du cache d'identité de texte, en nombre d'entrées.
 const TEXT_REF_CACHE_MAX_ENTRIES: u64 = 50_000;
 
-/// Memory cap of the addressed tables of contents, in bytes. The code du travail
-/// weighs about 4 MB of them.
+/// Memory cap of the addressed tables of contents, in bytes.
 const TOC_ADDRESS_CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
 
 /// Peak DB connections one search holds at once, whichever engine: the three
@@ -55,9 +52,8 @@ pub struct AppState {
     pub embedder: Arc<AnyEmbedder>,
     pub embedding_cache: EmbeddingCache,
     pub search_cache: TypedCache<Arc<RankedResults>>,
-    /// Total et facettes du mode parcours, clé = les filtres seuls. C'est la
-    /// partie chère (1,5 s sur les six ordres réunis, 3,48 M de décisions) et la
-    /// seule qui ne dépende ni de la page ni du tri.
+    /// Total and facets of browse mode, keyed on the filters alone: the costly
+    /// part, and the only one that depends on neither the page nor the sort.
     pub browse_cache: TypedCache<Arc<(i64, lj_dtos::SearchFacets)>>,
     /// Réponses du moteur textes, clé = requête complète, fenêtre comprise. Accès
     /// via `legi::search_textes`.
@@ -128,6 +124,8 @@ pub struct AppState {
     pub named_text_cache: TypedCache<Option<Arc<str>>>,
     /// Client HTTP partagé des appels registre.
     pub registre_http: reqwest::Client,
+    /// `None` without the INPI account or the bucket.
+    pub inpi: Option<Arc<crate::inpi::Inpi>>,
     /// Client Mistral du rerank listwise, tenu sur le pool de la base.
     pub mistral: Arc<MistralPool>,
     pub pseudonymiser: Option<lj_identity::Pseudonymiser>,
@@ -230,9 +228,7 @@ impl AppState {
         let place_texts_cache = TypedCache::builder(256)
             .time_to_live(Duration::from_secs(6 * 3600))
             .build();
-        // Both scan `legal_text` whole (1,87 Go, 1,35 M lignes) for want of an
-        // index their predicate can use: 720 ms for the catalogue, 320 ms for a
-        // resolution, measured on prod 11/09. Ingest is what moves either.
+        // Both read the whole of `legal_text`, which only ingest moves.
         let named_code_catalog_cache = TypedCache::builder(1)
             .time_to_live(Duration::from_secs(12 * 3600))
             .build();
@@ -248,6 +244,7 @@ impl AppState {
             .user_agent("librejustice.fr")
             .build()
             .expect("client HTTP registre");
+        let inpi = crate::inpi::Inpi::from_settings(&settings).map(Arc::new);
         let mistral = Arc::new(MistralPool::default());
         let pseudonymiser =
             lj_identity::Pseudonymiser::new(settings.usage_pseudonym_key.as_deref());
@@ -277,6 +274,7 @@ impl AppState {
             search_permits,
             registre_cache,
             registre_http,
+            inpi,
             suggest_cache,
             text_ref_cache,
             toc_address_cache,

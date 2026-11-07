@@ -122,7 +122,7 @@ pub struct NormalizedPageTarget {
 
 impl NormalizedPageTarget {
     pub fn intersects_rect(&self, rect: &Rect) -> bool {
-        self.quads.iter().any(|quad| quad.intersects_rect(rect)) || self.bounds.intersects(rect)
+        self.quads.iter().any(|quad| quad.intersects_rect(rect))
     }
 
     pub fn intersects_quad(&self, quad: &Quad) -> bool {

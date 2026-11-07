@@ -14,7 +14,7 @@ const PER_TEXT: usize = 2;
 
 pub async fn audit_toc_paths() -> Result<()> {
     let settings = Settings::from_env()?;
-    let pool = lj_store::db::build_pool(&settings.db_url, CONCURRENCY + 1)
+    let pool = lj_pg::db::build_pool(&settings.db_url, CONCURRENCY + 1)
         .map_err(|e| anyhow!("build_pool: {e}"))?;
     let texts = {
         let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;

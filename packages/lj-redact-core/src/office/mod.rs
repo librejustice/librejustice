@@ -21,6 +21,22 @@ pub fn characters(bytes: &[u8]) -> Result<Vec<(char, Anchor)>> {
     Ok(anchored(lj_office::characters(bytes)?))
 }
 
+/// `text` as a feed, each character anchored at its position, which is how a
+/// text that is no document is searched and labelled.
+pub fn plain(text: &str) -> Result<Vec<(char, Anchor)>> {
+    text.chars()
+        .enumerate()
+        .map(|(at, c)| {
+            let anchor = lj_office::Anchor::XmlText {
+                part: 0,
+                node: 0,
+                offset: u32::try_from(at)?,
+            };
+            Ok((c, Anchor::Office(anchor)))
+        })
+        .collect()
+}
+
 /// The views of [`characters`] a reader may have besides the whole of it,
 /// tracked changes accepted or rejected, hidden text hidden, as the
 /// positions each keeps: a name a change or hidden text cuts in the file

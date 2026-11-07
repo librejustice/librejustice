@@ -2,6 +2,7 @@
 //! of a name becomes a letter, the same wherever the word recurs (`M. [B]`),
 //! and the other families a numbered label (`[Adresse 1]`).
 
+use std::cmp::Reverse;
 use std::collections::HashMap;
 use std::ops::Range;
 
@@ -9,6 +10,7 @@ use anyhow::{anyhow, bail, Result};
 
 use crate::detect::{Kind, CIVILITIES};
 use crate::fold::{fold_char_before, fold_query, Spaces};
+use crate::index::Anchor;
 
 /// The family the page files a string the user typed under.
 pub const MANUAL: &str = "manual";
@@ -135,6 +137,47 @@ impl Labels {
         let chars: Vec<char> = span.chars().collect();
         self.plans[needle].pieces(&chars)
     }
+
+    /// Each label with the text it stands for, `texts` being the needles not
+    /// held, in order: a name's letter with its word as the needle writes it,
+    /// particles included, and any other label with its whole needle. A label
+    /// met again keeps the text it was first given.
+    pub fn legend(&self, texts: &[String]) -> Result<Vec<(String, String)>> {
+        let mut out: Vec<(String, String)> = Vec::new();
+        for (plan, text) in self.plans.iter().zip(texts) {
+            let pairs = match plan {
+                Plan::Whole(label) => vec![(label.clone(), text.clone())],
+                Plan::Words(words) => words.legend(text)?,
+            };
+            for (label, value) in pairs {
+                if !label.is_empty() && !out.iter().any(|(known, _)| *known == label) {
+                    out.push((label, value));
+                }
+            }
+        }
+        Ok(out)
+    }
+}
+
+/// The text of `feed` with each occurrence of `needles`, the needles not held,
+/// under its label. Occurrences go leftmost then longest first, and one that
+/// overlaps an earlier one is left to it.
+pub fn labelled(feed: &[(char, Anchor)], needles: &[String], labels: &Labels) -> Result<String> {
+    let mut occurrences = crate::locate(feed, needles);
+    occurrences.sort_by_key(|o| (o.source.start, Reverse(o.source.end)));
+    let text = |range: Range<usize>| feed[range].iter().map(|(c, _)| *c).collect::<String>();
+    let mut out = String::with_capacity(feed.len());
+    let mut at = 0;
+    for occurrence in occurrences {
+        if occurrence.source.start < at {
+            continue;
+        }
+        out.push_str(&text(at..occurrence.source.start));
+        out.push_str(&labels.render(occurrence.needle, &text(occurrence.source.clone()))?);
+        at = occurrence.source.end;
+    }
+    out.push_str(&text(at..feed.len()));
+    Ok(out)
 }
 
 impl Plan {
@@ -307,6 +350,28 @@ impl Words {
         }
     }
 
+    /// Each word's label with the word as `text`, the needle itself, writes it.
+    fn legend(&self, text: &str) -> Result<Vec<(String, String)>> {
+        let chars: Vec<char> = text.chars().collect();
+        let tags = self.tags(&chars)?;
+        let mut out = Vec::with_capacity(self.letters.len());
+        for (w, letter) in self.letters.iter().enumerate() {
+            let Some(first) = tags.iter().position(|tag| *tag == Tag::Word(w)) else {
+                continue;
+            };
+            let mut last = first;
+            for (at, tag) in tags.iter().enumerate().skip(first) {
+                match *tag {
+                    Tag::Word(v) if v == w => last = at,
+                    Tag::Word(_) => break,
+                    Tag::Clear => {}
+                }
+            }
+            out.push((format!("[{letter}]"), chars[first..=last].iter().collect()));
+        }
+        Ok(out)
+    }
+
     fn pieces(&self, chars: &[char]) -> Result<Pieces> {
         let tags = self.tags(chars)?;
         let mut written = vec![false; self.letters.len()];
@@ -460,6 +525,56 @@ mod tests {
         assert_eq!(shown(&needles), ["M. [A]", "[A]", "[B] [C]", "[C] [D]"]);
     }
 
+    /// What a model reads of a document, and what `restore` gives back from it:
+    /// a label put back stands for the text its needle first gave it.
+    #[test]
+    fn the_legend_puts_back_what_the_labels_replaced() {
+        let needles = [
+            person("M. Jean de La Fontaine"),
+            of(Some(Kind::Address), "3 rue des Lilas"),
+            person("FONTAINE"),
+        ];
+        let texts: Vec<String> = needles.iter().map(|n| n.text.to_string()).collect();
+        let labels = Labels::assign(&needles);
+        let source = "M. Jean de La Fontaine demeure 3 rue des Lilas. FONTAINE signe.";
+        let hidden = labelled(&crate::tests::glyphs(source), &texts, &labels).unwrap();
+        assert_eq!(hidden, "M. [A] [B] demeure [Adresse 1]. [B] signe.");
+
+        let legend = labels.legend(&texts).unwrap();
+        let pairs: Vec<(&str, &str)> = legend
+            .iter()
+            .map(|(label, value)| (label.as_str(), value.as_str()))
+            .collect();
+        assert_eq!(
+            pairs,
+            [
+                ("[A]", "Jean"),
+                ("[B]", "de La Fontaine"),
+                ("[Adresse 1]", "3 rue des Lilas")
+            ]
+        );
+        let back: Vec<Needle> = legend
+            .iter()
+            .map(|(label, value)| Needle {
+                text: label,
+                kind: None,
+                label: Some(value),
+                held: false,
+            })
+            .collect();
+        let shown: Vec<String> = legend.iter().map(|(label, _)| label.clone()).collect();
+        let restored = labelled(
+            &crate::tests::glyphs(&hidden),
+            &shown,
+            &Labels::assign(&back),
+        )
+        .unwrap();
+        assert_eq!(
+            restored,
+            "M. Jean de La Fontaine demeure 3 rue des Lilas. de La Fontaine signe."
+        );
+    }
+
     #[test]
     fn a_particle_group_keeps_the_source_separators_around_it() {
         let labels = Labels::assign(&[person("Jean de La Fontaine")]);
@@ -470,8 +585,8 @@ mod tests {
 
     #[test]
     fn a_comma_between_the_words_of_a_name_stays_between_their_letters() {
-        let labels = Labels::assign(&[person("Pascal COUMES")]);
-        assert_eq!(labels.render(0, "Pascal, COUMES").unwrap(), "[A], [B]");
+        let labels = Labels::assign(&[person("Pascal VERDIER")]);
+        assert_eq!(labels.render(0, "Pascal, VERDIER").unwrap(), "[A], [B]");
     }
 
     #[test]

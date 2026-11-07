@@ -1,15 +1,13 @@
 # The AUTHENTICATED path end to end: web session by cookie, then MCP, by OAuth
 # and by a static key.
 #
-# This file is the ONLY automatic check that presents a VALID identity. The rest
-# of the suite carries no secret and therefore only tests refusal: `me.hurl`
-# stays green even when the server refuses EVERY valid identity.
+# This file presents a VALID identity. The rest of the suite carries no secret
+# and tests refusal.
 #
 # The target must be https, the cookie being `Secure` and so never sent in the
-# clear. It does not run alone: `mise run contract-authed` injects `base`,
-# `email`, `password` and `api_key`. The account is the one an agent takes to be
-# logged into the app: it exists already, it survives the run, and no real
-# account is borrowed.
+# clear. It does not run alone: the runner injects `base`, `email`, `password`
+# and `api_key`. The account is a dedicated test account: it exists already, it
+# survives the run, and no real account is borrowed.
 #
 # PKCE: the verifier and challenge pair is the one of RFC 7636 appendix B, so a
 # constant. A client does not have to compute a SHA-256 to prove the server
@@ -78,7 +76,7 @@ body contains "{{email}}"
 # Le 401 n'est pas le seul symptôme possible : une identité perdue dégrade en
 # anonyme sans erreur. On assert donc le succès, et `identity` se lit
 # dans les spans.
-GET {{base}}/internal/search?q=trouble+anormal+de+voisinage&limit=3
+GET {{base}}/internal/search?query=trouble+anormal+de+voisinage&limit=3
 HTTP 200
 [Asserts]
 jsonpath "$.hits" isCollection
@@ -112,8 +110,8 @@ code: header "Location" regex "[?&]code=([A-Za-z0-9_-]{43})"
 header "Location" startsWith "https://claude.ai/api/mcp/auth_callback"
 
 # ── 8 bis. Le même défi rend le même code ────────────────────────────────────
-# Un navigateur mobile rejoue la soumission quand le retour n'aboutit pas : 33
-# fois en 32 s le 28/08/2026, donc 33 codes dont un seul pouvait servir.
+# A mobile browser replays the submission when the return fails, so every replay
+# must yield the one code.
 POST {{base}}/oauth/approve
 Content-Type: application/x-www-form-urlencoded
 [FormParams]
@@ -233,7 +231,7 @@ jsonpath "$.result.structuredContent.pinned" not exists
 
 # The retired key narrows the set and does not open a rank: only a `seat` filter
 # does. A caller still on it reads the paths off the hits, where `seat` carries
-# the room, and the facet answers with the types alone.
+# the room, and the facet answers with the orders and their types alone.
 POST {{base}}/mcp
 Authorization: Bearer {{access}}
 Accept: application/json, text/event-stream
@@ -255,9 +253,10 @@ jsonpath "$.result.isError" not == true
 jsonpath "$.result.structuredContent.total" isInteger
 jsonpath "$.result.structuredContent.total" > 1
 # `cc` has no court segment: its code names the type, so a room's path holds in
-# two segments and the root carries the court's count.
-jsonpath "$.result.structuredContent.facets.seat.CC" isInteger
-jsonpath "$.result.structuredContent.facets.seat['CC.COMMERCIALE']" not exists
+# three segments and the type carries the court's count.
+jsonpath "$.result.structuredContent.facets.seat.FR" isInteger
+jsonpath "$.result.structuredContent.facets.seat['FR.CC']" isInteger
+jsonpath "$.result.structuredContent.facets.seat['FR.CC.COMMERCIALE']" not exists
 
 # A filtered seat opens the rank right below it, whole: MCP serves the `seat`
 # facet, whose keys are dotted paths, handed back verbatim to the `seat` filter.
@@ -272,20 +271,19 @@ Content-Type: application/json
   "method": "tools/call",
   "params": {
     "name": "search_decisions",
-    "arguments": { "query": "bail commercial", "seat": ["CC"], "limit": 1 }
+    "arguments": { "query": "bail commercial", "seat": ["FR.CC"], "limit": 1 }
   }
 }
 HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
-jsonpath "$.result.structuredContent.facets.seat.CC" isInteger
-jsonpath "$.result.structuredContent.facets.seat['CC.C3_CIVILE']" isInteger
-jsonpath "$.result.structuredContent.facets.seat['CC.COMMERCIALE']" isInteger
+jsonpath "$.result.structuredContent.facets.seat['FR.CC']" isInteger
+jsonpath "$.result.structuredContent.facets.seat['FR.CC.C3_CIVILE']" isInteger
+jsonpath "$.result.structuredContent.facets.seat['FR.CC.COMMERCIALE']" isInteger
 
 # ── 10 bis. La liste servie est enregistrable telle quelle par un client ─────
-# Un combinateur à la racine d'un `inputSchema` fait omettre l'outil par le
-# client, sans erreur ni trace côté serveur : du 15 au 19/08/2026, `tools/list`
-# déclarait cinq outils et les clients Claude n'en voyaient que quatre.
+# A combinator at the root of an `inputSchema` makes the client drop the tool,
+# with no error nor trace on the server side.
 POST {{base}}/mcp
 Authorization: Bearer {{access}}
 Accept: application/json, text/event-stream
@@ -321,7 +319,7 @@ HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
 jsonpath "$.result.structuredContent.code" == "code-de-procedure-penale"
-jsonpath "$.result.structuredContent.num" == "706-88"
+jsonpath "$.result.structuredContent.number" == "706-88"
 
 # Un identifiant Légifrance se reconnaît à sa forme, où qu'il soit posé.
 POST {{base}}/mcp
@@ -332,15 +330,15 @@ Content-Type: application/json
   "jsonrpc": "2.0",
   "id": 12,
   "method": "tools/call",
-  "params": { "name": "get_norm", "arguments": { "textId": "LEGIARTI000006419282" } }
+  "params": { "name": "get_norm", "arguments": { "text_id": "LEGIARTI000006419282" } }
 }
 HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
 jsonpath "$.result.structuredContent.code" == "code-civil"
 
-# Racine d'un texte sans articles : le corps, et pas de `num` — c'est l'absence
-# de `num` qui dit à l'appelant qu'il tient un texte et non un article.
+# The root of a text without articles: its body and no `number`, whose absence
+# tells the caller it holds a text and not an article.
 POST {{base}}/mcp
 Authorization: Bearer {{access}}
 Accept: application/json, text/event-stream
@@ -358,7 +356,7 @@ HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
 jsonpath "$.result.structuredContent.text" isString
-jsonpath "$.result.structuredContent.num" not exists
+jsonpath "$.result.structuredContent.number" not exists
 
 # Racine d'un texte qui a des articles : elle rend sa table des matières, bornée,
 # et `omitted` dit ce qui manque. Un code entier ne tient pas dans une réponse ;
@@ -376,7 +374,7 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
-jsonpath "$.result.structuredContent.articleCount" > 1000
+jsonpath "$.result.structuredContent.article_count" > 1000
 jsonpath "$.result.structuredContent.articles" isCollection
 jsonpath "$.result.structuredContent.omitted" isInteger
 jsonpath "$.result.structuredContent.text" not exists
@@ -406,7 +404,7 @@ Content-Type: application/json
   "jsonrpc": "2.0",
   "id": 14,
   "method": "tools/call",
-  "params": { "name": "get_norm", "arguments": { "textId": "LEGISCTA000006117710" } }
+  "params": { "name": "get_norm", "arguments": { "text_id": "LEGISCTA000006117710" } }
 }
 HTTP 200
 [Asserts]
@@ -494,7 +492,7 @@ jsonpath "$.result.structuredContent.total" < 20
 jsonpath "$.result.structuredContent.facets.code['code-civil']" isInteger
 
 # ── 10 quater. An article carries its amending laws and their travaux ───────
-# `travauxParlementaires` is `modifiedBy` narrowed to the LOI whose JORF text
+# `legislative_history` is `modified_by` narrowed to the LOI whose JORF text
 # is known, so both lock together: 2279 has two of each, and 350, amended by
 # an ordonnance alone, keeps the first and loses the second. The DILA label
 # breaks its line inside the law number, the JSON does not.
@@ -511,11 +509,11 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
-jsonpath "$.result.structuredContent.modifiedBy" count == 2
-jsonpath "$.result.structuredContent.travauxParlementaires" count == 2
-jsonpath "$.result.structuredContent.travauxParlementaires[0].date" == "2015-02-16"
-jsonpath "$.result.structuredContent.travauxParlementaires[0].href" == "https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000030248562"
-jsonpath "$.result.structuredContent.travauxParlementaires[1].label" == "LOI n°2008-561 du 17 juin 2008"
+jsonpath "$.result.structuredContent.modified_by" count == 2
+jsonpath "$.result.structuredContent.legislative_history" count == 2
+jsonpath "$.result.structuredContent.legislative_history[0].date" == "2015-02-16"
+jsonpath "$.result.structuredContent.legislative_history[0].href" == "https://www.legifrance.gouv.fr/jorf/id/JORFTEXT000030248562"
+jsonpath "$.result.structuredContent.legislative_history[1].label" == "LOI n°2008-561 du 17 juin 2008"
 
 POST {{base}}/mcp
 Authorization: Bearer {{access}}
@@ -530,11 +528,11 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
-jsonpath "$.result.structuredContent.modifiedBy[0].label" startsWith "Ordonnance n°2022-1292"
-jsonpath "$.result.structuredContent.travauxParlementaires" not exists
+jsonpath "$.result.structuredContent.modified_by[0].label" startsWith "Ordonnance n°2022-1292"
+jsonpath "$.result.structuredContent.legislative_history" not exists
 
 # ── 10 quinquies. A retired tool name still calls its tool ──────────────────
-# A client freezes the tool list when the connector is installed: ChatGPT keeps
+# A client freezes the tool list when the connector is installed, and keeps
 # calling the names of before a rename.
 POST {{base}}/mcp
 Authorization: Bearer {{access}}
@@ -549,7 +547,7 @@ Content-Type: application/json
 HTTP 200
 [Asserts]
 jsonpath "$.result.isError" not == true
-jsonpath "$.result.structuredContent.num" == "1240"
+jsonpath "$.result.structuredContent.number" == "1240"
 
 POST {{base}}/mcp
 Authorization: Bearer {{access}}
@@ -567,8 +565,7 @@ jsonpath "$.result.isError" not == true
 jsonpath "$.result.structuredContent.total" > 0
 
 # ── 11. Le grant refresh tourne, et rote les deux jetons ─────────────────────
-# Ce chemin n'avait jamais tourné en réel avant la sonde manuelle du 10/08 :
-# 85 des 90 access tokens vivants dépendent de lui pour survivre à 30 jours.
+# An access token outlives 30 days through this grant alone.
 POST {{base}}/oauth/token
 [FormParams]
 grant_type: refresh_token
@@ -611,8 +608,7 @@ client_id: {{client_id}}
 HTTP 400
 
 # ── 14. Un jeton MCP inventé est refusé ──────────────────────────────────────
-# Vérifie le motif d'alerte `mcp_token_rejete` : c'est la seule trace qu'un
-# connecteur cassé laisse désormais côté serveur.
+# Refused with `invalid_token` and the challenge naming the resource metadata.
 POST {{base}}/mcp
 Authorization: Bearer lj_jeton_qui_nexiste_pas
 Accept: application/json, text/event-stream
@@ -625,13 +621,36 @@ header "WWW-Authenticate" contains "resource_metadata="
 
 # ── 14 bis. The public door answers at the grain of the MCP tools ────────────
 # A hit carries the url that chains to `get_decision`; the browser DTO does not.
-GET {{base}}/api/search?q=usufruit&limit=1&aiMode=1
+GET {{base}}/api/search?query=usufruit&limit=1&ai_rerank=1
 Authorization: Bearer {{api_key}}
 HTTP 200
 [Asserts]
 jsonpath "$.hits[0].url" contains "/decision/"
 jsonpath "$.hits[0].title" exists
 jsonpath "$.total" exists
+
+# ── 14 bis bis. A parameter the contract does not name is refused ───────────
+# Ignored, it would answer another question than the one asked. Every one is named.
+GET {{base}}/api/search?query=usufruit&limit=1&foo=1&bar=2
+Authorization: Bearer {{api_key}}
+HTTP 422
+[Asserts]
+jsonpath "$.detail[0].type" == "extra_forbidden"
+jsonpath "$.detail[0].loc[1]" == "foo"
+jsonpath "$.detail[1].loc[1]" == "bar"
+
+# ── 14 bis ter. The former names are still read ─────────────────────────────
+GET {{base}}/api/search?q=usufruit&limit=1&aiMode=false
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.query" == "usufruit"
+
+GET {{base}}/api/norm/code%20civil/Article%201240?date=2020-01-01
+Authorization: Bearer {{api_key}}
+HTTP 200
+[Asserts]
+jsonpath "$.code" == "code-civil"
 
 # ── 14 ter. A code is named as a model composes it, an article likewise ──────
 GET {{base}}/api/norm/code%20civil/Article%201240

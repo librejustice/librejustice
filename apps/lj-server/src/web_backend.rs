@@ -11,8 +11,8 @@ use lj_dtos::{
     EntityRegistreResponse, EntitySearchResponse, JurisdictionCatalogueResponse,
     JurisdictionHubResponse, JurisdictionYearResponse, LawArticleResponse, LawCodeSummary,
     LawCompareResponse, LawSectionResponse, NormCatalogueResponse, NormFondResponse,
-    NormYearResponse, PlaceCorpusResponse, PlacesResponse, SearchContext, SearchRequest,
-    SearchResponse, SimilarDecisionsResponse, SuggestResponse,
+    NormYearResponse, OpenSourceResponse, PlaceCorpusResponse, PlacesResponse, SearchContext,
+    SearchRequest, SearchResponse, SimilarDecisionsResponse, SuggestResponse,
 };
 use lj_web::api::{ApiError, ApiResult, Backend, PageParams, TextesFilters};
 
@@ -172,20 +172,21 @@ impl Backend for ServiceBackend {
         mode: lj_dtos::SearchMode,
         context: SearchContext,
     ) -> ApiResult<ArticleSearchResponse> {
+        let date = |field, raw: Option<&str>| {
+            raw.map(|d| lj_api::legi::query_date(field, d))
+                .transpose()
+                .map_err(map_service_error)
+        };
         lj_api::legi::search_textes(
             &self.state,
             q,
             filters.code,
             filters.places,
-            &filters
-                .jurisdiction
-                .map(str::to_string)
-                .into_iter()
-                .collect::<Vec<_>>(),
-            filters.nature,
+            filters.jurisdictions,
             filters.source,
             filters.scope,
-            None,
+            date("as_of", filters.as_of)?,
+            date("valid_from", filters.valid_from)?,
             i64::from(page.limit),
             i64::from(page.offset),
             mode,
@@ -209,6 +210,10 @@ impl Backend for ServiceBackend {
             .await
             .map(|r| (*r).clone())
             .map_err(map_service_error)
+    }
+
+    async fn fetch_open_source(&self) -> ApiResult<OpenSourceResponse> {
+        Ok(lj_api::open_source::response().clone())
     }
 
     async fn fetch_juridiction_hub(&self, code: &str) -> ApiResult<JurisdictionHubResponse> {

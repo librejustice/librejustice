@@ -1,9 +1,8 @@
 # Smoke test — robots.txt rendu par la route
 # Usage : hurl --variable api_url=http://localhost:8300 tests/smoke/robots.hurl --test
 #
-# Le fichier statique a été supprimé du bundle : si la route saute, la prod
-# répond 404 et toute la politique d'accès disparaît d'un coup, sans autre
-# signal. D'où ce contrat.
+# robots.txt is rendered by a route, with no static file behind it: this
+# contract holds the whole access policy.
 
 GET {{api_url}}/robots.txt
 HTTP 200

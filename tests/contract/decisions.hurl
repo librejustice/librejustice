@@ -25,7 +25,7 @@ jsonpath "$.version" isString
 # le runner — une variable externe non fournie fait échouer le fichier sur
 # « Undefined variable » au lieu de tester quoi que ce soit.
 # ---------------------------------------------------------------------------
-GET {{base}}/internal/search?q=usufruit&limit=1
+GET {{base}}/internal/search?query=usufruit&limit=1
 HTTP 200
 [Captures]
 decision_id: jsonpath "$.hits[0].id"
@@ -60,11 +60,7 @@ jsonpath "$.publicationCodes" isCollection
 
 
 # ---------------------------------------------------------------------------
-# detail: non-existent id → 404 contract
-#   Python (FastAPI): 404 JSON body {"detail":"not_found"}
-#   Rust  (axum):     404 plain-text body "not found"
-# We assert the status only (the body shape DIVERGES — see notes). The differ
-# will flag the body; status parity is the contract that must hold.
+# detail: non-existent id → 404, status only
 # ---------------------------------------------------------------------------
 GET {{base}}/internal/decision/does-not-exist-xyz-0000
 HTTP 404

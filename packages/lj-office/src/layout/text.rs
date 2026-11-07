@@ -394,7 +394,7 @@ impl<'e, 'a, 'd> Setter<'e, 'a, 'd> {
             let advances = face.advances(&text, props.kerning);
             let em = f64::from(face.metrics.units_per_em);
             for (atom, advance) in self.atoms[start..end].iter_mut().zip(advances) {
-                // Measured: LibreOffice sets an East Asian space 0.5 em wide in any font.
+                // LibreOffice sets an East Asian space 0.5 em wide in any font.
                 let advance = if atom.c == ' ' && props.east_asian_hint {
                     em / 2.0
                 } else if wide(atom.c) && !self.env.covers(atom.face.face, atom.c) {

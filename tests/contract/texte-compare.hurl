@@ -68,9 +68,9 @@ jsonpath "$.reading[?(@.kind == 'article')].texte" count > 0
 jsonpath "$.entries" count == 0
 
 # ============================================================================
-# Commentaires de norme et travaux parlementaires sur la
-# réponse article. Art. 8 CEDH : bundle curé (note de cabinet) ancré en base.
-# Art. L311-13 CESEDA : lois modificatrices → liens Légifrance composés.
+# Commentaries and parliamentary work on the article answer. Art. 8 ECHR: a
+# curated note stored in the base. Art. L311-13 CESEDA: amending laws, as
+# composed Légifrance links.
 # ============================================================================
 
 GET {{base}}/internal/norm/convention-de-sauvegarde-des-droits-de-l-homme-et-des-libertes-fondamentales/8

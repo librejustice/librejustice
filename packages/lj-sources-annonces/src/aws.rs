@@ -23,9 +23,9 @@ const NATURES: [(&str, NatureMarche); 3] = [
 ];
 const MAX_PAGES: u64 = 60;
 const CELLULES_PARALLELES: usize = 12;
-/// Procédures du formulaire (`<select name="IDP">`), seul axe qui morde en plus
-/// de la nature et du département. Elles laissent ~2 % de la cellule dehors, des
-/// avis sans procédure déclarée qu'aucune valeur ne rattrape.
+/// The form's procedures (`<select name="IDP">`), the only axis that bites beyond
+/// nature and department. They leave out the notices declaring no procedure, which
+/// no value catches.
 const PROCEDURES: [&str; 9] = ["PA", "AOO", "AOE", "MN", "CO", "CR", "DC", "AU", "DSP"];
 
 /// Ce que `lister` rend : la page servie, ou le refus au-delà du plafond.
@@ -690,7 +690,7 @@ async fn attributions_departement(dept: String) -> Vec<AttributionListee> {
 }
 
 /// The award notices the national portal serves, département by département.
-/// Its window ran ninety days on 15/09/2026, which no form parameter bounds.
+/// The portal sets its window, which no form parameter bounds.
 pub async fn attributions() -> Result<Vec<AttributionListee>> {
     let departements = departements().await?;
     let lots: Vec<Vec<AttributionListee>> =
@@ -866,15 +866,15 @@ Envoi le 18/06/26 à la publication",
 Lot 01 : SECTEUR LONS LE SAUNIER Date d'attribution : 23/07/26 Nombre d'offres reçues : 2 \
 Nombre d'offres reçues de la part de PME : 0 \
 Nombre d'offres reçues de la part de soumissionnaires d'autres États membres de l'UE : 0 \
-Montant HT : 60 000,00 € Marché n° : 2026074A - Diana Salmi Psychologue 97 PL DE LA COMEDIE 39000 LONS-LE-SAUNIER \
+Montant HT : 60 000,00 € Marché n° : 2026074A - Claire Martin Psychologue 12 PL DU MARCHE 39000 LONS-LE-SAUNIER \
 Le titulaire est une PME : NON Sous-traitance : oui. Part de la sous-traitance Inconnue. \
-Montant HT : 42 000,00 € Marché n° : 2026074A - Emmanuel Fontaine 296 RTE DES ALOUETTES 01240 LENT \
+Montant HT : 42 000,00 € Marché n° : 2026074A - Paul Durand 8 RTE DES CHAMPS 01240 LENT \
 Le titulaire est une PME : NON";
         let lots = parse_lots(plat);
         assert_eq!(lots.len(), 2);
-        assert_eq!(lots[0].titulaire, "Diana Salmi Psychologue");
+        assert_eq!(lots[0].titulaire, "Claire Martin Psychologue");
         assert_eq!(lots[0].montant, Some(60_000.0));
-        assert_eq!(lots[1].titulaire, "Emmanuel Fontaine");
+        assert_eq!(lots[1].titulaire, "Paul Durand");
         assert_eq!(lots[1].ville.as_deref(), Some("LENT"));
         assert_eq!(lots[1].montant, Some(42_000.0));
         assert_eq!(lots[1].nb_offres, Some(2));

@@ -19,8 +19,8 @@ const SEEDS: [(&str, &str); 2] = [
 macro_rules! with_repo {
     ($conn:ident, $repo:ident) => {
         let settings = crate::config::Settings::from_env()?;
-        let pool = lj_store::db::build_pool(&settings.db_url, 2)
-            .map_err(|e| anyhow!("build_pool: {e}"))?;
+        let pool =
+            lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
         let $conn = pool.get().await.map_err(|e| anyhow!("pool: {e}"))?;
         let $repo = DecisionRepository::new(&$conn);
     };
@@ -83,7 +83,7 @@ pub async fn seed() -> Result<()> {
 /// Renders the pool as the base holds it, never the secret.
 pub async fn list() -> Result<()> {
     with_repo!(conn, repo);
-    for provider in ["mistral", "gemini", "openai"] {
+    for provider in ["mistral", "mistral-vibe", "gemini", "openai"] {
         for c in repo.all_credentials(provider).await? {
             let expiry = c
                 .expires_at
@@ -163,7 +163,7 @@ fn until_enabled_instant() -> DateTime<Utc> {
     )
 }
 
-fn parked_until_enabled(c: &Credential) -> bool {
+pub(crate) fn parked_until_enabled(c: &Credential) -> bool {
     c.disabled_until == Some(until_enabled_instant())
 }
 
@@ -229,9 +229,8 @@ pub async fn login() -> Result<()> {
         }
     };
 
-    // The fingerprint keys on the pair, which is the quota boundary: measured 22/09/2026,
-    // one seat carries an independent window per workspace, and two of its approvals
-    // coexist, each rotating its own refresh token.
+    // The fingerprint keys on the pair, which is the quota boundary: one seat carries a
+    // window per workspace.
     let print = key_fingerprint(&format!("{}:{}", tokens.user_id, tokens.account_id));
     let tenant = tokens
         .email
@@ -265,9 +264,8 @@ pub async fn refresh() -> Result<()> {
         .user_agent("librejustice-ingest")
         .build()?;
     with_repo!(conn, repo);
-    // Measured 18/09/2026 on a `team` account: the access token lives ten days. The
-    // horizon must cover more than the period of whatever calls this, or a token dies
-    // between two runs; the timer is daily.
+    // The horizon must cover more than the period of whatever calls this, or a token
+    // dies between two runs.
     let soon = Utc::now() + Duration::days(2);
     let (mut turned, mut refused) = (0usize, 0usize);
     for c in repo.all_credentials("openai").await? {
@@ -351,8 +349,7 @@ pub async fn usage() -> Result<()> {
     Ok(())
 }
 
-/// Burns a reset credit on one account. A credit spent on a week that still has
-/// room throws away what remained of it, so the sweep of that week is the door.
+/// Burns a reset credit on one account.
 pub async fn reset_credit(label: &str, force: bool) -> Result<()> {
     let http = reqwest::Client::builder()
         .user_agent("librejustice-ingest")
@@ -390,10 +387,7 @@ pub async fn reset_credit(label: &str, force: bool) -> Result<()> {
     for w in before.windows() {
         println!("before: {}", window_line(w));
     }
-    // Measured 20/09/2026: one credit resets EVERY window the seat announces, the
-    // 5 h along with the 7 j. Burnt on a 5 h at 25 %, it threw away the three hours
-    // that were left in it, which nothing was consuming. Room under a full longer
-    // window cannot be spent, so it is not thrown away.
+    // A credit resets every window the seat announces.
     let full = before
         .windows()
         .into_iter()
@@ -442,11 +436,8 @@ pub async fn reset_credit(label: &str, force: bool) -> Result<()> {
     Ok(())
 }
 
-/// Reads back until a window drops, and gives up after three minutes.
-///
-/// The endpoint keeps serving the figures from before the credit for about 75 s,
-/// so a fixed wait either prints the old ones or pays the margin it took to be
-/// safe. The last reading is returned whether or not anything moved.
+/// Reads back until a window drops, and gives up after three minutes. The last
+/// reading is returned whether or not anything moved.
 async fn poll_reset(
     http: &reqwest::Client,
     token: &str,

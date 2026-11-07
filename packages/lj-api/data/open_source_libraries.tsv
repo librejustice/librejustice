@@ -1,0 +1,555 @@
+adler2	2.0.1	0BSD OR MIT OR Apache-2.0	https://crates.io/crates/adler2	0BSD=861399f8c21c042b MIT=23f18e03dc49df91 Apache-2.0=8ada45cd9f843acf
+aes	0.8.4	MIT OR Apache-2.0	https://crates.io/crates/aes	MIT=f7e8ab639afef155 Apache-2.0=a9040321c3712d8f
+aes	0.9.1	MIT OR Apache-2.0	https://crates.io/crates/aes	MIT=25f77efa393854f7 Apache-2.0=a9040321c3712d8f
+ahash	0.8.12	MIT OR Apache-2.0	https://crates.io/crates/ahash	MIT=0444c6991eead682 Apache-2.0=a60eea8175145316
+aho-corasick	1.1.4	Unlicense OR MIT	https://crates.io/crates/aho-corasick	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+aliasable	0.1.3	MIT	https://crates.io/crates/aliasable	MIT=b6e8f9bd07084b3e
+alloc-no-stdlib	2.0.4	BSD-3-Clause	https://crates.io/crates/alloc-no-stdlib	BSD-3-Clause=c0c56f26d9c051ca
+alloc-stdlib	0.2.2	BSD-3-Clause	https://crates.io/crates/alloc-stdlib
+allocator-api2	0.2.21	MIT OR Apache-2.0	https://crates.io/crates/allocator-api2	MIT=36516aefdc84c5d5 Apache-2.0=20fe7b00e904ed69
+allsorts	0.16.1	Apache-2.0	https://crates.io/crates/allsorts	Apache-2.0=b40930bbcf80744c
+anstream	1.0.0	MIT OR Apache-2.0	https://crates.io/crates/anstream	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+anstyle	1.0.14	MIT OR Apache-2.0	https://crates.io/crates/anstyle	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+anstyle-parse	1.0.0	MIT OR Apache-2.0	https://crates.io/crates/anstyle-parse	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+anstyle-query	1.1.5	MIT OR Apache-2.0	https://crates.io/crates/anstyle-query	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+any_spawner	0.3.0	MIT	https://crates.io/crates/any_spawner
+anyhow	1.0.104	MIT OR Apache-2.0	https://crates.io/crates/anyhow	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+anymap3	1.1.0	BlueOak-1.0.0 OR MIT OR Apache-2.0	https://crates.io/crates/anymap3	+COPYING=cce3eaac7d45535f
+arc-swap	1.9.1	MIT OR Apache-2.0	https://crates.io/crates/arc-swap	MIT=ff3f1cd12af8866d Apache-2.0=a60eea8175145316
+argon2	0.5.3	MIT OR Apache-2.0	https://crates.io/crates/argon2	MIT=33f702959c0ea91c Apache-2.0=a9040321c3712d8f
+arrayref	0.3.9	BSD-2-Clause	https://crates.io/crates/arrayref	BSD-2-Clause=1bc7e6f475b3ec99
+arrayvec	0.7.8	MIT OR Apache-2.0	https://crates.io/crates/arrayvec	MIT=4da95ec4ecb65b73 Apache-2.0=a60eea8175145316
+async-compression	0.4.42	MIT OR Apache-2.0	https://crates.io/crates/async-compression	MIT=88d1e3160df48926 Apache-2.0=a60eea8175145316
+async-lock	3.4.2	Apache-2.0 OR MIT	https://crates.io/crates/async-lock	Apache-2.0=a60eea8175145316 MIT=23f18e03dc49df91
+async-once-cell	0.5.4	MIT OR Apache-2.0	https://crates.io/crates/async-once-cell	MIT=7363f4dac3b02106 Apache-2.0=a3d8a0b4ea35032b
+atomic-waker	1.1.2	Apache-2.0 OR MIT	https://crates.io/crates/atomic-waker	Apache-2.0=a60eea8175145316 MIT=23f18e03dc49df91 +LICENSE-THIRD-PARTY=6226d0632e2e1a80
+aws-lc-rs	1.18.1	ISC AND (Apache-2.0 OR ISC)	https://crates.io/crates/aws-lc-rs	+LICENSE=b50b376e7d24a059
+aws-lc-sys	0.45.0	ISC AND (Apache-2.0 OR ISC) AND Apache-2.0 AND MIT AND BSD-3-Clause AND (Apache-2.0 OR ISC OR MIT) AND (Apache-2.0 OR ISC OR MIT-0)	https://crates.io/crates/aws-lc-sys	+LICENSE=728536b4160e051f
+axum	0.8.9	MIT	https://crates.io/crates/axum	MIT=6a13bc24a100a681
+axum-core	0.5.6	MIT	https://crates.io/crates/axum-core	MIT=008c87afcd2e626e
+axum-server	0.7.3	MIT	https://crates.io/crates/axum-server	MIT=ab743bd126625ce5
+axum-tracing-opentelemetry	0.42.1	CC0-1.0	https://crates.io/crates/axum-tracing-opentelemetry
+base64	0.13.1	MIT OR Apache-2.0	https://crates.io/crates/base64	MIT=0dd882e53de11566 Apache-2.0=a60eea8175145316
+base64	0.22.1	MIT OR Apache-2.0	https://crates.io/crates/base64	MIT=0dd882e53de11566 Apache-2.0=a60eea8175145316
+base64	0.23.1	MIT OR Apache-2.0	https://crates.io/crates/base64	MIT=ab499c75a0f0da8e Apache-2.0=a60eea8175145316
+base64ct	1.8.3	Apache-2.0 OR MIT	https://crates.io/crates/base64ct	Apache-2.0=a9040321c3712d8f MIT=2d1c57bff28344b9
+bcrypt	0.17.1	MIT	https://crates.io/crates/bcrypt	MIT=bb92dde0b21dc772
+bit-set	0.5.3	MIT OR Apache-2.0	https://crates.io/crates/bit-set	MIT=c9a75f18b9ab2927 Apache-2.0=8173d5c29b4f956d
+bit-vec	0.6.3	MIT OR Apache-2.0	https://crates.io/crates/bit-vec	MIT=7b63ecd5f1902af1 Apache-2.0=8173d5c29b4f956d
+bitflags	1.3.2	MIT OR Apache-2.0	https://crates.io/crates/bitflags	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+bitflags	2.13.2	MIT OR Apache-2.0	https://crates.io/crates/bitflags	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+bitpacking	0.9.3	MIT	https://crates.io/crates/bitpacking	MIT=81874c6dee7a6d11
+bitreader	0.3.11	MIT OR Apache-2.0	https://crates.io/crates/bitreader	MIT=8583712ee2b062ff Apache-2.0=cfc7749b96f63bd3
+blake2	0.10.6	MIT OR Apache-2.0	https://crates.io/crates/blake2	MIT=9c768944eb4a0422 Apache-2.0=a9040321c3712d8f
+blake3	1.8.6	CC0-1.0 OR Apache-2.0 OR Apache-2.0 WITH LLVM-exception	https://crates.io/crates/blake3	CC0-1.0=a2010f343487d3f7 Apache-2.0=00fcc7a934ddbc9e LLVM-exception=a5695f57ea0c221e
+block-buffer	0.10.4	MIT OR Apache-2.0	https://crates.io/crates/block-buffer	MIT=d5c22aa3118d240e Apache-2.0=a9040321c3712d8f
+block-buffer	0.12.0	MIT OR Apache-2.0	https://crates.io/crates/block-buffer	MIT=98181e7249d0c017 Apache-2.0=a9040321c3712d8f
+block-padding	0.3.3	MIT OR Apache-2.0	https://crates.io/crates/block-padding	MIT=d5c22aa3118d240e Apache-2.0=a9040321c3712d8f
+blowfish	0.9.1	MIT OR Apache-2.0	https://crates.io/crates/blowfish	MIT=52232c2cee3bb7d8 Apache-2.0=a9040321c3712d8f
+bon	3.9.1	MIT OR Apache-2.0	https://crates.io/crates/bon	MIT=8f8dbb74f833dc8a Apache-2.0=62c7a1e35f564068
+brotli	8.0.3	BSD-3-Clause AND MIT	https://crates.io/crates/brotli	BSD-3-Clause=c0c56f26d9c051ca MIT=3d180008e36922a4
+brotli-decompressor	5.0.1	BSD-3-Clause OR MIT	https://crates.io/crates/brotli-decompressor	+LICENSE=c0c56f26d9c051ca
+bstr	1.12.3	MIT OR Apache-2.0	https://crates.io/crates/bstr	MIT=6b7374c39a57e57f Apache-2.0=a60eea8175145316 +COPYING=68653aaa727a2bfa
+btls	0.5.6	Apache-2.0	https://crates.io/crates/btls	Apache-2.0=eef7770e932a552c
+btls-sys	0.5.6	MIT	https://crates.io/crates/btls-sys	MIT=2f55c7cce4da9f83
+bumpalo	3.20.3	MIT OR Apache-2.0	https://crates.io/crates/bumpalo	MIT=65f94e99ddaf4f5d Apache-2.0=a60eea8175145316
+bytecount	0.6.9	Apache-2.0 OR MIT	https://crates.io/crates/bytecount	Apache-2.0=b40930bbcf80744c MIT=a5dea80c1f383cb5
+bytemuck	1.25.2	Zlib OR Apache-2.0 OR MIT	https://crates.io/crates/bytemuck	Zlib=84b34dd7608f7fb9 Apache-2.0=e3ba223bb1423f0a MIT=9df9ba60a11af705
+byteorder	1.5.0	Unlicense OR MIT	https://crates.io/crates/byteorder	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+bytes	1.11.1	MIT	https://crates.io/crates/bytes	MIT=45f522cacecb1023
+bzip2	0.6.1	MIT OR Apache-2.0	https://crates.io/crates/bzip2	MIT=c8c6324cf2f0f076 Apache-2.0=a60eea8175145316
+camino	1.2.2	MIT OR Apache-2.0	https://crates.io/crates/camino	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316
+castaway	0.2.4	MIT	https://crates.io/crates/castaway	MIT=f98e09091d5ae02b
+cbc	0.1.2	MIT OR Apache-2.0	https://crates.io/crates/cbc	MIT=63af4bea227c94d0 Apache-2.0=a9040321c3712d8f
+census	0.4.2	MIT	https://crates.io/crates/census	MIT=6755ef28efcf3e52
+cfg-if	1.0.4	MIT OR Apache-2.0	https://crates.io/crates/cfg-if	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+chacha20	0.10.0	MIT OR Apache-2.0	https://crates.io/crates/chacha20	MIT=b8c6939380a400f5 Apache-2.0=a9040321c3712d8f
+chrono	0.4.45	MIT OR Apache-2.0	https://crates.io/crates/chrono	+LICENSE.txt=946c9835d8034d24
+chrono-humanize	0.2.3	MIT OR Apache-2.0	https://crates.io/crates/chrono-humanize	MIT=3816c3eacbc316a4 Apache-2.0=689368526c59167e
+cipher	0.4.4	MIT OR Apache-2.0	https://crates.io/crates/cipher	MIT=5c7bd92d1f096f12 Apache-2.0=a9040321c3712d8f
+cipher	0.5.2	MIT OR Apache-2.0	https://crates.io/crates/cipher	MIT=950d712c518a02fc Apache-2.0=a9040321c3712d8f
+clap	4.6.1	MIT OR Apache-2.0	https://crates.io/crates/clap	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+clap_builder	4.6.0	MIT OR Apache-2.0	https://crates.io/crates/clap_builder	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+clap_lex	1.1.0	MIT OR Apache-2.0	https://crates.io/crates/clap_lex	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+cmov	0.5.4	Apache-2.0 OR MIT	https://crates.io/crates/cmov	Apache-2.0=cfc7749b96f63bd3 MIT=70c9d40f1f9545c3
+cms	0.2.3	Apache-2.0 OR MIT	https://crates.io/crates/cms
+codee	0.3.5	MIT OR Apache-2.0	https://crates.io/crates/codee	MIT=a0e276c5bf795196 Apache-2.0=a6cba85bc92e0cff
+colorchoice	1.0.5	MIT OR Apache-2.0	https://crates.io/crates/colorchoice	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+compact_str	0.9.1	MIT	https://crates.io/crates/compact_str	MIT=0d52feec79589df3
+compression-codecs	0.4.38	MIT OR Apache-2.0	https://crates.io/crates/compression-codecs	MIT=88d1e3160df48926 Apache-2.0=a60eea8175145316
+compression-core	0.4.32	MIT OR Apache-2.0	https://crates.io/crates/compression-core	MIT=88d1e3160df48926 Apache-2.0=a60eea8175145316
+config	0.15.23	MIT OR Apache-2.0	https://crates.io/crates/config	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+console	0.16.3	MIT	https://crates.io/crates/console	MIT=2022c11b24fc1e50
+const-oid	0.10.2	Apache-2.0 OR MIT	https://crates.io/crates/const-oid	Apache-2.0=a9040321c3712d8f MIT=73b9dc2e79c73089
+const-oid	0.9.6	Apache-2.0 OR MIT	https://crates.io/crates/const-oid	Apache-2.0=a9040321c3712d8f MIT=bada9e7ed8dc00d6
+const-str	1.1.0	MIT	https://crates.io/crates/const-str	MIT=be6088202447fafd
+const_format	0.2.36	Zlib	https://crates.io/crates/const_format	Zlib=c1e018d60dd011b3
+const_str_slice_concat	0.1.0	MIT	https://crates.io/crates/const_str_slice_concat
+constant_time_eq	0.4.2	CC0-1.0 OR MIT-0 OR Apache-2.0	https://crates.io/crates/constant_time_eq	CC0-1.0=a2010f343487d3f7 MIT-0=9a3aeb3f63659c4c Apache-2.0=62c7a1e35f564068
+convert_case	0.6.0	MIT	https://crates.io/crates/convert_case	MIT=797087750c410307
+cookie	0.18.1	MIT OR Apache-2.0	https://crates.io/crates/cookie	MIT=f28420c1906af38b Apache-2.0=2773e20df8f4c52a
+cookie_store	0.22.1	MIT OR Apache-2.0	https://crates.io/crates/cookie_store	MIT=afb11426e09da40a Apache-2.0=b40930bbcf80744c
+cpubits	0.1.1	MIT OR Apache-2.0	https://crates.io/crates/cpubits	MIT=003736bc98408b53 Apache-2.0=a9040321c3712d8f
+cpufeatures	0.2.17	MIT OR Apache-2.0	https://crates.io/crates/cpufeatures	MIT=ae9baa7beea91027 Apache-2.0=a9040321c3712d8f
+cpufeatures	0.3.0	MIT OR Apache-2.0	https://crates.io/crates/cpufeatures	MIT=ae9baa7beea91027 Apache-2.0=a9040321c3712d8f
+crc32fast	1.5.0	MIT OR Apache-2.0	https://crates.io/crates/crc32fast	MIT=61d383b05b87d78f Apache-2.0=c6596eb7be8581c1
+crossbeam-channel	0.5.15	MIT OR Apache-2.0	https://crates.io/crates/crossbeam-channel	MIT=5734ed989dfca1f6 Apache-2.0=a60eea8175145316 +LICENSE-THIRD-PARTY=b16db96b93b1d7cf
+crossbeam-deque	0.8.6	MIT OR Apache-2.0	https://crates.io/crates/crossbeam-deque	MIT=5734ed989dfca1f6 Apache-2.0=a60eea8175145316
+crossbeam-epoch	0.9.20	MIT OR Apache-2.0	https://crates.io/crates/crossbeam-epoch	MIT=5734ed989dfca1f6 Apache-2.0=a60eea8175145316
+crossbeam-utils	0.8.21	MIT OR Apache-2.0	https://crates.io/crates/crossbeam-utils	MIT=5734ed989dfca1f6 Apache-2.0=a60eea8175145316
+crunchy	0.2.4	MIT	https://crates.io/crates/crunchy	MIT=3eab77734a181b2a
+crypto-common	0.1.7	MIT OR Apache-2.0	https://crates.io/crates/crypto-common	MIT=3521672491a34794 Apache-2.0=a9040321c3712d8f
+crypto-common	0.2.2	MIT OR Apache-2.0	https://crates.io/crates/crypto-common	MIT=d2e7ec5355c96eea Apache-2.0=a9040321c3712d8f
+csv	1.4.0	Unlicense OR MIT	https://crates.io/crates/csv	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+csv-core	0.1.13	Unlicense OR MIT	https://crates.io/crates/csv-core	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+ctutils	0.4.2	Apache-2.0 OR MIT	https://crates.io/crates/ctutils	Apache-2.0=cfc7749b96f63bd3 MIT=91585c36e4fb9ab4
+daachorse	1.0.1	MIT OR Apache-2.0	https://crates.io/crates/daachorse	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+dary_heap	0.3.9	MIT OR Apache-2.0	https://crates.io/crates/dary_heap	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+data-encoding	2.11.0	MIT	https://crates.io/crates/data-encoding	MIT=b68ad1a3367b8254
+datasketches	0.2.0	Apache-2.0	https://crates.io/crates/datasketches
+deadpool	0.13.1	MIT OR Apache-2.0	https://crates.io/crates/deadpool	MIT=8982e37af8078670 Apache-2.0=23fac4edada8cdd7
+deadpool-postgres	0.14.2	MIT OR Apache-2.0	https://crates.io/crates/deadpool-postgres	MIT=8982e37af8078670 Apache-2.0=23fac4edada8cdd7
+deadpool-runtime	0.3.1	MIT OR Apache-2.0	https://crates.io/crates/deadpool-runtime	MIT=8982e37af8078670 Apache-2.0=23fac4edada8cdd7
+deflate64	0.1.12	MIT	https://crates.io/crates/deflate64	MIT=86b5aedec040ac6e
+defmt	1.1.1	MIT OR Apache-2.0	https://crates.io/crates/defmt	MIT=2710a622a896bba6 Apache-2.0=8173d5c29b4f956d
+der	0.7.10	Apache-2.0 OR MIT	https://crates.io/crates/der	Apache-2.0=a9040321c3712d8f MIT=ad64fcb9589f1627
+deranged	0.5.8	MIT OR Apache-2.0	https://crates.io/crates/deranged	MIT=231c837c45eb53f1 Apache-2.0=edd65bdd88957a20
+derive_builder	0.20.2	MIT OR Apache-2.0	https://crates.io/crates/derive_builder	MIT=8c9612877aacfa1b Apache-2.0=c6596eb7be8581c1
+digest	0.10.7	MIT OR Apache-2.0	https://crates.io/crates/digest	MIT=9e0dfd2dd4173a53 Apache-2.0=a9040321c3712d8f
+digest	0.11.3	MIT OR Apache-2.0	https://crates.io/crates/digest	MIT=af59cea35d7f5e27 Apache-2.0=a9040321c3712d8f
+downcast-rs	1.2.1	MIT OR Apache-2.0	https://crates.io/crates/downcast-rs	MIT=fb252fecf98d9af8 Apache-2.0=8173d5c29b4f956d
+downcast-rs	2.0.2	MIT OR Apache-2.0	https://crates.io/crates/downcast-rs	MIT=fb252fecf98d9af8 Apache-2.0=8173d5c29b4f956d
+drain_filter_polyfill	0.1.3	MIT OR Apache-2.0	https://crates.io/crates/drain_filter_polyfill
+dyn-clone	1.0.20	MIT OR Apache-2.0	https://crates.io/crates/dyn-clone	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+dyn-hash	0.2.2	MIT OR Apache-2.0	https://crates.io/crates/dyn-hash	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+ecb	0.1.2	MIT	https://crates.io/crates/ecb	MIT=305f0f8f4db84708
+either	1.16.0	MIT OR Apache-2.0	https://crates.io/crates/either	MIT=7576269ea71f767b Apache-2.0=a60eea8175145316
+either_of	0.1.9	MIT	https://crates.io/crates/either_of
+email-encoding	0.4.2	MIT OR Apache-2.0	https://crates.io/crates/email-encoding	MIT=c5d18f2569938b6d Apache-2.0=c71d239df91726fc
+email_address	0.2.9	MIT	https://crates.io/crates/email_address	MIT=39712155836e5c10
+encoding_rs	0.8.35	(Apache-2.0 OR MIT) AND BSD-3-Clause	https://crates.io/crates/encoding_rs	Apache-2.0=cfc7749b96f63bd3 MIT=3fa4ca83dcc92378 +COPYRIGHT=11789f45bb180841 +LICENSE-WHATWG=838118388fe5c2e7
+equivalent	1.0.2	Apache-2.0 OR MIT	https://crates.io/crates/equivalent	Apache-2.0=a60eea8175145316 MIT=7365cc8878a1d7ce
+erased	0.1.2	MIT	https://crates.io/crates/erased
+erased-serde	0.4.10	MIT OR Apache-2.0	https://crates.io/crates/erased-serde	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+errno	0.3.14	MIT OR Apache-2.0	https://crates.io/crates/errno	MIT=8764a597675778dd Apache-2.0=a60eea8175145316
+esaxx-rs	0.1.10	Apache-2.0	https://crates.io/crates/esaxx-rs	Apache-2.0=c71d239df91726fc
+event-listener	5.4.2	Apache-2.0 OR MIT	https://crates.io/crates/event-listener	Apache-2.0=a60eea8175145316 MIT=23f18e03dc49df91
+event-listener-strategy	0.5.4	Apache-2.0 OR MIT	https://crates.io/crates/event-listener-strategy	Apache-2.0=a60eea8175145316 MIT=23f18e03dc49df91
+fallible-iterator	0.2.0	MIT OR Apache-2.0	https://crates.io/crates/fallible-iterator	MIT=0816e154b159ba25 Apache-2.0=c6596eb7be8581c1
+fastdivide	0.4.2	zlib-acknowledgement OR MIT	https://crates.io/crates/fastdivide	+LICENSE.txt=97b68427822e3bca
+fastrand	2.4.1	Apache-2.0 OR MIT	https://crates.io/crates/fastrand	Apache-2.0=a60eea8175145316 MIT=23f18e03dc49df91
+faststr	0.2.34	MIT OR Apache-2.0	https://crates.io/crates/faststr	MIT=d00db6780089a342 Apache-2.0=122686c559146c39
+fearless_simd	0.4.1	Apache-2.0 OR MIT	https://crates.io/crates/fearless_simd	Apache-2.0=a6cba85bc92e0cff MIT=23c23145f6eac25c
+filetime	0.2.29	MIT OR Apache-2.0	https://crates.io/crates/filetime	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+flagset	0.4.7	Apache-2.0	https://crates.io/crates/flagset	Apache-2.0=cfc7749b96f63bd3
+flate2	1.1.9	MIT OR Apache-2.0	https://crates.io/crates/flate2	MIT=025436edff4cfcdd Apache-2.0=a60eea8175145316
+fnv	1.0.7	Apache-2.0 OR MIT	https://crates.io/crates/fnv	Apache-2.0=a60eea8175145316 MIT=65fdb6c76cd61612
+foldhash	0.2.0	Zlib	https://crates.io/crates/foldhash	Zlib=b1181a40b2a7b25c
+font-types	0.12.5	MIT OR Apache-2.0	https://crates.io/crates/font-types	MIT=7b4c9a3946dfcea7 Apache-2.0=eba684204073ed71
+foreign-types	0.5.0	MIT OR Apache-2.0	https://crates.io/crates/foreign-types	MIT=333ea3aaa3cadb81 Apache-2.0=c6596eb7be8581c1
+foreign-types-shared	0.3.1	MIT OR Apache-2.0	https://crates.io/crates/foreign-types-shared	MIT=333ea3aaa3cadb81 Apache-2.0=c6596eb7be8581c1
+form_urlencoded	1.2.2	MIT OR Apache-2.0	https://crates.io/crates/form_urlencoded	MIT=20c7855c364d57ea Apache-2.0=a60eea8175145316
+fs-err	3.3.0	MIT OR Apache-2.0	https://crates.io/crates/fs-err	MIT=36516aefdc84c5d5 Apache-2.0=7cfd738c53d61c79
+fs4	0.13.1	MIT OR Apache-2.0	https://crates.io/crates/fs4	MIT=7b63ecd5f1902af1 Apache-2.0=a60eea8175145316
+fst	0.4.7	Unlicense OR MIT	https://crates.io/crates/fst	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+futures	0.3.32	MIT OR Apache-2.0	https://crates.io/crates/futures	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+futures-channel	0.3.34	MIT OR Apache-2.0	https://crates.io/crates/futures-channel	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+futures-core	0.3.34	MIT OR Apache-2.0	https://crates.io/crates/futures-core	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+futures-executor	0.3.32	MIT OR Apache-2.0	https://crates.io/crates/futures-executor	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+futures-io	0.3.34	MIT OR Apache-2.0	https://crates.io/crates/futures-io	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+futures-sink	0.3.34	MIT OR Apache-2.0	https://crates.io/crates/futures-sink	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+futures-task	0.3.34	MIT OR Apache-2.0	https://crates.io/crates/futures-task	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+futures-util	0.3.34	MIT OR Apache-2.0	https://crates.io/crates/futures-util	MIT=6652c868f35dfe5e Apache-2.0=275c491d6d116055
+generic-array	0.14.7	MIT	https://crates.io/crates/generic-array	MIT=c09aae9d3c77b531
+getrandom	0.2.17	MIT OR Apache-2.0	https://crates.io/crates/getrandom	MIT=42fa16951ce7f24b Apache-2.0=aaff376532ea30a0
+getrandom	0.3.4	MIT OR Apache-2.0	https://crates.io/crates/getrandom	MIT=29e9fe5074bd27e0 Apache-2.0=aaff376532ea30a0
+getrandom	0.4.2	MIT OR Apache-2.0	https://crates.io/crates/getrandom	MIT=523a42c25d245dde Apache-2.0=aaff376532ea30a0
+gloo-net	0.6.0	MIT OR Apache-2.0	https://crates.io/crates/gloo-net
+gloo-timers	0.3.0	MIT OR Apache-2.0	https://crates.io/crates/gloo-timers
+gloo-utils	0.2.0	MIT OR Apache-2.0	https://crates.io/crates/gloo-utils
+glyph-names	0.2.0	BSD-3-Clause	https://crates.io/crates/glyph-names	BSD-3-Clause=a6fce513b6efe3cf
+guardian	1.3.0	MIT OR Apache-2.0	https://crates.io/crates/guardian	MIT=697f5ef68facecab Apache-2.0=a60eea8175145316
+h2	0.4.20	MIT	https://crates.io/crates/h2	MIT=b21623012e6c453d
+half	2.4.1	MIT OR Apache-2.0	https://crates.io/crates/half	+LICENSE=36bb253818ac1376
+harfrust	0.12.0	MIT	https://crates.io/crates/harfrust	MIT=3a7c3f0b887abb7c
+hashbrown	0.14.5	MIT OR Apache-2.0	https://crates.io/crates/hashbrown	MIT=ff8f68cb076caf8c Apache-2.0=a60eea8175145316
+hashbrown	0.16.1	MIT OR Apache-2.0	https://crates.io/crates/hashbrown	MIT=ff8f68cb076caf8c Apache-2.0=a60eea8175145316
+hashbrown	0.17.1	MIT OR Apache-2.0	https://crates.io/crates/hashbrown	MIT=ff8f68cb076caf8c Apache-2.0=a60eea8175145316
+hayro-ccitt	0.3.0	Apache-2.0 OR MIT	https://crates.io/crates/hayro-ccitt	Apache-2.0=0cec06e0e55fbc3d MIT=51b50e6120c344dc
+hayro-cmap	0.1.0	Apache-2.0 OR MIT	https://crates.io/crates/hayro-cmap	Apache-2.0=0cec06e0e55fbc3d MIT=51b50e6120c344dc
+hayro-jbig2	0.3.0	Apache-2.0 OR MIT	https://crates.io/crates/hayro-jbig2	Apache-2.0=0cec06e0e55fbc3d MIT=51b50e6120c344dc
+hayro-jpeg2000	0.3.5	Apache-2.0 OR MIT	https://crates.io/crates/hayro-jpeg2000	Apache-2.0=0cec06e0e55fbc3d MIT=51b50e6120c344dc
+hayro-postscript	0.1.0	Apache-2.0 OR MIT	https://crates.io/crates/hayro-postscript	Apache-2.0=0cec06e0e55fbc3d MIT=51b50e6120c344dc
+hmac	0.13.0	MIT OR Apache-2.0	https://crates.io/crates/hmac	MIT=9e0dfd2dd4173a53 Apache-2.0=a9040321c3712d8f
+hostname	0.4.2	MIT	https://crates.io/crates/hostname	MIT=2e4213e573312c8c
+html-escape	0.2.13	MIT	https://crates.io/crates/html-escape	MIT=b65c9ac375b3b6c5
+htmlescape	0.3.1	Apache-2.0 OR MIT OR MPL-2.0	https://crates.io/crates/htmlescape
+http	1.5.0	MIT OR Apache-2.0	https://crates.io/crates/http	MIT=dc91f8200e4b2a1f Apache-2.0=8bb1b50b0e5c9399
+http-body	1.0.1	MIT	https://crates.io/crates/http-body	MIT=cddabf8adc6ccd6c
+http-body-util	0.1.5	MIT	https://crates.io/crates/http-body-util	MIT=248378d0a3383c17
+http-range-header	0.4.2	MIT	https://crates.io/crates/http-range-header	MIT=ed72515b08d7ce8a
+http2	0.5.20	MIT	https://crates.io/crates/http2	MIT=b21623012e6c453d
+httparse	1.10.1	MIT OR Apache-2.0	https://crates.io/crates/httparse	MIT=391a5396cec6230b Apache-2.0=a60eea8175145316
+httpdate	1.0.3	MIT OR Apache-2.0	https://crates.io/crates/httpdate	MIT=934887691e05d69d Apache-2.0=4d10fe5f3aa176b0
+hybrid-array	0.4.12	MIT OR Apache-2.0	https://crates.io/crates/hybrid-array	MIT=70c9d40f1f9545c3 Apache-2.0=a9040321c3712d8f
+hydration_context	0.3.2	MIT	https://crates.io/crates/hydration_context
+hyper	1.12.0	MIT	https://crates.io/crates/hyper	MIT=2d01890414494742
+hyper-rustls	0.27.9	Apache-2.0 OR ISC OR MIT	https://crates.io/crates/hyper-rustls	Apache-2.0=a60eea8175145316 ISC=7cfafc877eccc46c MIT=709e3175b4212f7b
+hyper-util	0.1.21	MIT	https://crates.io/crates/hyper-util	MIT=9e0a97848ea543ae
+iana-time-zone	0.1.65	MIT OR Apache-2.0	https://crates.io/crates/iana-time-zone	MIT=da28ccc6b158fc2d Apache-2.0=696759d65dfe558f
+icu_collections	2.2.0	Unicode-3.0	https://crates.io/crates/icu_collections	Unicode-3.0=f367c1b8e1aa2624
+icu_locale_core	2.2.0	Unicode-3.0	https://crates.io/crates/icu_locale_core	Unicode-3.0=f367c1b8e1aa2624
+icu_normalizer	2.2.0	Unicode-3.0	https://crates.io/crates/icu_normalizer	Unicode-3.0=f367c1b8e1aa2624
+icu_normalizer_data	2.2.0	Unicode-3.0	https://crates.io/crates/icu_normalizer_data	Unicode-3.0=f367c1b8e1aa2624
+icu_properties	2.2.0	Unicode-3.0	https://crates.io/crates/icu_properties	Unicode-3.0=f367c1b8e1aa2624
+icu_properties_data	2.2.0	Unicode-3.0	https://crates.io/crates/icu_properties_data	Unicode-3.0=f367c1b8e1aa2624
+icu_provider	2.2.0	Unicode-3.0	https://crates.io/crates/icu_provider	Unicode-3.0=f367c1b8e1aa2624
+idna	1.1.0	MIT OR Apache-2.0	https://crates.io/crates/idna	MIT=b38f11f6096706e6 Apache-2.0=a60eea8175145316
+idna_adapter	1.2.2	Apache-2.0 OR MIT	https://crates.io/crates/idna_adapter	Apache-2.0=a60eea8175145316 MIT=8b43ce8accd61e9d
+indexmap	2.14.0	Apache-2.0 OR MIT	https://crates.io/crates/indexmap	Apache-2.0=a60eea8175145316 MIT=ecc269ef87fd38a1
+indicatif	0.18.4	MIT	https://crates.io/crates/indicatif	MIT=2022c11b24fc1e50
+inout	0.1.4	MIT OR Apache-2.0	https://crates.io/crates/inout	MIT=304b898acad7f02e Apache-2.0=a9040321c3712d8f
+inout	0.2.2	MIT OR Apache-2.0	https://crates.io/crates/inout	MIT=a07fcacc3c60de4d Apache-2.0=a9040321c3712d8f
+inventory	0.3.24	MIT OR Apache-2.0	https://crates.io/crates/inventory	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+ipnet	2.12.0	MIT OR Apache-2.0	https://crates.io/crates/ipnet	MIT=47dc9ff29128ddfb Apache-2.0=87d9feb9238c6bd8
+is_terminal_polyfill	1.70.2	MIT OR Apache-2.0	https://crates.io/crates/is_terminal_polyfill	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+itertools	0.10.5	MIT OR Apache-2.0	https://crates.io/crates/itertools	MIT=7576269ea71f767b Apache-2.0=a60eea8175145316
+itertools	0.12.1	MIT OR Apache-2.0	https://crates.io/crates/itertools	MIT=7576269ea71f767b Apache-2.0=a60eea8175145316
+itertools	0.14.0	MIT OR Apache-2.0	https://crates.io/crates/itertools	MIT=7576269ea71f767b Apache-2.0=a60eea8175145316
+itoa	1.0.18	MIT OR Apache-2.0	https://crates.io/crates/itoa	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+jiff	0.2.38	Unlicense OR MIT	https://crates.io/crates/jiff	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+jiff-core	0.1.1	Unlicense OR MIT	https://crates.io/crates/jiff-core	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+jiff-tzdb	0.1.9	Unlicense OR MIT	https://crates.io/crates/jiff-tzdb	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+jiff-tzdb-platform	0.1.3	Unlicense OR MIT	https://crates.io/crates/jiff-tzdb-platform	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+jpeg-decoder	0.3.2	MIT OR Apache-2.0	https://crates.io/crates/jpeg-decoder	MIT=22b83fb92a50418c Apache-2.0=a60eea8175145316
+js-sys	0.3.105	MIT OR Apache-2.0	https://crates.io/crates/js-sys	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+jsonwebtoken	10.4.0	MIT	https://crates.io/crates/jsonwebtoken	MIT=a8012be84ea17619
+keccak	0.1.6	Apache-2.0 OR MIT	https://crates.io/crates/keccak	Apache-2.0=a9040321c3712d8f MIT=bdebaf9156a298f8
+konst	0.2.20	Zlib	https://crates.io/crates/konst	Zlib=573e362dc50a6d9e
+konst_macro_rules	0.2.19	Zlib	https://crates.io/crates/konst_macro_rules	Zlib=573e362dc50a6d9e
+lazy_static	1.5.0	MIT OR Apache-2.0	https://crates.io/crates/lazy_static	MIT=0621878e61f0d0fd Apache-2.0=a60eea8175145316
+leptos	0.8.22	MIT	https://crates.io/crates/leptos
+leptos-fetch	0.4.10	MIT	https://crates.io/crates/leptos-fetch
+leptos_axum	0.8.10	MIT	https://crates.io/crates/leptos_axum
+leptos_config	0.8.10	MIT	https://crates.io/crates/leptos_config
+leptos_dom	0.8.8	MIT	https://crates.io/crates/leptos_dom
+leptos_hot_reload	0.8.7	MIT	https://crates.io/crates/leptos_hot_reload
+leptos_integration_utils	0.8.8	MIT	https://crates.io/crates/leptos_integration_utils
+leptos_meta	0.8.7	MIT	https://crates.io/crates/leptos_meta
+leptos_router	0.8.17	MIT	https://crates.io/crates/leptos_router
+leptos_server	0.8.8	MIT	https://crates.io/crates/leptos_server
+lettre	0.11.23	MIT	https://crates.io/crates/lettre	MIT=9a51230200e4e3ea
+levenshtein_automata	0.2.1	MIT	https://crates.io/crates/levenshtein_automata	MIT=aea36047a863d18c
+libbz2-rs-sys	0.2.5	bzip2-1.0.6	https://crates.io/crates/libbz2-rs-sys	bzip2-1.0.6=54e1fd7bd53273e6
+libc	0.2.186	MIT OR Apache-2.0	https://crates.io/crates/libc	MIT=123a331b5dbf04c3 Apache-2.0=62c7a1e35f564068
+libm	0.2.16	MIT	https://crates.io/crates/libm	MIT=3823dda7cf046602
+linux-raw-sys	0.12.1	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	https://crates.io/crates/linux-raw-sys	Apache-2.0=a60eea8175145316 LLVM-exception=268872b9816f90fd MIT=23f18e03dc49df91 +COPYRIGHT=3290ae0fbc9ddb77
+litemap	0.8.2	Unicode-3.0	https://crates.io/crates/litemap	Unicode-3.0=f367c1b8e1aa2624
+lock_api	0.4.14	MIT OR Apache-2.0	https://crates.io/crates/lock_api	MIT=c9a75f18b9ab2927 Apache-2.0=a60eea8175145316
+log	0.4.32	MIT OR Apache-2.0	https://crates.io/crates/log	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+lopdf	0.39.0	MIT	https://crates.io/crates/lopdf	MIT=2fb01e6708ea9d53
+lru	0.16.4	MIT	https://crates.io/crates/lru	MIT=061dc50af2cd9340
+lru	0.18.4	MIT	https://crates.io/crates/lru	MIT=061dc50af2cd9340
+lru-slab	0.1.2	MIT OR Apache-2.0 OR Zlib	https://crates.io/crates/lru-slab	MIT=1466d9b4f3a59bb8 Apache-2.0=cfc7749b96f63bd3 Zlib=09785877275ffada
+lz4_flex	0.13.1	MIT	https://crates.io/crates/lz4_flex	MIT=0982c33390159842
+lzma-rust2	0.16.4	Apache-2.0	https://crates.io/crates/lzma-rust2	Apache-2.0=43070e2d4e532684
+macro_rules_attribute	0.2.2	Apache-2.0 OR MIT OR Zlib	https://crates.io/crates/macro_rules_attribute	Apache-2.0=388e98b08de12ba8 MIT=603fb27ef3266ea5 Zlib=1c41c0e19caa2c20
+maplit	1.0.2	MIT OR Apache-2.0	https://crates.io/crates/maplit	MIT=7576269ea71f767b Apache-2.0=a60eea8175145316
+matchers	0.2.0	MIT	https://crates.io/crates/matchers	MIT=a47129d738752a6a
+matchit	0.8.4	MIT AND BSD-3-Clause	https://crates.io/crates/matchit	+LICENSE=de701d0618d694fe +LICENSE.httprouter=162ce11ad71338d0
+matrixmultiply	0.3.10	MIT OR Apache-2.0	https://crates.io/crates/matrixmultiply	MIT=792d075c7bad6dac Apache-2.0=a60eea8175145316
+md-5	0.10.6	MIT OR Apache-2.0	https://crates.io/crates/md-5	MIT=b4eb00df6e2a4d22 Apache-2.0=a9040321c3712d8f
+md-5	0.11.0	MIT OR Apache-2.0	https://crates.io/crates/md-5	MIT=831e0f43ad0bf014 Apache-2.0=a9040321c3712d8f
+measure_time	0.9.0	MIT	https://crates.io/crates/measure_time	MIT=405776d2ef79101b
+memchr	2.8.1	Unlicense OR MIT	https://crates.io/crates/memchr	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+memmap2	0.9.11	MIT OR Apache-2.0	https://crates.io/crates/memmap2	MIT=0d25d03b5ab49576 Apache-2.0=04ea4849dba9dcae
+mime	0.3.17	MIT OR Apache-2.0	https://crates.io/crates/mime	MIT=df9cfd06d8a44d9a Apache-2.0=a60eea8175145316
+mime_guess	2.0.5	MIT	https://crates.io/crates/mime_guess	MIT=816000f9c28f7005
+minimal-lexical	0.2.1	MIT OR Apache-2.0	https://crates.io/crates/minimal-lexical	MIT=23f18e03dc49df91 Apache-2.0=8173d5c29b4f956d +LICENSE.md=dbe1fff0fb1314b6
+miniz_oxide	0.8.9	MIT OR Zlib OR Apache-2.0	https://crates.io/crates/miniz_oxide	MIT=799e9ca9d179295e Zlib=0a54e647fe541046 Apache-2.0=0d542e0c8804e39a +LICENSE=4108245a1f2df9d4
+mio	1.2.1	MIT	https://crates.io/crates/mio	MIT=07919255c7e04793
+moka	0.12.15	(MIT OR Apache-2.0) AND Apache-2.0	https://crates.io/crates/moka	MIT=7fe7e5e13e445074 Apache-2.0=021f4a01e58372b8 +NOTICE=f6d3f84b39d597c1
+monostate	0.1.18	MIT OR Apache-2.0	https://crates.io/crates/monostate	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+multer	3.1.0	MIT	https://crates.io/crates/multer	MIT=cfb47b4c5832e5a2
+munge	0.4.7	MIT	https://crates.io/crates/munge	MIT=b9c981ef9c76c018
+murmurhash32	0.3.1	MIT	https://crates.io/crates/murmurhash32	MIT=80cabf1d60958444
+ndarray	0.16.1	MIT OR Apache-2.0	https://crates.io/crates/ndarray	MIT=1fd6747d2c8e80f9 Apache-2.0=a60eea8175145316
+ndarray	0.17.2	MIT OR Apache-2.0	https://crates.io/crates/ndarray	MIT=1fd6747d2c8e80f9 Apache-2.0=a60eea8175145316
+next_tuple	0.1.0	MIT	https://crates.io/crates/next_tuple
+nom	7.1.3	MIT	https://crates.io/crates/nom	MIT=4dbda04344456f09
+nom	8.0.0	MIT	https://crates.io/crates/nom	MIT=4dbda04344456f09
+nom_locate	5.0.0	MIT	https://crates.io/crates/nom_locate	MIT=12de15dd3b3b4eae
+nu-ansi-term	0.50.3	MIT	https://crates.io/crates/nu-ansi-term	MIT=2844658604074202
+num-bigint	0.4.6	MIT OR Apache-2.0	https://crates.io/crates/num-bigint	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+num-bigint-dig	0.8.6	MIT OR Apache-2.0	https://crates.io/crates/num-bigint-dig	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+num-complex	0.4.6	MIT OR Apache-2.0	https://crates.io/crates/num-complex	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+num-conv	0.2.2	MIT OR Apache-2.0	https://crates.io/crates/num-conv	MIT=e2e245f2b566d0bf Apache-2.0=0d542e0c8804e39a
+num-integer	0.1.46	MIT OR Apache-2.0	https://crates.io/crates/num-integer	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+num-iter	0.1.46	MIT OR Apache-2.0	https://crates.io/crates/num-iter	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+num-traits	0.2.19	MIT OR Apache-2.0	https://crates.io/crates/num-traits	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+oco_ref	0.2.1	MIT	https://crates.io/crates/oco_ref
+once_cell	1.21.4	MIT OR Apache-2.0	https://crates.io/crates/once_cell	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316
+oneshot	0.1.13	MIT OR Apache-2.0	https://crates.io/crates/oneshot	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+onig	6.5.3	MIT	https://crates.io/crates/onig	MIT=e9c1238c5beb73c6
+onig_sys	69.9.3	MIT	https://crates.io/crates/onig_sys	MIT=71f321038b088358
+openssl-probe	0.2.1	MIT OR Apache-2.0	https://crates.io/crates/openssl-probe	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+opentelemetry	0.33.0	Apache-2.0	https://crates.io/crates/opentelemetry
+opentelemetry-appender-tracing	0.33.0	Apache-2.0	https://crates.io/crates/opentelemetry-appender-tracing
+opentelemetry-http	0.33.0	Apache-2.0	https://crates.io/crates/opentelemetry-http
+opentelemetry-otlp	0.33.0	Apache-2.0	https://crates.io/crates/opentelemetry-otlp
+opentelemetry-proto	0.33.0	Apache-2.0	https://crates.io/crates/opentelemetry-proto
+opentelemetry-semantic-conventions	0.33.0	Apache-2.0	https://crates.io/crates/opentelemetry-semantic-conventions
+opentelemetry_sdk	0.33.0	Apache-2.0	https://crates.io/crates/opentelemetry_sdk
+or_poisoned	0.1.0	MIT	https://crates.io/crates/or_poisoned
+ordered-float	5.3.0	MIT	https://crates.io/crates/ordered-float	MIT=f7715d38a3fa1b4a
+ouroboros	0.17.2	MIT OR Apache-2.0	https://crates.io/crates/ouroboros	MIT=5912351ea923c770 Apache-2.0=e5f31d0d8b5616e3
+ownedbytes	0.9.0	MIT	https://crates.io/crates/ownedbytes
+parking	2.2.1	Apache-2.0 OR MIT	https://crates.io/crates/parking	Apache-2.0=a60eea8175145316 MIT=23f18e03dc49df91 +LICENSE-THIRD-PARTY=9a6d7a3c1b8edcc7
+parking_lot	0.12.5	MIT OR Apache-2.0	https://crates.io/crates/parking_lot	MIT=c9a75f18b9ab2927 Apache-2.0=a60eea8175145316
+parking_lot_core	0.9.12	MIT OR Apache-2.0	https://crates.io/crates/parking_lot_core	MIT=c9a75f18b9ab2927 Apache-2.0=a60eea8175145316
+password-hash	0.5.0	MIT OR Apache-2.0	https://crates.io/crates/password-hash	MIT=233b95ccbf90dc67 Apache-2.0=a9040321c3712d8f
+pathdiff	0.2.3	MIT OR Apache-2.0	https://crates.io/crates/pathdiff	MIT=23f18e03dc49df91 Apache-2.0=dd7818e575815db1
+pathfinder_geometry	0.5.1	MIT OR Apache-2.0	https://crates.io/crates/pathfinder_geometry
+pathfinder_simd	0.5.6	MIT OR Apache-2.0	https://crates.io/crates/pathfinder_simd
+pbkdf2	0.13.0	MIT OR Apache-2.0	https://crates.io/crates/pbkdf2	MIT=8ea5cea8ddecc46a Apache-2.0=a9040321c3712d8f
+pem	3.0.6	MIT	https://crates.io/crates/pem	MIT=b7c76ff4466a3aeb
+pem-rfc7468	0.7.0	Apache-2.0 OR MIT	https://crates.io/crates/pem-rfc7468	Apache-2.0=a9040321c3712d8f MIT=90c503b61dee04e1
+percent-encoding	2.3.2	MIT OR Apache-2.0	https://crates.io/crates/percent-encoding	MIT=b38f11f6096706e6 Apache-2.0=a60eea8175145316
+pgvector	0.4.2	MIT OR Apache-2.0	https://crates.io/crates/pgvector	MIT=8a631592536e9967 Apache-2.0=cfc7749b96f63bd3
+phf	0.13.1	MIT	https://crates.io/crates/phf	MIT=0ab4d106b6faac07
+phf_shared	0.13.1	MIT	https://crates.io/crates/phf_shared	MIT=0ab4d106b6faac07
+pin-project	1.1.13	Apache-2.0 OR MIT	https://crates.io/crates/pin-project	Apache-2.0=0d542e0c8804e39a MIT=23f18e03dc49df91
+pin-project-lite	0.2.17	Apache-2.0 OR MIT	https://crates.io/crates/pin-project-lite	Apache-2.0=0d542e0c8804e39a MIT=23f18e03dc49df91
+pkcs1	0.7.5	Apache-2.0 OR MIT	https://crates.io/crates/pkcs1	Apache-2.0=a9040321c3712d8f MIT=c995204cc6bad2ed
+pkcs8	0.10.2	Apache-2.0 OR MIT	https://crates.io/crates/pkcs8	Apache-2.0=a9040321c3712d8f MIT=ad64fcb9589f1627
+portable-atomic	1.13.1	Apache-2.0 OR MIT	https://crates.io/crates/portable-atomic	Apache-2.0=0d542e0c8804e39a MIT=23f18e03dc49df91
+postgres-protocol	0.6.12	MIT OR Apache-2.0	https://crates.io/crates/postgres-protocol	MIT=4d033ae2577fa505 Apache-2.0=a60eea8175145316
+postgres-types	0.2.14	MIT OR Apache-2.0	https://crates.io/crates/postgres-types	MIT=4d033ae2577fa505 Apache-2.0=a60eea8175145316
+potential_utf	0.1.5	Unicode-3.0	https://crates.io/crates/potential_utf	Unicode-3.0=f367c1b8e1aa2624
+powerfmt	0.2.0	MIT OR Apache-2.0	https://crates.io/crates/powerfmt	MIT=070dbc7dda03a292 Apache-2.0=155420c6403d4e0f
+ppmd-rust	1.4.0	CC0-1.0 OR MIT-0	https://crates.io/crates/ppmd-rust	CC0-1.0=c2c14e64a5798ecd MIT-0=5574529c6fc6bb5f
+ppv-lite86	0.2.21	MIT OR Apache-2.0	https://crates.io/crates/ppv-lite86	MIT=4cada0bd02ea3692 Apache-2.0=0218327e7a480793
+primal-check	0.3.4	MIT OR Apache-2.0	https://crates.io/crates/primal-check	MIT=6d3a9431e65e69c7 Apache-2.0=a60eea8175145316
+printpdf	0.9.1	MIT	https://crates.io/crates/printpdf	MIT=f686a15f8ed89fb2
+proc-macro2	1.0.106	MIT OR Apache-2.0	https://crates.io/crates/proc-macro2	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+proc-macro2-diagnostics	0.11.0	MIT OR Apache-2.0	https://crates.io/crates/proc-macro2-diagnostics	MIT=38176bb6aad910a4 Apache-2.0=62c7a1e35f564068
+prost	0.11.9	Apache-2.0	https://crates.io/crates/prost	Apache-2.0=a60eea8175145316
+prost	0.14.3	Apache-2.0	https://crates.io/crates/prost	Apache-2.0=a60eea8175145316
+psl-types	2.0.11	MIT OR Apache-2.0	https://crates.io/crates/psl-types	Apache-2.0=a60eea8175145316 MIT=7b25e06666d37972
+ptr_meta	0.3.1	MIT	https://crates.io/crates/ptr_meta	MIT=635111a955495b5d
+publicsuffix	2.3.0	MIT OR Apache-2.0	https://crates.io/crates/publicsuffix	Apache-2.0=a60eea8175145316 MIT=f09adf500d35265e
+quick-xml	0.41.0	MIT	https://crates.io/crates/quick-xml	MIT=5b2c207dcf571267
+quinn	0.11.9	MIT OR Apache-2.0	https://crates.io/crates/quinn	MIT=4b2d0aca6789fa39 Apache-2.0=c71d239df91726fc
+quinn-proto	0.11.16	MIT OR Apache-2.0	https://crates.io/crates/quinn-proto	MIT=4b2d0aca6789fa39 Apache-2.0=c71d239df91726fc
+quinn-udp	0.5.14	MIT OR Apache-2.0	https://crates.io/crates/quinn-udp	MIT=4b2d0aca6789fa39 Apache-2.0=c71d239df91726fc
+quote	1.0.45	MIT OR Apache-2.0	https://crates.io/crates/quote	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+quoted_printable	0.5.2	0BSD	https://crates.io/crates/quoted_printable	0BSD=b3d6ddb122348e7c
+rancor	0.1.1	MIT	https://crates.io/crates/rancor	MIT=e26fc4190084f5bf
+rand	0.10.1	MIT OR Apache-2.0	https://crates.io/crates/rand	MIT=209fbbe0ad52d923 Apache-2.0=35242e7a83f69875 +COPYRIGHT=90eb64f0279b0d94
+rand	0.8.8	MIT OR Apache-2.0	https://crates.io/crates/rand	MIT=209fbbe0ad52d923 Apache-2.0=35242e7a83f69875 +COPYRIGHT=90eb64f0279b0d94
+rand	0.9.4	MIT OR Apache-2.0	https://crates.io/crates/rand	MIT=209fbbe0ad52d923 Apache-2.0=35242e7a83f69875 +COPYRIGHT=90eb64f0279b0d94
+rand_chacha	0.3.1	MIT OR Apache-2.0	https://crates.io/crates/rand_chacha	MIT=209fbbe0ad52d923 Apache-2.0=aaff376532ea30a0 +COPYRIGHT=90eb64f0279b0d94
+rand_chacha	0.9.0	MIT OR Apache-2.0	https://crates.io/crates/rand_chacha	MIT=209fbbe0ad52d923 Apache-2.0=35242e7a83f69875 +COPYRIGHT=90eb64f0279b0d94
+rand_core	0.10.1	MIT OR Apache-2.0	https://crates.io/crates/rand_core	MIT=8b6e9feec03e7c9a Apache-2.0=6df43f6f4b5d4587 +COPYRIGHT=92b81db30f7ab6d6
+rand_core	0.6.4	MIT OR Apache-2.0	https://crates.io/crates/rand_core	MIT=209fbbe0ad52d923 Apache-2.0=6df43f6f4b5d4587 +COPYRIGHT=90eb64f0279b0d94
+rand_core	0.9.5	MIT OR Apache-2.0	https://crates.io/crates/rand_core	MIT=209fbbe0ad52d923 Apache-2.0=6df43f6f4b5d4587 +COPYRIGHT=90eb64f0279b0d94
+rand_distr	0.4.3	MIT OR Apache-2.0	https://crates.io/crates/rand_distr	MIT=a771e4354f6b3ad4 Apache-2.0=6df43f6f4b5d4587 +COPYRIGHT=90eb64f0279b0d94
+rand_pcg	0.10.2	MIT OR Apache-2.0	https://crates.io/crates/rand_pcg	MIT=2234e3cefee876ae Apache-2.0=6df43f6f4b5d4587 +COPYRIGHT=90eb64f0279b0d94
+rangemap	1.7.1	MIT OR Apache-2.0	https://crates.io/crates/rangemap	MIT=29a4c3823ee29ee5 Apache-2.0=1c7745cc26c7294b
+rawpointer	0.2.1	MIT OR Apache-2.0	https://crates.io/crates/rawpointer	MIT=7576269ea71f767b Apache-2.0=a60eea8175145316
+rayon	1.12.0	MIT OR Apache-2.0	https://crates.io/crates/rayon	MIT=0621878e61f0d0fd Apache-2.0=a60eea8175145316
+rayon-cond	0.4.0	Apache-2.0 OR MIT	https://crates.io/crates/rayon-cond	Apache-2.0=a60eea8175145316 MIT=27995d58ad5c1145
+rayon-core	1.13.0	MIT OR Apache-2.0	https://crates.io/crates/rayon-core	MIT=0621878e61f0d0fd Apache-2.0=a60eea8175145316
+reactive_graph	0.2.15	MIT	https://crates.io/crates/reactive_graph
+reactive_stores	0.4.4	MIT	https://crates.io/crates/reactive_stores
+read-fonts	0.41.0	MIT OR Apache-2.0	https://crates.io/crates/read-fonts	MIT=7b4c9a3946dfcea7 Apache-2.0=eba684204073ed71
+ref-cast	1.0.25	MIT OR Apache-2.0	https://crates.io/crates/ref-cast	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+regex	1.12.3	MIT OR Apache-2.0	https://crates.io/crates/regex	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+regex-automata	0.4.14	MIT OR Apache-2.0	https://crates.io/crates/regex-automata	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+regex-syntax	0.8.10	MIT OR Apache-2.0	https://crates.io/crates/regex-syntax	MIT=6485b8ed310d3f03 Apache-2.0=a60eea8175145316
+rend	0.5.3	MIT	https://crates.io/crates/rend	MIT=635111a955495b5d
+reqwest	0.13.5	MIT OR Apache-2.0	https://crates.io/crates/reqwest	MIT=dd87e27dfbaa888c Apache-2.0=751963a8b88c0e3a
+reqwest-middleware	0.5.2	MIT OR Apache-2.0	https://crates.io/crates/reqwest-middleware	MIT=c6cf22786becd197 Apache-2.0=62c7a1e35f564068
+reqwest-tracing	0.7.1	MIT OR Apache-2.0	https://crates.io/crates/reqwest-tracing	MIT=c6cf22786becd197 Apache-2.0=62c7a1e35f564068
+ring	0.17.14	Apache-2.0 AND ISC	https://crates.io/crates/ring	+LICENSE=b3d734001a94efff +LICENSE-BoringSSL=005fc765ddc5115d +LICENSE-other-bits=f025ccfb7dfb6bdf
+rkyv	0.8.18	MIT	https://crates.io/crates/rkyv	MIT=635111a955495b5d
+rsa	0.9.10	MIT OR Apache-2.0	https://crates.io/crates/rsa	MIT=30fefc3a7d6a0041 Apache-2.0=769f80b5bcb42ed0
+rstml	0.13.1	MIT	https://crates.io/crates/rstml
+rust-stemmers	1.2.0	MIT OR BSD-3-Clause	https://crates.io/crates/rust-stemmers	+LICENSE=e46379f1aba07707
+rustc-hash	1.1.0	Apache-2.0 OR MIT	https://crates.io/crates/rustc-hash	Apache-2.0=a60eea8175145316 MIT=23f18e03dc49df91
+rustc-hash	2.1.2	Apache-2.0 OR MIT	https://crates.io/crates/rustc-hash	Apache-2.0=95bd3988beee069f MIT=30fefc3a7d6a0041
+rustfft	6.4.1	MIT OR Apache-2.0	https://crates.io/crates/rustfft	MIT=8f5442dfa8e91690 Apache-2.0=2e54cd84a645bea2
+rustix	1.1.4	Apache-2.0 WITH LLVM-exception OR Apache-2.0 OR MIT	https://crates.io/crates/rustix	Apache-2.0=a60eea8175145316 LLVM-exception=268872b9816f90fd MIT=23f18e03dc49df91 +COPYRIGHT=377c2e7c53250cc5
+rustls	0.23.45	Apache-2.0 OR ISC OR MIT	https://crates.io/crates/rustls	Apache-2.0=a60eea8175145316 ISC=7cfafc877eccc46c MIT=709e3175b4212f7b
+rustls-native-certs	0.8.4	Apache-2.0 OR ISC OR MIT	https://crates.io/crates/rustls-native-certs	Apache-2.0=a60eea8175145316 ISC=7cfafc877eccc46c MIT=709e3175b4212f7b +LICENSE=d75967ce788187f8
+rustls-pki-types	1.14.1	MIT OR Apache-2.0	https://crates.io/crates/rustls-pki-types	MIT=9117d922e6671255 Apache-2.0=45fd05c4865e7c35
+rustls-platform-verifier	0.7.0	MIT OR Apache-2.0	https://crates.io/crates/rustls-platform-verifier	MIT=1c7cf76689c837a6 Apache-2.0=c71d239df91726fc
+rustls-webpki	0.103.15	ISC	https://crates.io/crates/rustls-webpki	ISC=5b698ca13897be3a
+ryu	1.0.23	Apache-2.0 OR BSL-1.0	https://crates.io/crates/ryu	Apache-2.0=62c7a1e35f564068 +LICENSE-BOOST=c9bff75738922193
+same-file	1.0.6	Unlicense OR MIT	https://crates.io/crates/same-file	Unlicense=7e12e5df4bae12cb MIT=cb3c929a05e6cbc9 +COPYING=01c266bced4a434d
+scan_fmt	0.2.6	MIT	https://crates.io/crates/scan_fmt	MIT=4d0814fe61e6458a
+scopeguard	1.2.0	MIT OR Apache-2.0	https://crates.io/crates/scopeguard	MIT=fb77f0a9c53e473a Apache-2.0=a60eea8175145316
+send_wrapper	0.6.0	MIT OR Apache-2.0	https://crates.io/crates/send_wrapper	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316
+serde	1.0.228	MIT OR Apache-2.0	https://crates.io/crates/serde	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+serde-wasm-bindgen	0.6.5	MIT	https://crates.io/crates/serde-wasm-bindgen	MIT=62a81c033fcf1736
+serde_core	1.0.228	MIT OR Apache-2.0	https://crates.io/crates/serde_core	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+serde_html_form	0.4.1	MIT	https://crates.io/crates/serde_html_form	MIT=23f18e03dc49df91
+serde_json	1.0.150	MIT OR Apache-2.0	https://crates.io/crates/serde_json	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+serde_path_to_error	0.1.20	MIT OR Apache-2.0	https://crates.io/crates/serde_path_to_error	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+serde_qs	0.15.0	MIT OR Apache-2.0	https://crates.io/crates/serde_qs	MIT=91c134b29883adac Apache-2.0=62c7a1e35f564068
+serde_spanned	1.1.1	MIT OR Apache-2.0	https://crates.io/crates/serde_spanned	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+serde_urlencoded	0.7.1	MIT OR Apache-2.0	https://crates.io/crates/serde_urlencoded	MIT=b9eb266294324f67 Apache-2.0=62c7a1e35f564068
+server_fn	0.8.13	MIT	https://crates.io/crates/server_fn
+sha1	0.10.6	MIT OR Apache-2.0	https://crates.io/crates/sha1	MIT=b4eb00df6e2a4d22 Apache-2.0=a9040321c3712d8f
+sha1	0.11.0	MIT OR Apache-2.0	https://crates.io/crates/sha1	MIT=831e0f43ad0bf014 Apache-2.0=a9040321c3712d8f
+sha2	0.10.9	MIT OR Apache-2.0	https://crates.io/crates/sha2	MIT=b4eb00df6e2a4d22 Apache-2.0=a9040321c3712d8f
+sha2	0.11.0	MIT OR Apache-2.0	https://crates.io/crates/sha2	MIT=831e0f43ad0bf014 Apache-2.0=a9040321c3712d8f
+sha3	0.10.9	MIT OR Apache-2.0	https://crates.io/crates/sha3	MIT=f18f6229547ab07f Apache-2.0=a9040321c3712d8f
+sharded-slab	0.1.7	MIT	https://crates.io/crates/sharded-slab	MIT=eafbfa606bc005ed
+signal-hook-registry	1.4.8	MIT OR Apache-2.0	https://crates.io/crates/signal-hook-registry	MIT=503558bfefe66ca1 Apache-2.0=a60eea8175145316
+signature	2.2.0	Apache-2.0 OR MIT	https://crates.io/crates/signature	Apache-2.0=a9040321c3712d8f MIT=b3470648aff02beb
+simd-adler32	0.3.9	MIT	https://crates.io/crates/simd-adler32	MIT=42a35170233e83e1
+simdutf8	0.1.5	MIT OR Apache-2.0	https://crates.io/crates/simdutf8	MIT=1847e0e0698142ed Apache-2.0=0cec06e0e55fbc3d
+similar	3.1.1	Apache-2.0	https://crates.io/crates/similar	Apache-2.0=a60eea8175145316
+simple_asn1	0.6.4	ISC	https://crates.io/crates/simple_asn1	ISC=f06524678fd27a7e
+siphasher	1.0.3	MIT OR Apache-2.0	https://crates.io/crates/siphasher	+COPYING=c962ee4d1d05ddc1
+sketches-ddsketch	0.4.0	Apache-2.0	https://crates.io/crates/sketches-ddsketch	Apache-2.0=53e1575d9de48211
+slab	0.4.12	MIT	https://crates.io/crates/slab	MIT=8ce0830173fdac60
+slotmap	1.1.1	Zlib	https://crates.io/crates/slotmap	Zlib=6cec81441b2ab2b5
+smallvec	1.15.1	MIT OR Apache-2.0	https://crates.io/crates/smallvec	MIT=0b28172679e0009b Apache-2.0=a60eea8175145316
+socket2	0.6.4	MIT OR Apache-2.0	https://crates.io/crates/socket2	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+sonic-number	0.1.3	Apache-2.0	https://crates.io/crates/sonic-number	Apache-2.0=43070e2d4e532684
+sonic-rs	0.5.10	Apache-2.0	https://crates.io/crates/sonic-rs	Apache-2.0=43070e2d4e532684
+sonic-simd	0.1.4	Apache-2.0	https://crates.io/crates/sonic-simd	Apache-2.0=43070e2d4e532684
+spin	0.9.8	MIT	https://crates.io/crates/spin	MIT=6ac8711fb340c62c
+spki	0.7.3	Apache-2.0 OR MIT	https://crates.io/crates/spki	Apache-2.0=a9040321c3712d8f MIT=c995204cc6bad2ed
+spm_precompiled	0.1.4	Apache-2.0	https://crates.io/crates/spm_precompiled	Apache-2.0=c71d239df91726fc
+stable_deref_trait	1.2.1	MIT OR Apache-2.0	https://crates.io/crates/stable_deref_trait	MIT=5e05b024f653a5ce Apache-2.0=a60eea8175145316
+static_assertions	1.1.0	MIT OR Apache-2.0	https://crates.io/crates/static_assertions	MIT=ea084a2373ebc1f0 Apache-2.0=cfc7749b96f63bd3
+strength_reduce	0.2.4	MIT OR Apache-2.0	https://crates.io/crates/strength_reduce	MIT=8f5442dfa8e91690 Apache-2.0=2e54cd84a645bea2
+string-interner	0.15.0	MIT OR Apache-2.0	https://crates.io/crates/string-interner	MIT=7f304506d28acecc Apache-2.0=1129d26272a056e3
+stringprep	0.1.5	MIT OR Apache-2.0	https://crates.io/crates/stringprep	MIT=a07450fd4496cb8b Apache-2.0=c6596eb7be8581c1
+strsim	0.11.1	MIT	https://crates.io/crates/strsim	MIT=1e697ce8d21401fb
+subtle	2.6.1	BSD-3-Clause	https://crates.io/crates/subtle	BSD-3-Clause=d1fc1bc0d155df60
+syn	3.0.3	MIT OR Apache-2.0	https://crates.io/crates/syn	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+sync_wrapper	1.0.2	Apache-2.0	https://crates.io/crates/sync_wrapper	Apache-2.0=0d542e0c8804e39a
+tachys	0.2.19	MIT	https://github.com/librejustice/tachys	MIT=76356e713a0d1ea0
+tagptr	0.2.0	MIT OR Apache-2.0	https://crates.io/crates/tagptr	MIT=175d33d2e88fc394 Apache-2.0=a2b15e1e90041431
+tantivy	0.26.0	MIT	https://crates.io/crates/tantivy	MIT=acacd14bebbffdb3
+tantivy-bitpacker	0.10.0	MIT	https://crates.io/crates/tantivy-bitpacker
+tantivy-columnar	0.7.0	MIT	https://crates.io/crates/tantivy-columnar
+tantivy-common	0.11.0	MIT	https://crates.io/crates/tantivy-common
+tantivy-fst	0.5.0	Unlicense OR MIT	https://crates.io/crates/tantivy-fst	Unlicense=7e12e5df4bae12cb MIT=7297a3511ab0870e +COPYING=01c266bced4a434d
+tantivy-query-grammar	0.26.0	MIT	https://crates.io/crates/tantivy-query-grammar
+tantivy-sstable	0.7.0	MIT	https://crates.io/crates/tantivy-sstable
+tantivy-stacker	0.7.0	MIT	https://crates.io/crates/tantivy-stacker
+tantivy-tokenizer-api	0.7.0	MIT	https://crates.io/crates/tantivy-tokenizer-api
+tar	0.4.46	MIT OR Apache-2.0	https://crates.io/crates/tar	MIT=8ca6b96cea9e67c6 Apache-2.0=a60eea8175145316
+task-local	0.1.1	MIT OR Apache-2.0	https://crates.io/crates/task-local	MIT=7252367f2c8a6270 Apache-2.0=badf748a969391bc +LICENSE=05d715ef45e81789
+tempfile	3.27.0	MIT OR Apache-2.0	https://crates.io/crates/tempfile	MIT=8b427f5bc5017645 Apache-2.0=a60eea8175145316
+thiserror	1.0.69	MIT OR Apache-2.0	https://crates.io/crates/thiserror	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+thiserror	2.0.18	MIT OR Apache-2.0	https://crates.io/crates/thiserror	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+thread_local	1.1.9	MIT OR Apache-2.0	https://crates.io/crates/thread_local	MIT=c9a75f18b9ab2927 Apache-2.0=a60eea8175145316
+throw_error	0.3.1	MIT	https://crates.io/crates/throw_error
+time	0.3.47	MIT OR Apache-2.0	https://crates.io/crates/time	MIT=2537228d9a1b44a5 Apache-2.0=0d542e0c8804e39a
+time-core	0.1.8	MIT OR Apache-2.0	https://crates.io/crates/time-core	MIT=2537228d9a1b44a5 Apache-2.0=0d542e0c8804e39a
+tinystr	0.8.3	Unicode-3.0	https://crates.io/crates/tinystr	Unicode-3.0=f367c1b8e1aa2624
+tinyvec	1.11.0	Zlib OR Apache-2.0 OR MIT	https://crates.io/crates/tinyvec	Zlib=84b34dd7608f7fb9 Apache-2.0=cfc7749b96f63bd3 MIT=fd80a26fbb3f644a
+tinyvec_macros	0.1.1	MIT OR Apache-2.0 OR Zlib	https://crates.io/crates/tinyvec_macros	MIT=1dd8eca0f83669e7 Apache-2.0=4f44572785f35152 Zlib=41ace205715d9f19
+tls_codec	0.4.2	Apache-2.0 OR MIT	https://crates.io/crates/tls_codec	Apache-2.0=a9040321c3712d8f MIT=904801faf3f18503
+tokenizers	0.23.1	Apache-2.0	https://crates.io/crates/tokenizers	Apache-2.0=c71d239df91726fc
+tokio	1.53.2	MIT	https://crates.io/crates/tokio	MIT=253cd04c6714889d
+tokio-btls	0.5.6	MIT OR Apache-2.0	https://crates.io/crates/tokio-btls	MIT=c51bb9b3b2819748 Apache-2.0=67b987e7a15e32c8
+tokio-postgres	0.7.18	MIT OR Apache-2.0	https://crates.io/crates/tokio-postgres	MIT=4d033ae2577fa505 Apache-2.0=a60eea8175145316
+tokio-rustls	0.26.4	MIT OR Apache-2.0	https://crates.io/crates/tokio-rustls	MIT=e20fa2b8e0a2565f Apache-2.0=cc117d90b498b32b
+tokio-socks	0.5.3	MIT	https://crates.io/crates/tokio-socks	MIT=a0bb5ec9a11d4b34
+tokio-stream	0.1.18	MIT	https://crates.io/crates/tokio-stream	MIT=253cd04c6714889d
+tokio-tungstenite	0.29.0	MIT	https://crates.io/crates/tokio-tungstenite	MIT=fdd55e2b2da854b0
+tokio-util	0.7.18	MIT	https://crates.io/crates/tokio-util	MIT=253cd04c6714889d
+toml	1.1.2+spec-1.1.0	MIT OR Apache-2.0	https://crates.io/crates/toml	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+toml_datetime	1.1.1+spec-1.1.0	MIT OR Apache-2.0	https://crates.io/crates/toml_datetime	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+toml_parser	1.1.2+spec-1.1.0	MIT OR Apache-2.0	https://crates.io/crates/toml_parser	MIT=6efb0476a1cc0850 Apache-2.0=c6596eb7be8581c1
+tower	0.5.3	MIT	https://crates.io/crates/tower	MIT=4249c8e6c5ebb85f
+tower-http	0.6.11	MIT	https://crates.io/crates/tower-http	MIT=5049cf464977eff4
+tower-layer	0.3.3	MIT	https://crates.io/crates/tower-layer	MIT=4249c8e6c5ebb85f
+tower-service	0.3.3	MIT	https://crates.io/crates/tower-service	MIT=4249c8e6c5ebb85f
+tracing	0.1.44	MIT	https://crates.io/crates/tracing	MIT=898b1ae9821e98da
+tracing-core	0.1.36	MIT	https://crates.io/crates/tracing-core	MIT=898b1ae9821e98da
+tracing-log	0.2.0	MIT	https://crates.io/crates/tracing-log	MIT=898b1ae9821e98da
+tracing-opentelemetry	0.34.0	MIT	https://crates.io/crates/tracing-opentelemetry	MIT=898b1ae9821e98da
+tracing-opentelemetry-instrumentation-sdk	0.42.1	CC0-1.0	https://crates.io/crates/tracing-opentelemetry-instrumentation-sdk
+tracing-serde	0.2.0	MIT	https://crates.io/crates/tracing-serde	MIT=898b1ae9821e98da
+tracing-subscriber	0.3.23	MIT	https://crates.io/crates/tracing-subscriber	MIT=898b1ae9821e98da
+tract-core	0.21.12	MIT OR Apache-2.0	https://crates.io/crates/tract-core	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316 +LICENSE=f7ef673bf046d823
+tract-data	0.21.12	MIT OR Apache-2.0	https://crates.io/crates/tract-data	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316 +LICENSE=f7ef673bf046d823
+tract-hir	0.21.12	MIT OR Apache-2.0	https://crates.io/crates/tract-hir	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316 +LICENSE=f7ef673bf046d823
+tract-linalg	0.21.12	MIT OR Apache-2.0	https://crates.io/crates/tract-linalg	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316 +LICENSE=f7ef673bf046d823
+tract-nnef	0.21.12	MIT OR Apache-2.0	https://crates.io/crates/tract-nnef	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316 +LICENSE=f7ef673bf046d823
+tract-onnx	0.21.12	MIT OR Apache-2.0	https://crates.io/crates/tract-onnx	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316 +LICENSE=f7ef673bf046d823
+tract-onnx-opl	0.21.12	MIT OR Apache-2.0	https://crates.io/crates/tract-onnx-opl	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316 +LICENSE=f7ef673bf046d823
+transpose	0.2.3	MIT OR Apache-2.0	https://crates.io/crates/transpose	MIT=5080149357fd0be5 Apache-2.0=8797ef61538ec5ee
+try-lock	0.2.5	MIT	https://crates.io/crates/try-lock	MIT=c816a0749cdc6bf0
+ttf-parser	0.25.1	MIT OR Apache-2.0	https://crates.io/crates/ttf-parser	MIT=f3c9fe731c701ed7 Apache-2.0=a60eea8175145316
+tungstenite	0.29.0	MIT OR Apache-2.0	https://crates.io/crates/tungstenite	MIT=7fea0ee51a4ca5d5 Apache-2.0=a60eea8175145316
+typed-builder	0.23.2	MIT OR Apache-2.0	https://crates.io/crates/typed-builder	MIT=23f18e03dc49df91 Apache-2.0=a60eea8175145316
+typed-path	0.12.3	MIT OR Apache-2.0	https://crates.io/crates/typed-path	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+typeid	1.0.3	MIT OR Apache-2.0	https://crates.io/crates/typeid	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+typenum	1.20.1	MIT OR Apache-2.0	https://crates.io/crates/typenum	MIT=a825bd853ab71619 Apache-2.0=516b24e051bf5630 +LICENSE=db11fec9946737df
+typetag	0.2.22	MIT OR Apache-2.0	https://crates.io/crates/typetag	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+ucd-trie	0.1.7	MIT OR Apache-2.0	https://crates.io/crates/ucd-trie	MIT=0f96a83840e146e4 Apache-2.0=a60eea8175145316
+unicase	2.9.0	MIT OR Apache-2.0	https://crates.io/crates/unicase	MIT=4f6bd11a0f17fe5b Apache-2.0=a60eea8175145316
+unicode-bidi	0.3.18	MIT OR Apache-2.0	https://crates.io/crates/unicode-bidi	MIT=7b63ecd5f1902af1 Apache-2.0=a60eea8175145316 +COPYRIGHT=edb20b474f6cbd4f
+unicode-canonical-combining-class	1.0.0	Apache-2.0	https://crates.io/crates/unicode-canonical-combining-class	Apache-2.0=b40930bbcf80744c
+unicode-general-category	1.1.0	Apache-2.0	https://crates.io/crates/unicode-general-category	Apache-2.0=b40930bbcf80744c
+unicode-ident	1.0.24	(MIT OR Apache-2.0) AND Unicode-3.0	https://crates.io/crates/unicode-ident	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068 Unicode-3.0=f7db81051789b729
+unicode-joining-type	1.0.0	Apache-2.0	https://crates.io/crates/unicode-joining-type	Apache-2.0=b40930bbcf80744c
+unicode-linebreak	0.1.5	Apache-2.0	https://crates.io/crates/unicode-linebreak	Apache-2.0=c71d239df91726fc
+unicode-normalization	0.1.25	MIT OR Apache-2.0	https://crates.io/crates/unicode-normalization	MIT=7b63ecd5f1902af1 Apache-2.0=a60eea8175145316 +COPYRIGHT=23860c2a7b5d96b2
+unicode-normalization-alignments	0.1.12	MIT OR Apache-2.0	https://crates.io/crates/unicode-normalization-alignments	MIT=7b63ecd5f1902af1 Apache-2.0=a60eea8175145316 +COPYRIGHT=23860c2a7b5d96b2
+unicode-properties	0.1.4	MIT OR Apache-2.0	https://crates.io/crates/unicode-properties	MIT=7b63ecd5f1902af1 Apache-2.0=a60eea8175145316 +COPYRIGHT=23860c2a7b5d96b2
+unicode-segmentation	1.13.3	MIT OR Apache-2.0	https://crates.io/crates/unicode-segmentation	MIT=7b63ecd5f1902af1 Apache-2.0=a60eea8175145316 +COPYRIGHT=23860c2a7b5d96b2
+unicode-width	0.2.2	MIT OR Apache-2.0	https://crates.io/crates/unicode-width	MIT=7b63ecd5f1902af1 Apache-2.0=a60eea8175145316 +COPYRIGHT=23860c2a7b5d96b2
+unicode_categories	0.1.1	MIT OR Apache-2.0	https://crates.io/crates/unicode_categories	MIT=98a817e7b85e5fe4 Apache-2.0=c6596eb7be8581c1
+unit-prefix	0.5.2	MIT	https://crates.io/crates/unit-prefix	MIT=b39b755692699226
+untrusted	0.7.1	ISC	https://crates.io/crates/untrusted	ISC=7abd9b6960dcf7d4
+untrusted	0.9.0	ISC	https://crates.io/crates/untrusted	ISC=7abd9b6960dcf7d4
+url	2.5.8	MIT OR Apache-2.0	https://crates.io/crates/url	MIT=b38f11f6096706e6 Apache-2.0=a60eea8175145316
+utf8-ranges	1.0.5	Unlicense OR MIT	https://crates.io/crates/utf8-ranges	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+utf8-width	0.1.8	MIT	https://crates.io/crates/utf8-width	MIT=b65c9ac375b3b6c5
+utf8_iter	1.0.4	Apache-2.0 OR MIT	https://crates.io/crates/utf8_iter	Apache-2.0=cfc7749b96f63bd3 MIT=3fa4ca83dcc92378 +COPYRIGHT=c30152c94a6d75e0
+utf8parse	0.2.2	Apache-2.0 OR MIT	https://crates.io/crates/utf8parse	Apache-2.0=62c7a1e35f564068 MIT=e4c9b06fa850cb9b
+uuid	1.23.2	Apache-2.0 OR MIT	https://crates.io/crates/uuid	Apache-2.0=a60eea8175145316 MIT=436bc5a105d8e57d
+walkdir	2.5.0	Unlicense OR MIT	https://crates.io/crates/walkdir	Unlicense=7e12e5df4bae12cb MIT=0f96a83840e146e4 +COPYING=01c266bced4a434d
+want	0.3.2	MIT	https://crates.io/crates/want	MIT=a65f5d0a945d2677
+wasm-bindgen	0.2.128	MIT OR Apache-2.0	https://crates.io/crates/wasm-bindgen	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+wasm-bindgen-futures	0.4.78	MIT OR Apache-2.0	https://crates.io/crates/wasm-bindgen-futures	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+wasm-bindgen-shared	0.2.128	MIT OR Apache-2.0	https://crates.io/crates/wasm-bindgen-shared	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+wasm-streams	0.5.0	MIT OR Apache-2.0	https://crates.io/crates/wasm-streams	MIT=23f18e03dc49df91 Apache-2.0=62c7a1e35f564068
+wasm_split_helpers	0.2.1	MIT OR Apache-2.0	https://crates.io/crates/wasm_split_helpers
+web-sys	0.3.105	MIT OR Apache-2.0	https://crates.io/crates/web-sys	MIT=378f5840b258e277 Apache-2.0=a60eea8175145316
+web-time	1.1.0	MIT OR Apache-2.0	https://crates.io/crates/web-time	MIT=f428305bbf2e70fb Apache-2.0=54a744942eb3fa63
+webpki-root-certs	1.0.7	CDLA-Permissive-2.0	https://crates.io/crates/webpki-root-certs	CDLA-Permissive-2.0=e271993808fec50a
+weezl	0.1.12	MIT OR Apache-2.0	https://crates.io/crates/weezl	MIT=573f5227db835cd3 Apache-2.0=769f80b5bcb42ed0
+whoami	2.1.2	Apache-2.0 OR BSL-1.0 OR MIT	https://crates.io/crates/whoami	Apache-2.0=62c7a1e35f564068 MIT=508a77d2e7b51d98 +LICENSE_BOOST=c9bff75738922193
+winnow	1.0.3	MIT	https://crates.io/crates/winnow	MIT=cb5aedb296c5246d
+wreq	0.16.1	Apache-2.0	https://crates.io/crates/wreq	Apache-2.0=92caec58166a8afc
+wreq-proto	0.2.6	Apache-2.0	https://crates.io/crates/wreq-proto	Apache-2.0=e1fcef418a10d8ab
+wreq-rt	0.2.2-rc.4	Apache-2.0	https://crates.io/crates/wreq-rt	Apache-2.0=6a660e61e7420e0f
+wreq-util	0.2.0	Apache-2.0	https://crates.io/crates/wreq-util	Apache-2.0=144121bc6a6fc275
+writeable	0.6.3	Unicode-3.0	https://crates.io/crates/writeable	Unicode-3.0=f367c1b8e1aa2624
+x509-cert	0.2.5	Apache-2.0 OR MIT	https://crates.io/crates/x509-cert	Apache-2.0=a9040321c3712d8f MIT=90c503b61dee04e1
+xattr	1.6.1	MIT OR Apache-2.0	https://crates.io/crates/xattr	MIT=8b427f5bc5017645 Apache-2.0=a60eea8175145316
+xxhash-rust	0.8.15	BSL-1.0	https://crates.io/crates/xxhash-rust	BSL-1.0=c9bff75738922193
+yoke	0.8.3	Unicode-3.0	https://crates.io/crates/yoke	Unicode-3.0=f367c1b8e1aa2624
+zerocopy	0.8.50	BSD-2-Clause OR Apache-2.0 OR MIT	https://crates.io/crates/zerocopy	BSD-2-Clause=83c1763356e822ad Apache-2.0=9d185ac6703c4b04 MIT=1a2f5c12ddc934d5
+zerofrom	0.1.8	Unicode-3.0	https://crates.io/crates/zerofrom	Unicode-3.0=f367c1b8e1aa2624
+zeroize	1.8.2	Apache-2.0 OR MIT	https://crates.io/crates/zeroize	Apache-2.0=cfc7749b96f63bd3 MIT=0b04ee3ce0021a92
+zerotrie	0.2.4	Unicode-3.0	https://crates.io/crates/zerotrie	Unicode-3.0=f367c1b8e1aa2624
+zerovec	0.11.6	Unicode-3.0	https://crates.io/crates/zerovec	Unicode-3.0=f367c1b8e1aa2624
+zip	8.6.0	MIT	https://crates.io/crates/zip	MIT=58545fed1565e42d
+zlib-rs	0.6.3	Zlib	https://crates.io/crates/zlib-rs	Zlib=e72111c52b7d96eb
+zmij	1.0.21	MIT	https://crates.io/crates/zmij	MIT=23f18e03dc49df91
+zopfli	0.8.3	Apache-2.0	https://crates.io/crates/zopfli	Apache-2.0=018b1cb87efdf7a0
+zstd	0.13.3	MIT	https://crates.io/crates/zstd	MIT=129e8edef29e9abc
+zstd-safe	7.2.4	MIT OR Apache-2.0	https://crates.io/crates/zstd-safe	MIT=129e8edef29e9abc Apache-2.0=0d542e0c8804e39a +LICENSE=a77b7cfeaf911ed4
+zstd-sys	2.0.16+zstd.1.5.7	MIT OR Apache-2.0	https://crates.io/crates/zstd-sys	MIT=129e8edef29e9abc Apache-2.0=0d542e0c8804e39a +LICENSE=a77b7cfeaf911ed4 +LICENSE.BSD-3-Clause=48341f685c873040

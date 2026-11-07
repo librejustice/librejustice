@@ -31,9 +31,9 @@ pub(crate) fn twips(points: f64) -> f64 {
 
 /// The box a face gives a line at `size`. The font is measured on a 8640 dpi
 /// reference device, then ascent and descent are rounded to twips together
-/// and the leading apart, the leading going above the ascent: on 21 faces at
-/// 11 pt and five of them at six sizes, pitch and first baseline match
-/// LibreOffice's to the twip. Without `leading`, the face's line gap is dropped.
+/// and the leading apart, the leading going above the ascent: pitch and first
+/// baseline match LibreOffice's to the twip. Without `leading`, the face's line
+/// gap is dropped.
 pub(crate) fn font_box(metrics: &Metrics, size: f64, leading: bool) -> LineBox {
     let em = (size * 120.0).round();
     let upm = f64::from(metrics.units_per_em);

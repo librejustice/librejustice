@@ -23,6 +23,15 @@ pub mod query;
 pub mod reads;
 pub mod seo;
 
+/// Entry point of the anonymisation workbench mounted as an MCP App view, its
+/// files fetched from `origin`.
+#[cfg(feature = "hydrate")]
+#[wasm_bindgen::prelude::wasm_bindgen]
+pub fn mount_workbench(origin: String) {
+    console_error_panic_hook::set_once();
+    crate::pages::redact::mcp_app::mount(origin);
+}
+
 /// Point d'entree wasm : cargo-leptos appelle `hydrate()` cote client pour
 /// rattacher l'arbre Leptos au DOM emis par le SSR.
 #[cfg(feature = "hydrate")]
@@ -31,6 +40,8 @@ pub fn hydrate() {
     console_error_panic_hook::set_once();
     crate::reads::note_document();
     leptos::mount::hydrate_body(crate::app::App);
+    crate::reads::report_landing();
+    crate::reads::count_actions();
     // Témoin lu par la sonde d'hydratation du shell.
     let _ = js_sys::Reflect::set(
         &js_sys::global(),

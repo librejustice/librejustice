@@ -639,7 +639,7 @@ static MENTION_DE_TEST: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock:
 });
 
 /// A platform's own demonstration consultation, which its buyer account or its
-/// text names as such: 126 of the 19 166 open markets on 23/09/2026.
+/// text names as such.
 pub fn consultation_de_test(acheteur: &str, textes: &[&str]) -> bool {
     let acheteur = lj_fold::fold(acheteur);
     ACHETEURS_DE_TEST.iter().any(|a| acheteur.starts_with(a))
@@ -1005,9 +1005,8 @@ const ELISIONS: [&str; 13] = [
 ];
 const APRES_ELISION: &str = "aeiouyàâäéèêëîïôöùûüh";
 
-/// A source that lost its encoding publishes `d?offres`. Only the elision comes
-/// back: `march?s` lost a letter too, and which one is a guess. Measured on the
-/// open markets of 17/09/2026, 92 of the 105 occurrences are elisions.
+/// A source that lost its encoding publishes `d?offres`. Only the elision, most of
+/// the occurrences, comes back: `march?s` lost a letter too, and which one is a guess.
 pub fn reparer_elisions(texte: &str) -> String {
     if !texte.contains('?') {
         return texte.to_string();
@@ -1035,7 +1034,7 @@ pub fn reparer_elisions(texte: &str) -> String {
 }
 
 /// Past twenty years, the span of the fund's longest qualification systems, a
-/// deadline's year is a typo (`2924`, `7017`): 24 open markets on 23/09/2026.
+/// deadline's year is a typo (`2924`, `7017`).
 pub const ECHEANCE_ANS_MAX: i16 = 20;
 
 fn echeance_plausible(echeance: Timestamp, publication: Date) -> bool {
@@ -1504,8 +1503,7 @@ mod tests {
         }
     }
 
-    /// Values taken from Postgres: the threshold of the near-title key was
-    /// measured in SQL, and holds here only if both computations coincide.
+    /// Values computed by Postgres: the SQL near-title threshold holds only if both agree.
     #[test]
     fn la_similarite_des_titres_est_celle_de_postgres() {
         for (a, b, attendu) in [

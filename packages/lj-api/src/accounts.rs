@@ -16,6 +16,7 @@ use axum::routing::post;
 use axum::Router;
 use serde::Deserialize;
 
+use crate::disposable::{disposable_domain, log_refusal};
 use crate::error::{ApiError, Result};
 use crate::oauth::{form_urlencode, random_bytes, sha256};
 use crate::oidc_auth::destination_interne;
@@ -65,6 +66,10 @@ async fn signup(
         Ok(email) => email,
         Err(_) => return rebond("email_invalide"),
     };
+    if let Some(listed) = disposable_domain(&state, &email).await? {
+        log_refusal(&listed, "signup");
+        return rebond("email_jetable");
+    }
     match verifier_robustesse(&req.password) {
         Ok(()) => {}
         Err(ApiError::BadRequest(code)) => return rebond(&code),
@@ -278,13 +283,30 @@ async fn link_request(
         Ok(email) => email,
         Err(_) => {
             return Ok(rebond_login(
-                &[("mode", "lien"), ("error", "email_invalide")],
+                &[("mode", "link"), ("error", "email_invalide")],
                 next,
             ))
         }
     };
 
     let conn = state.pool.get().await?;
+    // An account already on a disposable domain keeps signing in by link.
+    if let Some(listed) = disposable_domain(&state, &email).await? {
+        if conn
+            .query_opt(
+                "SELECT 1 FROM users WHERE lower(email) = lower($1)",
+                &[&email],
+            )
+            .await?
+            .is_none()
+        {
+            log_refusal(&listed, "link");
+            return Ok(rebond_login(
+                &[("mode", "link"), ("error", "email_jetable")],
+                next,
+            ));
+        }
+    }
     let ligne = conn
         .query_opt(
             "INSERT INTO users (sub, email) VALUES (gen_random_uuid()::text, $1) \
@@ -658,8 +680,7 @@ mod tests {
         assert!(verifier_robustesse(&format!("Aa1{}", "x".repeat(70))).is_err());
     }
 
-    /// Les deux schémas cohabitent tant que l'import Supabase n'est pas éteint :
-    /// on écrit de l'argon2id, on doit continuer à lire du `$2a$`.
+    /// A hash is written in argon2id, and a bcrypt `$2a$` hash still verifies.
     #[test]
     fn les_deux_schemas_se_verifient() {
         let ecrit = hacher("Motdepasse1").unwrap();

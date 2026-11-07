@@ -300,10 +300,10 @@ pub(crate) mod tests {
 
     #[test]
     fn a_comma_between_two_words_of_the_document_does_not_part_a_name() {
-        let text = "Pascal, COUMES et Pascal COUMES, puis Pascal,COUMES";
+        let text = "Pascal, VERDIER et Pascal VERDIER, puis Pascal,VERDIER";
         assert_eq!(
-            sources(text, "Pascal COUMES"),
-            ["Pascal, COUMES", "Pascal COUMES"]
+            sources(text, "Pascal VERDIER"),
+            ["Pascal, VERDIER", "Pascal VERDIER"]
         );
     }
 

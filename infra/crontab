@@ -1,20 +1,29 @@
-# LibreJustice — chaîne d'ingestion. Les étapes sont définies dans
-# `apps/lj-ingest/src/chain.rs` : chacune a son watchdog, un échec n'interrompt
-# pas les suivantes, et la chaîne sort non-zéro sur `chain_failed`.
+# LibreJustice ingest. The steps are defined in `apps/lj-ingest/src/chain.rs`: each has
+# its watchdog, a failure does not stop the next ones, and the chain exits non-zero on
+# `chain_failed`.
 
-# Ce que les portes d'une annonce servent, échantillonné. Hors chaîne, dont le
-# pire cas sature déjà la période du cron : la sonde tient son propre budget de
-# 120 s et lit les liens que la chaîne de la veille a écrits.
+# What a notice's links serve, sampled, outside the chain.
 30 2 * * * cd /app && lj-ingest annonces-sonder-liens --par-moteur 8
 
-# Du lundi au samedi.
+# The disposable mail domains.
+0 12 * * * cd /app && lj-ingest disposable-domains
+
+# The whole list of the Défenseur des droits decisions, outside the chain.
+0 13 * * 6 cd /app && lj-ingest sync-ddd --full
+
+# The Autorité de la concurrence's dataset, written when it is a new one.
+30 13 * * * cd /app && lj-ingest sync-adlc
+
+# The European Commission's competition decisions: the week's documents every day,
+# the whole listing once a week.
+0 14 * * 0-5 cd /app && lj-ingest sync-comeu
+0 14 * * 6 cd /app && lj-ingest sync-comeu --full
+
+# The prefectures' recueils, beside the chain, one run at a time under an advisory lock.
+0 3 * * * cd /app && lj-ingest raa --minutes 230
+
 0 3 * * 1-6 cd /app && lj-ingest chain daily
 
-# Le dimanche, la quotidienne et l'hebdomadaire s'enchaînent dans un seul
-# processus : aucun chevauchement, aucun verrou.
+# The daily chain then the weekly maintenance, in one process; the chain lock keeps two
+# chains from overlapping.
 0 3 * * 0 cd /app && lj-ingest chain weekly
-
-# `lj-ingest chain drain` n'est plus planifié depuis le 21/09/2026 : la vidange
-# réécrivait le stock des anciennes générations sur luna autant que sur gemini,
-# et la stratégie de réécriture n'est pas arrêtée. La commande reste, la ligne
-# de cron revient avec la décision.

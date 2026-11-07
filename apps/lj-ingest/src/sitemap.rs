@@ -2,9 +2,9 @@
 //!
 //! Pipeline :
 //!
-//! 1. [`build_sitemaps`] — itère `decisions` par pages de 50 000 URLs et
-//!    construit **en mémoire** un fichier `sitemap-{n}.xml.gz` par page + un
-//!    `sitemap-index.xml` qui les référence par leur URL publique finale.
+//! 1. [`build_sitemaps`] walks `decisions` in pages of [`MAX_URLS_PER_SITEMAP`]
+//!    URLs and builds **in memory** one `sitemap-{n}.xml.gz` per page, plus a
+//!    `sitemap-index.xml` naming them by their final public URL.
 //! 2. Côté appelant (`cmd_sitemap`), l'ensemble est upserté dans la table
 //!    Postgres `sitemaps`
 //!    ([`lj_store::repository::DecisionRepository::replace_sitemaps`]).
@@ -19,7 +19,7 @@ use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use flate2::{Compression, GzBuilder};
 
-/// Limites W3C Sitemaps : 50 000 URLs OU 50 MiB décompressé par sitemap.
+/// Sitemaps protocol cap on the URLs of one sitemap.
 pub const MAX_URLS_PER_SITEMAP: usize = 50_000;
 
 /// Origine publique des URLs ; en dur — un site = une origine canonique.
@@ -115,6 +115,8 @@ const STATIC_PATHS: &[&str] = &[
     "/mcp-guide",
     "/legal-notice",
     "/privacy",
+    "/terms",
+    "/open-source",
 ];
 
 fn decision_url(path: &str) -> String {

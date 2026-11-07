@@ -16,6 +16,7 @@ pub enum ApiError {
     ///
     /// Porte l'objet d'erreur déjà construit (`{type, loc, msg, input, ctx?}`) ;
     /// le corps rendu est `{"detail": [<obj>]}`. Cf. [`validation`].
+    /// An array carries several such objects, rendered as the `detail` list.
     #[error("unprocessable")]
     Unprocessable(Value),
     #[error("not found")]
@@ -65,7 +66,7 @@ impl From<deadpool_postgres::PoolError> for ApiError {
         // Un `PoolError` ne naît que du checkout (`pool.get()`). Le timeout
         // d'attente = saturation transitoire → 503 ; le reste (backend, pool
         // fermé…) est une erreur serveur 500.
-        let detail = lj_store::error::pool_detail(&e);
+        let detail = lj_pg::error::pool_detail(&e);
         match e {
             deadpool_postgres::PoolError::Timeout(_) => {
                 ApiError::DbBusy(format!("checkout connexion: {detail}"))
@@ -171,6 +172,7 @@ impl IntoResponse for ApiError {
         let busy = self.is_db_busy();
         let detail: Value = match &self {
             ApiError::BadRequest(msg) => json!(msg),
+            ApiError::Unprocessable(Value::Array(objs)) => json!(objs),
             ApiError::Unprocessable(obj) => json!([obj.clone()]),
             ApiError::NotFound => json!("not_found"),
             ApiError::NoVersionAtDate(msg) => json!(msg),
@@ -356,6 +358,17 @@ pub mod validation {
             "msg": format!("Input should be {expected}"),
             "input": input,
             "ctx": { "expected": expected },
+        })
+    }
+
+    /// `extra_forbidden`: a parameter the contract does not name, refused with
+    /// the names it does.
+    pub fn extra_forbidden(loc: &[&str], input: &str, known: &[&str]) -> Value {
+        json!({
+            "type": "extra_forbidden",
+            "loc": loc,
+            "msg": format!("Extra inputs are not permitted, expected one of: {}", known.join(", ")),
+            "input": input,
         })
     }
 

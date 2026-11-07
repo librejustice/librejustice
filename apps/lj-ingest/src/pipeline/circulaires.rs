@@ -3,12 +3,11 @@
 //! nature=`CIRCULAIRE`, identité `cir_<ID>`, NOR en cascade, état
 //! V/A en `status`, résumé en `body`.
 //!
-//! Corps ([`sync_circulaires_bodies`]) : passe séparée qui rejoue les stocks
-//! PDF (`pdf/<année>_pdf.tar.gz`) puis les PDF compagnons des flux —
-//! `pdftotext` déterministe, OCR Mistral cache-first en repli scanné — et pose
-//! `body` = corps extrait. Le sync métadonnées écrit le résumé DILA
-//! (≤ 5 000 caractères) en `body` provisoire ; la passe corps le remplace quand
-//! un PDF exploitable existe.
+//! Bodies ([`sync_circulaires_bodies`]): a separate pass replays the PDF stocks
+//! (`pdf/<année>_pdf.tar.gz`), then the feeds' companion PDFs, through
+//! deterministic `pdftotext` with cache-first Mistral OCR for scans, and sets
+//! `body` to the extracted text. The metadata sync writes DILA's capped summary
+//! as a provisional `body`, which the body pass replaces when a usable PDF exists.
 //!
 //! Rejeu : stocks (par année) → `abroge_txt.tar` (flips d'état historiques)
 //! → flux en ordre chronologique (last-write-wins par `ID_CIRCULAIRE` —
@@ -20,11 +19,11 @@ use std::path::Path;
 
 use anyhow::{anyhow, Result};
 
-use lj_llm::mistral::{ocr_with_retry, MistralClient};
 use lj_sources::circulaires::{CircKind, Circulaire};
 use lj_store::repository::DecisionRepository;
 
 use crate::config::Settings;
+use crate::ocr::Ocr;
 
 /// Sync du fond CIRCULAIRES : planifie (listing + téléchargements), ingère
 /// chaque fichier nouveau dans l'ordre de rejeu, marque le manifest, puis pose
@@ -42,7 +41,7 @@ pub async fn sync_circulaires() -> Result<()> {
     };
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -107,21 +106,11 @@ pub async fn sync_circulaires_bodies() -> Result<()> {
     };
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 
-    // Repli OCR marginal, pool standard. Client dédié, donc registre de quota
-    // dédié : le seau de `mistral-ocr` n'est pas celui du chat.
-    let ocr_keys = repo.pool_api_keys("mistral").await?;
-    let ocr_client = if ocr_keys.is_empty() {
-        None
-    } else {
-        Some(MistralClient::new(
-            ocr_keys,
-            "mistral-ocr-latest".to_string(),
-        )?)
-    };
+    let ocr_client = Ocr::from_pool(&repo).await?;
 
     let mut total = PdfCounts::default();
     drain_pending_ocr(&repo, ocr_client.as_ref(), &dir, &mut total).await?;
@@ -156,7 +145,7 @@ pub async fn sync_circulaires_bodies() -> Result<()> {
 /// reste (re-comptée `ocr_missed`).
 async fn drain_pending_ocr(
     repo: &DecisionRepository<'_>,
-    ocr_client: Option<&MistralClient>,
+    ocr_client: Option<&Ocr>,
     circ_dir: &Path,
     total: &mut PdfCounts,
 ) -> Result<()> {
@@ -234,10 +223,9 @@ enum PdfMsg {
     Unreadable,
 }
 
-/// Mistral OCR calls in flight at once. A doc key lives ~30 min from its first
+/// Mistral OCR calls in flight at once. A doc key lives a fixed time from its first
 /// use whatever the volume, so the window is saturated rather than left to
-/// drain between two calls. Any 429 is absorbed by the back-off of
-/// [`ocr_with_retry`].
+/// drain between two calls. [`Ocr`] paces the pages they send.
 const OCR_CONCURRENCY: usize = 8;
 
 /// Un membre PDF résolu en corps (ou compté) par le pipeline concurrent.
@@ -256,7 +244,7 @@ enum PdfOutcome {
 /// séquentielles sur la connexion unique.
 async fn ingest_circulaire_pdfs(
     repo: &DecisionRepository<'_>,
-    ocr_client: Option<&MistralClient>,
+    ocr_client: Option<&Ocr>,
     circ_dir: &Path,
     path: &Path,
 ) -> Result<PdfCounts> {
@@ -367,7 +355,7 @@ async fn ingest_circulaire_pdfs(
 const PDF_TEXT_LAYER_FLOOR_PER_PAGE: usize = 100;
 
 /// Corps depuis la couche texte `pdftotext` ; `None` = PDF réputé scanné.
-fn body_from_text_layer(extracted: &str) -> Option<String> {
+pub(crate) fn body_from_text_layer(extracted: &str) -> Option<String> {
     let pages = extracted.matches('\x0c').count() + 1;
     let non_ws = extracted.chars().filter(|c| !c.is_whitespace()).count();
     if non_ws / pages < PDF_TEXT_LAYER_FLOOR_PER_PAGE {
@@ -381,7 +369,7 @@ fn body_from_text_layer(extracted: &str) -> Option<String> {
 /// disponible (puis cache). `None` si pas de cache ET pas de clé/échec →
 /// l'appelant compte un `ocr_missed`, le tarball sera rejoué.
 async fn scanned_ocr_fallback(
-    client: Option<&MistralClient>,
+    client: Option<&Ocr>,
     circ_dir: &Path,
     id: &str,
     pdf_bytes: &[u8],
@@ -391,7 +379,7 @@ async fn scanned_ocr_fallback(
         return Some(md);
     }
     let client = client?;
-    match ocr_with_retry(client, pdf_bytes, id).await {
+    match client.document(pdf_bytes, id).await {
         Ok(markdown) => {
             if let Err(e) = save_cached_circulaire_ocr(circ_dir, id, &markdown) {
                 tracing::warn!(id = %id, error = %e, "circulaire ocr cache write");

@@ -298,7 +298,7 @@ pub struct Circulaire {
     pub date_publi: Option<String>,
     pub auteur: Option<String>,
     pub signataire: Option<String>,
-    /// Résumé (≤ 5 000 caractères) — seul « corps » disponible hors PDF.
+    /// Summary, capped in length: the only body there is without the PDF.
     pub resume: Option<String>,
     /// Chemin du PDF compagnon (`/pdf/YYYY/MM/cir_<ID>.pdf`) — corps, track futur.
     pub pdf_path: Option<String>,

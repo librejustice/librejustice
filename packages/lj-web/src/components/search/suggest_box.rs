@@ -14,6 +14,8 @@ use leptos::leptos_dom::helpers::{set_timeout_with_handle, TimeoutHandle};
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 
+use lj_dtos::UiAction;
+
 use crate::api::ApiClient;
 
 /// Contrat de `/suggest` : min 2 codepoints saisis.
@@ -245,6 +247,7 @@ pub fn SuggestPanel(ctrl: SuggestController) -> impl IntoView {
                                 <button
                                     type="button"
                                     role="option"
+                                    data-usage=UiAction::SearchSuggestion.as_str()
                                     aria-selected=move || (ctrl.active.get() == Some(i)).to_string()
                                     // mousedown : préempte le blur de l'input (pas de
                                     // course fermeture/clic), le click fait le pick.

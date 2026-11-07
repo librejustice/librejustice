@@ -13,11 +13,12 @@ use axum_tracing_opentelemetry::middleware::OtelAxumLayer;
 use leptos::prelude::*;
 use leptos_axum::{generate_route_list, LeptosRoutes};
 use lj_api::{config::Settings, host_metrics, pg_metrics, state::AppState, telemetry};
-use lj_store::db;
+use lj_pg::db;
 use lj_web::app::{shell, App};
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context, Poll};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate as _};
 use tower_http::compression::CompressionLayer;
 use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeader;
@@ -51,6 +52,11 @@ async fn run() -> Result<()> {
     install_panic_hook();
     tracing_executor::install()?;
 
+    let conf = get_configuration(None).unwrap();
+    let leptos_options = conf.leptos_options;
+    let origin = settings.public_base_url.trim_end_matches('/');
+    let redact = lj_api::redact::router(origin, lj_web::pages::redact::mcp_app::document(origin));
+    let workbench_entry = lj_web::pages::redact::mcp_app::entry(&leptos_options);
     let pool = db::build_pool(&settings.db_url, settings.pool_max)?;
     let state = AppState::build(Arc::new(settings.clone()), pool);
 
@@ -80,8 +86,6 @@ async fn run() -> Result<()> {
         });
     }
 
-    let conf = get_configuration(None).unwrap();
-    let leptos_options = conf.leptos_options;
     let leptos_addr = leptos_options.site_addr;
     let routes = generate_route_list(App);
 
@@ -172,6 +176,14 @@ async fn run() -> Result<()> {
                 move || shell(leptos_options.clone())
             },
         )
+        // Cloudflare's challenge form leaves a POST document, which a reload repeats.
+        .method_not_allowed_fallback(|uri: axum::http::Uri| async move {
+            let target = match uri.query() {
+                Some(q) => format!("{}?{q}", uri.path()),
+                None => uri.path().to_string(),
+            };
+            axum::response::Redirect::to(&target)
+        })
         .fallback(
             move |uri: axum::http::Uri,
                   st: axum::extract::State<LeptosOptions>,
@@ -188,6 +200,17 @@ async fn run() -> Result<()> {
                         return axum::response::IntoResponse::into_response(
                             axum::response::Redirect::permanent(&target),
                         );
+                    }
+                    // leptos_axum 0.8 `get_static_file` forwards `Accept-Encoding` alone: a
+                    // byte range came back whole, and Safari plays no video served that way.
+                    if path.ends_with(".mp4") || path.ends_with(".webm") {
+                        return match ServeDir::new(&*st.site_root).try_call(req).await {
+                            Ok(res) => axum::response::IntoResponse::into_response(res),
+                            Err(e) => axum::response::IntoResponse::into_response((
+                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                                e.to_string(),
+                            )),
+                        };
                     }
                     leptos_fallback(uri, st, req).await
                 }
@@ -233,8 +256,11 @@ async fn run() -> Result<()> {
         ));
     }
 
-    let app = leptos_router
-        .merge(api)
+    let app = match lj_api::redact::PUBLISHED {
+        true => leptos_router.merge(api).merge(redact),
+        false => leptos_router.merge(api),
+    };
+    let app = app
         .route(
             "/mcp",
             axum::routing::get(|| async { axum::response::Redirect::temporary("/mcp/") }),
@@ -253,13 +279,34 @@ async fn run() -> Result<()> {
         )
         .route("/profil", redirect_preserving_query("/profile"))
         .route("/connexion", redirect_preserving_query("/login-link"))
+        .route(
+            lj_vocab::files::ENTRY,
+            axum::routing::get(move || async move {
+                (
+                    [
+                        (
+                            axum::http::header::CONTENT_TYPE,
+                            "text/javascript; charset=utf-8",
+                        ),
+                        (axum::http::header::CACHE_CONTROL, "no-cache"),
+                    ],
+                    workbench_entry,
+                )
+            }),
+        )
         .nest_service("/pkg", pkg_service)
         .nest_service("/fonts", fonts_service)
         .nest_service("/redactor", redactor_service)
         .layer(axum::middleware::from_fn(place_prefix_moved))
-        .layer(CompressionLayer::new())
+        // A compressed video goes out chunked, without a length: the CDN caches it
+        // that way and then answers a byte range with the whole file.
+        .layer(
+            CompressionLayer::new()
+                .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("video/"))),
+        )
         .layer(axum::middleware::from_fn(html_cache_policy))
         .layer(axum::middleware::from_fn(security_headers))
+        .layer(axum::middleware::from_fn(workbench_files))
         .layer(axum::middleware::from_fn(pageview_span))
         .layer(axum::middleware::from_fn(crawler_trace_policy));
 
@@ -509,8 +556,12 @@ async fn security_headers(
     use axum::http::header;
     use axum::http::HeaderValue;
 
+    let worker = worker_policy(&req);
     let mut resp = next.run(req).await;
     let headers = resp.headers_mut();
+    if let Some(policy) = worker {
+        headers.insert(header::CONTENT_SECURITY_POLICY, policy);
+    }
     for (name, value) in [
         (header::X_CONTENT_TYPE_OPTIONS, "nosniff"),
         (header::X_FRAME_OPTIONS, "DENY"),
@@ -535,6 +586,36 @@ async fn security_headers(
         );
     }
     resp
+}
+
+/// The workbench's view, framed by an MCP host, loads these files from another origin.
+async fn workbench_files(
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    let shared = lj_vocab::files::shared(req.uri().path());
+    let mut resp = next.run(req).await;
+    if shared {
+        resp.headers_mut().insert(
+            axum::http::header::ACCESS_CONTROL_ALLOW_ORIGIN,
+            axum::http::HeaderValue::from_static("*"),
+        );
+    }
+    resp
+}
+
+/// The text readers' workers answer to the policy their own script is served
+/// with, not the page's: the handwriting one reaches nothing, the OCR one its files.
+fn worker_policy(req: &axum::extract::Request) -> Option<axum::http::HeaderValue> {
+    let connect = match req.uri().path() {
+        "/htr-worker.js" => "'none'".to_string(),
+        "/ocr/worker.min.js" => {
+            let host = req.headers().get(axum::http::header::HOST)?.to_str().ok()?;
+            format!("{host}/ocr/")
+        }
+        _ => return None,
+    };
+    axum::http::HeaderValue::from_str(&format!("connect-src {connect}; object-src 'none'")).ok()
 }
 
 /// Politique de cache **par défaut** des documents HTML : `private, no-store`
@@ -725,7 +806,7 @@ async fn juridiction_address(state: &AppState, code: &str, year: Option<&str>) -
     let referential = lj_api::referential::referential(state).await.ok()?;
     let entry = referential.jurisdiction(code)?;
     let jt = lj_dtos::JurisdictionType::from_code(&entry.jurisdiction_type)?;
-    let hub = format!("/decision-index/{}/{code}", jt.url_segment());
+    let hub = format!("/decision-index/{}/{code}", jt.url_segment(Some(code)));
     Some(match year {
         Some(y) => format!("{hub}/{y}"),
         None => hub,
@@ -789,7 +870,7 @@ mod tests {
     use std::task::{Context, Poll};
     use tracing::Instrument;
 
-    const SCRAPER_MOBILE: &str = "mozilla/5.0 (linux; android 10; k) applewebkit/537.36 \
+    const CHROME_MOBILE: &str = "mozilla/5.0 (linux; android 10; k) applewebkit/537.36 \
         (khtml, like gecko) chrome/132.0.0.0 mobile safari/537.36";
     const APPLEBOT: &str = "mozilla/5.0 (macintosh; intel mac os x 10_15_7) \
         applewebkit/605.1.15 (khtml, like gecko) version/17.4 safari/605.1.15 (applebot/0.1; \
@@ -817,18 +898,18 @@ mod tests {
             ("sec-fetch-dest", "document"),
             ("sec-fetch-mode", "navigate"),
         ]);
-        assert_eq!(client_kind(SCRAPER_MOBILE, &h), "browser");
+        assert_eq!(client_kind(CHROME_MOBILE, &h), "browser");
     }
 
     #[test]
     fn sec_fetch_incoherent_est_un_bot() {
         let h = headers(&[("sec-fetch-dest", "empty")]);
-        assert_eq!(client_kind(SCRAPER_MOBILE, &h), "bot");
+        assert_eq!(client_kind(CHROME_MOBILE, &h), "bot");
     }
 
     #[test]
     fn sans_sec_fetch_on_ne_sait_pas() {
-        assert_eq!(client_kind(SCRAPER_MOBILE, &HeaderMap::new()), "unknown");
+        assert_eq!(client_kind(CHROME_MOBILE, &HeaderMap::new()), "unknown");
         assert_eq!(client_kind("", &HeaderMap::new()), "unknown");
     }
 
@@ -865,7 +946,7 @@ mod tests {
             ),
             "edge"
         );
-        assert_eq!(browser_family(SCRAPER_MOBILE), "chrome");
+        assert_eq!(browser_family(CHROME_MOBILE), "chrome");
         assert_eq!(
             browser_family(
                 "mozilla/5.0 (macintosh; intel mac os x 10_15_7) applewebkit/605.1.15 (khtml, \

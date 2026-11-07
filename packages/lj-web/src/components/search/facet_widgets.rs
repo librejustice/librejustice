@@ -23,19 +23,20 @@ use super::compact_search::query_state;
 pub fn filter_keys() -> Vec<&'static str> {
     vec![
         "seat",
-        "office",
-        // The two jurisdiction keys are read by the API and no longer written
-        // here: an old bookmark stays clearable.
+        "formation",
+        // Keys no longer written here, so that an old bookmark stays clearable.
         "jurisdictionType",
         "jurisdictionCode",
+        "office",
+        "procedure",
         "legalDomain",
         "solution",
-        "procedure",
         "publication",
         "legalInstrument",
         "legalArticle",
         "dateFrom",
         "dateTo",
+        "searchIn",
     ]
 }
 
@@ -98,9 +99,9 @@ fn grow<'a>(
 /// Reduces the tree to what answers `needle` (already lowercased), at any
 /// depth: a branch that matches keeps all its descendants, otherwise it keeps
 /// only the descendants that match. Also returns the nodes the search must
-/// UNFOLD, which are only those a match sits under: « paris » names five courts
-/// and unfolding them showed their 203 rooms, when the room is reached by
-/// opening the court. A branch that answers by its own label stays folded.
+/// UNFOLD, which are only those a match sits under: « paris » names several courts,
+/// and a room is reached by opening its court rather than by unfolding them all. A
+/// branch that answers by its own label stays folded.
 pub fn prune_tree(tree: Vec<FacetNode>, needle: &str) -> (Vec<FacetNode>, HashSet<String>) {
     if needle.is_empty() {
         return (tree, HashSet::new());
@@ -275,9 +276,8 @@ pub fn FilterSearchInput(
     #[prop(optional)] on_enter: Option<Callback<()>>,
 ) -> impl IntoView {
     // The typed text is local and instant; `value`, which a facet tree hangs
-    // off, follows after the pause. Typing « chambre sociale » crosses seven
-    // prefixes that each keep more than 2 100 of the 2 368 nodes of the seat
-    // axis, for a final state that keeps 149: without the pause the browser
+    // off, follows after the pause. Typing « chambre sociale » crosses prefixes
+    // that each keep most of the seat axis: without the pause the browser
     // renders every one of them.
     let typed = RwSignal::new(value.get_untracked());
     let pending = StoredValue::new_local(None::<TimeoutHandle>);
@@ -729,26 +729,25 @@ mod tests {
         assert_eq!(prune_tree(build_tree(&plat), "").0.len(), 2, "sans saisie");
     }
 
-    /// A court of appeal pole opens a fourth level, where 88 of the Paris
-    /// leaves live.
+    /// A court of appeal pole opens a fourth level.
     #[test]
     fn build_tree_descend_sous_le_troisieme_etage() {
         let plat = vec![
-            choix("CA", "Cour d'appel", None),
-            choix("CA.PARIS", "Cour d'appel de Paris", Some("CA")),
-            choix("CA.PARIS.P5", "Pôle 5, économique", Some("CA.PARIS")),
-            choix("CA.PARIS.P5.C6", "6e chambre", Some("CA.PARIS.P5")),
+            choix("FR.CA", "Cour d'appel", Some("FR")),
+            choix("FR.CA.PARIS", "Cour d'appel de Paris", Some("FR.CA")),
+            choix("FR.CA.PARIS.P5", "Pôle 5, économique", Some("FR.CA.PARIS")),
+            choix("FR.CA.PARIS.P5.C6", "6e chambre", Some("FR.CA.PARIS.P5")),
         ];
 
         let tree = build_tree(&plat);
         assert_eq!(tree.len(), 1);
         let pole = &tree[0].children[0].children[0];
-        assert_eq!(pole.choice.value, "CA.PARIS.P5");
-        assert_eq!(pole.children[0].choice.value, "CA.PARIS.P5.C6");
+        assert_eq!(pole.choice.value, "FR.CA.PARIS.P5");
+        assert_eq!(pole.children[0].choice.value, "FR.CA.PARIS.P5.C6");
 
         let (trouve, ouvre) = prune_tree(tree, "6e chambre");
         assert_eq!(
-            trouve[0].children[0].children[0].children[0].choice.value, "CA.PARIS.P5.C6",
+            trouve[0].children[0].children[0].children[0].choice.value, "FR.CA.PARIS.P5.C6",
             "l'élagage garde la chaîne des ancêtres de la feuille"
         );
         assert_eq!(
@@ -761,11 +760,15 @@ mod tests {
     /// A jurisdiction without a seat holds entirely at the first level.
     #[test]
     fn build_tree_rend_une_racine_sans_descendance() {
-        let plat = vec![choix("CNDA", "Cour nationale du droit d'asile", None)];
+        let plat = vec![choix(
+            "FR.CNDA",
+            "Cour nationale du droit d'asile",
+            Some("FR"),
+        )];
 
         let tree = build_tree(&plat);
         assert_eq!(tree.len(), 1);
-        assert_eq!(tree[0].choice.value, "CNDA");
+        assert_eq!(tree[0].choice.value, "FR.CNDA");
         assert!(tree[0].children.is_empty());
         assert_eq!(prune_tree(build_tree(&plat), "asile").0.len(), 1);
     }
@@ -775,13 +778,13 @@ mod tests {
     #[test]
     fn build_tree_remonte_une_branche_sans_parent_servi() {
         let plat = vec![
-            choix("CA", "Cour d'appel", None),
-            choix("CA.PARIS", "Cour d'appel de Paris", Some("CA")),
-            choix("CA.LYON.C1", "1re chambre", Some("CA.LYON")),
+            choix("FR.CA", "Cour d'appel", Some("FR")),
+            choix("FR.CA.PARIS", "Cour d'appel de Paris", Some("FR.CA")),
+            choix("FR.CA.LYON.C1", "1re chambre", Some("FR.CA.LYON")),
         ];
 
         let tree = build_tree(&plat);
         assert_eq!(tree.len(), 2);
-        assert_eq!(tree[1].choice.value, "CA.LYON.C1");
+        assert_eq!(tree[1].choice.value, "FR.CA.LYON.C1");
     }
 }

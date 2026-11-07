@@ -466,8 +466,8 @@ static CODE_MATTERS: LazyLock<BTreeMap<&'static str, Vec<CodeMatter>>> = LazyLoc
     by_text
 });
 
-/// Not « loi de finances »: 1 274 of the 2 193 titles that name one distribute
-/// credits, and a finance law mixes the tax with the budget.
+/// Not « loi de finances »: most titles that name one distribute credits, and a
+/// finance law mixes the tax with the budget.
 static TAX_TITLE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)\bimp[oô]ts?\b|\btaxes?\b|\bfiscal").unwrap());
 

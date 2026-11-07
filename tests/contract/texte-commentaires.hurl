@@ -4,20 +4,20 @@
 #   GET /norm/fr/{slug}       -> the rendered block
 # {{base}} = host root. The bundle is anchored on the whole text, which is
 # what a law commentary comments; an article keeps the anchor on its number.
-# The HAL harvest only grows, so a count is asserted as a floor.
+# A count is asserted as a floor, the harvest growing between scans.
 # ============================================================================
 
-# Sapin II: 9 HAL deposits name the law in their title on 21/09/2026.
+# Sapin II: notes linked to their publisher.
 GET {{base}}/internal/norm/loi-n-2016-1691-du-9-decembre-2016-relative-a-la-transparence-a-la-lutte-contre
 HTTP 200
 [Asserts]
-jsonpath "$.commentaires" count >= 5
+jsonpath "$.commentaires" count >= 3
 jsonpath "$.commentaires[0].kind" == "note"
 jsonpath "$.commentaires[0].title" isString
 jsonpath "$.commentaires[0].url" startsWith "https://"
-# The edition reference travels: 22 308 of the 26 439 decision links and 693 of
-# the 838 law ones carry a page, which is what makes a note citable.
-jsonpath "$.commentaires[?(@.pages)]" count >= 5
+# The edition reference travels: most links carry a page, which is what makes a
+# note citable.
+jsonpath "$.commentaires[?(@.pages)]" count >= 3
 
 # An uncommented text carries no empty bundle: the key is absent, and the
 # front reads that absence rather than an empty list.
@@ -33,4 +33,4 @@ HTTP 200
 [Asserts]
 header "Content-Type" contains "text/html"
 body contains "Commentaires"
-body contains "hal.science/hal-01612976"
+body contains "dalloz.fr/documentation/Document?id=CONSTIT/CHRON/2017/0173"

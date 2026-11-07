@@ -421,7 +421,7 @@ mod tests {
     }
 
     #[test]
-    fn bundle_adr_0204() {
+    fn ajce_entries_bundle_into_analyse_and_conclusions() {
         let a = parse_ajce_html(ANCIEN);
         let entry = AjceEntry {
             body: analyse_body(&a),

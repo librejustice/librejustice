@@ -35,6 +35,20 @@ pub fn decision_seat(
     )
 }
 
+/// The « Formation » keys of a decision as tags: the path the `formation` filter
+/// takes and its label, the composition first; the order and the type are left out.
+pub fn formation_tags(paths: &[String]) -> Vec<lj_dtos::FacetTag> {
+    paths
+        .iter()
+        .filter_map(|path| {
+            Some(lj_dtos::FacetTag {
+                key: path.clone(),
+                label: lj_core::formation::formation_label(path)?.to_string(),
+            })
+        })
+        .collect()
+}
+
 /// Seat tag: the deepest path, as the `seat` filter expects it, and the label
 /// of its last segment. Paths come out unfolded from shortest to longest, so
 /// the last one is the room.
@@ -72,6 +86,22 @@ pub fn decision_title(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_decision_url_names_the_order_its_seat_starts_at() {
+        for kind in lj_dtos::JurisdictionType::ALL {
+            let code = serde_json::to_value(kind).unwrap();
+            let code = code.as_str().unwrap();
+            let court = lj_vocab::courts::is_foreign(code)
+                .then(|| lj_vocab::courts::foreign_court_code("sn", code, &[]));
+            let order = lj_core::chamber::jurisdiction_order(code, court.as_deref());
+            assert_eq!(
+                order.to_ascii_lowercase(),
+                kind.url_segment(court.as_deref()),
+                "{code}"
+            );
+        }
+    }
 
     #[test]
     fn full_title_with_date_and_docket() {

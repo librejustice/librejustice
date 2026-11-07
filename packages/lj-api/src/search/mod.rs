@@ -21,7 +21,7 @@ mod legs;
 mod query;
 pub mod suggest;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use deadpool_postgres::Client;
 use lj_llm::backend::Embedder;
@@ -34,11 +34,12 @@ use crate::rerank::{
     RERANK_K,
 };
 use crate::signals;
+use crate::snippets;
 use crate::state::AppState;
 
 use lj_dtos::{
     FacetChoice, LegalInstrumentFacet, PinnedDecision, QueryMode, SearchFacets, SearchHit,
-    SearchRequest, SearchResponse, SortOrder,
+    SearchMode, SearchRequest, SearchResponse, SortOrder,
 };
 
 use adaptive::compute_adaptive_weights;
@@ -48,12 +49,12 @@ use hydrate::{
     hydrate_decisions, opt_tag, DecisionMeta,
 };
 use legs::{
-    ann_leg, bm25_leg, bm25_parse_leg, fuse_ranks, pool_max_per_decision, reference_leg, title_leg,
-    truncate_fused, LegHit, Legs, ReferenceKeys, Written,
+    ann_leg, ann_within, bm25_leg, bm25_parse_leg, fuse_ranks, pool_max_per_decision,
+    reference_leg, title_leg, truncate_fused, LegHit, Legs, ReferenceKeys, Written,
 };
 use query::{
-    detect_query_mode, has_boolean_operator, is_boolean_query, query_lacks_searchable_terms,
-    translate_boolean,
+    detect_query_mode, has_boolean_operator, lexical_parse, query_lacks_searchable_terms,
+    quoted_constraint, without_quotes,
 };
 
 pub(crate) use dates::{parse_search_date, DateError, DATE_GE, DATE_LE};
@@ -254,7 +255,7 @@ async fn nocache(
         comptage(state, req, &ranked).await?;
     }
     let t1 = std::time::Instant::now();
-    let resp = paginate(state, req, &ranked, None).await?;
+    let resp = paginate(state, req, &ranked, None, snippets::DEFAULT_MAX_CHARS).await?;
     tracing::info!(
         target: "lj_api::timing",
         retrieval_ms,
@@ -377,13 +378,12 @@ async fn client(state: &AppState) -> Result<Client> {
         .map_err(|e| ApiError::Internal(format!("pool: {e}")))
 }
 
-/// Hydrate des `SearchHit` complets pour une liste ordonnée d'ids de décisions,
-/// sans requête de recherche (score 0, snippet = tête du texte). Renvoie
-/// `(decision_id, hit)` dans l'ordre d'entrée ; les ids sans metadata affichable
-/// sont silencieusement omis.
+/// `(decision_id, hit)` in the order given, score 0, the snippet highlighting
+/// `query`; an id without displayable metadata is left out.
 pub(crate) async fn hits_for_decision_ids(
     conn: &Client,
     decision_ids: &[i64],
+    query: &str,
     refs: &crate::referential::Referential,
 ) -> Result<Vec<(i64, SearchHit)>> {
     let meta = hydrate_decisions(conn, decision_ids)
@@ -394,7 +394,7 @@ pub(crate) async fn hits_for_decision_ids(
         .filter(|id| meta.contains_key(id))
         .map(|id| (*id, 0.0, LegHit::synthetic_title_only(*id)))
         .collect();
-    let hits = assemble_page(conn, &page, &meta, "", refs).await?;
+    let hits = assemble_page(conn, &page, &meta, query, refs, snippets::DEFAULT_MAX_CHARS).await?;
     Ok(page.iter().map(|(id, _, _)| *id).zip(hits).collect())
 }
 
@@ -431,6 +431,14 @@ struct Retrieval {
 /// How many decisions the card above a content list holds.
 const PINNED_MAX: usize = 3;
 
+/// The filters the search no longer has. A client still sending them, from a
+/// cached tool list or an old integration, is answered without them and told so.
+pub(crate) const RETIRED_FILTERS: [&str; 2] = ["procedure", "office"];
+
+/// ASCII, since the public door sends it as a header.
+pub(crate) const RETIRED_FILTERS_WARNING: &str = "`procedure` and `office` no longer filter: \
+the bench is `formation`, and an interim-relief track or a QPC is reached by `legal_article`.";
+
 /// What `auto` decides for a query, or what a stated mode collapses to.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Resolution {
@@ -459,12 +467,17 @@ impl Resolution {
 }
 
 /// What a content query designates besides what it asks: a number, weak when
-/// its four digits beside a court could be a year, or a case name the corpus
-/// knows, by its matched key.
+/// its four digits beside a court could be a year, or the decisions a name
+/// designates, with the words of the query that name covers.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum Designation {
-    Number { weak: bool },
-    Name(String),
+    Number {
+        weak: bool,
+    },
+    Name {
+        bearers: Vec<i64>,
+        covered: Vec<String>,
+    },
 }
 
 impl Designation {
@@ -472,7 +485,11 @@ impl Designation {
     fn consumes(&self, query: &str) -> bool {
         match self {
             Designation::Number { .. } => lj_core::docket_key::is_bare_number(query),
-            Designation::Name(key) => lj_core::case_names::case_name_key(query) == *key,
+            Designation::Name { covered, .. } => {
+                let folded = lj_core::case_names::case_name_key(query);
+                let words: Vec<&str> = folded.split(' ').collect();
+                lj_core::citation::only_designates(&words_outside(&words, covered))
+            }
         }
     }
 
@@ -488,10 +505,27 @@ impl Designation {
                 .into_iter()
                 .filter(|w| !w.chars().any(|c| c.is_ascii_digit()))
                 .collect(),
-            Designation::Name(key) => lj_core::citation::words_around(&words, key),
+            Designation::Name { covered, .. } => words_outside(&words, covered),
         };
         lj_core::citation::remainder_cites(&around, seats)
     }
+}
+
+/// The words of a folded query once each covered word is taken out.
+fn words_outside<'a>(words: &[&'a str], covered: &[String]) -> Vec<&'a str> {
+    let mut left: Vec<&str> = covered.iter().map(String::as_str).collect();
+    words
+        .iter()
+        .copied()
+        .filter(|w| !w.is_empty())
+        .filter(|w| match left.iter().position(|c| c == w) {
+            Some(i) => {
+                left.swap_remove(i);
+                false
+            }
+            None => true,
+        })
+        .collect()
 }
 
 /// A stated mode is served as stated, without a card; `auto` settles the
@@ -507,6 +541,15 @@ fn resolve_shape(req: &SearchRequest) -> Option<Resolution> {
                 && !has_boolean_operator(&req.query))
             .then_some(Resolution::Reference)
         }
+    }
+}
+
+/// A reference settled by its shape holds Postgres like any search, for a tenth
+/// of a hybrid's time.
+pub(crate) fn budget_cost(req: &SearchRequest) -> crate::ratelimit::Cost {
+    match resolve_shape(req) {
+        Some(Resolution::Reference) => crate::ratelimit::Cost::Reference,
+        _ => crate::ratelimit::Cost::Search,
     }
 }
 
@@ -538,19 +581,64 @@ async fn designation(state: &AppState, query: &str) -> Result<Option<Designation
         let weak = eclis.is_empty() && numbers.iter().all(|n| n.weak);
         return Ok(Some(Designation::Number { weak }));
     }
+    let refs = crate::referential::referential(state).await?;
+    let folded = lj_core::case_names::case_name_key(query);
+    let words: Vec<&str> = folded.split(' ').filter(|w| !w.is_empty()).collect();
+    let (distinctive, designates) = lj_core::citation::distinctive_words(&words, refs.seat_words());
+    let seated = lj_core::citation::strip_court(&words)
+        .is_some_and(|(kind, rest)| refs.seats_court(kind, &rest));
+    if distinctive.is_empty() && seated {
+        return Ok(None);
+    }
+    let bearers = match distinctive.is_empty() {
+        true => Vec::new(),
+        false => refs.name_bearers(&distinctive, lj_core::case_names::NAME_BEARERS_MAX),
+    };
+    if !bearers.is_empty() && (designates || !all_written_often(state, &distinctive).await?) {
+        return Ok(Some(Designation::Name {
+            bearers,
+            covered: distinctive.iter().map(|w| w.to_string()).collect(),
+        }));
+    }
     let keys = lj_core::case_names::candidate_keys(query);
-    if !crate::referential::referential(state)
-        .await?
-        .names_a_case(&keys)
-    {
+    if !refs.names_a_case(&keys) {
         return Ok(None);
     }
     let conn = client(state).await?;
-    Ok(DecisionRepository::new(&conn)
+    let Some(named) = DecisionRepository::new(&conn)
         .case_name_match(&keys)
         .await
         .map_err(ApiError::Store)?
-        .map(|m| Designation::Name(m.key)))
+    else {
+        return Ok(None);
+    };
+    if lj_core::citation::key_is_glued(&words, &named.key, &distinctive) {
+        return Ok(None);
+    }
+    Ok(Some(Designation::Name {
+        bearers: named.decisions.iter().map(|d| d.id).collect(),
+        covered: named.key.split(' ').map(str::to_string).collect(),
+    }))
+}
+
+/// Without a court or a designating word, a name's words must not all be
+/// common words of the fonds: « harcèlement » alone asks, it names nobody.
+async fn all_written_often(state: &AppState, words: &[&str]) -> Result<bool> {
+    let conn = client(state).await?;
+    let frequent = DecisionRepository::new(&conn)
+        .frequent_names(words, lj_core::case_names::SHORT_NAME_RARITY)
+        .await
+        .map_err(ApiError::Store)?;
+    Ok(frequent.len() == words.len())
+}
+
+/// A date order on content lists every decision holding all the words, sorted in
+/// the index: re-sorting the relevance pool, capped at 100, dropped the newest.
+async fn dated_listing(state: &AppState, req: &SearchRequest) -> Result<bool> {
+    if req.sort == SortOrder::Relevance || query_lacks_searchable_terms(&req.query) {
+        return Ok(false);
+    }
+    Ok(resolve(state, req).await? != Resolution::Reference)
 }
 
 async fn resolve(state: &AppState, req: &SearchRequest) -> Result<Resolution> {
@@ -610,37 +698,15 @@ async fn reference_keys(state: &AppState, req: &SearchRequest) -> Result<Referen
         return Ok(ReferenceKeys {
             numbers,
             eclis,
-            named: false,
+            bearers: Vec::new(),
         });
     }
-    let name_keys = lj_core::case_names::candidate_keys(&req.query);
-    if !crate::referential::referential(state)
-        .await?
-        .names_a_case(&name_keys)
-    {
-        return Ok(ReferenceKeys::default());
-    }
-    let conn = client(state).await?;
-    let Some(named) = DecisionRepository::new(&conn)
-        .case_name_match(&name_keys)
-        .await
-        .map_err(ApiError::Store)?
-    else {
-        return Ok(ReferenceKeys::default());
-    };
-    Ok(ReferenceKeys {
-        numbers: named
-            .decisions
-            .iter()
-            .flat_map(|d| &d.docket_numbers)
-            .map(|n| lj_core::docket_key::QueryNumber {
-                key: lj_core::docket_key::docket_key(n),
-                courts: &[],
-                weak: false,
-            })
-            .collect(),
-        eclis: Vec::new(),
-        named: true,
+    Ok(match designation(state, &req.query).await? {
+        Some(Designation::Name { bearers, .. }) => ReferenceKeys {
+            bearers,
+            ..ReferenceKeys::default()
+        },
+        _ => ReferenceKeys::default(),
     })
 }
 
@@ -699,8 +765,8 @@ async fn retrieve_reference(
     leg_limit: i64,
 ) -> Result<Retrieval> {
     let reference = reference_keys(state, req).await?;
-    let designated =
-        !reference.named && !(reference.numbers.is_empty() && reference.eclis.is_empty());
+    let designated = reference.bearers.is_empty()
+        && !(reference.numbers.is_empty() && reference.eclis.is_empty());
     let refs = crate::referential::referential(state).await?;
     let (leg_req, written) = match designated {
         true => (req.clone(), written_citation(&refs, &req.query)),
@@ -714,8 +780,8 @@ async fn retrieve_reference(
         .into_iter()
         .map(|(d, s)| (d, s, LegHit::synthetic_title_only(d)))
         .collect();
-    // Every bearer of a key is an answer, not a tail: only the title alone has one to cut.
-    let fused = match designated {
+    // Every bearer of a key or a name is an answer, not a tail: only the title alone has one to cut.
+    let fused = match designated || !reference.bearers.is_empty() {
         true => fused,
         false => truncate_fused(fused),
     };
@@ -734,17 +800,9 @@ async fn retrieve_boolean(
     leg_limit: i64,
 ) -> Result<Retrieval> {
     let bm25_conn = client(state).await?;
-    let body_query = if is_boolean_query(&req.query) {
-        translate_boolean(&req.query)
-    } else {
-        req.query.clone()
-    };
-    let bm25_scores = if is_boolean_query(&req.query) {
-        bm25_parse_leg(&bm25_conn, req, &body_query, leg_limit).await
-    } else {
-        bm25_leg(&bm25_conn, req, leg_limit).await
-    }
-    .map_err(ApiError::Store)?;
+    let bm25_scores = bm25_parse_leg(&bm25_conn, req, &lexical_parse(&req.query), leg_limit)
+        .await
+        .map_err(ApiError::Store)?;
     let empty: HashMap<i64, LegHit> = HashMap::new();
     let none: HashMap<i64, f64> = HashMap::new();
     let fused = truncate_fused(fuse_ranks(
@@ -770,7 +828,12 @@ async fn retrieve_hybrid(
     leg_limit: i64,
     vchord_probes: u32,
 ) -> Result<Retrieval> {
-    let query_arr = match state.embedding_cache.get(&req.query).await {
+    let constraint = quoted_constraint(&req.query);
+    let question = match constraint {
+        Some(_) => without_quotes(&req.query),
+        None => req.query.clone(),
+    };
+    let query_arr = match state.embedding_cache.get(&question).await {
         Some(vec) => {
             crate::cache_metrics::record_access("embedding", true);
             vec
@@ -779,13 +842,13 @@ async fn retrieve_hybrid(
             crate::cache_metrics::record_access("embedding", false);
             let arr = state
                 .embedder
-                .embed_query(std::slice::from_ref(&req.query))
+                .embed_query(std::slice::from_ref(&question))
                 .await
                 .map_err(|e| ApiError::Internal(format!("embed: {e}")))?;
             let vec = std::sync::Arc::new(arr.row(0).to_owned());
             state
                 .embedding_cache
-                .set(&req.query, std::sync::Arc::clone(&vec))
+                .set(&question, std::sync::Arc::clone(&vec))
                 .await;
             vec
         }
@@ -798,10 +861,14 @@ async fn retrieve_hybrid(
     let (bm25_scores, ann_hits) = {
         let bm25_conn = client(state).await?;
         let mut ann_conn = client(state).await?;
-        tokio::try_join!(
-            bm25_leg(&bm25_conn, req, leg_limit),
-            ann_leg(&mut ann_conn, req, &query_vec, leg_limit, vchord_probes),
-        )
+        tokio::try_join!(bm25_leg(&bm25_conn, req, leg_limit), async {
+            match &constraint {
+                Some(c) => {
+                    ann_within(&mut ann_conn, req, c, &query_vec, leg_limit, vchord_probes).await
+                }
+                None => ann_leg(&mut ann_conn, req, &query_vec, leg_limit, vchord_probes).await,
+            }
+        })
         .map_err(ApiError::Store)?
     };
 
@@ -842,25 +909,31 @@ fn score_key(query: &str, decision_id: i64) -> String {
     format!("{decision_id} {query}")
 }
 
-/// Applique l'ordre LLM `new_ids` sur le head (top-[`RERANK_K`]) de `base` et
-/// renvoie la séquence complète d'ids en ordre relevance reranké : head réordonné,
-/// ids du head non couverts remis en queue de head dans l'ordre RRF, puis la tail
-/// intacte. Conserve tous les ids de `base`.
+/// Applies the LLM order `new_ids` to the head (top-[`RERANK_K`]) of `base` and
+/// returns every id in reranked relevance order: the reranked ids take back, in LLM
+/// order, the ranks they held; a head id the reranker did not judge (no summary)
+/// keeps its RRF rank; then the tail untouched.
 fn rerank_id_order(base: &[(i64, f64, LegHit)], new_ids: &[i64]) -> Vec<i64> {
     let head_len = RERANK_K.min(base.len());
-    let head_ids: Vec<i64> = base[..head_len].iter().map(|(d, _, _)| *d).collect();
-    let mut remaining: std::collections::HashSet<i64> = head_ids.iter().copied().collect();
-    let mut out: Vec<i64> = Vec::with_capacity(base.len());
-    for d in new_ids {
-        if remaining.remove(d) {
-            out.push(*d);
-        }
-    }
-    for d in &head_ids {
-        if remaining.remove(d) {
-            out.push(*d);
-        }
-    }
+    let head = &base[..head_len];
+    let mut in_head: HashSet<i64> = head.iter().map(|(d, _, _)| *d).collect();
+    let reranked: Vec<i64> = new_ids
+        .iter()
+        .copied()
+        .filter(|d| in_head.remove(d))
+        .collect();
+    let judged: HashSet<i64> = reranked.iter().copied().collect();
+    let mut reranked = reranked.into_iter();
+    let mut out: Vec<i64> = head
+        .iter()
+        .map(|(d, _, _)| {
+            if judged.contains(d) {
+                reranked.next().expect("one reranked id per judged slot")
+            } else {
+                *d
+            }
+        })
+        .collect();
     out.extend(base[head_len..].iter().map(|(d, _, _)| *d));
     out
 }
@@ -908,11 +981,11 @@ async fn reranked_order(
         .iter()
         .filter_map(|d| {
             let m = bundle.meta.get(d)?;
-            let summary = m.summary.clone().filter(|s| !s.is_empty())?;
+            let summary = m.summary.as_deref().filter(|s| !s.is_empty())?;
             Some(RerankItem {
                 decision_id: *d,
                 title: display_title(m, &refs),
-                summary,
+                summary: lj_summary::summary_head(summary).to_string(),
             })
         })
         .collect();
@@ -970,8 +1043,8 @@ async fn llm_order(
             .await?
     };
 
-    // Un jeton = un rerank, quel que soit le nombre d'appels qu'il déclenche : le
-    // cache de notes le fait varier de ~4 à 15. Le jeton est calé sur le pire cas.
+    // One token is one rerank, whatever number of calls the score cache leaves it
+    // to make. The token is set on the worst case.
     if state
         .budgets
         .take(crate::ratelimit::Cost::Rerank, budget_key)
@@ -1104,7 +1177,7 @@ fn meta_weight(m: &DecisionMeta) -> usize {
         + opt(&m.jurisdiction_code)
         + opt(&m.date_lecture)
         + opt(&m.solution_uid)
-        + opt(&m.procedure_uid)
+        + vec_s(&m.formation_paths)
         + opt(&m.office_uid)
         + opt(&m.legal_domain_uid)
         + vec_s(&m.publication_codes)
@@ -1125,10 +1198,9 @@ pub(crate) fn facets_weight(f: &SearchFacets) -> usize {
             .sum()
     }
     choices(&f.seat)
-        + choices(&f.office)
+        + choices(&f.formation)
         + choices(&f.legal_domain)
         + choices(&f.solution)
-        + choices(&f.procedure)
         + choices(&f.publication)
         + choices(&f.date_lecture_year)
         + f.legal_instrument
@@ -1218,16 +1290,36 @@ async fn pinned_decisions(state: &AppState, ids: &[i64]) -> Result<Vec<PinnedDec
             id: m.public_id.clone(),
             jurisdiction_type: lj_dtos::JurisdictionType::from_code(&m.jurisdiction_type)
                 .expect("a stored jurisdiction_type is a known variant"),
+            jurisdiction_code: m.jurisdiction_code.clone(),
             title: display_title(m, &refs),
             seat: display_seat(m, &refs),
             solution: opt_tag(&m.solution_uid, &refs),
-            procedure: opt_tag(&m.procedure_uid, &refs),
+            formation: crate::titles::formation_tags(&m.formation_paths),
         })
         .collect())
 }
 
 /// Total exact et facettes du bundle, calculés une seule fois : les demandeurs
 /// suivants attendent le même résultat, et aucun ne relance la récupération.
+/// A list served lexically is counted as the lexical mode, auto's included; a
+/// constrained hybrid counts the decisions holding its quoted phrases.
+fn counted(req: &SearchRequest, served: QueryMode) -> SearchRequest {
+    let constraint = match served {
+        QueryMode::Hybrid => quoted_constraint(&req.query),
+        _ => None,
+    };
+    let lexical = served == QueryMode::Lexical || constraint.is_some();
+    SearchRequest {
+        query: constraint.unwrap_or_else(|| req.query.clone()),
+        mode: if lexical {
+            SearchMode::Lexical
+        } else {
+            req.mode
+        },
+        ..req.clone()
+    }
+}
+
 async fn comptage<'a>(
     state: &AppState,
     req: &SearchRequest,
@@ -1243,9 +1335,8 @@ async fn comptage<'a>(
                 QueryMode::Reference => Scope::Served(&served),
                 _ => Scope::Question(&ranked.hors_question),
             };
-            let (total, counters) = aggregate_facets(&conn, req, scope, Aggs::All)
-                .await
-                .map_err(|e| ApiError::Internal(format!("facettes agrégées : {e}")))?;
+            let req = &counted(req, ranked.query_mode);
+            let (total, counters) = aggregate_facets(&conn, req, scope, Aggs::All).await?;
             Ok((total, facets_from_counters(&counters, &refs)))
         })
         .await
@@ -1260,6 +1351,7 @@ async fn paginate(
     req: &SearchRequest,
     ranked: &RankedResults,
     rerank_ids: Option<&[i64]>,
+    snippet_chars: usize,
 ) -> Result<SearchResponse> {
     let relevance_ids: Vec<i64> = match rerank_ids {
         Some(ids) => rerank_id_order(&ranked.fused, ids),
@@ -1271,8 +1363,8 @@ async fn paginate(
         .collect();
 
     let page_key = format!(
-        "{}|{:?}|{}|{}",
-        req.ai_mode, req.sort, req.offset, req.limit
+        "{}|{:?}|{}|{}|{}",
+        req.ai_mode, req.sort, req.offset, req.limit, snippet_chars
     );
 
     let cached_page = ranked.page_memo.lock().unwrap().get(&page_key).cloned();
@@ -1298,7 +1390,15 @@ async fn paginate(
 
         let conn = client(state).await?;
         let refs = referential(state).await?;
-        let hits = assemble_page(&conn, &slice, &ranked.meta, &req.query, &refs).await?;
+        let hits = assemble_page(
+            &conn,
+            &slice,
+            &ranked.meta,
+            &req.query,
+            &refs,
+            snippet_chars,
+        )
+        .await?;
         ranked
             .page_memo
             .lock()
@@ -1367,10 +1467,7 @@ async fn rank_uncached(
     vchord_probes: u32,
     budget_key: Option<&crate::ratelimit::CallerKey>,
 ) -> Result<std::sync::Arc<RankedResults>> {
-    if state
-        .budgets
-        .take(crate::ratelimit::Cost::Search, budget_key)
-        .await
+    if state.budgets.take(budget_cost(req), budget_key).await
         == crate::ratelimit::Verdict::Exhausted
         && state.settings.search_budget_enforce
     {
@@ -1401,6 +1498,8 @@ async fn rank_uncached(
     librejustice.search.origin = tracing::field::Empty,
     librejustice.search.caller = tracing::field::Empty,
     user_agent.original = tracing::field::Empty,
+    librejustice.request.headers = tracing::field::Empty,
+    librejustice.request.worker = tracing::field::Empty,
     librejustice.search.visit = tracing::field::Empty,
     librejustice.search.page = tracing::field::Empty,
     librejustice.search.filters = tracing::field::Empty,
@@ -1433,14 +1532,14 @@ pub async fn search(
         span.record("librejustice.search.pinned", resp.pinned.len() as u64);
     };
 
-    if req.query.trim().is_empty() {
+    if query_lacks_searchable_terms(&req.query) || dated_listing(state, req).await? {
         let resp = browse::browse(state, req).await?;
         resolu(&resp);
         caller.record_outcome(
             ENGINE,
             req.query.as_str(),
             shape,
-            resp.total.unwrap_or_default(),
+            resp.total.unwrap_or(resp.all_hit_paths.len() as i64),
         );
         return Ok(resp);
     }
@@ -1460,11 +1559,13 @@ pub async fn search(
     let rerank_ids = reranked_order(state, req, &ranked, budget_key, rerank_budget).await?;
     let rerank = t.elapsed();
     let t = std::time::Instant::now();
+    let snippet_chars = snippets::budget(caller.context, snippets::DEFAULT_MAX_CHARS);
     let resp = paginate(
         state,
         req,
         &ranked,
         rerank_ids.as_deref().map(Vec::as_slice),
+        snippet_chars,
     )
     .await?;
 
@@ -1504,7 +1605,7 @@ pub async fn count(
     req: &SearchRequest,
     budget_key: Option<&crate::ratelimit::CallerKey>,
 ) -> Result<lj_dtos::SearchCountResponse> {
-    if req.query.trim().is_empty() {
+    if query_lacks_searchable_terms(&req.query) || dated_listing(state, req).await? {
         let refs = referential(state).await?;
         let counts = browse::totals_and_facets(state, req, &refs).await?;
         return Ok(lj_dtos::SearchCountResponse {
@@ -1535,9 +1636,9 @@ const SUGGEST_TEXTS: i64 = 8;
 /// answer to « l'article L761-2 », not a list to shorten further.
 const SUGGEST_ROWS: usize = 10;
 
-/// The `include` regex of the aggregate compiles to at most 1,000 states and a
-/// key costs about one per escaped character: 30 keys sharing no prefix already
-/// fill it, and a 31st fails the whole call. Trimming here rather than in the
+/// The `include` regex of the aggregate compiles to a bounded number of states and
+/// a key costs about one per escaped character: past the bound the whole call
+/// fails. Trimming here rather than in the
 /// aggregate is what keeps the keys counted and the rows served the same set.
 const INCLUDE_BUDGET: usize = 900;
 
@@ -1620,7 +1721,7 @@ pub async fn suggest_instruments(
         instruments: &uids,
         articles: &keys,
     };
-    let counters = if req.query.trim().is_empty() {
+    let counters = if query_lacks_searchable_terms(&req.query) {
         aggregate_facets(&conn, req, Scope::Question(&[]), aggs).await
     } else {
         let ranked = ranked_results_cached(
@@ -1636,9 +1737,8 @@ pub async fn suggest_instruments(
             QueryMode::Reference => Scope::Served(&served),
             _ => Scope::Question(&ranked.hors_question),
         };
-        aggregate_facets(&conn, req, scope, aggs).await
-    }
-    .map_err(|e| ApiError::Internal(format!("comptage des candidats : {e}")))?
+        aggregate_facets(&conn, &counted(req, ranked.query_mode), scope, aggs).await
+    }?
     .1;
 
     let mut rows: Vec<LegalInstrumentFacet> = uids
@@ -1670,10 +1770,10 @@ pub async fn suggest_instruments(
         .collect();
     // The code spelled out comes first, then the one case law cites most. On
     // the count alone, « l'article L761-2 du code de la consommation » answers
-    // with the labour code, which carries that number 301 times against 84; on
+    // with the labour code, which carries that number more often; on
     // the catalogue score alone, « 700 » answers with the Senegalese code of
     // civil procedure, whose short title outscores the French one it never
-    // cites, and « L. 761-1 CJA » ranks the CJA fifth, an acronym being in no
+    // cites, and « L. 761-1 CJA » ranks the CJA low, an acronym being in no
     // title.
     let named = lj_fold::slug(needle, '-');
     rows.sort_by_key(|r| {
@@ -1718,20 +1818,34 @@ mod tests {
     }
 
     #[test]
+    fn a_decision_the_reranker_did_not_judge_keeps_its_rank() {
+        let base: Vec<(i64, f64, LegHit)> = (1..=60)
+            .map(|d| (d, 0.0, LegHit::synthetic_title_only(d)))
+            .collect();
+        let judged: Vec<i64> = (1..=50).rev().filter(|d| *d != 3).collect();
+        let order = rerank_id_order(&base, &judged);
+        assert_eq!(&order[..4], &[50, 49, 3, 48]);
+        assert_eq!(&order[50..], &(51..=60).collect::<Vec<_>>()[..]);
+        let mut sorted = order.clone();
+        sorted.sort_unstable();
+        assert_eq!(sorted, (1..=60).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn la_requete_qui_designe_une_decision_part_en_reference() {
         for q in [
-            "\"18-25.770\"",
-            "n° 250747",
-            "n° 1702092",
-            "21PA01295",
-            "31399/23",
-            "2010-104 QPC",
-            "86-215 DC conseil constitutionnel 3 septembre 1986",
-            "\"2026-915 DC\"",
-            "ECLI:FR:CCASS:2007:C200527",
-            "2503146",
-            " 1702092 ",
-            "335033",
+            "\"17-24.681\"",
+            "n° 412345",
+            "n° 1801234",
+            "19PA01234",
+            "41234/22",
+            "2012-245 QPC",
+            "88-123 DC conseil constitutionnel 5 mars 1988",
+            "\"2025-901 DC\"",
+            "ECLI:FR:CCASS:2015:C100123",
+            "2401234",
+            " 1801234 ",
+            "412345",
         ] {
             assert_eq!(
                 resolve_shape(&req(q, "auto")),
@@ -1740,12 +1854,12 @@ mod tests {
             );
         }
         for q in [
-            "\"12-11.666\" OU valeur des parts de l'associé retrayant",
-            "\"12-15.373\" ET \"cour d'appel de Douai\"",
-            "21PA01295 SAUF référé",
-            "387763 Czabaj délai raisonnable",
-            "75013",
-            "33260",
+            "\"13-14.567\" OU valeur des parts sociales",
+            "\"14-12.345\" ET \"cour d'appel de Rennes\"",
+            "19PA01234 SAUF référé",
+            "412345 Durand délai raisonnable",
+            "69003",
+            "44100",
             "Danthony",
         ] {
             assert_eq!(resolve_shape(&req(q, "auto")), None, "{q}");
@@ -1754,7 +1868,7 @@ mod tests {
 
     #[test]
     fn le_mode_demande_est_servi_tel_quel_sans_carte() {
-        for q in ["\"18-25.770\"", "Danthony", "75013", "expulsion locative"] {
+        for q in ["\"17-24.681\"", "Danthony", "69003", "expulsion locative"] {
             assert_eq!(
                 resolve_shape(&req(q, "lexical")),
                 Some(Resolution::Lexical),
@@ -1771,9 +1885,9 @@ mod tests {
     #[test]
     fn le_mode_reference_demande_tient_sous_un_operateur_booleen() {
         for q in [
-            "\"18-25.770\"",
-            "\"25-12.848\" OU \"25-12.849\"",
-            "\"12-15.373\" ET \"cour d'appel de Douai\"",
+            "\"17-24.681\"",
+            "\"24-10.101\" OU \"24-10.102\"",
+            "\"14-12.345\" ET \"cour d'appel de Rennes\"",
             "expulsion locative",
         ] {
             assert_eq!(
@@ -1792,88 +1906,105 @@ mod tests {
             .collect();
         let number = || Some(Designation::Number { weak: false });
         let weak = || Some(Designation::Number { weak: true });
-        let danthony = || Some(Designation::Name("danthony".into()));
-        let beziers = || Some(Designation::Name("commune de beziers".into()));
-        let beziers_court = || Some(Designation::Name("beziers".into()));
+        let name = |covered: &str| {
+            Some(Designation::Name {
+                bearers: vec![1],
+                covered: covered.split(' ').map(str::to_string).collect(),
+            })
+        };
+        let danthony = || name("danthony");
+        let beziers = || name("commune beziers");
+        let beziers_court = || name("beziers");
         for (q, designation, attendu) in [
             ("expulsion locative", None, Resolution::Semantic),
-            ("Conseil d'État 2024 expulsion", None, Resolution::Semantic),
-            ("conseil d'état 1920", None, Resolution::Semantic),
             (
-                "cour d'appel nîmes 12 avril 2022 congés trimestriels",
+                "Conseil d'État 2023 expropriation",
+                None,
+                Resolution::Semantic,
+            ),
+            ("conseil d'état 1935", None, Resolution::Semantic),
+            (
+                "cour d'appel rennes 3 mars 2021 heures supplémentaires",
                 None,
                 Resolution::Semantic,
             ),
             (
-                "cour d'appel de toulouse 23 avril 1998",
+                "cour d'appel de toulouse 14 mai 2003",
                 None,
                 Resolution::Reference,
             ),
-            ("caa paris 17 juillet 2024", None, Resolution::Reference),
+            ("caa paris 9 juin 2023", None, Resolution::Reference),
             (
-                "caa paris 17 juillet 2024 OU 18 juillet 2024",
+                "caa paris 9 juin 2023 OU 10 juin 2023",
                 None,
                 Resolution::Lexical,
             ),
             ("congés ET payés", None, Resolution::Lexical),
             ("\"force majeure\"", None, Resolution::Lexical),
             (
-                "5911 conseil d'etat 1978",
+                "4823 conseil d'etat 1976",
                 weak(),
                 Resolution::SemanticWithCard,
             ),
             (
-                "TA Lyon 29 novembre 2022 1906545",
+                "TA Lyon 15 mars 2021 2101234",
                 number(),
                 Resolution::Reference,
             ),
             (
-                "100639 diop 7 octobre 1991",
+                "104567 durand 5 mai 1993",
+                number(),
+                Resolution::SemanticWithCard,
+            ),
+            ("Béziers CAA Lyon", beziers_court(), Resolution::Reference),
+            ("69003", number(), Resolution::LexicalWithCard),
+            (
+                "412345 Durand délai raisonnable",
                 number(),
                 Resolution::SemanticWithCard,
             ),
             (
-                "Béziers CAA Marseille",
-                beziers_court(),
-                Resolution::Reference,
-            ),
-            ("75013", number(), Resolution::LexicalWithCard),
-            (
-                "387763 Czabaj délai raisonnable",
+                "barème 300000 indemnisation du préjudice",
                 number(),
                 Resolution::SemanticWithCard,
             ),
             (
-                "barème 500000 accident de la circulation",
-                number(),
-                Resolution::SemanticWithCard,
-            ),
-            (
-                "\"12-11.666\" OU valeur des parts",
+                "\"13-14.567\" OU valeur des parts",
                 number(),
                 Resolution::LexicalWithCard,
             ),
             ("Danthony", danthony(), Resolution::LexicalWithCard),
+            ("arrêt Nicolo", name("nicolo"), Resolution::LexicalWithCard),
+            (
+                "l'arrêt dit Nicolo",
+                name("nicolo"),
+                Resolution::LexicalWithCard,
+            ),
+            (
+                "Marckx c. Belgique",
+                name("marckx belgique"),
+                Resolution::LexicalWithCard,
+            ),
             ("\"Danthony\"", danthony(), Resolution::LexicalWithCard),
             (
-                "Danthony vice de procédure",
+                "Danthony consultation irrégulière",
                 danthony(),
                 Resolution::SemanticWithCard,
             ),
             ("Commune de Béziers", beziers(), Resolution::LexicalWithCard),
             (
-                "Commune de Béziers absence de transmission",
+                "Commune de Béziers résiliation unilatérale",
                 beziers(),
                 Resolution::SemanticWithCard,
             ),
             ("Béziers", beziers_court(), Resolution::LexicalWithCard),
             (
-                "Béziers 2001",
+                "Béziers 2011",
                 beziers_court(),
                 Resolution::SemanticWithCard,
             ),
             (
-                "jurisprudence Béziers II",
+                "doctrine Béziers II",
                 beziers_court(),
                 Resolution::SemanticWithCard,
             ),
@@ -1882,16 +2013,16 @@ mod tests {
                 beziers_court(),
                 Resolution::Reference,
             ),
-            ("Béziers CE 2001", beziers_court(), Resolution::Reference),
+            ("Béziers CE 2011", beziers_court(), Resolution::Reference),
             ("Danthony CE", danthony(), Resolution::Reference),
-            ("362324 conseil d'État", number(), Resolution::Reference),
+            ("412345 conseil d'État", number(), Resolution::Reference),
             (
                 "Béziers OU Danthony CE",
                 beziers_court(),
                 Resolution::LexicalWithCard,
             ),
             (
-                "Béziers conseil d'État loyauté contractuelle",
+                "Béziers conseil d'État résiliation unilatérale",
                 beziers_court(),
                 Resolution::SemanticWithCard,
             ),
@@ -1909,6 +2040,7 @@ mod tests {
                 jurisdiction_type: kind.to_string(),
                 city: city.map(str::to_string),
                 label: label.to_string(),
+                place: None,
             }
         };
         let refs = crate::referential::Referential::new(
@@ -1941,21 +2073,21 @@ mod tests {
             )
         };
         assert_eq!(
-            filters("caa paris 17 juillet 2024"),
+            filters("caa paris 9 juin 2023"),
             (
                 Some(vec!["caa_paris".to_string()]),
                 None,
-                Some("2024-07-17".to_string()),
-                Some("2024-07-17".to_string())
+                Some("2023-06-09".to_string()),
+                Some("2023-06-09".to_string())
             )
         );
         assert_eq!(
-            filters("cour d'appel de toulouse 23 avril 1998"),
+            filters("cour d'appel de toulouse 14 mai 2003"),
             (
                 None,
                 Some(1),
-                Some("1998-04-23".to_string()),
-                Some("1998-04-23".to_string())
+                Some("2003-05-14".to_string()),
+                Some("2003-05-14".to_string())
             )
         );
         assert_eq!(
@@ -1963,7 +2095,7 @@ mod tests {
             (Some(vec!["ce".to_string()]), None, None, None)
         );
         assert_eq!(filters("Béziers"), (None, None, None, None));
-        let mut own = req("caa paris 17 juillet 2024", "auto");
+        let mut own = req("caa paris 9 juin 2023", "auto");
         own.date_from = Some("2020-01-01".to_string());
         own.jurisdiction_code = Some(vec!["caa_lyon".to_string()]);
         let kept = title_request(&refs, &own);

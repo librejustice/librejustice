@@ -46,31 +46,34 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT decision_id, full_text FROM decision_text
-                 WHERE decision_id > $1 AND decision_id % $2 = 0
-                   AND deleted_at IS NULL AND lead
-                 ORDER BY decision_id LIMIT $3",
+                &format!(
+                    "SELECT t.decision_id, t.full_text FROM decision_text t
+                     WHERE t.decision_id > $1 AND t.decision_id % $2 = 0
+                       AND t.deleted_at IS NULL AND {read}
+                     ORDER BY t.decision_id LIMIT $3",
+                    read = super::pick::read("t")
+                ),
                 &[&after_id, &modulo, &limit],
             )
             .await?;
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
-    /// Lot keyset de corps d'articles (`legal_article.texte`, full scan — le
-    /// corpus textes est petit). Renvoie `(id, texte)` au-delà de `after_id`.
+    /// Sampled keyset batch of article bodies (`id % modulo = 0`), in id order.
     #[tracing::instrument(name = "db.suggest_article_texts", skip(self), fields(db.system = "postgresql"))]
     pub async fn suggest_article_texts_batch(
         &self,
         after_id: i64,
+        modulo: i64,
         limit: i64,
     ) -> Result<Vec<(i64, String)>> {
         let rows = self
             .conn
             .query(
                 "SELECT id, texte FROM legal_article
-                 WHERE id > $1 AND texte IS NOT NULL
-                 ORDER BY id LIMIT $2",
-                &[&after_id, &limit],
+                 WHERE id > $1 AND id % $2 = 0 AND texte IS NOT NULL
+                 ORDER BY id LIMIT $3",
+                &[&after_id, &modulo, &limit],
             )
             .await?;
         Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())

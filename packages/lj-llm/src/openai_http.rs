@@ -8,13 +8,13 @@ use reqwest_tracing::{SpanBackendWithUrl, TracingMiddleware};
 use serde_json::Value;
 
 const DEFAULT_TIMEOUT_S: f64 = 600.0;
-/// A query embed answers in ~50 ms at p50; past this, the local backend counts
-/// as down and `AnyEmbedder::Auto` serves the search from Cloudflare.
+/// Past this, the local backend counts as down and `AnyEmbedder::Auto` serves
+/// the search from Cloudflare.
 const QUERY_TIMEOUT_S: f64 = 5.0;
 /// Cap on the TCP establishment phase. Without it, an unreachable backend (SYN
 /// with no reply, no RST) hangs the connect on the OS TCP timeout before
-/// `AnyEmbedder::Auto` falls back to Cloudflare. A legitimate local connect is
-/// under 100 ms.
+/// `AnyEmbedder::Auto` falls back to Cloudflare. A legitimate local connect takes
+/// a fraction of it.
 const CONNECT_TIMEOUT_S: f64 = 2.0;
 const DEFAULT_MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
 
@@ -60,6 +60,9 @@ impl OpenAIHttpEmbedder {
             client: ClientBuilder::new(
                 reqwest::Client::builder()
                     .connect_timeout(std::time::Duration::from_secs_f64(CONNECT_TIMEOUT_S))
+                    // uvicorn closes an idle connection on a longer timeout: a reuse
+                    // just before its close races it and fails the request.
+                    .pool_idle_timeout(std::time::Duration::from_secs(3))
                     .build()
                     .expect("reqwest client openai-http"),
             )

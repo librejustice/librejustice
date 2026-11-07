@@ -86,7 +86,7 @@ pub async fn ingest_eu_rproc(dry_run: bool) -> Result<()> {
         let doc = serde_json::json!({
             "text_uid": r.text_uid,
             "source": "eur-lex",
-            "jurisdiction": "UE",
+            "jurisdiction": "EU",
             "title": r.title,
             // Forme citée dominante : liée par le fold de titre du linker.
             "title_key": r.title_key_form,

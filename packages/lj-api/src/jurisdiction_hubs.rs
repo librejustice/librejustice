@@ -19,7 +19,8 @@ use std::sync::Arc;
 /// judiciaire, juridictions spécialisées, cours européennes. Une famille
 /// inconnue passe en queue, dans l'ordre du GROUP BY (alphabétique).
 const TYPE_ORDER: &[&str] = &[
-    "CE", "CAA", "TA", "CONSTIT", "TC", "CC", "CA", "TJ", "TCOM", "CNDA", "CNIL", "CEDH", "CJUE",
+    "CE", "CAA", "TA", "CONSTIT", "TC", "CC", "CA", "TJ", "TCOM", "CPH", "CNDA", "CNIL", "DDD",
+    "ADLC", "CEDH", "CJUE", "COMEU",
 ];
 
 /// Catalogue des juridictions groupé par famille. Une seule entrée de cache

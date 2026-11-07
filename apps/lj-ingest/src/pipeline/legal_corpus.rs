@@ -294,7 +294,7 @@ pub async fn load_legal_corpus(only: Option<&str>) -> Result<()> {
     }
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -323,8 +323,20 @@ pub(crate) async fn load_dataset_file(
             std::fs::read_to_string(file).with_context(|| format!("lecture {}", file.display()))?;
         let doc: CorpusDoc = serde_json::from_str(&raw)
             .with_context(|| format!("dataset legal-corpus invalide: {}", file.display()))?;
+        if lj_norm::jurisdictions::from_url_segment(&doc.jurisdiction.to_ascii_lowercase())
+            != Some(doc.jurisdiction.as_str())
+        {
+            bail!(
+                "{}: unknown jurisdiction {:?}",
+                file.display(),
+                doc.jurisdiction
+            );
+        }
 
         let date_texte = doc.date_texte.as_deref().map(parse_date).transpose()?;
+        if date_texte.is_none() {
+            tracing::warn!(text_uid = %doc.text_uid, dataset = %file.display(), "dataset without date_texte: the text has no date");
+        }
         let effect_date = doc.effect_date.as_deref().map(parse_date).transpose()?;
         // Fraîcheur « as-of » : valeur explicite du dataset, ou à défaut la date de
         // modification du FICHIER dataset — la date de curation, invariante au re-load.
@@ -580,6 +592,10 @@ pub(crate) async fn run_corpus_finishers(
         .classify_text_roles_scoped(&uids)
         .await
         .map_err(|e| anyhow!("classify_text_roles_scoped: {e}"))?;
+    let dated = repo
+        .date_instruments_from_vehicles(Some(&uids))
+        .await
+        .map_err(|e| anyhow!("date_instruments_from_vehicles: {e}"))?;
     repo.refresh_article_denorm(None)
         .await
         .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
@@ -590,7 +606,12 @@ pub(crate) async fn run_corpus_finishers(
         .await
         .map_err(|e| anyhow!("refresh_reading_ranks: {e}"))?;
     tracing::info!(ranked_texts, ranked_rows, "reading ranks");
-    tracing::info!(slugged, vehicule, "legal corpus finishers");
+    tracing::info!(
+        slugged,
+        vehicule,
+        dated = dated.len(),
+        "legal corpus finishers"
+    );
     Ok(())
 }
 
@@ -599,7 +620,7 @@ pub(crate) async fn run_corpus_finishers(
 pub async fn reading_ranks() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -621,7 +642,7 @@ pub async fn reading_ranks() -> Result<()> {
 pub async fn stamp_freshness() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -656,7 +677,7 @@ pub async fn relabel_sources() -> Result<()> {
 
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 
@@ -724,7 +745,7 @@ pub async fn canonicalize_source_labels() -> Result<()> {
 
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 

@@ -1,14 +1,13 @@
 //! Sticky decision bar: shared context and search-to-decision state handoff.
 //!
-//! `leptos_router` has no rich equivalent of `location.state`, so two reactive
-//! contexts provided to the shell stand in for it:
 //! - `DecisionBarSignal`: what the `TopBar` shows (title, nav, back).
-//! - `ResultNavSignal`: a seed set on click by a result card, a neighbour or the
-//!   prev-next widget, read ONCE by `DecisionHeader` on mount to build the bar.
-//!   One-shot: a decision link without a seed (bookmarks, direct link) never
-//!   reuses a stale nav.
+//! - [`ResultNavSeed`]: the context of one visit, pushed with its history entry
+//!   by the link or the navigation that opens the decision, and read by
+//!   `DecisionHeader` on mount. Back, forward and reload give an entry back its
+//!   own seed; any other link opens a visit without one.
 
 use leptos::prelude::*;
+use leptos_router::NavigateOptions;
 use serde::{Deserialize, Serialize};
 
 /// Origine « recherche » d'une consultation : permet au bouton retour de revenir
@@ -19,6 +18,10 @@ pub struct FromSearch {
     pub search: String,
     /// Position de scroll à restaurer au retour (px).
     pub scroll_y: f64,
+    /// The query whose terms the decision highlights, `None` when the search
+    /// served references. Kept out of the URL, which history, logs and shared
+    /// links keep.
+    pub highlight: Option<String>,
 }
 
 /// Navigation inter-résultats : la liste servie, dont se dérivent le rang, le
@@ -37,7 +40,7 @@ pub struct DecisionBarState {
     pub from_search: Option<FromSearch>,
 }
 
-/// Graine posée au clic, consommée par `DecisionHeader`.
+/// The context of a visit, carried by its history entry.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ResultNavSeed {
     pub nav: Option<ResultNav>,
@@ -67,20 +70,13 @@ pub type WorkbenchSignal = RwSignal<Option<crate::pages::redact::Session>>;
 /// `TopBar` et des pages routées — donc persistant à travers les navigations).
 pub fn provide_decision_bar_contexts() {
     provide_context::<DecisionBarSignal>(RwSignal::new(None));
-    provide_context::<ResultNavSignal>(RwSignal::new(None));
     provide_context::<RestoreScrollSignal>(RwSignal::new(None));
     provide_context::<WorkbenchSignal>(RwSignal::new(None));
-    provide_context::<SeedMemorySignal>(StoredValue::new(std::collections::HashMap::new()));
 }
 
 /// Signal de la barre décision (ce que la `TopBar` lit).
 pub fn use_decision_bar() -> DecisionBarSignal {
     expect_context::<DecisionBarSignal>()
-}
-
-/// Signal de la graine de navigation (posé au clic, consommé au montage).
-pub fn use_result_nav() -> ResultNavSignal {
-    expect_context::<ResultNavSignal>()
 }
 
 /// Signal du scroll à restaurer (posé par le bouton retour, consommé au montage
@@ -89,24 +85,74 @@ pub fn use_restore_scroll() -> RestoreScrollSignal {
     expect_context::<RestoreScrollSignal>()
 }
 
-/// Mémoire des graines consommées (par id de décision).
-pub fn use_seed_memory() -> SeedMemorySignal {
-    expect_context::<SeedMemorySignal>()
-}
-
-/// Persiste la graine de `id` dans l'onglet (`sessionStorage`).
-///
-/// La mémoire ci-dessus vit en RAM : elle rattrape le back/forward, pas le
-/// rechargement de la page.
-#[cfg(feature = "hydrate")]
-pub fn persist_seed(id: &str, seed: &ResultNavSeed) {
-    if let Ok(json) = serde_json::to_string(seed) {
-        crate::dom::nav_seed_set(id, &json);
+/// The search on screen, as the origin of a visit opened from it. Empty on the
+/// server, where no click happens.
+pub fn search_origin(highlight: Option<String>) -> FromSearch {
+    #[cfg(feature = "hydrate")]
+    let (search, scroll_y) = web_sys::window()
+        .map(|w| {
+            (
+                w.location().search().unwrap_or_default(),
+                w.scroll_y().unwrap_or(0.0),
+            )
+        })
+        .unwrap_or_default();
+    #[cfg(not(feature = "hydrate"))]
+    let (search, scroll_y) = (String::new(), 0.0);
+    FromSearch {
+        search,
+        scroll_y,
+        highlight,
     }
 }
 
-/// Relit la graine persistée de `id` — `None` si cet onglet n'en a pas.
+/// Hands `seed` to the router through the clicked link, which pushes it with
+/// the history entry of the visit. The link's own `on:click` runs before the
+/// router's listener on `window`, as long as event delegation stays off.
+pub fn carry_seed(ev: &leptos::ev::MouseEvent, seed: &ResultNavSeed) {
+    #[cfg(feature = "hydrate")]
+    if let (Some(link), Ok(json)) = (ev.current_target(), serde_json::to_string(seed)) {
+        let _ = js_sys::Reflect::set(&link, &"state".into(), &json.into());
+    }
+    #[cfg(not(feature = "hydrate"))]
+    let _ = (ev, seed);
+}
+
+/// Navigation options that push `seed` with the history entry of the visit.
+pub fn seeded(seed: &ResultNavSeed) -> NavigateOptions {
+    #[cfg(feature = "hydrate")]
+    let state = leptos_router::location::State::new(
+        serde_json::to_string(seed)
+            .ok()
+            .map(wasm_bindgen::JsValue::from),
+    );
+    #[cfg(not(feature = "hydrate"))]
+    let state = {
+        let _ = seed;
+        Default::default()
+    };
+    NavigateOptions {
+        state,
+        ..Default::default()
+    }
+}
+
+/// The seed of the visit to `path`. The router writes the history entry once
+/// the route is ready, which can come after the page mounts: until then, the
+/// state it was handed is the visit's.
 #[cfg(feature = "hydrate")]
-pub fn restore_seed(id: &str) -> Option<ResultNavSeed> {
-    serde_json::from_str(&crate::dom::nav_seed_get(id)?).ok()
+pub fn visit_seed(path: &str, location: &leptos_router::location::Location) -> ResultNavSeed {
+    let window = web_sys::window().expect("a browser window");
+    let state = if window.location().pathname().ok().as_deref() == Some(path) {
+        window
+            .history()
+            .and_then(|h| h.state())
+            .unwrap_or(wasm_bindgen::JsValue::NULL)
+    } else {
+        location.state.get_untracked().to_js_value()
+    };
+    state
+        .as_string()
+        .and_then(|json| serde_json::from_str(&json).ok())
+        .unwrap_or_default()
 }

@@ -185,7 +185,7 @@ mod tests {
 
     #[test]
     fn accents_case_and_ligatures_fold_to_ascii() {
-        assert_eq!(fold("Éric DUPONT-MORETTI"), "eric dupont-moretti");
+        assert_eq!(fold("Éric DUPONT-MARTIN"), "eric dupont-martin");
         assert_eq!(fold("SŒUR Cœur ÆSOPE"), "soeur coeur aesope");
         assert_eq!(fold("Straße \u{fb01}n"), "strasse fin");
         assert_eq!(fold("Muñoz Ørsted Łódź Ÿves"), "munoz orsted lodz yves");

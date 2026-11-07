@@ -87,7 +87,7 @@ async fn run(strict: bool) -> Result<CommentaireSeedReport> {
         .with_context(|| format!("dataset article-commentaires invalide: {}", path.display()))?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -123,7 +123,7 @@ async fn run(strict: bool) -> Result<CommentaireSeedReport> {
 
         // Bundle jsonb au même format que les commentaires de décision.
         let mut note_out = json!({ "kind": "note", "url": url });
-        for k in ["title", "publisher", "access", "date", "author"] {
+        for k in ["title", "publisher", "date", "author"] {
             if let Some(v) = note.get(k).and_then(Value::as_str) {
                 note_out[k] = json!(v);
             }

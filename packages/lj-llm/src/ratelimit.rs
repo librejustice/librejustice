@@ -2,12 +2,12 @@
 //! can pay for. A Mistral response carries the key's quota state
 //! (`x-ratelimit-*-minute`) but no `Retry-After`, and Gemini carries neither.
 //!
-//! The two counters obey different laws, both measured on 07/09/2026:
+//! The two counters obey different laws:
 //!
 //! - **requests**: hard-edged bucket, back to full at the top of the wall minute,
-//!   and proper to `/v1/chat/completions`. Five `/v1/conversations` calls leave it
+//!   and proper to `/v1/chat/completions`. `/v1/conversations` calls leave it
 //!   where it stood, so that route has no request counter and does not gate.
-//! - **tokens**: rolling window, shared by the two routes. The 26 005 tokens of a
+//! - **tokens**: rolling window, shared by the two routes. The tokens of a
 //!   `chat/completions` call show up in what `conversations` announces next, so the
 //!   route is not a dimension of the bucket. Each spend is released 60 s after it
 //!   was made, continuously and with no minute boundary. Hence `TokenWindow`, one
@@ -24,9 +24,9 @@
 use std::sync::Mutex;
 use std::time::Duration;
 
-/// Seed token ceiling: `mistral-small-2603` on `/v1/conversations`, measured on
-/// 07/09/2026. It keeps a fresh client from starting blind; the first response
-/// replaces it with what the service announces.
+/// Seed token ceiling: `mistral-small-2603` on `/v1/conversations`. It keeps a
+/// fresh client from starting blind; the first response replaces it with what
+/// the service announces.
 const SEED_TOK_PER_MIN: u32 = 20_000;
 
 /// Marge posée après la frontière de minute : la bascule du service traîne de
@@ -215,9 +215,8 @@ impl RequestWindow {
     }
 }
 
-/// Growth per served call, in calls in flight. Additive and not scaled, measured
-/// 11/09/2026: a proportional growth takes 137 served calls to climb off the floor,
-/// so a run of 300 summaries ends where it started.
+/// Growth per served call, in calls in flight. Additive and not scaled: a
+/// proportional growth barely climbs off the floor within a run.
 const GROW_STEP: f64 = 0.25;
 
 /// Multiplicative cut on a refusal.
@@ -235,10 +234,9 @@ const PROBE_PERIOD: f64 = 120.0;
 /// Token bucket whose burst and refill rate are learnt from the outcomes, for a
 /// service that publishes no counter and states its ceilings only by refusing.
 ///
-/// Measured 11/09/2026, one key under 20 workers: 15 calls served in 30 ms, 3 over
-/// the next 6 s, none for the following 20. A bucket, then, and not a spacing the
-/// service imposes; and 3 000 attempts left the day's 500 untouched, so a refusal
-/// costs the round trip and nothing else.
+/// The service serves a burst, then a trickle, then nothing: a bucket, and not a
+/// spacing it imposes. A refusal leaves the day's requests untouched, so it costs
+/// the round trip and nothing else.
 #[derive(Debug)]
 struct LearnedRate {
     tokens: f64,
@@ -252,7 +250,8 @@ struct LearnedRate {
     probe_at: f64,
     /// Floor a `retryDelay` has posted: the service's own figure holds.
     hold_until: f64,
-    /// End of the episode one cut has already paid for. Held apart from `hold_until`, which the service may state as `0s`: measured 18/09/2026 on 40 of 159 refusals, and a wave of thirteen then cuts thirteen times.
+    /// End of the episode one cut has already paid for. Held apart from `hold_until`, which
+    /// the service may state as `0s`, and a wave of refusals would then cut once per refusal.
     cut_until: f64,
     /// An admission was refused since the last growth, so the target is what binds. Without it the target climbs over an idle pool and the next wave pays the whole climb in refusals.
     starved: bool,
@@ -313,9 +312,7 @@ impl LearnedRate {
     /// unbounded climb pays one per cycle.
     ///
     /// The burst does not grow. Under a full queue the throughput is the refill rate,
-    /// so a burst above one only spends tokens faster than they come back: measured
-    /// 11/09/2026, growing it cost 230 refusals over 300 summaries and drove every
-    /// bucket to its floor.
+    /// so a burst above one only spends tokens faster than they come back.
     fn served(&mut self, latency: Option<f64>, now: f64) {
         if let Some(sample) = latency.filter(|s| *s > 0.0) {
             self.latency = self.latency * 0.8 + sample * 0.2;
@@ -340,9 +337,8 @@ impl LearnedRate {
     /// hold, so the wait is not paid twice.
     ///
     /// A refusal that states nothing waits out the wall minute, the period of every
-    /// rate family we have met. Measured 11/09/2026: waiting one refill instead had
-    /// the bucket refused again on the way down, cut after cut, 176 refusals over 300
-    /// summaries and a rate two sevenths of what the service serves.
+    /// rate family we have met: waiting one refill instead has the bucket refused
+    /// again on the way down, cut after cut.
     fn refused(&mut self, stated: Option<f64>, retry_delay: Option<Duration>, now: f64) {
         if let Some(delay) = retry_delay {
             self.hold_until = self.hold_until.max(now + delay.as_secs_f64());
@@ -610,10 +606,9 @@ impl CostModel {
 
 /// Quota ledger of a key pool.
 ///
-/// One bucket per key and per model, both measured on 07/09/2026. Not per account:
-/// spending on one of the eight OFFLINE keys leaves the seven others untouched.
-/// Per model: a key down to 8 241 of its 20 000 tokens on `mistral-small-2603`
-/// announces 624 964 of 625 000 on `ministral-8b-latest` at the same instant.
+/// One bucket per key and per model. Not per account: spending on one key leaves
+/// the others untouched. Per model: a key spent on `mistral-small-2603` announces
+/// a full window on `ministral-8b-latest` at the same instant.
 ///
 /// The model is therefore a dimension of the bucket, and it is held by carrying one
 /// ledger per model rather than a second index: a client calls a single model, so
@@ -831,14 +826,14 @@ mod tests {
         let mut announced = Bucket::seed();
         assert_eq!(announced.demand(), None);
         // 50 requests a minute announced, a 4 s round trip: 50 / 60 * 4 in flight.
-        announced.settle(quota(43, 45_537, 1_000), 1_000, Some(4.0), t);
+        announced.settle(quota(40, 45_000, 1_000), 1_000, Some(4.0), t);
         let claimed = announced.demand().expect("un appel servi");
         assert!((claimed - 50.0 / 60.0 * 4.0).abs() < 1e-9, "{claimed}");
 
         // Tokens bind first: 50 000 a minute at 5 000 a call is 10 calls, not the 50
         // the request counter announces.
         let mut token_bound = Bucket::seed();
-        token_bound.settle(quota(43, 45_537, 5_000), 5_000, Some(4.0), t);
+        token_bound.settle(quota(40, 45_000, 5_000), 5_000, Some(4.0), t);
         let claimed = token_bound.demand().expect("un appel servi");
         assert!((claimed - 10.0 / 60.0 * 4.0).abs() < 1e-9, "{claimed}");
 
@@ -886,23 +881,23 @@ mod tests {
         assert_eq!(b.try_reserve(1_000, t), Err(MIN_WAIT));
 
         // Le `settle` de la sonde renseigne le seau : les suivants passent.
-        b.settle(quota(43, 45_537, 1097), 1_097, None, t);
+        b.settle(quota(40, 45_000, 1_000), 1_000, None, t);
         assert!(b.informed);
         assert!(b.try_reserve(1_000, t).is_ok());
     }
 
-    /// Measured on 07/09/2026: a spend comes back 60 s after it was made, and the
-    /// top of the wall minute gives nothing back. A charge burnt at second 10 is
+    /// A spend comes back 60 s after it was made, and the top of the wall minute
+    /// gives nothing back. A charge burnt at second 10 is
     /// therefore still held at second 9 of the next minute.
     #[test]
     fn token_release_follows_the_sliding_window() {
         let m = 30_000_000u64;
         let t0 = m as f64 * 60.0 + 10.0;
         let mut b = Bucket::seed();
-        b.settle(quota(43, 45_537, 4_463), 4_463, None, t0);
+        b.settle(quota(40, 45_000, 5_000), 5_000, None, t0);
 
-        assert_eq!(b.tokens.available(t0).round() as u32, 45_537);
-        assert_eq!(b.tokens.available(t0 + 51.0).round() as u32, 45_537);
+        assert_eq!(b.tokens.available(t0).round() as u32, 45_000);
+        assert_eq!(b.tokens.available(t0 + 51.0).round() as u32, 45_000);
         assert_eq!(b.tokens.available(t0 + 60.5).round() as u32, 50_000);
     }
 
@@ -914,16 +909,15 @@ mod tests {
         let m = 30_000_000u64;
         let t = m as f64 * 60.0 + 10.0;
         let mut b = Bucket::seed();
-        b.settle(quota(43, 0, 3_353), 3_353, None, t);
+        b.settle(quota(40, 0, 4_000), 4_000, None, t);
 
-        assert_eq!(b.tokens.available(t).round() as u32, 46_647);
-        assert!(b.try_reserve(3_353, t).is_ok());
+        assert_eq!(b.tokens.available(t).round() as u32, 46_000);
+        assert!(b.try_reserve(4_000, t).is_ok());
     }
 
-    /// Sustainable rate measured on `/v1/conversations` on 07/09/2026: at 20 000
-    /// tokens/min and 3 353 tokens per summary, a key serves one call every
-    /// 10,06 s. Five of them fill the window; the sixth waits for the deadline of
-    /// the first, and not for the top of the minute.
+    /// Sustainable rate: at 20 000 tokens/min and 3 500 tokens per call, a key serves
+    /// one call every 10.5 s. Five of them fill the window; the sixth waits for the
+    /// deadline of the first, and not for the top of the minute.
     #[test]
     fn the_sustainable_rate_is_the_ceiling() {
         let mut b = Bucket::seed();
@@ -932,12 +926,12 @@ mod tests {
 
         let mut t = 0.0;
         for _ in 0..5 {
-            b.tokens.record(3_353.0, t);
-            t += 10.06;
+            b.tokens.record(3_500.0, t);
+            t += 10.5;
         }
-        let wait = b.try_reserve(3_353, t).unwrap_err();
+        let wait = b.try_reserve(3_500, t).unwrap_err();
         assert_eq!((t + wait.as_secs_f64()).round() as u32, 60);
-        assert!(b.try_reserve(3_353, 60.0).is_ok());
+        assert!(b.try_reserve(3_500, 60.0).is_ok());
     }
 
     #[test]
@@ -988,8 +982,7 @@ mod tests {
     }
 
     /// `/v1/conversations` announces no request counter, and a bucket that has
-    /// only ever seen that route must not gate on a phantom one: `ministral-3b`
-    /// pays 388 summaries a minute of tokens.
+    /// only ever seen that route must not gate on a phantom one.
     #[test]
     fn an_unannounced_request_counter_does_not_gate() {
         let m = 30_000_000u64;
@@ -997,19 +990,19 @@ mod tests {
         let mut b = Bucket::seed();
         let tok_only = Quota {
             tok: Some(Counter {
-                limit: 1_300_000,
-                left: 1_296_647,
+                limit: 1_000_000,
+                left: 996_000,
             }),
-            cost: Some(3_353),
+            cost: Some(4_000),
             ..Quota::default()
         };
         for _ in 0..200 {
-            b.try_reserve(3_353, t).expect("le plafond de tokens tient");
-            b.release(3_353);
-            b.settle(tok_only, 3_353, None, t);
+            b.try_reserve(4_000, t).expect("le plafond de tokens tient");
+            b.release(4_000);
+            b.settle(tok_only, 4_000, None, t);
         }
         assert!(announced(&b).is_none());
-        assert!(b.try_reserve(3_353, t).is_ok());
+        assert!(b.try_reserve(4_000, t).is_ok());
     }
 
     /// The burst a learnt bucket holds is its in-flight target, which Little reads off
@@ -1105,22 +1098,20 @@ mod tests {
         );
     }
 
-    /// Measured 18/09/2026, 40 of 159 Gemini refusals state `retryDelay: "0s"`. The
-    /// episode guard read `hold_until`, which such a refusal leaves at `now`, so a
-    /// wave of thirteen cut thirteen times and took a 15/min bucket to 0.36/min, the
-    /// rate prod was serving at.
+    /// A Gemini refusal may state `retryDelay: "0s"`, which leaves `hold_until` at
+    /// `now`: a wave of ten such refusals still cuts once.
     #[test]
     fn a_wave_refused_with_a_zero_delay_cuts_once() {
         let now = 20_000_000.0 * 60.0 + 12.0;
-        let ledger = Ledger::learned(1, 780.0, 1.0, 1_000_000);
-        let wave: Vec<_> = (0..13)
+        let ledger = Ledger::learned(1, 600.0, 1.0, 1_000_000);
+        let wave: Vec<_> = (0..10)
             .map(|_| ledger.reserve(&[0], 10, now).expect("la rafale passe"))
             .collect();
         for (i, reservation) in wave.into_iter().enumerate() {
             reservation.refused_rate(None, Some(Duration::ZERO), now + i as f64 * 0.01);
         }
         let rate = ledger.rate_per_min();
-        assert!((580.0..590.0).contains(&rate), "une seule coupe : {rate}");
+        assert!((445.0..455.0).contains(&rate), "une seule coupe : {rate}");
     }
 
     /// The cut is what one episode pays once; the delay is the service's own figure,
@@ -1173,9 +1164,8 @@ mod tests {
     }
 
     /// `/v1/conversations` sends no cost header, so the body's `usage` is the only
-    /// exact figure on the summary route: measured on 07/09/2026, a call billed
-    /// 1 585 tokens took the announced remaining from 20 000 to 18 415. Without it
-    /// the route books estimates and its estimator never learns.
+    /// exact figure on the summary route. Without it the route books estimates and
+    /// its estimator never learns.
     #[test]
     fn a_route_without_a_cost_header_settles_on_the_body_usage() {
         let now = now_unix();
@@ -1183,7 +1173,7 @@ mod tests {
         let tok_only = Quota {
             tok: Some(Counter {
                 limit: 20_000,
-                left: 18_415,
+                left: 18_500,
             }),
             cost: None,
             ..Quota::default()
@@ -1193,13 +1183,13 @@ mod tests {
         ledger
             .reserve(&[0], payload_chars, now)
             .expect("le seau est neuf")
-            .settle(tok_only, Some(1_585), now);
+            .settle(tok_only, Some(1_500), now);
 
         let available = ledger.buckets[0].lock().unwrap().tokens.available(now);
-        assert_eq!(available, 18_415.0);
+        assert_eq!(available, 18_500.0);
         let learnt = ledger.cost.estimate(payload_chars);
         assert!(
-            (i64::from(learnt) - 1_585).abs() < (i64::from(seeded) - 1_585).abs(),
+            (i64::from(learnt) - 1_500).abs() < (i64::from(seeded) - 1_500).abs(),
             "l'estimation doit se rapprocher du coût facturé"
         );
     }
@@ -1222,15 +1212,15 @@ mod tests {
     #[test]
     fn le_cout_suit_ce_qui_est_facture() {
         let c = CostModel::new();
-        let plein = c.estimate(6_210);
+        let plein = c.estimate(6_000);
         assert!(plein > 1_500, "amorce non cachée : {plein}");
         for _ in 0..30 {
-            c.observe(6_210, 24);
+            c.observe(6_000, 20);
         }
         assert!(
-            (24..30).contains(&c.estimate(6_210)),
+            (20..26).contains(&c.estimate(6_000)),
             "{}",
-            c.estimate(6_210)
+            c.estimate(6_000)
         );
     }
 
@@ -1251,7 +1241,6 @@ mod tests {
 
     /// A service serving a whole tier at `limit: 0` walls the key for as long as the
     /// process lives, the stored zero forbidding the very call that would lift it.
-    /// Measured on 04/09/2026: 0 rerank served, 778 deadlines, until restart.
     #[test]
     fn a_zero_limit_still_admits_a_probe() {
         let m = 30_000_000u64;

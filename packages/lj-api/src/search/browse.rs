@@ -1,8 +1,8 @@
-//! Mode parcours : sans requête textuelle, le fonds filtré est listé par date,
-//! et total comme facettes portent sur lui en entier, jamais sur une page.
+//! Listing by date, the index sorting and cutting what the counts cover whole: the
+//! filtered stock without a question, and the question of a date-sorted search.
 //!
-//! « Textes cités » est servie ici comme les autres axes : ses 3,02 s étaient
-//! celles du SQL, l'index la rend dans la passe des autres sans coût mesurable.
+//! « Textes cités » is served here like the other axes, the index rendering it in
+//! the same pass.
 
 use std::sync::Arc;
 
@@ -16,6 +16,7 @@ use crate::state::AppState;
 use super::aggregate::{aggregate_facets, Aggs, Scope};
 use super::filters::{as_refs, Params};
 use super::hydrate::{facets_from_counters, FacetCounters};
+use super::query::query_lacks_searchable_terms;
 
 /// Does the request carry at least one filter? With neither question nor filter,
 /// the page is the landing on `/decision-search`, not a search.
@@ -25,8 +26,7 @@ pub(crate) fn has_filters(req: &SearchRequest) -> bool {
     }
     some(&req.jurisdiction_type)
         || some(&req.solution)
-        || some(&req.procedure)
-        || some(&req.office)
+        || some(&req.formation)
         || some(&req.legal_domain)
         || some(&req.jurisdiction_code)
         || some(&req.seat)
@@ -56,12 +56,12 @@ fn nav_window(offset: i64, limit: i64) -> (i64, i64) {
     (start, NAV_WINDOW.max(offset + limit - start))
 }
 
-/// Identifiants et `public_id` de la fenêtre `[start, start + len)`, qui couvre
-/// la page demandée. Sous filtre, l'index trie et tronque, par le
-/// prédicat qui sert déjà les compteurs : le tas remonte son index de date en
-/// jetant au filtre, 2,1 s sur un office rare et 6,7 s sur un texte que personne
-/// ne cite, contre 20 à 50 ms quelle que soit la sélectivité. Sans filtre il
-/// reste le plus court, 0,1 ms en index seul.
+/// Ids and `public_id` of the window `[start, start + len)`, which covers the
+/// requested page. Under a filter the index sorts and truncates, through the
+/// predicate that already serves the counts: the heap would walk its date index
+/// discarding at the filter, slow on a rare selection, where the index costs the
+/// same whatever the selectivity. Without a filter the heap stays the shortest,
+/// index only.
 async fn window_ids(
     conn: &Client,
     req: &SearchRequest,
@@ -69,61 +69,67 @@ async fn window_ids(
     len: i64,
 ) -> Result<Vec<(i64, String)>> {
     let mut params: Params = Vec::new();
-    let filtered = has_filters(req).then(|| {
+    let question = !query_lacks_searchable_terms(&req.query);
+    let filtered = (question || has_filters(req)).then(|| {
         let mut idx = 1usize;
         super::aggregate::build_predicate(req, &mut idx, &mut params)
     });
-    let (li, oi) = (params.len() + 1, params.len() + 2);
+    let (li, oi, fi) = (params.len() + 1, params.len() + 2, params.len() + 3);
+    // A question matches every text of a decision, and few carry more than three.
+    let fetch = (start + len) * if question { 3 } else { 1 };
     let mut refs = as_refs(&params);
     refs.push(&len);
     refs.push(&start);
     let sql = match filtered {
-        Some(predicate) => format!(
-            "SELECT d.id, d.public_id, d.jurisdiction_type FROM ( \
-               SELECT t.decision_id, t.date_lecture FROM decision_text t WHERE t.id @@@ {predicate} \
-               ORDER BY {} LIMIT ${li} OFFSET ${oi} \
-             ) w JOIN decisions d ON d.id = w.decision_id \
-             ORDER BY {}",
-            order_by(req.sort, "t.date_lecture", "t.decision_id"),
-            order_by(req.sort, "w.date_lecture", "w.decision_id"),
-        ),
+        Some(predicate) => {
+            refs.push(&fetch);
+            format!(
+                "SELECT d.id, d.public_id, d.jurisdiction_type, d.jurisdiction_code FROM ( \
+                   SELECT DISTINCT ON (w.date_lecture, w.decision_id) w.decision_id, w.date_lecture \
+                   FROM ( \
+                     SELECT t.decision_id, t.date_lecture FROM decision_text t \
+                     WHERE t.id @@@ {predicate} ORDER BY {} LIMIT ${fi} \
+                   ) w ORDER BY {} LIMIT ${li} OFFSET ${oi} \
+                 ) p JOIN decisions d ON d.id = p.decision_id \
+                 ORDER BY {}",
+                order_by(req.sort, "t.date_lecture", "t.decision_id"),
+                order_by(req.sort, "w.date_lecture", "w.decision_id"),
+                order_by(req.sort, "p.date_lecture", "p.decision_id"),
+            )
+        }
         None => format!(
-            "SELECT d.id, d.public_id, d.jurisdiction_type FROM decisions d WHERE d.deleted_at IS NULL \
+            "SELECT d.id, d.public_id, d.jurisdiction_type, d.jurisdiction_code \
+             FROM decisions d WHERE d.deleted_at IS NULL \
              ORDER BY {} LIMIT ${li} OFFSET ${oi}",
             order_by(req.sort, "d.date_lecture", "d.id"),
         ),
     };
-    let rows = conn
-        .query(&sql, &refs)
-        .await
-        .map_err(|e| ApiError::Internal(format!("browse page: {e}")))?;
+    let rows = conn.query(&sql, &refs).await?;
     Ok(rows
         .iter()
         .map(|r| {
             let jt = lj_dtos::JurisdictionType::from_code(r.get(2))
                 .expect("a stored jurisdiction_type is a known variant");
-            (r.get(0), lj_dtos::decision_path(jt, r.get(1)))
+            (r.get(0), lj_dtos::decision_path(jt, r.get(3), r.get(1)))
         })
         .collect())
 }
 
-/// Total et facettes du fonds filtré, comptés dans l'index par le même agrégat
-/// que la recherche textuelle : 0,61 s sous le filtre `CA` contre 2,5 s pour le
-/// `GROUPING SETS` pleine table qu'il remplace.
+/// Total and facets of the filtered fund, counted in the index by the same
+/// aggregate as the text search, several times faster than a full-table
+/// `GROUPING SETS`.
 async fn live_totals_and_facets(
     state: &AppState,
     req: &SearchRequest,
     refs: &Referential,
 ) -> Result<(i64, SearchFacets)> {
     let conn = super::client(state).await?;
-    let (total, counters) = aggregate_facets(&conn, req, Scope::Question(&[]), Aggs::All)
-        .await
-        .map_err(|e| ApiError::Internal(format!("browse facettes: {e}")))?;
+    let (total, counters) = aggregate_facets(&conn, req, Scope::Question(&[]), Aggs::All).await?;
     Ok((total, facets_from_counters(&counters, refs)))
 }
 
-/// Sans aucun filtre, l'état du fonds ne change qu'une fois par nuit : il se lit
-/// dans l'instantané que recompte la chaîne, pas en balayant 3,7 M de lignes.
+/// Without any filter, the state of the fonds changes once a night: it is read
+/// from the snapshot the chain recounts, without scanning the table.
 async fn snapshot_totals_and_facets(
     state: &AppState,
     refs: &Referential,
@@ -149,10 +155,9 @@ async fn snapshot_totals_and_facets(
         match (dimension.as_str(), parent) {
             ("total", _) => total = n,
             ("seat", _) => drop(c.seats.insert(value, n)),
-            ("office", _) => drop(c.office.insert(value, n)),
+            ("formation", _) => drop(c.formation.insert(value, n)),
             ("legal_domain", _) => drop(c.domain.insert(value, n)),
             ("solution", _) => drop(c.solution.insert(value, n)),
-            ("procedure", _) => drop(c.procedure.insert(value, n)),
             ("year", _) => drop(c.year.insert(value, n)),
             ("publication_codes", _) => {
                 let codes: Vec<String> = value.split(',').map(str::to_string).collect();
@@ -182,8 +187,8 @@ async fn snapshot_totals_and_facets(
     Ok((total, facets_from_counters(&c, refs)))
 }
 
-/// Clé du cache parcours : les filtres seuls. Ni page, ni tri, ni mode, dont le
-/// total et les facettes ne dépendent pas.
+/// The browse cache key, the filters alone: the total and the facets depend on
+/// neither the page, the order, the mode nor the parts.
 fn cache_key(req: &SearchRequest) -> String {
     let mut norm = req.clone();
     norm.offset = 0;
@@ -191,6 +196,7 @@ fn cache_key(req: &SearchRequest) -> String {
     norm.sort = SortOrder::Relevance;
     norm.mode = lj_dtos::SearchMode::Auto;
     norm.ai_mode = false;
+    norm.search_in = None;
     serde_json::to_string(&norm).unwrap_or_default()
 }
 
@@ -207,7 +213,7 @@ pub(crate) async fn totals_and_facets(
         .browse_cache
         .optionally_get_with(cache_key(req), async {
             paye = true;
-            let computed = if has_filters(req) {
+            let computed = if has_filters(req) || !query_lacks_searchable_terms(&req.query) {
                 live_totals_and_facets(state, req, refs).await
             } else {
                 snapshot_totals_and_facets(state, refs).await
@@ -235,12 +241,19 @@ pub(crate) async fn browse(state: &AppState, req: &SearchRequest) -> Result<Sear
     let (offset, limit) = (i64::from(req.offset), i64::from(req.limit));
     let (window_start, window_len) = nav_window(offset, limit);
 
+    let question = !query_lacks_searchable_terms(&req.query);
     let list_conn = super::client(state).await?;
+    // Under a question, the aggregate outlasts the page: it waits for the count
+    // call, as relevance does.
     let (window, counts) = tokio::try_join!(
         window_ids(&list_conn, req, window_start, window_len),
-        totals_and_facets(state, req, &refs),
+        async {
+            match question {
+                true => Ok(None),
+                false => totals_and_facets(state, req, &refs).await.map(Some),
+            }
+        },
     )?;
-    let (total, facets) = (counts.0, counts.1.clone());
 
     let page: Vec<i64> = window
         .iter()
@@ -250,7 +263,7 @@ pub(crate) async fn browse(state: &AppState, req: &SearchRequest) -> Result<Sear
         .collect();
 
     let hits_conn = super::client(state).await?;
-    let hits: Vec<SearchHit> = super::hits_for_decision_ids(&hits_conn, &page, &refs)
+    let hits: Vec<SearchHit> = super::hits_for_decision_ids(&hits_conn, &page, &req.query, &refs)
         .await?
         .into_iter()
         .map(|(_, hit)| hit)
@@ -258,11 +271,14 @@ pub(crate) async fn browse(state: &AppState, req: &SearchRequest) -> Result<Sear
     let all_hit_paths: Vec<String> = window.into_iter().map(|(_, path)| path).collect();
 
     Ok(SearchResponse {
-        query: String::new(),
-        total: Some(total),
+        query: req.query.clone(),
+        total: counts.as_ref().map(|c| c.0),
         hits,
-        query_mode: QueryMode::Browse,
-        facets: Some(facets),
+        query_mode: match question {
+            true => QueryMode::Lexical,
+            false => QueryMode::Browse,
+        },
+        facets: counts.map(|c| c.1.clone()),
         all_hit_paths,
         reranked: false,
         pinned: Vec::new(),

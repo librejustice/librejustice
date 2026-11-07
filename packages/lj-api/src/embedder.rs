@@ -2,8 +2,9 @@
 //! response to a request.
 
 use crate::config::Settings;
-use lj_llm::backend::{AnyEmbedder, DummyEmbedder, LocalHost};
+use lj_llm::backend::{AnyEmbedder, DummyEmbedder, Link};
 use lj_llm::cloudflare::CloudflareWorkersAIEmbedder;
+use lj_llm::hosts::Entry;
 use lj_llm::openai_http::OpenAIHttpEmbedder;
 
 /// Construit l'embedder de requête selon `settings.embed_backend`
@@ -13,15 +14,14 @@ use lj_llm::openai_http::OpenAIHttpEmbedder;
 /// signature est infaillible et l'embedder est construit une fois au démarrage,
 /// une config invalide doit faire échouer le boot, pas une requête.
 ///
-/// `auto` mode: the local hosts of `embed_hosts` in priority order, each behind
-/// its own breaker, then Cloudflare Workers AI once every host is down. The
-/// Cloudflare credentials are required because they back the fallback.
+/// `auto` mode: the links of `embed_chain` in priority order, each behind its own
+/// breaker.
 pub fn build_query_embedder(settings: &Settings) -> AnyEmbedder {
     match settings.embed_backend.as_str() {
         "dummy" => AnyEmbedder::Dummy(DummyEmbedder::default()),
         "openai-http" => {
-            let [host] = settings.embed_hosts.as_slice() else {
-                panic!("embed_backend=openai-http takes one LIBREJUSTICE_EMBED_URL, a list needs auto.")
+            let [Entry::Host(host)] = settings.embed_chain.as_slice() else {
+                panic!("embed_backend=openai-http takes one URL in LIBREJUSTICE_EMBED_URL, a chain needs auto.")
             };
             AnyEmbedder::OpenAiHttp(OpenAIHttpEmbedder::new(
                 host.url.clone(),
@@ -42,25 +42,28 @@ pub fn build_query_embedder(settings: &Settings) -> AnyEmbedder {
                 CloudflareWorkersAIEmbedder::DEFAULT_MODEL,
             ))
         }
-        "auto" => {
-            // `auto` valide les creds Cloudflare (fallback) avant de construire
-            // le backend local primaire.
-            let (account_id, token) = require_cloudflare(
-                settings,
-                "embed_backend=auto nécessite \
-                 LIBREJUSTICE_CLOUDFLARE_ACCOUNT_ID + \
-                 LIBREJUSTICE_CLOUDFLARE_BACKEND_TOKEN pour le fallback cloudflare.",
-            );
-            let cloudflare = CloudflareWorkersAIEmbedder::new(
-                account_id,
-                token,
-                CloudflareWorkersAIEmbedder::DEFAULT_MODEL,
-            );
-            AnyEmbedder::Auto {
-                locals: settings.embed_hosts.iter().map(LocalHost::new).collect(),
-                cloudflare,
-            }
-        }
+        "auto" => AnyEmbedder::Auto(
+            settings
+                .embed_chain
+                .iter()
+                .map(|entry| match entry {
+                    Entry::Host(host) => Link::local(host),
+                    Entry::Cloudflare => {
+                        let (account_id, token) = require_cloudflare(
+                            settings,
+                            "cloudflare-aiworker in LIBREJUSTICE_EMBED_URL needs \
+                             LIBREJUSTICE_CLOUDFLARE_ACCOUNT_ID + \
+                             LIBREJUSTICE_CLOUDFLARE_BACKEND_TOKEN.",
+                        );
+                        Link::cloudflare(CloudflareWorkersAIEmbedder::new(
+                            account_id,
+                            token,
+                            CloudflareWorkersAIEmbedder::DEFAULT_MODEL,
+                        ))
+                    }
+                })
+                .collect(),
+        ),
         other => panic!("embed_backend inconnu : {other:?}"),
     }
 }

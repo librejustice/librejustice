@@ -21,8 +21,7 @@ use serde::{Deserialize, Serialize};
 pub mod schema;
 
 pub use schema::{
-    abbreviate_jurisdiction_name, Domain, JurisdictionLevel, JurisdictionType, Office, Procedure,
-    Solution,
+    abbreviate_jurisdiction_name, Domain, JurisdictionLevel, JurisdictionType, Solution,
 };
 
 // ── Enums propres à l'API (canal, mode de recherche, tri) ────────────────────
@@ -68,6 +67,24 @@ pub enum SearchMode {
     Lexical,
     Semantic,
     Reference,
+}
+
+/// A part of a decision a search runs in: the court's headnote (sommaire,
+/// analyse), the judgment, its moyens annexés.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DecisionPart {
+    Headnote,
+    Judgment,
+    Annexes,
+}
+
+impl DecisionPart {
+    pub const ALL: [DecisionPart; 3] = [
+        DecisionPart::Headnote,
+        DecisionPart::Judgment,
+        DecisionPart::Annexes,
+    ];
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,12 +152,6 @@ pub struct SearchRequest {
     /// Solutions du dispositif (référentiel `solution:*`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<Vec<Solution>>,
-    /// Voies procédurales (référentiel `procedure:*`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<Vec<Procedure>>,
-    /// Juges/offices spécialisés (référentiel `office:*`).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub office: Option<Vec<Office>>,
     /// Domaines de place (référentiel `legal_domain:*`) — une racine
     /// sélectionnée matche elle-même + toutes ses feuilles (expansion API).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -148,12 +159,17 @@ pub struct SearchRequest {
     /// Codes du référentiel `jurisdiction` (`tj76351`, `ca_paris`, `cc`…).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_code: Option<Vec<String>>,
-    /// Seat paths (`CA.PARIS.P5.C3`), from the court type down to the room. A
-    /// path matches itself and everything under it, and this key says on its own
-    /// what `jurisdictionType` and `jurisdictionCode` say at its first two
-    /// depths.
+    /// Seat paths (`FR.CA.PARIS.P5.C3`), from the legal order down to the room.
+    /// A path matches itself and everything under it, and this key says on its
+    /// own what `jurisdictionType` and `jurisdictionCode` say at its second and
+    /// third depths.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat: Option<Vec<String>>,
+    /// Formation paths (`FR.TJ.JEX`, `FR.CC.RESTREINTE`): under the court type, the
+    /// composition of the bench or the judge sitting alone by function. A path
+    /// matches itself and everything under it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub formation: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_instrument: Option<Vec<String>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -167,6 +183,9 @@ pub struct SearchRequest {
     pub date_from: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_to: Option<String>,
+    /// The parts of a decision the search runs in, every part when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search_in: Option<Vec<DecisionPart>>,
     #[serde(default)]
     pub mode: SearchMode,
     #[serde(default = "default_sort")]
@@ -234,8 +253,8 @@ pub struct LegalInstrumentFacet {
     pub articles: Vec<FacetChoice>,
 }
 
-/// Facettes de recherche : Juridiction (arbre) · Office · Domaine (arbre) ·
-/// Solution · Procédure · Publication · Date · Textes cités.
+/// Search facets, in the bar's order: « Juridiction », « Formation », « Domaine »,
+/// « Solution », « Publication », « Date », « Textes cités ».
 ///
 /// `juridiction` : niveau 1 = racines à valeur uid complet
 /// (`jurisdiction_type:TJ`) ; niveau 2 = codes `jurisdiction` (`tj76351`,
@@ -246,16 +265,14 @@ pub struct LegalInstrumentFacet {
 pub struct SearchFacets {
     #[serde(default)]
     pub seat: Vec<FacetChoice>,
+    /// Formation paths under their court type, `parent` carrying the hierarchy as
+    /// in `seat`.
     #[serde(default)]
-    pub office: Vec<FacetChoice>,
+    pub formation: Vec<FacetChoice>,
     #[serde(default)]
     pub legal_domain: Vec<FacetChoice>,
     #[serde(default)]
     pub solution: Vec<FacetChoice>,
-    /// Voie procédurale (`procedure:*`) : une décision sans valeur relève de la
-    /// procédure contentieuse ordinaire, et ne compte donc sous aucun choix.
-    #[serde(default)]
-    pub procedure: Vec<FacetChoice>,
     #[serde(default)]
     pub publication: Vec<FacetChoice>,
     #[serde(default)]
@@ -293,10 +310,9 @@ pub struct SearchHit {
     /// Tags référentiels résolus (clé + libellé).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub office: Option<FacetTag>,
+    /// The « Formation » paths, with their labels: the composition first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formation: Vec<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_domain: Option<FacetTag>,
     /// The seat node the decision is filed under: the deepest path, and the
@@ -312,6 +328,15 @@ pub struct SearchHit {
     /// Résumé v4 embarqué en mode IA uniquement.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Where the court's own summary sits inside `summary`, pasted between an
+    /// opening and sometimes an outcome the model wrote: codepoint offsets, half
+    /// open. Absent when the model wrote it all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_quote: Option<std::ops::Range<usize>>,
+    /// Where the body of `summary` sits, after its opening, in codepoint offsets,
+    /// half open: the court's words in a collage. Absent for an opening alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_body: Option<std::ops::Range<usize>>,
     /// Page de la décision chez son éditeur officiel, dérivée de la provenance
     /// autoritaire.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -322,7 +347,7 @@ pub struct SearchHit {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub cited_articles: BTreeMap<String, Vec<String>>,
     /// The number the query bit on, when it is not the one the title names. A
-    /// decision carries up to 1 244 dockets and is titled by its head, so a
+    /// decision can carry many dockets and is titled by its head, so a
     /// search on any other answers with a card naming a different number.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub matched_docket: Option<String>,
@@ -364,13 +389,16 @@ pub struct SearchResponse {
 pub struct PinnedDecision {
     pub id: String,
     pub jurisdiction_type: JurisdictionType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jurisdiction_code: Option<String>,
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seat: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<FacetTag>,
+    /// The « Formation » paths, with their labels: the composition first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formation: Vec<FacetTag>,
 }
 
 /// Réponse de `/internal/search/decompte` : le total exact et les facettes de la
@@ -505,6 +533,15 @@ pub struct DecisionDetail {
     pub sections: Option<Vec<DecisionSection>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    /// Where the court's own summary sits inside `summary`, pasted between an
+    /// opening and sometimes an outcome the model wrote: codepoint offsets, half
+    /// open. Absent when the model wrote it all.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_quote: Option<std::ops::Range<usize>>,
+    /// Where the body of `summary` sits, after its opening, in codepoint offsets,
+    /// half open: the court's words in a collage. Absent for an opening alone.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary_body: Option<std::ops::Range<usize>>,
     /// Code de cour précis (`jurisdiction:*`, ex. `tj_paris`) — token du
     /// filtre `jurisdiction_code`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -520,10 +557,9 @@ pub struct DecisionDetail {
     /// Tags référentiels résolus (clé + libellé).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub office: Option<FacetTag>,
+    /// The « Formation » paths, with their labels: the composition first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formation: Vec<FacetTag>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub legal_domain: Option<FacetTag>,
     /// Codes de publication source (`b`, `A`…), dont le front tire le libellé et
@@ -575,12 +611,9 @@ pub struct DecisionDetail {
     /// at the foot of the page.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commentaires: Vec<Commentaire>,
-    /// Décisions dont l'analyse du Conseil d'État renvoie à celle-ci, la plus
-    /// récente d'abord.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub renvoyants: Vec<Renvoyant>,
-    /// Décisions dont le texte cite celle-ci, autorité d'abord, hors étapes de
-    /// la chronologie qui ont leur propre bloc.
+    /// Decisions whose text cites this one or whose Conseil d'Etat analysis
+    /// refers to it, authority first, less the steps of the chronology, which
+    /// have their own block.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub citantes: Vec<CitingDecisionHit>,
     /// Total des citantes, servi quand il dépasse la liste rendue.
@@ -588,18 +621,18 @@ pub struct DecisionDetail {
     pub citantes_total: Option<i64>,
 }
 
-/// Institutional commentary on a decision or an article: an outgoing link line,
-/// never redistributed content. Two forms: `conclusions`, whose existence alone
-/// is stored and whose link is composed towards ArianeWeb, and `note`, a linked
-/// document (report or opinion of the Cour, doctrinal note) titled towards its
-/// publisher. The Conseil d'Etat analysis is no longer one of them: its sommaire
-/// is the summary of the decision.
+/// Institutional commentary on a decision or an article. Three forms:
+/// `summary`, the court's own summary of its ruling, carried whole in `body`;
+/// `conclusions`, whose existence alone is stored and whose link is composed
+/// towards ArianeWeb; and `note`, a linked document (report or opinion of the
+/// Cour, doctrinal note) titled towards its publisher. The page renders only the
+/// two link forms, the summary being already the head of the page.
 // Read back from a stored blob whose writer ships apart from this reader, so a
 // new field reaches the base before the binary that knows it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Commentaire {
-    /// `conclusions` | `note`.
+    /// `summary` | `conclusions` | `note`.
     pub kind: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub author: Option<String>,
@@ -620,12 +653,12 @@ pub struct Commentaire {
     pub issue: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pages: Option<String>,
-    /// Accès : `libre` | `abonnes`. Absent = libre.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub access: Option<String>,
     /// External link: the line renders as an outgoing one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub url: Option<String>,
+    /// The text itself, on a `summary` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
 }
 
 impl Commentaire {
@@ -633,9 +666,8 @@ impl Commentaire {
     /// `None` when the source gave none of the three.
     ///
     /// A label the source already wrote is not written twice, and `p.` is only
-    /// posed on a number or a range: 80 % of HAL's `page_s` are one of those,
-    /// the rest being `act. 843`, `1 et suivantes` or `250 s.`, which carry
-    /// their own form.
+    /// posed on a number or a range: HAL's other `page_s`, `act. 843`,
+    /// `1 et suivantes` or `250 s.`, carry their own form.
     pub fn reference(&self) -> Option<String> {
         let mut parts: Vec<String> = Vec::new();
         if let Some(v) = strip_label(&self.volume, &["volume", "vol.", "vol", "tome", "t."]) {
@@ -680,22 +712,6 @@ fn is_page_range(s: &str) -> bool {
         && s.chars().any(|c| c.is_ascii_digit())
 }
 
-/// Décision dont l'analyse du Conseil d'État renvoie à celle de la page. Écrite
-/// par un documentaliste, pas par le juge : sur 9 702 renvois, 59 sont aussi une
-/// citation du corps.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct Renvoyant {
-    pub id: String,
-    pub jurisdiction_type: JurisdictionType,
-    /// Nom de la juridiction (repli : libellé du type).
-    pub label: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub date: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub docket_numbers: Option<Vec<String>>,
-}
-
 /// Étape de la chronologie d'une affaire : une décision de la chaîne
 /// appel/pourvoi/renvoi, identifiée par sa juridiction et sa date.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -708,6 +724,9 @@ pub struct ChronologyEntry {
     /// Set with `id`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_type: Option<JurisdictionType>,
+    /// Set with `id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jurisdiction_code: Option<String>,
     /// Nom de la juridiction (repli : libellé du type).
     pub label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -741,11 +760,16 @@ pub fn source_label(code: &str) -> &str {
         "dila-jade" => "DILA — JADE (juridictions administratives)",
         "dila-constit" => "DILA — Conseil constitutionnel",
         "dila-cass" => "DILA — Cour de cassation",
+        "dila-inca" => "DILA, inédits de la Cour de cassation",
         "dila-capp" => "DILA — cours d'appel",
         "cedh" => "CEDH — HUDOC",
         "cjue" => "CJUE — EUR-Lex",
         "cnda" => "Cour nationale du droit d'asile",
         "dila-cnil" => "DILA — CNIL (délibérations)",
+        "ddd" => "Défenseur des droits",
+        "adlc" => "Autorité de la concurrence",
+        "comeu" => "Commission européenne",
+        "contribution" => "Versée par un utilisateur",
         other => other,
     }
 }
@@ -791,8 +815,15 @@ pub fn format_date_fr(value: &str) -> String {
 pub const SITE_BASE: &str = "https://librejustice.fr";
 
 /// The page of a decision, under the jurisdiction segment of its court.
-pub fn decision_path(jurisdiction_type: JurisdictionType, id: &str) -> String {
-    format!("/decision/{}/{id}", jurisdiction_type.url_segment())
+pub fn decision_path(
+    jurisdiction_type: JurisdictionType,
+    jurisdiction_code: Option<&str>,
+    id: &str,
+) -> String {
+    format!(
+        "/decision/{}/{id}",
+        jurisdiction_type.url_segment(jurisdiction_code)
+    )
 }
 
 /// The public id a decision path ends with.
@@ -800,9 +831,28 @@ pub fn decision_id_of_path(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// The court's words of a summary: the whole of one pasted, the `quote` alone of a collage.
+pub fn court_words(summary: &str, quote: &std::ops::Range<usize>) -> String {
+    if quote.start == 0 {
+        return summary.to_owned();
+    }
+    summary
+        .chars()
+        .skip(quote.start)
+        .take(quote.len())
+        .collect()
+}
+
 /// Permalien canonique LibreJustice d'une décision.
-pub fn decision_permalink(jurisdiction_type: JurisdictionType, id: &str) -> String {
-    format!("{SITE_BASE}{}", decision_path(jurisdiction_type, id))
+pub fn decision_permalink(
+    jurisdiction_type: JurisdictionType,
+    jurisdiction_code: Option<&str>,
+    id: &str,
+) -> String {
+    format!(
+        "{SITE_BASE}{}",
+        decision_path(jurisdiction_type, jurisdiction_code, id)
+    )
 }
 
 /// Lignes de provenance/audit d'une décision — `(libellé, valeur)` dans l'ordre
@@ -822,7 +872,11 @@ pub fn provenance_rows(detail: &DecisionDetail) -> Vec<(&'static str, String)> {
     }
     rows.push((
         "Permalien",
-        decision_permalink(detail.jurisdiction_type, &detail.id),
+        decision_permalink(
+            detail.jurisdiction_type,
+            detail.jurisdiction_code.as_deref(),
+            &detail.id,
+        ),
     ));
     rows
 }
@@ -837,6 +891,8 @@ pub struct SimilarDecisionHit {
     pub id: String,
     pub jurisdiction_type: JurisdictionType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jurisdiction_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_lecture: Option<String>,
@@ -845,10 +901,9 @@ pub struct SimilarDecisionHit {
     /// Tags référentiels résolus (clé + libellé).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub office: Option<FacetTag>,
+    /// The « Formation » paths, with their labels: the composition first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formation: Vec<FacetTag>,
     #[serde(default)]
     pub publication_codes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -880,8 +935,9 @@ pub struct DecisionPreview {
     pub title: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub solution: Option<FacetTag>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub procedure: Option<FacetTag>,
+    /// The « Formation » paths, with their labels: the composition first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub formation: Vec<FacetTag>,
     #[serde(default)]
     pub publication_codes: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -911,7 +967,7 @@ pub struct LawArticleVersion {
 pub const DEFAULT_READER_PLACE: &str = "FR-M";
 
 /// The most places a text search reads from at once: each one the day has not
-/// seen yet costs a read of the coverage, up to 30 ms.
+/// seen yet costs a read of the coverage.
 pub const MAX_READER_PLACES: usize = 20;
 
 /// A place of the vocabulary as the web and the connector write it (`PF`), with
@@ -967,6 +1023,10 @@ pub enum PlaceGroup {
 pub struct ReadablePlace {
     pub place: PlaceRef,
     pub group: PlaceGroup,
+    /// `dateDebut` of the version the place reads at the reader's date, absent
+    /// when no state covers it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub version: Option<String>,
 }
 
 /// A state of the article in force at the reader's date in other places.
@@ -1096,6 +1156,8 @@ pub struct LawArticleResponse {
     /// `code` alone no longer identifies a text, two countries carrying the
     /// same name for their civil code.
     pub jurisdiction: String,
+    /// The jurisdiction's name, « France » for `FR`.
+    pub jurisdiction_label: String,
     /// Titre humain du texte (`legal_text.title`, ex. « Code de la famille
     /// sénégalais ») pour l'affichage « Article N du … ». `code` reste le slug
     /// d'URL ; sans ce champ le front retombe sur le slug humanisé (laid).
@@ -1362,8 +1424,7 @@ pub struct LawCodeSummary {
     /// Date de signature ISO (`date_texte`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_texte: Option<String>,
-    /// Libellé de portée quand le texte relève de la doctrine administrative ;
-    /// absent pour les normes.
+    /// The scope label when the text is not a norm, absent for a norm.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
     /// Fond du catalogue des normes, maillage retour vers `/norm-index/{juris}/{fond}` ;
@@ -1385,6 +1446,31 @@ pub struct LawCodeSummary {
     /// shape as on the decision and the article sides.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub commentaires: Vec<Commentaire>,
+    /// What the JO printed around a text's articles.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub publication: Option<TextPublication>,
+}
+
+/// The blocks of a JO text outside its articles, and the issue that carried it.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct TextPublication {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub issue: Option<LinkedTextRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notice: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub visas: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signatories: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparatory_work: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub summary: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repeal: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub corrigendum: Option<String>,
 }
 
 /// Décision citant un article LEGI, via `legal_citation`. La liste est ordonnée
@@ -1395,6 +1481,8 @@ pub struct CitingDecisionHit {
     pub id: String,
     pub title: String,
     pub jurisdiction_type: JurisdictionType,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jurisdiction_code: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_lecture: Option<String>,
     pub publication_codes: Vec<String>,
@@ -1448,6 +1536,13 @@ pub struct ArticleSearchHit {
     pub status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_debut: Option<String>,
+    /// The entry into force of the version served, the text's date standing in
+    /// for a start the source leaves unknown.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_from: Option<String>,
+    /// The end of the version served, when it has one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub valid_to: Option<String>,
 }
 
 /// Réponse de `/internal/search-textes` : hits paginés, total exact sous le
@@ -1514,12 +1609,15 @@ pub struct ArticleSearchFacets {
     #[serde(default)]
     pub code: Vec<FacetChoice>,
     pub jurisdiction: Vec<FacetChoice>,
-    pub nature: Vec<FacetChoice>,
     pub source: Vec<FacetChoice>,
-    /// Sur-facette « portée » : `norme` | `doctrine_administrative`, agrégée côté
-    /// API depuis les buckets `nature` (mapping code, pas de colonne).
+    /// The scope: `norme` | `doctrine_administrative` | `information_publique`,
+    /// summed by the API from the `nature` buckets, with no column of its own.
     #[serde(default)]
     pub scope: Vec<FacetChoice>,
+    /// Every jurisdiction path the hits sit on, an order and each level of a
+    /// type under it (`FR`, `FR.LOI`, `FR.LOI.ORGANIQUE`), `parent` the level above.
+    #[serde(default)]
+    pub path: Vec<FacetChoice>,
 }
 
 /// Entrée du catalogue des codes (`/internal/codes`). `code` = slug (lien `/texte/{code}`).
@@ -1588,7 +1686,7 @@ pub struct JurisdictionHubResponse {
     pub label: String,
     pub jurisdiction_type: String,
     pub type_label: String,
-    /// The court's node on the seat axis (`TJ.EPINAL`), token of the `seat`
+    /// The court's node on the seat axis (`FR.TJ.EPINAL`), token of the `seat`
     /// filter. Derived from the code by the API, which alone holds the
     /// vocabulary renaming a court.
     pub seat_path: String,
@@ -1670,6 +1768,8 @@ pub struct NormFondResponse {
     pub jurisdiction: String,
     pub fond: String,
     pub label: String,
+    /// The norms search's `jurisdiction` values selecting the fond (`FR.DECRET`).
+    pub search_paths: Vec<String>,
     pub text_count: i64,
     pub years: Vec<NormYearCount>,
 }
@@ -1697,6 +1797,8 @@ pub struct NormYearResponse {
     pub jurisdiction: String,
     pub fond: String,
     pub label: String,
+    /// See [`NormFondResponse::search_paths`].
+    pub search_paths: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub year: Option<i32>,
     pub total: i64,
@@ -1747,9 +1849,9 @@ pub struct TocNode {
 /// que la division racine.
 pub const INLINE_READING_MAX: usize = 150;
 
-/// Seconde borne de la même règle, en octets de corps : 82 articles du code
-/// général des impôts pèsent 420 ko, la division médiane 4. Au-delà, la
-/// division rend son index et non ses corps.
+/// Second bound of the same rule, in body bytes: a division of few articles can
+/// still weigh far more than most. Past it, the division serves its index and
+/// not its bodies.
 pub const INLINE_READING_MAX_BYTES: usize = 50_000;
 
 /// Réponse de `/internal/norm/{code}/sommaire` : table des matières d'un code.
@@ -1784,6 +1886,9 @@ pub struct LawSectionItem {
     pub etat: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub texte: Option<String>,
+    /// The cross-references of `texte`, as on the article's own page.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub texte_spans: Vec<CitationSpan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nota: Option<String>,
 }
@@ -1838,6 +1943,8 @@ pub struct SectionCitingText {
 pub struct LawSectionResponse {
     pub code: String,
     pub jurisdiction: String,
+    /// The jurisdiction's name, « France » for `FR`.
+    pub jurisdiction_label: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code_title: Option<String>,
     pub path: String,
@@ -1907,6 +2014,8 @@ pub struct BookmarkItem {
     pub title: String,
     pub jurisdiction_type: JurisdictionType,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jurisdiction_code: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jurisdiction_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub date_lecture: Option<String>,
@@ -1960,10 +2069,20 @@ pub struct ReadReport {
     pub kind: ReadKind,
     /// The page's path, which names the document read.
     pub reference: String,
+    #[serde(default)]
+    pub document: String,
     /// The document the browser loaded, against a navigation inside the app.
     pub landing: bool,
     pub referrer: Option<String>,
     pub utm_source: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LandingReport {
+    pub path: String,
+    pub referrer: Option<String>,
+    pub utm_source: Option<String>,
+    pub utm_campaign: Option<String>,
 }
 
 /// An annuaire search the browser shows, reported by it for the same reason as
@@ -1971,6 +2090,126 @@ pub struct ReadReport {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntitySearchReport {
     pub query: String,
+}
+
+/// A front feature used: a click on a button or on any control inside a marked block,
+/// or a copy of a field's text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UiAction {
+    DecisionBookmark,
+    DecisionCopyFull,
+    DecisionCopyShort,
+    DecisionPrint,
+    DecisionPdf,
+    DecisionSelectionCopy,
+    DecisionSelectionCopyReference,
+    DecisionSelectionSearch,
+    DecisionBackToResults,
+    DecisionResultStep,
+    DecisionTocSynthesis,
+    DecisionTocPreamble,
+    DecisionTocProcedure,
+    DecisionTocVisa,
+    DecisionTocExpose,
+    DecisionTocMoyens,
+    DecisionTocChapeau,
+    DecisionTocMotivations,
+    DecisionTocDispositif,
+    DecisionTocAnnexes,
+    DecisionTocOther,
+    DecisionChronology,
+    DecisionMeta,
+    DecisionMetaCopyJurisdiction,
+    DecisionMetaCopyCaseName,
+    DecisionMetaCopyDockets,
+    DecisionMetaCopyDate,
+    DecisionMetaCopySolution,
+    DecisionMetaCopyDomain,
+    DecisionMetaCopyChamber,
+    DecisionMetaCopyFormation,
+    DecisionMetaCopyHearingDate,
+    DecisionMetaCopyPublication,
+    DecisionMetaCopyNomenclature,
+    DecisionText,
+    DecisionCommentaries,
+    DecisionProvenance,
+    DecisionReferences,
+    DecisionParties,
+    DecisionCiting,
+    DecisionSimilar,
+    SearchSuggestion,
+    SearchSyntaxHelp,
+    SearchView,
+    SearchRailYears,
+    SearchRailArticles,
+    SearchRailSeats,
+    SearchRailSolutions,
+    SearchCardView,
+    SearchFilterChip,
+    HomeExample,
+    NormCopyReference,
+    MenuBookmarks,
+}
+
+impl UiAction {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DecisionBookmark => "decision_bookmark",
+            Self::DecisionCopyFull => "decision_copy_full",
+            Self::DecisionCopyShort => "decision_copy_short",
+            Self::DecisionPrint => "decision_print",
+            Self::DecisionPdf => "decision_pdf",
+            Self::DecisionSelectionCopy => "decision_selection_copy",
+            Self::DecisionSelectionCopyReference => "decision_selection_copy_reference",
+            Self::DecisionSelectionSearch => "decision_selection_search",
+            Self::DecisionBackToResults => "decision_back_to_results",
+            Self::DecisionResultStep => "decision_result_step",
+            Self::DecisionTocSynthesis => "decision_toc_synthesis",
+            Self::DecisionTocPreamble => "decision_toc_preamble",
+            Self::DecisionTocProcedure => "decision_toc_procedure",
+            Self::DecisionTocVisa => "decision_toc_visa",
+            Self::DecisionTocExpose => "decision_toc_expose",
+            Self::DecisionTocMoyens => "decision_toc_moyens",
+            Self::DecisionTocChapeau => "decision_toc_chapeau",
+            Self::DecisionTocMotivations => "decision_toc_motivations",
+            Self::DecisionTocDispositif => "decision_toc_dispositif",
+            Self::DecisionTocAnnexes => "decision_toc_annexes",
+            Self::DecisionTocOther => "decision_toc_other",
+            Self::DecisionChronology => "decision_chronology",
+            Self::DecisionMeta => "decision_meta",
+            Self::DecisionMetaCopyJurisdiction => "decision_meta_copy_jurisdiction",
+            Self::DecisionMetaCopyCaseName => "decision_meta_copy_case_name",
+            Self::DecisionMetaCopyDockets => "decision_meta_copy_dockets",
+            Self::DecisionMetaCopyDate => "decision_meta_copy_date",
+            Self::DecisionMetaCopySolution => "decision_meta_copy_solution",
+            Self::DecisionMetaCopyDomain => "decision_meta_copy_domain",
+            Self::DecisionMetaCopyChamber => "decision_meta_copy_chamber",
+            Self::DecisionMetaCopyFormation => "decision_meta_copy_formation",
+            Self::DecisionMetaCopyHearingDate => "decision_meta_copy_hearing_date",
+            Self::DecisionMetaCopyPublication => "decision_meta_copy_publication",
+            Self::DecisionMetaCopyNomenclature => "decision_meta_copy_nomenclature",
+            Self::DecisionText => "decision_text",
+            Self::DecisionCommentaries => "decision_commentaries",
+            Self::DecisionProvenance => "decision_provenance",
+            Self::DecisionReferences => "decision_references",
+            Self::DecisionParties => "decision_parties",
+            Self::DecisionCiting => "decision_citing",
+            Self::DecisionSimilar => "decision_similar",
+            Self::SearchSuggestion => "search_suggestion",
+            Self::SearchSyntaxHelp => "search_syntax_help",
+            Self::SearchView => "search_view",
+            Self::SearchRailYears => "search_rail_years",
+            Self::SearchRailArticles => "search_rail_articles",
+            Self::SearchRailSeats => "search_rail_seats",
+            Self::SearchRailSolutions => "search_rail_solutions",
+            Self::SearchCardView => "search_card_view",
+            Self::SearchFilterChip => "search_filter_chip",
+            Self::HomeExample => "home_example",
+            Self::NormCopyReference => "norm_copy_reference",
+            Self::MenuBookmarks => "menu_bookmarks",
+        }
+    }
 }
 
 /// Préfixe un titre d'instrument par « du / de la / de l' » selon son premier
@@ -2005,8 +2244,7 @@ pub fn instrument_with_de(name: &str) -> String {
 }
 
 /// What Légifrance writes as a `date_debut` when an entry into force is deferred
-/// to a date it has not fixed: a flag, never a bound. 696 articles carry it on
-/// 15/09/2026, and ordering it as a date announced a span « 2222-02-22 to now ».
+/// to a date it has not fixed: a flag, never a bound, so never ordered as a date.
 pub const DATE_A_DETERMINER: &str = "2222-02-22";
 
 /// Ranks of the version closing before `date` and of the one opening after it:
@@ -2032,9 +2270,8 @@ pub fn version_gap(bornes: &[(Option<&str>, Option<&str>)], date: &str) -> Optio
 }
 
 /// Whether the status closing a gap says why nothing covers the date: the article
-/// did not exist under that number then. On the 867 gaps of the CSS on 09/09/2026
-/// 703 are explained, and `false` leaves the gap ours to hold. Decides only that
-/// it is, the API and the front not wording it in the same language.
+/// did not exist under that number then. Decides only that it is, the API and the
+/// front not wording it in the same language.
 pub fn gap_explique(status: &str) -> bool {
     status.starts_with("ABROGE") || matches!(status, "ANNULE" | "PERIME" | "TRANSFERE")
 }
@@ -2066,8 +2303,8 @@ pub fn article_status_label(status: &str) -> Option<&'static str> {
 
 // ── Fiche entité ────────────────────────────────────────────────────────────
 
-/// Fiche d'une entité du référentiel (`entity`) : identité registre
-/// + agrégats contentieux dérivés de `decision_party`.
+/// An entity of the registry (`entity`): registry identity and litigation
+/// aggregates from the actors linked to it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EntityPageResponse {
@@ -2269,7 +2506,7 @@ pub struct EntityRegistreResponse {
     /// d'arête, projetés dans le même `AnnonceHit`. Vide = aucune annonce, ou
     /// amont indisponible.
     pub annonces: Vec<EntityAnnonceGroupDto>,
-    /// Liens sortants (annuaire-entreprises, documents INPI…).
+    /// Liens sortants (annuaire-entreprises…).
     pub liens: Vec<RegistreLienDto>,
 }
 
@@ -2310,6 +2547,24 @@ pub struct RegistreFinanceDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct RegistreLienDto {
     pub label: String,
+    pub url: String,
+}
+
+/// A company's deeds and annual accounts as the INPI lists them, newest filing first.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityDocumentsResponse {
+    pub comptes: Vec<EntityDocumentDto>,
+    pub actes: Vec<EntityDocumentDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct EntityDocumentDto {
+    pub label: String,
+    /// Filing date, ISO.
+    pub filed: Option<String>,
+    /// The file, served by librejustice.fr.
     pub url: String,
 }
 
@@ -2372,7 +2627,7 @@ pub struct AnnonceSearchRequest {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fond: Vec<String>,
     /// Canonical département code (`75`, `2A`, `973`), [`lj_vocab::ZONE_FRANCE`]
-    /// for a nationwide market, [`lj_vocab::ZONE_UE`] for a Europe-wide one,
+    /// for a nationwide market, [`lj_vocab::ZONE_EU`] for a Europe-wide one,
     /// [`lj_vocab::ZONE_SANS`] for what no source located. A notice carries
     /// several; the filter overlaps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -2574,7 +2829,9 @@ pub struct AnnonceCanalDto {
 pub struct AnnonceEntiteDto {
     pub role: String,
     pub label: String,
-    pub href: String,
+    /// Absent when the edge points at an entity the registry no longer holds.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub href: Option<String>,
 }
 
 /// One lot of a tender, as the notice publishes it. Distinct from
@@ -2735,6 +2992,32 @@ pub struct ApiKeyCreated {
     pub key: ApiKeySummary,
 }
 
+/// A licence word, or a file a component ships, with the text it opens when there is one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenSourceLink {
+    pub label: String,
+    pub href: Option<String>,
+}
+
+/// A third-party component of the published code: a file served as is or a compiled crate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenSourceComponent {
+    pub name: String,
+    pub version: String,
+    pub home: Option<String>,
+    pub licence: Vec<OpenSourceLink>,
+    pub files: Vec<OpenSourceLink>,
+}
+
+/// Response of `/internal/open-source`, sorted by name.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct OpenSourceResponse {
+    pub components: Vec<OpenSourceComponent>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2751,14 +3034,13 @@ mod tests {
             date: None,
             title: None,
             publisher: None,
-            access: None,
             url: None,
+            body: None,
         }
     }
 
     /// HAL takes the three fields as free text, so the layout has to hold the
-    /// forms it actually carries, measured on 400 law deposits: 80 % of
-    /// `page_s` are a number or a range, the rest write their own label.
+    /// forms it carries: `page_s` is a number, a range or its own label.
     #[test]
     fn reference_rend_ce_que_la_source_porte_et_rien_de_plus() {
         assert_eq!(
@@ -2907,13 +3189,14 @@ mod tests {
                 key: "REJET".into(),
                 label: "Rejet".into(),
             }),
-            procedure: None,
-            office: None,
+            formation: Vec::new(),
             legal_domain: None,
             seat_path: None,
             publication_codes: vec!["B".into()],
             chars: Some(4200),
             summary: None,
+            summary_quote: None,
+            summary_body: None,
             official_url: Some(
                 "https://www.legifrance.gouv.fr/ceta/id/CETATEXT000050414461".into(),
             ),
@@ -2961,6 +3244,7 @@ mod tests {
             legitext: "LEGITEXT000006070721".into(),
             code: "code-civil".into(),
             jurisdiction: "FR".into(),
+            jurisdiction_label: "France".into(),
             code_title: Some("Code civil".into()),
             num: "L131-4".into(),
             num_key: "L131-4".into(),
@@ -3018,6 +3302,7 @@ mod tests {
             id: "cass-1".into(),
             title: "Cour de cassation, 2024-01-10, 22-12.345".into(),
             jurisdiction_type: JurisdictionType::Cc,
+            jurisdiction_code: Some("cc".into()),
             date_lecture: Some("2024-01-10".into()),
             publication_codes: vec!["r".into()],
             summary: None,

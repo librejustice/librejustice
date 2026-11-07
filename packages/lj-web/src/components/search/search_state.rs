@@ -9,7 +9,7 @@ use leptos_router::params::ParamsMap;
 
 use crate::helpers::{SEARCH_MAX_PAGES, SEARCH_PAGE_SIZE};
 use lj_dtos::{
-    Domain, JurisdictionType, Office, Procedure, SearchMode, SearchRequest, Solution, SortOrder,
+    DecisionPart, Domain, JurisdictionType, SearchMode, SearchRequest, Solution, SortOrder,
 };
 
 /// Clé de cache stable : query + filtres + page. Sert
@@ -21,24 +21,24 @@ pub struct SearchKey {
     pub page: u32,
     /// Types de juridiction (`TJ`, `CE`, …) — racines `jurisdiction_type:*` du rail.
     pub jurisdiction_type: Vec<String>,
-    /// Offices du juge (`JEX`, `JAF`, … — suffixes `office:*`), dropdown dédié.
-    pub office: Vec<String>,
     /// Codes du référentiel `jurisdiction` (`tj76351`, `ca_paris`, …).
     pub jurisdiction_code: Vec<String>,
     /// Formations, en paires `<cour>|<clé>` (`ca_paris|C3`).
     pub seat: Vec<String>,
+    /// Formation paths (`FR.TJ.JEX`).
+    pub formation: Vec<String>,
     /// Domaines du référentiel de place (suffixes `legal_domain:*`, racines ou feuilles).
     pub legal_domain: Vec<String>,
     /// Solutions (suffixes `solution:*`).
     pub solution: Vec<String>,
-    /// Voies procédurales (suffixes `procedure:*`).
-    pub procedure: Vec<String>,
     pub legal_instrument: Vec<String>,
     pub legal_article: Vec<String>,
     /// Niveaux de publication (suffixes `publication:*`).
     pub publication: Vec<String>,
     pub date_from: Option<String>,
     pub date_to: Option<String>,
+    /// The parts searched (`headnote`, `judgment`, `annexes`), every part when empty.
+    pub search_in: Vec<String>,
     pub sort: String,
     /// Mode demandé : `auto` (défaut) laisse le résolveur lire la requête.
     pub mode: String,
@@ -46,13 +46,16 @@ pub struct SearchKey {
 }
 
 impl SearchKey {
-    /// Ce dont dépend le décompte : la question et ses filtres. Page, tri et mode
-    /// IA parcourent le même ensemble apparié, et la clé du bundle serveur les
-    /// exclut déjà : deux clés qui n'en diffèrent que là partagent leur compte.
+    /// What the count depends on: the question, its filters, and whether the order
+    /// is by date, which lists every decision holding all the words.
     pub fn count_key(&self) -> Self {
+        let sort = match self.sort.as_str() {
+            "relevance" => parse_sort(None),
+            _ => parse_sort(Some("date_desc")),
+        };
         Self {
             page: 1,
-            sort: parse_sort(None),
+            sort,
             ai_mode: false,
             ..self.clone()
         }
@@ -95,17 +98,17 @@ pub fn key_from_map(map: &ParamsMap) -> SearchKey {
             .unwrap_or_default(),
         page: parse_page(map),
         jurisdiction_type: get_all(map, "jurisdictionType"),
-        office: get_all(map, "office"),
         jurisdiction_code: get_all(map, "jurisdictionCode"),
         seat: get_all(map, "seat"),
+        formation: get_all(map, "formation"),
         legal_domain: get_all(map, "legalDomain"),
         solution: get_all(map, "solution"),
-        procedure: get_all(map, "procedure"),
         legal_instrument: get_all(map, "legalInstrument"),
         legal_article: get_all(map, "legalArticle"),
         publication: get_all(map, "publication"),
         date_from: date("dateFrom"),
         date_to: date("dateTo"),
+        search_in: get_all(map, "searchIn"),
         sort: parse_sort(map.get("sort").as_deref()),
         mode: parse_mode(map.get("mode").as_deref()),
         ai_mode: super::ai_mode::ai_mode_from_param(map.get("aiMode").as_deref()),
@@ -162,16 +165,16 @@ pub fn request_from_key(key: &SearchKey) -> SearchRequest {
         query: key.query.clone(),
         jurisdiction_type: parse_enum_all::<JurisdictionType>(&key.jurisdiction_type),
         solution: parse_enum_all::<Solution>(&key.solution),
-        procedure: parse_enum_all::<Procedure>(&key.procedure),
-        office: parse_enum_all::<Office>(&key.office),
         legal_domain: parse_enum_all::<Domain>(&key.legal_domain),
         jurisdiction_code: non_empty(&key.jurisdiction_code),
         seat: non_empty(&key.seat),
+        formation: non_empty(&key.formation),
         legal_instrument: non_empty(&key.legal_instrument),
         legal_article: non_empty(&key.legal_article),
         publication: non_empty(&key.publication),
         date_from: key.date_from.clone(),
         date_to: key.date_to.clone(),
+        search_in: parse_enum_all::<DecisionPart>(&key.search_in),
         mode: match key.mode.as_str() {
             "lexical" => SearchMode::Lexical,
             "semantic" => SearchMode::Semantic,
@@ -189,18 +192,21 @@ pub fn request_from_key(key: &SearchKey) -> SearchRequest {
 mod tests {
     use super::*;
 
-    /// Page, tri et tri IA parcourent le même ensemble apparié : leur décompte
-    /// est le même, donc les compteurs des dropdowns ne se taisent pas.
     #[test]
-    fn count_key_ignore_page_tri_et_tri_ia() {
+    fn count_key_follows_the_set_not_the_page() {
         let page1 = key_from_map(&ParamsMap::new());
         let mut page3 = page1.clone();
         page3.page = 3;
-        page3.sort = "date_desc".to_string();
         page3.ai_mode = true;
-
         assert_ne!(page1, page3);
         assert_eq!(page1.count_key(), page3.count_key());
+
+        let mut recent = page1.clone();
+        recent.sort = "date_desc".to_string();
+        let mut oldest = page1.clone();
+        oldest.sort = "date_asc".to_string();
+        assert_ne!(page1.count_key(), recent.count_key());
+        assert_eq!(recent.count_key(), oldest.count_key());
 
         let mut filtre = page1.clone();
         filtre.solution = vec!["solution:cassation".to_string()];

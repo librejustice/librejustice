@@ -17,9 +17,11 @@ static BOOL_RE: LazyLock<Regex> = LazyLock::new(|| {
 
 // ── Détection de mode / traduction booléenne ─────────────────────────────────
 
-/// `lexical` si la query porte des opérateurs/guillemets, sinon `hybrid`.
+/// `lexical` when the query carries an operator or nothing outside its quotes:
+/// a quote beside free words constrains the hybrid instead.
 pub fn detect_query_mode(query: &str) -> QueryMode {
-    if BOOL_RE.is_match(query) {
+    let quoted_only = query.contains('"') && query_lacks_searchable_terms(&unquoted(query));
+    if has_boolean_operator(query) || quoted_only {
         QueryMode::Lexical
     } else {
         QueryMode::Hybrid
@@ -54,13 +56,18 @@ static TOKEN_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""[^"]*"(?:~\d+
 /// `PROCHE`/`NEAR` suivi de son entier, ou token nu. L'opérateur passe avant
 /// `\S+` pour être reconnu même collé à une phrase (`"a b"PROCHE3`).
 static PROX_SCAN_RE: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r#""[^"]*"|\b(?:PROCHE|NEAR)\d+\b|\S+"#).unwrap());
+    LazyLock::new(|| Regex::new(r#""[^"]*"(?:~\d+)?|\b(?:PROCHE|NEAR)\d+\b|\S+"#).unwrap());
+/// A quoted phrase with its slop, or a run holding neither space nor quote: a
+/// parenthesis glued to a phrase comes apart from it.
+static GROUP_SCAN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r#""[^"]*"(?:~\d+)?|[^\s"]+"#).unwrap());
 /// Token qui *est* l'opérateur de proximité, avec son slop en capture.
 static PROX_OP_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^(?:PROCHE|NEAR)(\d+)$").unwrap());
 
 pub(crate) fn translate_boolean(query: &str) -> String {
     let q = DOUBLE_QUOTE_RE.replace_all(query, r#""$1""#).into_owned();
+    let q = split_groups(&q);
     let q = rewrite_proximity(&q);
     let q = ET_RE.replace_all(&q, "AND").into_owned();
     let q = OU_RE.replace_all(&q, "OR").into_owned();
@@ -68,35 +75,158 @@ pub(crate) fn translate_boolean(query: &str) -> String {
     enforce_and_precedence(&q)
 }
 
+/// Sets apart as tokens of their own the `(` opening a token and the `)`
+/// closing one, and drops the unmatched and the empty groups:
+/// `("bail commercial" OU loyer)` becomes `( "bail commercial" OU loyer )`. A
+/// parenthesis inside a word (`acte(s`) stays its text.
+fn split_groups(query: &str) -> String {
+    let mut toks: Vec<&str> = Vec::new();
+    for m in GROUP_SCAN_RE.find_iter(query) {
+        let mut tok = m.as_str();
+        if tok.starts_with('"') {
+            toks.push(tok);
+            continue;
+        }
+        while let Some(rest) = tok.strip_prefix('(') {
+            toks.push("(");
+            tok = rest;
+        }
+        let mut closers = 0;
+        while tok.ends_with(')') && tok.matches(')').count() > tok.matches('(').count() {
+            tok = &tok[..tok.len() - 1];
+            closers += 1;
+        }
+        if !tok.is_empty() {
+            toks.push(tok);
+        }
+        toks.extend(std::iter::repeat_n(")", closers));
+    }
+    let mut out: Vec<&str> = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    for tok in toks {
+        match tok {
+            "(" => {
+                open.push(out.len());
+                out.push(tok);
+            }
+            ")" => match open.pop() {
+                Some(at) if at + 1 == out.len() => {
+                    out.pop();
+                }
+                Some(_) => out.push(tok),
+                None => {}
+            },
+            _ => out.push(tok),
+        }
+    }
+    for at in open.into_iter().rev() {
+        out.remove(at);
+    }
+    out.join(" ")
+}
+
 /// Slop d'un token opérateur (`PROCHE5` → 5), `None` si ce n'en est pas un.
 fn proximity_slop(tok: &str) -> Option<u32> {
     PROX_OP_RE.captures(tok)?.get(1)?.as_str().parse().ok()
 }
 
-/// Un opérande de proximité : ni mot-clé booléen, ni opérateur de proximité.
+/// A proximity operand: no boolean keyword, no proximity operator, no parenthesis.
 fn is_proximity_operand(tok: &str) -> bool {
-    !matches!(tok, "ET" | "OU" | "SAUF" | "AND" | "OR" | "NOT") && proximity_slop(tok).is_none()
+    !matches!(tok, "ET" | "OU" | "SAUF" | "AND" | "OR" | "NOT" | "(" | ")")
+        && proximity_slop(tok).is_none()
 }
 
-/// Mots portés par un opérande : une phrase quotée est aplatie en ses mots, un
-/// token nu se rend lui-même. Les guillemets tombent — la phrase à slop les
-/// reposera autour de l'ensemble.
-fn operand_words(tok: &str) -> Vec<String> {
-    tok.replace('"', " ")
+/// The words a proximity phrase gathers, with the widest slop its operands carry.
+type Leg = (Vec<String>, u32);
+
+/// The words of an operand, a quoted phrase flattened into its own, with the
+/// slop it carries: the proximity phrase quotes them all again.
+fn operand_leg(tok: &str) -> Leg {
+    let (body, slop) = match tok.rfind('"') {
+        Some(end) => (&tok[..end], tok[end + 1..].strip_prefix('~')),
+        None => (tok, None),
+    };
+    let words = body
+        .replace('"', " ")
         .split_whitespace()
         .map(str::to_string)
-        .collect()
+        .collect();
+    (words, slop.and_then(|n| n.parse().ok()).unwrap_or(0))
 }
 
-/// Réécrit les chaînes de proximité `A PROCHE5 B [PROCHE3 C…]` en phrase à slop
-/// tantivy `"A B C"~5` (slop = max des N de la chaîne), seule construction de la
-/// grammaire `paradedb.parse` qui exprime la proximité. Les opérandes sont des
-/// mots nus ou des phrases quotées, aplatis dans la phrase ; le slop tantivy
-/// tolère l'inversion (`"commercial bail"~5` matche « bail commercial »).
+/// The leg of each `OU` a group stands for, the `ET` of a leg flattened into
+/// it. `None` when the group nests another, or holds a `SAUF` or a proximity.
+fn group_legs<S: AsRef<str>>(inner: &[S]) -> Option<Vec<Leg>> {
+    let mut legs: Vec<Leg> = vec![(Vec::new(), 0)];
+    for tok in inner.iter().map(AsRef::as_ref) {
+        match tok {
+            "OU" | "OR" => legs.push((Vec::new(), 0)),
+            "ET" | "AND" => {}
+            t if !is_proximity_operand(t) => return None,
+            t => {
+                let (words, slop) = operand_leg(t);
+                let leg = legs.last_mut()?;
+                leg.0.extend(words);
+                leg.1 = leg.1.max(slop);
+            }
+        }
+    }
+    legs.iter()
+        .all(|(words, _)| !words.is_empty())
+        .then_some(legs)
+}
+
+/// Index of the parenthesis that closes the group opened by the first token.
+fn group_end<'a>(
+    toks: impl Iterator<Item = (usize, &'a str)>,
+    open: &str,
+    close: &str,
+) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, t) in toks {
+        if t == open {
+            depth += 1;
+        } else if t == close {
+            depth -= 1;
+            if depth == 0 {
+                return Some(i);
+            }
+        }
+    }
+    None
+}
+
+/// The operand ending `out`, a word, a phrase or a group, with the index it
+/// starts at.
+fn left_operand(out: &[String]) -> Option<(usize, Vec<Leg>)> {
+    let last = out.last()?;
+    if last != ")" {
+        return is_proximity_operand(last).then(|| (out.len() - 1, vec![operand_leg(last)]));
+    }
+    let open = group_end(out.iter().map(String::as_str).enumerate().rev(), ")", "(")?;
+    Some((open, group_legs(&out[open + 1..out.len() - 1])?))
+}
+
+/// The operand starting at `toks[at]`, with the index right after it.
+fn right_operand(toks: &[&str], at: usize) -> Option<(usize, Vec<Leg>)> {
+    let first = *toks.get(at)?;
+    if first != "(" {
+        return is_proximity_operand(first).then(|| (at + 1, vec![operand_leg(first)]));
+    }
+    let close = group_end(toks.iter().copied().enumerate().skip(at), "(", ")")?;
+    Some((close + 1, group_legs(&toks[at + 1..close])?))
+}
+
+/// Rewrites the proximity chains `A PROCHE5 B [PROCHE3 C…]` into the tantivy
+/// slop phrase `"A B C"~5` (the widest N of the chain), the only construct of
+/// the `paradedb.parse` grammar that expresses proximity. Words and phrases
+/// are flattened into it, and the slop forgives the order (`"commercial bail"~5`
+/// matches « bail commercial »). A group is distributed, one phrase per leg:
+/// `bail PROCHE5 (commercial OU rural)` → `( "bail commercial"~5 OR "bail rural"~5 )`.
 ///
-/// Un opérateur privé d'opérande à gauche ou à droite (`PROCHE5 bail`,
-/// `"bail commercial"PROCHE5`, `bail ET PROCHE5`) est droppé : rien à
-/// rapprocher.
+/// An operator missing an operand on either side (`PROCHE5 bail`,
+/// `"bail commercial"PROCHE5`, `bail ET PROCHE5`), or whose group does not
+/// distribute, is dropped: nothing to bring together.
 fn rewrite_proximity(query: &str) -> String {
     if !PROX_SCAN_RE
         .find_iter(query)
@@ -113,28 +243,53 @@ fn rewrite_proximity(query: &str) -> String {
             i += 1;
             continue;
         };
-        let left = out.last().filter(|t| is_proximity_operand(t)).cloned();
-        let right = toks.get(i + 1).copied().filter(|t| is_proximity_operand(t));
-        let (Some(left), Some(right)) = (left, right) else {
+        let (Some((start, mut legs)), Some((end, right))) =
+            (left_operand(&out), right_operand(&toks, i + 1))
+        else {
             i += 1;
             continue;
         };
-        out.pop();
-        let mut words = operand_words(&left);
-        words.extend(operand_words(right));
-        i += 2;
+        out.truncate(start);
+        legs = cross(&legs, &right);
+        i = end;
         // Chaîne : `A PROCHE5 B PROCHE3 C` → une seule phrase, slop = max.
-        while let (Some(next_slop), Some(operand)) = (
-            toks.get(i).and_then(|t| proximity_slop(t)),
-            toks.get(i + 1).copied().filter(|t| is_proximity_operand(t)),
-        ) {
+        while let Some(next_slop) = toks.get(i).and_then(|t| proximity_slop(t)) {
+            let Some((end, right)) = right_operand(&toks, i + 1) else {
+                break;
+            };
             slop = slop.max(next_slop);
-            words.extend(operand_words(operand));
-            i += 2;
+            legs = cross(&legs, &right);
+            i = end;
         }
-        out.push(format!("\"{}\"~{slop}", words.join(" ")));
+        let phrases = legs
+            .iter()
+            .map(|(words, own)| format!("\"{}\"~{}", words.join(" "), slop.max(*own)));
+        match legs.len() {
+            1 => out.extend(phrases),
+            _ => {
+                out.push("(".to_string());
+                for (n, phrase) in phrases.enumerate() {
+                    if n > 0 {
+                        out.push("OR".to_string());
+                    }
+                    out.push(phrase);
+                }
+                out.push(")".to_string());
+            }
+        }
     }
     out.join(" ")
+}
+
+/// Every leg of `left` followed by every leg of `right`.
+fn cross(left: &[Leg], right: &[Leg]) -> Vec<Leg> {
+    left.iter()
+        .flat_map(|(l, ls)| {
+            right
+                .iter()
+                .map(move |(r, rs)| ([l.as_slice(), r].concat(), *ls.max(rs)))
+        })
+        .collect()
 }
 
 /// Caractères que la grammaire tantivy interprète hors guillemets : un token nu
@@ -187,8 +342,17 @@ fn enforce_and_precedence(query: &str) -> String {
         let is_op = |t: &str| matches!(t, "AND" | "OR" | "NOT");
         let mut out: Vec<String> = Vec::new();
         for t in toks {
-            if is_op(&t) && out.last().is_none_or(|p| is_op(p)) {
+            if is_op(&t) && out.last().is_none_or(|p| is_op(p) || p == "(") {
                 continue;
+            }
+            if t == ")" {
+                while out.last().is_some_and(|p| is_op(p)) {
+                    out.pop();
+                }
+                if out.last().is_some_and(|p| p == "(") {
+                    out.pop();
+                    continue;
+                }
             }
             out.push(t);
         }
@@ -206,6 +370,20 @@ fn enforce_and_precedence(query: &str) -> String {
         }
         if tok == "NOT" {
             next_neg = true;
+            continue;
+        }
+        if tok == "(" {
+            out.push(format!("{}(", if next_neg { '-' } else { '+' }));
+            next_neg = false;
+            continue;
+        }
+        if tok == ")" {
+            match out.last().map(String::as_str) {
+                Some("+(" | "-(") => {
+                    out.pop();
+                }
+                _ => out.push(tok.to_string()),
+            }
             continue;
         }
         if is_bare_star(tok.trim_start_matches(['+', '-'])) {
@@ -245,11 +423,17 @@ pub(crate) fn phrase_combo_parse(query: &str) -> String {
 /// `Bag` ne garde que le sac OR (aucune clause phrase). `Weighted(w)` part de
 /// `Split` et pondère chaque clause phrase par `^w` (`w < 1` ⇒
 /// sous-pondération).
+///
+/// `Forms(f)` is `Split` with each word of the bag joined by the forms `f` gives
+/// it; `RequiredForms(f)` requires each content word or one of its forms, as the
+/// lexical mode requires every word.
 #[derive(Debug, Clone, Copy)]
 pub enum BodyArm {
     Bag,
     Split,
     Weighted(f64),
+    Forms(fn(&str) -> Vec<String>),
+    RequiredForms(fn(&str) -> Vec<String>),
 }
 
 /// Query body d'un bras, à passer à `paradedb.parse_with_field('body', …)`.
@@ -271,6 +455,33 @@ pub fn body_query_for_arm(query: &str, arm: BodyArm) -> String {
             .map(|(i, p)| if i == 0 { p } else { format!("{p}^{w}") })
             .collect::<Vec<_>>()
             .join(" "),
+        BodyArm::Forms(forms) => {
+            let mut seen = HashSet::new();
+            let bag = toks
+                .iter()
+                .flat_map(|t| std::iter::once(t.clone()).chain(forms(t)))
+                .filter(|t| seen.insert(t.clone()))
+                .collect::<Vec<_>>()
+                .join(" ");
+            std::iter::once(bag)
+                .chain(parts.into_iter().skip(1))
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
+        BodyArm::RequiredForms(forms) => {
+            let mut seen = HashSet::new();
+            let required = toks
+                .iter()
+                .filter(|t| !is_stopword(t) && seen.insert((*t).clone()))
+                .map(|t| match forms(t) {
+                    f if f.is_empty() => format!("+{t}"),
+                    f => format!("+({t} {})", f.join(" ")),
+                });
+            required
+                .chain(parts.into_iter().skip(1))
+                .collect::<Vec<_>>()
+                .join(" ")
+        }
     }
 }
 
@@ -332,6 +543,65 @@ pub(crate) fn phrase_combo_clauses(toks: &[String], spans: &[(usize, usize)]) ->
     let mut seen_parts = HashSet::new();
     parts.retain(|p| seen_parts.insert(p.clone()));
     parts
+}
+
+static QUOTED_RE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#""[^"]*"(?:~\d+)?"#).unwrap());
+
+/// The quoted phrases of an operator-free query, as a query of their own: what
+/// every result of the hybrid must hold.
+pub(crate) fn quoted_constraint(query: &str) -> Option<String> {
+    if has_boolean_operator(query) {
+        return None;
+    }
+    let query = DOUBLE_QUOTE_RE.replace_all(query, r#""$1""#);
+    let phrases: Vec<&str> = QUOTED_RE
+        .find_iter(&query)
+        .map(|m| m.as_str())
+        .filter(|p| !query_lacks_searchable_terms(p))
+        .collect();
+    (!phrases.is_empty()).then(|| phrases.join(" "))
+}
+
+fn unquoted(query: &str) -> String {
+    let query = DOUBLE_QUOTE_RE.replace_all(query, r#""$1""#);
+    QUOTED_RE.replace_all(&query, " ").replace('"', " ")
+}
+
+/// The question the hybrid embeds: the whole query, quote marks and slops dropped.
+pub(crate) fn without_quotes(query: &str) -> String {
+    let query = DOUBLE_QUOTE_RE.replace_all(query, r#""$1""#);
+    QUOTED_RE
+        .replace_all(&query, |c: &regex::Captures| {
+            let m = &c[0];
+            m[1..m.rfind('"').unwrap_or(m.len())].to_string()
+        })
+        .replace('"', " ")
+}
+
+/// The body query of a constrained hybrid: the quoted phrases required, the
+/// other words ranking as a plain query's do.
+pub(crate) fn constrained_parse(query: &str, constraint: &str) -> String {
+    let required = translate_boolean(constraint);
+    let rest = unquoted(query);
+    match query_lacks_searchable_terms(&rest) {
+        true => required,
+        false => format!("{required} {}", phrase_combo_parse(&rest)),
+    }
+}
+
+/// Every word required, as `ET` does; on a plain query, the phrase clauses only rank.
+pub(crate) fn lexical_parse(query: &str) -> String {
+    let required = translate_boolean(query);
+    if is_boolean_query(query) {
+        return required;
+    }
+    let phrases = phrase_combo_clauses(&tokenize_body(query), &[])
+        .into_iter()
+        .skip(1);
+    std::iter::once(required)
+        .chain(phrases)
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// `true` si la requête ne porte aucun token de contenu indexable : vide, ou
@@ -408,6 +678,52 @@ mod tests {
     }
 
     #[test]
+    fn a_quote_beside_free_words_constrains_the_hybrid() {
+        let q = r#""Dupont" licenciement"#;
+        assert_eq!(detect_query_mode(q), QueryMode::Hybrid);
+        assert_eq!(quoted_constraint(q).as_deref(), Some(r#""Dupont""#));
+        assert_eq!(
+            constrained_parse(q, r#""Dupont""#),
+            r#"+"Dupont" licenciement"#
+        );
+        assert_eq!(
+            without_quotes(r#""bail commercial"~3 résiliation"#),
+            "bail commercial résiliation"
+        );
+
+        assert_eq!(
+            detect_query_mode(r#""force majeure" "épidémie""#),
+            QueryMode::Lexical
+        );
+        assert_eq!(
+            detect_query_mode(r#""force majeure" ET épidémie"#),
+            QueryMode::Lexical
+        );
+        assert_eq!(quoted_constraint(r#""force majeure" ET épidémie"#), None);
+        assert_eq!(
+            quoted_constraint(r#""de la" "faute lourde" employeur"#).as_deref(),
+            Some(r#""faute lourde""#)
+        );
+    }
+
+    #[test]
+    fn lexical_parse_requires_every_word() {
+        assert_eq!(
+            lexical_parse("harcèlement moral"),
+            r#"+harcèlement +moral "harcelement moral""#
+        );
+        assert_eq!(
+            lexical_parse("faute de la victime"),
+            r#"+faute +victime "faute de la victime""#
+        );
+        assert_eq!(lexical_parse("congés ET payés"), "+congés +payés");
+        assert_eq!(
+            lexical_parse(r#""force majeure" épidémie"#),
+            r#"+"force majeure" +épidémie"#
+        );
+    }
+
+    #[test]
     fn dangling_proximity_operator_is_dropped() {
         assert_eq!(
             translate_boolean(r#""travail dimanche"PROCHE3"#),
@@ -417,6 +733,45 @@ mod tests {
         assert_eq!(translate_boolean("bail ET PROCHE5"), "+bail");
         assert_eq!(translate_boolean("approche5 ET bail"), "+approche5 +bail");
         assert_eq!(detect_query_mode("approche5 bail"), QueryMode::Hybrid);
+    }
+
+    #[test]
+    fn a_parenthesis_glued_to_a_phrase_groups() {
+        assert_eq!(
+            translate_boolean(r#"loyer ET ("prise d'effet" OU forfait)"#),
+            r#"loyer AND ( "prise d'effet" OR forfait )"#
+        );
+        assert_eq!(
+            translate_boolean(r#"vente SAUF ("hors magasin" ET particulier*)"#),
+            r#"+vente -( +"hors magasin" +particulier* )"#
+        );
+        assert_eq!(translate_boolean("(bail commercial"), "+bail +commercial");
+        assert_eq!(translate_boolean("bail) ET ()"), "+bail");
+        assert_eq!(translate_boolean("contrat SAUF (de la)"), "+contrat");
+        assert_eq!(
+            translate_boolean("(congés OU *) ET payés"),
+            "( congés ) AND payés"
+        );
+    }
+
+    #[test]
+    fn proximity_distributes_over_a_group() {
+        assert_eq!(
+            translate_boolean(r#""délais de grâce" PROCHE15 ("ne saurait" OU "ne permet pas")"#),
+            r#"( "délais de grâce ne saurait"~15 OR "délais de grâce ne permet pas"~15 )"#
+        );
+        assert_eq!(
+            translate_boolean("(mur OU sol) PROCHE5 (privé OU commun) ET lot"),
+            r#"( "mur privé"~5 OR "mur commun"~5 OR "sol privé"~5 OR "sol commun"~5 ) AND lot"#
+        );
+        assert_eq!(
+            translate_boolean("(note PROCHE5 Internet OU page) PROCHE3 notaire"),
+            r#"( "note Internet notaire"~5 OR "page notaire"~3 )"#
+        );
+        assert_eq!(
+            translate_boolean("bail PROCHE5 (commercial OU (rural ET fermage))"),
+            "bail ( commercial OR ( rural AND fermage ) )"
+        );
     }
 
     #[test]

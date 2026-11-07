@@ -1,5 +1,5 @@
 {
-  "_provenance": "généré depuis l'oracle Python (apps/api). NE PAS éditer à la main. Asservi par les tests Rust de lj-api.",
+  "_provenance": "Expected highlighted snippets of src/snippets.rs. Held by snippet_highlight_parity_oracle.",
   "cases": [
     {
       "name": "mid_text_single_match",

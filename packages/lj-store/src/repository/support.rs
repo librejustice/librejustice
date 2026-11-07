@@ -15,6 +15,7 @@ pub const REEXTRACTABLE_FIELDS: &[&str] = &[
     "seat",
     "seat_paths",
     "formation_uid",
+    "formation_paths",
     "case_name",
     "search_title",
     "publication_codes",
@@ -23,13 +24,6 @@ pub const REEXTRACTABLE_FIELDS: &[&str] = &[
     "office_uid",
     "legal_domain_uid",
     "jurisdiction_code",
-    "applicant_counsel_names",
-    "applicant_law_firms",
-    "applicant_companies",
-    "defendant_counsel_names",
-    "defendant_law_firms",
-    "defendant_companies",
-    "intervenors",
     "themes",
     "legal_references",
     "decision_links",
@@ -49,8 +43,8 @@ pub(super) const DECISION_LINKS_FIELD: &str = "decision_links";
 /// `case_citation`).
 pub(super) const CASE_CITATIONS_FIELD: &str = "case_citations";
 
-/// Champ ré-extractible routé vers `replace_decision_parties` (table
-/// `decision_party`).
+/// Re-extractable field routed to `replace_decision_actors` (table
+/// `decision_actors`).
 pub(super) const PARTIES_FIELD: &str = "parties";
 
 /// Champ ré-extractible routé vers `set_source_case_names` : trois colonnes
@@ -77,19 +71,12 @@ pub(super) fn extracted_column_type(field: &str) -> &'static str {
     match field {
         "date_lecture" => "date",
         "date_audience" => "date",
-        "docket_numbers" | "publication_codes" | "seat_paths" => "text[]",
+        "docket_numbers" | "publication_codes" | "seat_paths" | "formation_paths" => "text[]",
         "search_title" => "text",
         "seat" => "jsonb",
         "solution_uid" | "procedure_uid" | "office_uid" | "legal_domain_uid"
         | "jurisdiction_code" | "formation_uid" => "text",
-        "applicant_counsel_names"
-        | "applicant_law_firms"
-        | "applicant_companies"
-        | "defendant_counsel_names"
-        | "defendant_law_firms"
-        | "defendant_companies"
-        | "intervenors"
-        | "themes" => "text[]",
+        "themes" => "text[]",
         other => panic!("colonne ré-extractible inconnue: {other}"),
     }
 }
@@ -107,6 +94,7 @@ pub(super) fn extracted_field_value(
         "seat" => Box::new(extracted.seat.clone().map(tokio_postgres::types::Json)),
         "seat_paths" => Box::new(extracted.seat_paths.clone()),
         "formation_uid" => Box::new(extracted.formation_uid.clone()),
+        "formation_paths" => Box::new(formation_paths(extracted)),
         "search_title" => Box::new(extracted.search_title.clone()),
         "publication_codes" => Box::new(extracted.publication_codes.clone()),
         "solution_uid" => Box::new(extracted.solution_uid.clone()),
@@ -117,16 +105,19 @@ pub(super) fn extracted_field_value(
         // `ensure_jurisdictions` : les appelants spécialisent ce champ avant d'arriver
         // ici.
         "jurisdiction_code" => unreachable!("jurisdiction_code se résout via ensure_jurisdictions"),
-        "applicant_counsel_names" => Box::new(extracted.applicant_counsel_names.clone()),
-        "applicant_law_firms" => Box::new(extracted.applicant_law_firms.clone()),
-        "applicant_companies" => Box::new(extracted.applicant_companies.clone()),
-        "defendant_counsel_names" => Box::new(extracted.defendant_counsel_names.clone()),
-        "defendant_law_firms" => Box::new(extracted.defendant_law_firms.clone()),
-        "defendant_companies" => Box::new(extracted.defendant_companies.clone()),
-        "intervenors" => Box::new(extracted.intervenors.clone()),
         "themes" => Box::new(extracted.themes.clone()),
         other => panic!("colonne ré-extractible inconnue: {other}"),
     }
+}
+
+/// The « Formation » filter's paths, derived from the fields that name the bench.
+pub(super) fn formation_paths(extracted: &ExtractedFields) -> Vec<String> {
+    lj_core::formation::formation_paths(
+        &extracted.seat_paths,
+        extracted.formation_uid.as_deref(),
+        extracted.office_uid.as_deref(),
+        extracted.procedure_uid.as_deref(),
+    )
 }
 
 /// `CASE` de rang d'autorité sur une colonne de codes de publication, du plus
@@ -158,22 +149,36 @@ pub fn source_from_source_uid(source_uid: &str) -> &'static str {
         "dila-constit"
     } else if source_uid.starts_with("dila-cnil/") {
         "dila-cnil"
+    } else if source_uid.starts_with("dila-cass/") {
+        "dila-cass"
+    } else if source_uid.starts_with("dila-inca/") {
+        "dila-inca"
+    } else if source_uid.starts_with("dila-capp/") {
+        "dila-capp"
     } else if source_uid.starts_with("cedh/") {
         "cedh"
     } else if source_uid.starts_with("cjue/") {
         "cjue"
     } else if source_uid.starts_with("cnda/") {
         "cnda"
+    } else if source_uid.starts_with("ddd/") {
+        "ddd"
+    } else if source_uid.starts_with("adlc/") {
+        "adlc"
+    } else if source_uid.starts_with("comeu/") {
+        "comeu"
     } else if source_uid.starts_with("ariane-dce/") {
         "ariane-dce"
     } else if source_uid.starts_with("ariane-web/") {
         "ariane-web"
-    } else if source_uid.starts_with("adde/") {
-        "adde"
     } else if source_uid.starts_with("juricaf/") {
         "juricaf"
     } else if source_uid.starts_with("hal/") {
         "hal"
+    } else if source_uid.starts_with("doctrine-oai/") {
+        "doctrine-oai"
+    } else if source_uid.starts_with("contribution/") {
+        "contribution"
     } else {
         "opendata"
     }
@@ -250,6 +255,30 @@ mod tests {
                 continue;
             }
             let _ = extracted_column_type(f);
+        }
+    }
+
+    #[test]
+    fn every_ranked_source_is_named_by_its_uid() {
+        let rank = crate::migrator::embedded_migrations()
+            .into_iter()
+            .rev()
+            .find_map(|m| {
+                m.sql
+                    .rsplit_once("ADD COLUMN source_rank SMALLINT GENERATED")
+            })
+            .expect("a migration defines source_rank")
+            .1;
+        let ranked = rank
+            .lines()
+            .take_while(|l| l.trim() != "END")
+            .filter_map(|l| l.trim().strip_prefix("WHEN '"))
+            .filter_map(|l| l.split('\'').next())
+            .filter(|s| *s != "opendata")
+            .collect::<Vec<_>>();
+        assert_eq!(ranked.len(), 15);
+        for source in ranked {
+            assert_eq!(source_from_source_uid(&format!("{source}/x")), source);
         }
     }
 }

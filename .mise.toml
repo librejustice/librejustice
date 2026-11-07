@@ -117,13 +117,13 @@ description = "Précompresse /pkg (wasm/js/css) en brotli q11 + gzip -9 ; ServeD
 run = """
 site="${LEPTOS_SITE_ROOT:-target/site}"
 # Keyed on content: the redaction modules, OCR data and fonts rarely change,
-# and brotli -q 11 costs ~3 s per MB on this host.
+# and brotli -q 11 is slow.
 cache="${LIBREJUSTICE_STATE_DIR:-$HOME/.local/share/librejustice}/cache/precompress"
 mkdir -p "$cache"
 # Noms content-hashés (`hash-files = true`) : lj-web.<sha256>.{wasm,js,css}.
 # The redaction module and its viewer are compressed HERE rather than where they
-# are built: they travel through `public/`, whose copy by cargo-leptos truncated
-# a `.gz` at 256 KB on 21/09, which the browser read as an amputated module.
+# are built: they travel through `public/`, whose copy by cargo-leptos truncates
+# a large `.gz`.
 for f in "$site"/pkg/lj-web.*.wasm "$site"/pkg/lj-web.*.js "$site"/pkg/lj-web.*.css \
          "$site"/redactor/*.wasm "$site"/redactor/*.js \
          "$site"/redactor/fonts/*.ttf "$site"/redactor/fonts/*.otf "$site"/redactor/cmaps/*.cmap \
@@ -178,6 +178,7 @@ if [ ! -d "$bound" ]; then
   mv "$bound.tmp" "$bound"
 fi
 touch "$bound"
+mkdir -p "$site/redactor"
 cp -a "$bound"/* "$site/redactor"/
 { cat packages/lj-pdf/NOTICE; echo; cat packages/lj-office/NOTICE; } > "$site/redactor/NOTICE.txt"
 find "${bound%/*}" -mindepth 1 -maxdepth 1 -mtime +14 -exec rm -rf {} +
@@ -211,7 +212,7 @@ find "${bound%/*}" -mindepth 1 -maxdepth 1 -mtime +14 -exec rm -rf {} +
 # The slow reader's networks, converted once per pin: the handwriting reader
 # ships as a PyTorch checkpoint, exported here, which wants PyLaia and Torch.
 # Each file vendored here is listed, with its licence, in
-# packages/lj-web/public/third-party-licenses.txt.
+# the /open-source list, packages/lj-api/src/open_source.rs.
 [tasks.htr-assets]
 description = "Vendors the slow reader's networks and lexicon into lj-web/public/redactor/htr/models (served under /redactor/htr/models, fetched only when the pages are read as handwriting)."
 run = """
@@ -289,7 +290,7 @@ cp "$held"/* "$site/licenses/"
 # names one: the set hayro-cmap embeds natively, read from the repository it is
 # built from, with the CID to Unicode tables that repository adds.
 # Each file vendored here is listed, with its licence, in
-# packages/lj-web/public/third-party-licenses.txt.
+# the /open-source list, packages/lj-api/src/open_source.rs.
 [tasks.pdf-cmaps]
 description = "Vendors the predefined Adobe CMaps into lj-web/public/redactor/cmaps (served under /redactor/cmaps, fetched only for a PDF that names one)."
 run = """
@@ -322,12 +323,13 @@ for name in 83pv-RKSJ-H 90ms-RKSJ-H 90ms-RKSJ-V 90msp-RKSJ-H 90msp-RKSJ-V 90pv-R
   cp "$found" "$site/$name.cmap"
 done
 cp "$vendor/LICENSE.md" "$site/LICENSE.md"
+(cd "$site" && ls *.cmap | sed 's/[.]cmap$//') > "$site/index.txt"
 """
 
 # One of the five tesseract builds is vendored, LSTM and SIMD: the loader has to
 # name that file, or tesseract.js probes for names this folder does not carry.
 # Each file vendored here is listed, with its licence, in
-# packages/lj-web/public/third-party-licenses.txt.
+# the /open-source list, packages/lj-api/src/open_source.rs.
 [tasks.ocr-assets]
 description = "Vendors tesseract wasm + the fra data into lj-web/public/ocr (served under /ocr, 1.5 MB brotli fetched only for a document with no text layer)."
 run = """
@@ -403,7 +405,7 @@ done
 # Caladea stays on the LibreOffice pin, the later one changed its widths
 # (huertatipografica/Caladea#4); URW ships as OTF, the files LibreOffice reads.
 # Each file vendored here is listed, with its licence, in
-# packages/lj-web/public/third-party-licenses.txt.
+# the /open-source list, packages/lj-api/src/open_source.rs.
 [tasks.office-fonts]
 description = "Vendors the free substitutes of the Office fonts into lj-web/public/redactor/fonts (served under /redactor/fonts) and installs them with their aliases into the user's fontconfig, for LibreOffice."
 run = """
@@ -492,6 +494,7 @@ cc3d3bf735b45aa5f1fdd983de140a7d54c4508281b19fc589afb5d9446f7ad5 LiberationSansN
 b393cb01867c919b44381512120dc3e4c954c7b47e2035c405f3a324799a4d29 Gelasio-OFL.txt $gh/SorkinType/Gelasio/7ab20e7e5c42791e603b9ee3201a0b49849cfdb2/OFL.txt
 f2095b08bed08b23a6fe26112fcd679a2bee3f002eef077eb05d215ed1051bd8 Noto-OFL.txt $noto/LICENSE
 77b7c2506d4efb22e09c8ccf10159f4956eab3ef7c007fef95de136bcf45300c Selawik-OFL.txt $gh/microsoft/Selawik/b65ff9ce7c4673e75ec5c622924a6b6f61f2f876/LICENSE.txt
+2758cf7a872827f39661cf8cc24188113c030447aefb5ca7145993650076ca8c PTSans-OFL.txt $ptsans/OFL.txt
 "
 vendor="$LIBREJUSTICE_STATE_DIR/vendor/office-fonts-$(printf '%s' "$manifest" | sha256sum | cut -c1-12)"
 site="packages/lj-web/public/redactor/fonts"
@@ -535,6 +538,8 @@ fi
 rm -rf "$site"
 mkdir -p "$site"
 cp -R "$vendor/fonts/." "$site/"
+# What the workbench fetches to work offline: every font it may ask for.
+(cd "$site" && ls *.ttf *.otf) > "$site/index.txt"
 
 # LibreOffice may be converting while this runs: a file is only rewritten when it changed.
 mkdir -p "$fonts_dir" "${conf%/*}"
@@ -614,6 +619,7 @@ mise run htr-assets
 mise run ocr-assets
 mise run office-fonts
 mise run pdf-cmaps
+mise run open-source-libraries -- --texts
 # Les deux binaires dans une seule invocation : deux sélections de paquets font
 # deux exemplaires compilés de chaque crate partagé, recompilés à chaque build.
 # Un argument par occurrence du flag, qui ne découpe pas les espaces.
@@ -668,6 +674,13 @@ if [ -d target/site/pkg/snippets ]; then
   echo "build-app: le bundle porte des snippets wasm-bindgen — ils seraient servis immutable sous une URL figée, à versionner avant de livrer" >&2
   exit 1
 fi
+# The CSP grants no 'unsafe-eval': a js-sys import that builds code from a string throws, and the module dies with it.
+if grep -r -l -E --include='*.js' '__wbg_(new_no_args|new_with_args[a-z_]*|eval)_[0-9a-f]{16}' target/site; then
+  echo "build-app: these bundles build code from a string, which the CSP refuses: find the dependency calling js_sys::eval or Function::new_* / default" >&2
+  exit 1
+fi
+# The server reads the site as another user: a file kept 0640 from its upstream archive answers 404.
+chmod -R a+rX target/site
 # On a hit, only the modules copied over the site are new to its cache.
 mise run precompress
 if [ -z "$front_hit" ] && [ -n "$front_key" ]; then
@@ -697,29 +710,6 @@ done < target/release/hash.txt
 # Signe l'arbre bâti : la beta et le deploy lisent cette trace pour savoir si
 # l'artefact du worktree est celui de leur arbre.
 git rev-parse "HEAD^{tree}" > target/release/arbre-construit
-"""
-
-# Purge le cache CDN de la zone. Appelée en fin de deploy, et lançable seule en
-# dépannage. La purge est globale : les assets immuables se re-peuplent à la
-# première requête, pour un court pic à l'origine.
-#
-# Ni domaine ni compte en dur : un déploiement qui n'est pas derrière Cloudflare
-# ne pose aucune des deux variables et l'étape se saute.
-[tasks.cdn-purge]
-description = "Purge le cache CDN Cloudflare de LIBREJUSTICE_DOMAIN (chunks /assets après deploy)."
-run = """
-if [ -z "${LIBREJUSTICE_DOMAIN:-}" ] || [ -z "${LIBREJUSTICE_CLOUDFLARE_MANAGEMENT_TOKEN:-}" ]; then
-  echo "cdn-purge : LIBREJUSTICE_DOMAIN ou le jeton Cloudflare absent — étape sautée."
-  exit 0
-fi
-zone=$(curl -fsS "https://api.cloudflare.com/client/v4/zones?name=$LIBREJUSTICE_DOMAIN" \
-  -H "Authorization: Bearer $LIBREJUSTICE_CLOUDFLARE_MANAGEMENT_TOKEN" \
-  | python3 -c 'import sys,json; print(json.load(sys.stdin)["result"][0]["id"])')
-curl -fsS -X POST "https://api.cloudflare.com/client/v4/zones/$zone/purge_cache" \
-  -H "Authorization: Bearer $LIBREJUSTICE_CLOUDFLARE_MANAGEMENT_TOKEN" \
-  -H "Content-Type: application/json" \
-  --data '{"purge_everything":true}' \
-  | python3 -c 'import sys,json; d=json.load(sys.stdin); assert d.get("success"), d.get("errors"); print("✓ CDN Cloudflare purgé")'
 """
 
 [tasks.logs]
@@ -855,5 +845,5 @@ umask 077
 printf 'base=%s\\nemail=%s\\npassword=%s\\napi_key=%s\\n' \\
   "$base" "$LIBREJUSTICE_TEST_ACCOUNT_EMAIL" "$LIBREJUSTICE_TEST_ACCOUNT_PASSWORD" \\
   "$LIBREJUSTICE_TEST_ACCOUNT_API_KEY" > "$tmp/vars"
-hurl --variables-file "$tmp/vars" -H "x-lj-origin: ${LIBREJUSTICE_API_INTERNAL_ORIGIN_TOKEN:-}" tests/contract/authed.hurl --test
+hurl --variables-file "$tmp/vars" -H "x-lj-origin: ${LIBREJUSTICE_API_INTERNAL_ORIGIN_TOKEN:-}" "${LIBREJUSTICE_CONTRACT_AUTHED_FILE:-tests/contract/authed.hurl}" --test
 """

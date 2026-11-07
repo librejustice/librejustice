@@ -4,23 +4,6 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-/// Liste les `*.tar.gz` sous `path` (dossier ; non récursif — les tarballs DILA
-/// vivent à plat dans `tarballs/`). Dossier absent ⇒ liste vide.
-pub(super) fn collect_tar_gz(path: &Path) -> Result<Vec<PathBuf>> {
-    let mut out = Vec::new();
-    if !path.is_dir() {
-        return Ok(out);
-    }
-    for entry in std::fs::read_dir(path)? {
-        let entry = entry?;
-        let p = entry.path();
-        if p.is_file() && p.to_str().is_some_and(|s| s.ends_with(".tar.gz")) {
-            out.push(p);
-        }
-    }
-    Ok(out)
-}
-
 /// Liste les `*.zip` sous `path` (récursif si dossier, sinon le fichier seul).
 pub(super) fn collect_zip_paths(path: &Path) -> Result<Vec<PathBuf>> {
     let mut out = Vec::new();

@@ -1,37 +1,28 @@
 //! Pipelines opendata (XML) et Judilibre (JSON) + refetch ciblé.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::{Path, PathBuf};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 
-use lj_llm::backend::Embedder;
+use lj_pg::db::Connection;
 use lj_sources::downloader::Manifest;
 use lj_sources::judilibre::JudilibreClient;
-use lj_store::db::Connection;
 use lj_store::repository::DecisionRepository;
 
 use crate::config::Settings;
 
-use super::batch::{drain_batch, drain_batch_in_txn, run_stream};
-use super::embed::{build_embedder, build_local_strict};
+use super::batch::{drain_batch, run_stream};
 use super::files::{collect_jsonl_gz, collect_zip_paths};
 use super::prepare::{classify_judilibre, classify_xml};
 use super::{Candidate, IngestCounts, IngestMode};
 
-/// Ingère les archives opendata d'un dossier (XML → DB).
-///
-/// Itère les `*.zip` sous `data_dir`, parse chaque XML, triage idempotent par
-/// batch, chunk + extract + (embed) + upsert. `data_dir` est le dossier des ZIPs
-/// (`<cache>/opendata_conseil_etat/zips/...` ou un chemin explicite).
-pub async fn ingest_opendata(
-    data_dir: &Path,
-    with_embeddings: bool,
-    mode: IngestMode,
-) -> Result<()> {
+/// Ingests the opendata ZIPs under `data_dir`: each XML parsed, triaged by batch,
+/// extracted and upserted.
+pub async fn ingest_opendata(data_dir: &Path, mode: IngestMode) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -39,12 +30,6 @@ pub async fn ingest_opendata(
     // Connexion dédiée aux écritures : la phase amont du lot suivant (lecture
     // seule) recouvre l'écriture du lot courant.
     let write_conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
-
-    let embedder = if with_embeddings {
-        Some(build_embedder(&settings).await?)
-    } else {
-        None
-    };
 
     let zip_paths = collect_zip_paths(data_dir)?;
     if zip_paths.is_empty() {
@@ -76,7 +61,6 @@ pub async fn ingest_opendata(
             .and_then(|k| manifest.entries.get(k))
         {
             if entry.fully_ingested
-                && (!with_embeddings || entry.embeddings_complete)
                 && entry.size.is_some()
                 && entry.size == Some(zip_path.metadata()?.len())
             {
@@ -86,16 +70,7 @@ pub async fn ingest_opendata(
             }
         }
 
-        let zip_counts = drain_zip(
-            &conn,
-            &write_conn,
-            embedder.as_ref(),
-            zip_path,
-            None,
-            with_embeddings,
-            mode,
-        )
-        .await?;
+        let zip_counts = drain_zip(&conn, &write_conn, zip_path, mode).await?;
 
         tracing::info!(
             source = %zip_path.display(),
@@ -103,7 +78,8 @@ pub async fn ingest_opendata(
             updated = zip_counts.updated,
             skipped = zip_counts.skipped,
             errors = zip_counts.errors,
-            chunks = zip_counts.chunks_created,
+            dropped = zip_counts.passages_dropped,
+            kept = zip_counts.passages_kept,
             "ingest_zip"
         );
         total.merge(&zip_counts);
@@ -112,9 +88,6 @@ pub async fn ingest_opendata(
         if zip_counts.errors == 0 {
             if let Some(entry) = manifest_key.and_then(|k| manifest.entries.get_mut(k)) {
                 entry.fully_ingested = true;
-                if with_embeddings {
-                    entry.embeddings_complete = true;
-                }
                 manifest
                     .save(&manifest_path)
                     .map_err(|e| anyhow!("manifest save: {e}"))?;
@@ -129,23 +102,18 @@ pub async fn ingest_opendata(
         updated = total.updated,
         skipped = total.skipped,
         errors = total.errors,
-        chunks = total.chunks_created,
+        dropped = total.passages_dropped,
+        kept = total.passages_kept,
         "ingest_total"
     );
     Ok(())
 }
 
-/// Lit un ZIP opendata, classe chaque membre XML, filtre éventuellement par
-/// `only` (set de `source_uid` cibles), draine par batch. `only = Some(set)` ne
-/// retient que les candidats dont le `source_uid` (`{zip}/{member}`) est dans
-/// `set` — les autres membres du ZIP sont parsés puis jetés.
-async fn drain_zip<E: Embedder>(
+/// Reads an opendata ZIP, classifies each XML member and drains them by batch.
+async fn drain_zip(
     conn: &Connection,
     write_conn: &Connection,
-    embedder: Option<&E>,
     zip_path: &Path,
-    only: Option<&std::collections::HashSet<String>>,
-    with_embeddings: bool,
     mode: IngestMode,
 ) -> Result<IngestCounts> {
     let archive_name = zip_path
@@ -157,128 +125,36 @@ async fn drain_zip<E: Embedder>(
     let members = lj_sources::zip_reader::iter_decisions(zip_path)
         .map_err(|e| anyhow!("lecture {}: {e}", zip_path.display()))?;
 
-    run_stream(
-        conn,
-        write_conn,
-        embedder,
-        with_embeddings,
-        mode,
-        |tx| async move {
-            let mut counts = IngestCounts::default();
-            for (member, raw) in members {
-                if raw.is_empty() {
-                    counts.skipped += 1;
-                    counts.empty_skipped += 1;
-                    continue;
-                }
-                match classify_xml(raw, &member, &archive_name) {
-                    Some(cand) => {
-                        if only.is_none_or(|s| s.contains(&cand.decision.source_uid))
-                            && tx.send(cand).await.is_err()
-                        {
-                            break;
-                        }
-                    }
-                    None => counts.errors += 1,
-                }
+    run_stream(conn, write_conn, mode, |tx| async move {
+        let mut counts = IngestCounts::default();
+        for (member, raw) in members {
+            if raw.is_empty() {
+                counts.skipped += 1;
+                counts.empty_skipped += 1;
+                continue;
             }
-            Ok(counts)
-        },
-    )
+            match classify_xml(raw, &member, &archive_name) {
+                Some(cand) => {
+                    if tx.send(cand).await.is_err() {
+                        break;
+                    }
+                }
+                None => counts.errors += 1,
+            }
+        }
+        Ok(counts)
+    })
     .await
-}
-
-/// Re-ingest **ciblé** des décisions opendata dont l'autorité a basculé sur
-/// opendata mais dont le `full_text` reste figé sur une provenance de rang
-/// inférieur. Re-parse leur payload opendata depuis les ZIPs (seuls ceux
-/// contenant une cible sont ouverts ; le `source_uid` porte le nom du ZIP) en
-/// [`IngestMode::All`] : re-chunk + re-embed (local **strict**) + réécriture du
-/// `full_text` canonique sur le texte opendata.
-pub async fn reingest_stale_opendata(data_dir: &Path) -> Result<()> {
-    let settings = Settings::from_env()?;
-    let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
-    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
-    lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
-        .await
-        .map_err(|e| anyhow!("migrations: {e}"))?;
-    let write_conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
-
-    let targets: std::collections::HashSet<String> = DecisionRepository::new(&conn)
-        .opendata_source_uids_stale_authority()
-        .await?
-        .into_iter()
-        .collect();
-    if targets.is_empty() {
-        tracing::info!("reingest_stale_opendata: no target (nothing to flip)");
-        return Ok(());
-    }
-
-    // ZIPs contenant ≥1 cible : `source_uid` = `{zip}/{member}` → préfixe = nom
-    // du ZIP. On n'ouvre que ceux-là.
-    let target_zips: std::collections::HashSet<&str> =
-        targets.iter().filter_map(|u| u.split('/').next()).collect();
-    let zip_paths: Vec<PathBuf> = collect_zip_paths(data_dir)?
-        .into_iter()
-        .filter(|p| {
-            p.file_name()
-                .and_then(|n| n.to_str())
-                .is_some_and(|n| target_zips.contains(n))
-        })
-        .collect();
-
-    let embedder = build_local_strict(&settings).await?;
-
-    tracing::info!(
-        targets = targets.len(),
-        zips = zip_paths.len(),
-        "reingest_stale_opendata: start"
-    );
-    let mut total = IngestCounts::default();
-    for zip_path in &zip_paths {
-        let zip_counts = drain_zip(
-            &conn,
-            &write_conn,
-            Some(&embedder),
-            zip_path,
-            Some(&targets),
-            true,
-            IngestMode::All,
-        )
-        .await?;
-        tracing::info!(
-            source = %zip_path.display(),
-            updated = zip_counts.updated,
-            errors = zip_counts.errors,
-            chunks = zip_counts.chunks_created,
-            "reingest_stale_opendata_zip"
-        );
-        total.merge(&zip_counts);
-    }
-
-    tracing::info!(
-        zips = zip_paths.len(),
-        created = total.created,
-        updated = total.updated,
-        errors = total.errors,
-        chunks = total.chunks_created,
-        "reingest_stale_opendata: done"
-    );
-    Ok(())
 }
 
 /// Ingère les archives Judilibre d'un dossier (JSON → DB).
 ///
 /// Itère les `*/*.jsonl.gz` sous `data_dir`, parse chaque ligne JSON, même
-/// triage/chunk/embed/upsert que l'opendata.
-pub async fn ingest_judilibre(
-    data_dir: &Path,
-    with_embeddings: bool,
-    mode: IngestMode,
-) -> Result<()> {
+/// triage/extract/upsert que l'opendata.
+pub async fn ingest_judilibre(data_dir: &Path, mode: IngestMode) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -290,12 +166,6 @@ pub async fn ingest_judilibre(
     // d'ingest.
     crate::tombstones::prune_tombstones(data_dir, &DecisionRepository::new(&conn)).await?;
     let write_conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
-
-    let embedder = if with_embeddings {
-        Some(build_embedder(&settings).await?)
-    } else {
-        None
-    };
 
     let files = collect_jsonl_gz(data_dir)?;
     if files.is_empty() {
@@ -310,6 +180,7 @@ pub async fn ingest_judilibre(
 
     let mut total = IngestCounts::default();
     let mut manifest_skipped = 0usize;
+    let mut untyped: BTreeMap<String, usize> = BTreeMap::new();
     for path in &files {
         let jur = path
             .parent()
@@ -333,26 +204,17 @@ pub async fn ingest_judilibre(
 
         // Fast skip : `.jsonl.gz` non modifié (taille identique) et déjà ingéré.
         if let Some(state) = month_state {
-            if state.fully_ingested
-                && (!with_embeddings || state.embeddings_complete)
-                && state.ingested_size == Some(file_size)
-            {
+            if state.fully_ingested && state.ingested_size == Some(file_size) {
                 manifest_skipped += 1;
                 tracing::info!(source = %path.display(), "ingest_judilibre_manifest_skip");
                 continue;
             }
         }
 
-        // Resume incrémental : si N lignes de ce fichier sont déjà ingérées, on
-        // saute les N premières avant tout parse/hash/triage (le `.jsonl.gz` étant
-        // append-only, l'offset par lignes est stable). Embeddings requis mais
-        // incomplets sur le préfixe → full scan pour ré-embedder.
-        let skip_first_lines = match month_state {
-            Some(state) if !with_embeddings || state.embeddings_complete => {
-                state.ingested_lines.unwrap_or(0).max(0) as usize
-            }
-            _ => 0,
-        };
+        // The `.jsonl.gz` is append-only: the lines already ingested are skipped
+        // before any parse.
+        let skip_first_lines =
+            month_state.map_or(0, |state| state.ingested_lines.unwrap_or(0).max(0) as usize);
 
         let lines = lj_sources::downloader::read_jsonl_gz_lines(path)?;
         let lines_total = lines.len();
@@ -365,34 +227,32 @@ pub async fn ingest_judilibre(
             );
         }
         let source = path.display().to_string();
-        let file_counts = run_stream(
-            &conn,
-            &write_conn,
-            embedder.as_ref(),
-            with_embeddings,
-            mode,
-            |tx| async move {
-                let mut counts = IngestCounts::default();
-                for line in lines.into_iter().skip(skip_first_lines) {
-                    if line.is_empty() {
-                        continue;
+        let mut untyped_lines = 0usize;
+        let untyped_in_file = &mut untyped_lines;
+        let file_counts = run_stream(&conn, &write_conn, mode, |tx| async move {
+            let mut counts = IngestCounts::default();
+            for line in lines.into_iter().skip(skip_first_lines) {
+                if line.is_empty() {
+                    continue;
+                }
+                match classify_judilibre(line) {
+                    Ok(Some(cand)) => {
+                        if tx.send(cand).await.is_err() {
+                            break;
+                        }
                     }
-                    match classify_judilibre(line) {
-                        Ok(Some(cand)) => {
-                            if tx.send(cand).await.is_err() {
-                                break;
-                            }
-                        }
-                        Ok(None) => counts.errors += 1,
-                        Err(e) => {
-                            tracing::error!(source = %source, error = %e, "Judilibre parse failed");
-                            counts.errors += 1;
-                        }
+                    Ok(None) => {
+                        *untyped_in_file += 1;
+                        counts.errors += 1;
+                    }
+                    Err(e) => {
+                        tracing::error!(source = %source, error = %e, "Judilibre parse failed");
+                        counts.errors += 1;
                     }
                 }
-                Ok(counts)
-            },
-        )
+            }
+            Ok(counts)
+        })
         .await?;
 
         tracing::info!(
@@ -401,10 +261,14 @@ pub async fn ingest_judilibre(
             updated = file_counts.updated,
             skipped = file_counts.skipped,
             errors = file_counts.errors,
-            chunks = file_counts.chunks_created,
+            dropped = file_counts.passages_dropped,
+            kept = file_counts.passages_kept,
             "ingest_judilibre"
         );
         total.merge(&file_counts);
+        if untyped_lines > 0 {
+            *untyped.entry(jur.clone()).or_default() += untyped_lines;
+        }
 
         // Marque le mois entièrement ingéré dans le manifeste, écrit immédiatement.
         if file_counts.errors == 0 {
@@ -416,9 +280,6 @@ pub async fn ingest_judilibre(
                 state.fully_ingested = true;
                 state.ingested_size = Some(file_size);
                 state.ingested_lines = Some(lines_total as i64);
-                if with_embeddings {
-                    state.embeddings_complete = true;
-                }
                 manifest
                     .save(&manifest_path)
                     .map_err(|e| anyhow!("manifest save: {e}"))?;
@@ -433,9 +294,20 @@ pub async fn ingest_judilibre(
         updated = total.updated,
         skipped = total.skipped,
         errors = total.errors,
-        chunks = total.chunks_created,
+        dropped = total.passages_dropped,
+        kept = total.passages_kept,
         "ingest_judilibre_total"
     );
+    if !untyped.is_empty() {
+        let listed: Vec<String> = untyped
+            .iter()
+            .map(|(jur, n)| format!("{jur} ({n})"))
+            .collect();
+        bail!(
+            "Judilibre jurisdictions lj-parse does not type, left out: {}",
+            listed.join(", ")
+        );
+    }
     Ok(())
 }
 
@@ -444,26 +316,16 @@ pub async fn ingest_judilibre(
 /// Répare une poignée de décisions désynchronisées (ex. résurrection :
 /// supprimée puis re-créée côté Judilibre) **sans reculer le
 /// `history_watermark` global**. Réutilise le chemin d'ingest normal (parse →
-/// chunk → extract → upsert), idempotent par `content_checksum` (`MissingHash` :
+/// extract → upsert), idempotent par `content_checksum` (`MissingHash` :
 /// un id déjà à jour est skippé).
-pub async fn refetch_judilibre(
-    client: &JudilibreClient,
-    ids: &[String],
-    with_embeddings: bool,
-) -> Result<()> {
+pub async fn refetch_judilibre(client: &JudilibreClient, ids: &[String]) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
         .map_err(|e| anyhow!("migrations: {e}"))?;
-
-    let embedder = if with_embeddings {
-        Some(build_local_strict(&settings).await?)
-    } else {
-        None
-    };
 
     let mut candidates: Vec<Candidate> = Vec::new();
     for id in ids {
@@ -482,66 +344,15 @@ pub async fn refetch_judilibre(
     }
 
     let mut counts = IngestCounts::default();
-    drain_batch(
-        &conn,
-        embedder.as_ref(),
-        candidates,
-        with_embeddings,
-        IngestMode::MissingHash,
-        &mut counts,
-    )
-    .await?;
+    drain_batch(&conn, candidates, IngestMode::MissingHash, &mut counts).await?;
     tracing::info!(
         requested = ids.len(),
         created = counts.created,
         updated = counts.updated,
         skipped = counts.skipped,
-        chunks = counts.chunks_created,
+        dropped = counts.passages_dropped,
+        kept = counts.passages_kept,
         "refetch_judilibre_total"
     );
-    Ok(())
-}
-
-/// Re-fetch ciblé de quelques décisions Judilibre par ObjectId puis ré-ingest
-/// sur une **connexion et un embedder fournis**. [`IngestMode::All`] : UPDATE
-/// complet inconditionnel — le triage résout l'id par `source_uid`.
-/// `require_embeddings = true` : re-chunk + re-embed ciblé (local,
-/// l'embedder est construit par l'appelant). Renvoie une erreur si **aucune**
-/// décision n'a été reconnue.
-pub(super) async fn refetch_into<E: Embedder>(
-    conn: &Connection,
-    client: &JudilibreClient,
-    embedder: &E,
-    ids: &[String],
-) -> Result<()> {
-    let mut candidates: Vec<Candidate> = Vec::new();
-    for id in ids {
-        let payload = client
-            .decision(id)
-            .await
-            .map_err(|e| anyhow!("refetch {id}: {e}"))?;
-        let line = serde_json::to_vec(&payload).context("refetch: sérialisation payload")?;
-        match classify_judilibre(line)? {
-            Some(candidate) => candidates.push(candidate),
-            None => tracing::warn!(id = %id, "refetch: decision not recognised, skip"),
-        }
-    }
-    if candidates.is_empty() {
-        return Err(anyhow!(
-            "refetch_into: aucune décision reconnue ({} ids)",
-            ids.len()
-        ));
-    }
-
-    let mut counts = IngestCounts::default();
-    drain_batch_in_txn(
-        conn,
-        Some(embedder),
-        candidates,
-        true,
-        IngestMode::All,
-        &mut counts,
-    )
-    .await?;
     Ok(())
 }

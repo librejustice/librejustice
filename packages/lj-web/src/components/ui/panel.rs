@@ -83,15 +83,26 @@ pub fn dismiss<El, M>(
 ) where
     El: leptos_use::core::IntoElementMaybeSignal<web_sys::EventTarget, M>,
 {
-    use leptos_use::{on_click_outside, use_event_listener, use_window};
+    use leptos::prelude::GetUntracked;
+    use leptos_use::{use_event_listener, use_window};
     let guarded = move || {
         if is_open() {
             close();
         }
     };
-    let _ = on_click_outside(target, {
+    // Not `on_click_outside`: on iOS, leptos-use 0.19 calls `new Function`,
+    // which the CSP refuses, and hydration dies.
+    let target = target.into_element_maybe_signal();
+    let _ = use_event_listener(use_window(), leptos::ev::pointerdown, {
         let guarded = guarded.clone();
-        move |_| guarded()
+        move |ev| {
+            if target
+                .get_untracked()
+                .is_some_and(|el| !ev.composed_path().includes(&el, 0))
+            {
+                guarded();
+            }
+        }
     });
     if on.escape {
         let guarded = guarded.clone();

@@ -336,18 +336,17 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT c.entity_uid, f.entity_uid, min(d.date_lecture), max(d.date_lecture), \
-                        count(DISTINCT c.decision_id) \
-                 FROM decision_party c \
-                 JOIN decision_party f \
-                   ON f.decision_id = c.decision_id AND f.ord = c.firm_ord \
-                 JOIN decisions d ON d.id = c.decision_id \
-                 WHERE c.firm_ord IS NOT NULL \
-                   AND c.entity_uid LIKE 'cnb:%' \
-                   AND f.entity_uid IS NOT NULL \
+                "SELECT a.entity_uid, x.actors -> a.firm_ord ->> 'e', \
+                        min(d.date_lecture), max(d.date_lecture), count(DISTINCT x.decision_id) \
+                 FROM decision_actors x \
+                 CROSS JOIN LATERAL public.lj_actor_rows(x.actors) a \
+                 JOIN decisions d ON d.id = x.decision_id \
+                 WHERE a.firm_ord IS NOT NULL \
+                   AND a.entity_uid LIKE 'cnb:%' \
+                   AND x.actors -> a.firm_ord ? 'e' \
                    AND d.date_lecture IS NOT NULL \
                  GROUP BY 1, 2 \
-                 HAVING count(DISTINCT c.decision_id) >= $1",
+                 HAVING count(DISTINCT x.decision_id) >= $1",
                 &[&support],
             )
             .await?;
@@ -369,15 +368,15 @@ impl DecisionRepository<'_> {
 
     // ── Re-key CNBF (one-shot) ────────────────────────────────────────────────
 
-    /// Uids `cnb:` référencés par `decision_party` sans entité en base —
-    /// les danglants du régime clear+copy (sorties + changements de barreau).
-    pub async fn dangling_cnb_party_uids(&self) -> Result<Vec<String>> {
+    /// The `cnb:` uids actors link to with no entity left: the dangling ones of
+    /// the clear+copy reload (departures and barreau changes).
+    pub async fn dangling_cnb_actor_uids(&self) -> Result<Vec<String>> {
         let rows = self
             .conn
             .query(
-                "SELECT DISTINCT p.entity_uid FROM decision_party p \
-                 WHERE p.entity_uid LIKE 'cnb:%' \
-                   AND NOT EXISTS (SELECT 1 FROM entity e WHERE e.uid = p.entity_uid)",
+                "SELECT DISTINCT a.entity_uid FROM decision_actor a \
+                 WHERE a.entity_uid LIKE 'cnb:%' \
+                   AND NOT EXISTS (SELECT 1 FROM entity e WHERE e.uid = a.entity_uid)",
                 &[],
             )
             .await?;
@@ -416,11 +415,11 @@ impl DecisionRepository<'_> {
         Ok(n)
     }
 
-    /// Réécrit `decision_party.entity_uid` old→new. `returning_decisions` :
-    /// renvoie les décisions touchées (fusions/danglants — leurs cibles
-    /// gagnent des liens, `refresh_annuaire_scoped` doit recompter) ; les
-    /// renames purs n'en ont pas besoin (le compteur suit la ligne d'entité).
-    pub async fn decision_party_remap_entity(
+    /// Moves the actors linked to `old` onto `new`, in every document. Returns
+    /// the documents rewritten, and their decisions when `returning_decisions`
+    /// (merges and dangling uids: their targets gain links, which
+    /// `refresh_annuaire_scoped` must recount).
+    pub async fn actor_remap_entities(
         &self,
         pairs: &[(String, String)],
         returning_decisions: bool,
@@ -430,44 +429,39 @@ impl DecisionRepository<'_> {
         }
         let olds: Vec<&str> = pairs.iter().map(|p| p.0.as_str()).collect();
         let news: Vec<&str> = pairs.iter().map(|p| p.1.as_str()).collect();
-        if returning_decisions {
-            let rows = self
-                .conn
-                .query(
-                    "UPDATE decision_party p SET entity_uid = u.new_uid \
-                     FROM unnest($1::text[], $2::text[]) AS u(old_uid, new_uid) \
-                     WHERE p.entity_uid = u.old_uid \
-                     RETURNING p.decision_id",
-                    &[&olds, &news],
-                )
-                .await?;
-            let mut ids: Vec<i64> = rows.iter().map(|r| r.get(0)).collect();
-            ids.sort_unstable();
-            ids.dedup();
-            Ok((rows.len() as u64, ids))
+        let rows = self
+            .conn
+            .query(
+                "UPDATE decision_actors x \
+                 SET actors = public.lj_actor_remap_entities(x.actors, $1, $2) \
+                 WHERE public.lj_actor_terms(x.actors) \
+                       && ARRAY(SELECT 'e|' || o FROM unnest($1::text[]) o) \
+                 RETURNING x.decision_id",
+                &[&olds, &news],
+            )
+            .await?;
+        let mut ids: Vec<i64> = if returning_decisions {
+            rows.iter().map(|r| r.get(0)).collect()
         } else {
-            let n = self
-                .conn
-                .execute(
-                    "UPDATE decision_party p SET entity_uid = u.new_uid \
-                     FROM unnest($1::text[], $2::text[]) AS u(old_uid, new_uid) \
-                     WHERE p.entity_uid = u.old_uid",
-                    &[&olds, &news],
-                )
-                .await?;
-            Ok((n, Vec::new()))
-        }
+            Vec::new()
+        };
+        ids.sort_unstable();
+        Ok((rows.len() as u64, ids))
     }
 
-    /// Dé-lie les liens pointant vers des uids donnés (purge des bidons).
-    pub async fn decision_party_unlink_uids(&self, uids: &[String]) -> Result<u64> {
+    /// Unlinks the actors linked to the given uids (purge of bogus ones).
+    pub async fn actor_unlink_uids(&self, uids: &[String]) -> Result<u64> {
         if uids.is_empty() {
             return Ok(0);
         }
         let n = self
             .conn
             .execute(
-                "UPDATE decision_party SET entity_uid = NULL WHERE entity_uid = ANY($1)",
+                "UPDATE decision_actors x \
+                 SET actors = public.lj_actor_remap_entities( \
+                     x.actors, $1, array_fill(NULL::text, ARRAY[cardinality($1::text[])])) \
+                 WHERE public.lj_actor_terms(x.actors) \
+                       && ARRAY(SELECT 'e|' || u FROM unnest($1::text[]) u)",
                 &[&uids],
             )
             .await?;
@@ -630,12 +624,14 @@ impl DecisionRepository<'_> {
         let row = self
             .conn
             .query_one(
-                "SELECT count(DISTINCT p.decision_id), \
-                        count(DISTINCT p.decision_id) FILTER (WHERE p.side = 'applicant'), \
-                        count(DISTINCT p.decision_id) FILTER (WHERE p.side = 'defendant') \
-                 FROM decision_party p \
-                 JOIN decisions d ON d.id = p.decision_id \
-                 WHERE p.entity_uid = $1 AND d.deleted_at IS NULL",
+                "SELECT count(DISTINCT x.decision_id), \
+                        count(DISTINCT x.decision_id) FILTER (WHERE p.side = 'applicant'), \
+                        count(DISTINCT x.decision_id) FILTER (WHERE p.side = 'defendant') \
+                 FROM decision_actors x \
+                 CROSS JOIN LATERAL public.lj_actor_rows(x.actors) p \
+                 JOIN decisions d ON d.id = x.decision_id \
+                 WHERE public.lj_actor_terms(x.actors) @> ARRAY['e|' || $1] \
+                   AND p.entity_uid = $1 AND d.deleted_at IS NULL",
                 &[&uid],
             )
             .await?;
@@ -652,10 +648,12 @@ impl DecisionRepository<'_> {
             .conn
             .query(
                 "SELECT EXTRACT(YEAR FROM d.date_lecture)::int AS year, \
-                        count(DISTINCT p.decision_id) \
-                 FROM decision_party p \
-                 JOIN decisions d ON d.id = p.decision_id \
-                 WHERE p.entity_uid = $1 AND d.deleted_at IS NULL \
+                        count(DISTINCT x.decision_id) \
+                 FROM decision_actors x \
+                 CROSS JOIN LATERAL public.lj_actor_rows(x.actors) p \
+                 JOIN decisions d ON d.id = x.decision_id \
+                 WHERE public.lj_actor_terms(x.actors) @> ARRAY['e|' || $1] \
+                   AND p.entity_uid = $1 AND d.deleted_at IS NULL \
                    AND d.date_lecture IS NOT NULL \
                  GROUP BY year ORDER BY year",
                 &[&uid],
@@ -678,10 +676,12 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT d.jurisdiction_code, d.jurisdiction_type, count(DISTINCT p.decision_id) AS n \
-                 FROM decision_party p \
-                 JOIN decisions d ON d.id = p.decision_id \
-                 WHERE p.entity_uid = $1 AND d.deleted_at IS NULL \
+                "SELECT d.jurisdiction_code, d.jurisdiction_type, count(DISTINCT x.decision_id) AS n \
+                 FROM decision_actors x \
+                 CROSS JOIN LATERAL public.lj_actor_rows(x.actors) p \
+                 JOIN decisions d ON d.id = x.decision_id \
+                 WHERE public.lj_actor_terms(x.actors) @> ARRAY['e|' || $1] \
+                   AND p.entity_uid = $1 AND d.deleted_at IS NULL \
                  GROUP BY d.jurisdiction_code, d.jurisdiction_type \
                  ORDER BY n DESC, d.jurisdiction_type",
                 &[&uid],
@@ -710,10 +710,12 @@ impl DecisionRepository<'_> {
         let total: i64 = self
             .conn
             .query_one(
-                "SELECT count(DISTINCT p.decision_id) \
-                 FROM decision_party p \
-                 JOIN decisions d ON d.id = p.decision_id \
-                 WHERE p.entity_uid = $1 AND d.deleted_at IS NULL",
+                "SELECT count(DISTINCT x.decision_id) \
+                 FROM decision_actors x \
+                 CROSS JOIN LATERAL public.lj_actor_rows(x.actors) p \
+                 JOIN decisions d ON d.id = x.decision_id \
+                 WHERE public.lj_actor_terms(x.actors) @> ARRAY['e|' || $1] \
+                   AND p.entity_uid = $1 AND d.deleted_at IS NULL",
                 &[&uid],
             )
             .await?
@@ -724,12 +726,14 @@ impl DecisionRepository<'_> {
             .query(
                 "SELECT pr.decision_id, pr.quality, pr.side \
                  FROM ( \
-                     SELECT DISTINCT ON (decision_id) decision_id, quality, side \
-                     FROM decision_party \
-                     WHERE entity_uid = $1 \
-                     ORDER BY decision_id, \
-                       CASE quality WHEN 'party' THEN 0 WHEN 'law_firm' THEN 1 \
-                                    WHEN 'counsel_name' THEN 2 ELSE 3 END, ord \
+                     SELECT DISTINCT ON (x.decision_id) x.decision_id, a.quality, a.side \
+                     FROM decision_actors x \
+                     CROSS JOIN LATERAL public.lj_actor_rows(x.actors) a \
+                     WHERE public.lj_actor_terms(x.actors) @> ARRAY['e|' || $1] \
+                       AND a.entity_uid = $1 \
+                     ORDER BY x.decision_id, \
+                       CASE a.quality WHEN 'party' THEN 0 WHEN 'law_firm' THEN 1 \
+                                      WHEN 'counsel_name' THEN 2 ELSE 3 END, a.ord \
                  ) pr \
                  JOIN decisions d ON d.id = pr.decision_id \
                  WHERE d.deleted_at IS NULL \
@@ -749,10 +753,10 @@ impl DecisionRepository<'_> {
         Ok((total, items))
     }
 
-    /// Acteurs `decision_party` d'une décision par `public_id`, ordre stable
-    /// (`party` > `law_firm` > `counsel_name`, puis `applicant` avant
-    /// `defendant`, puis `ord`). `None` = décision inconnue (→ 404) ;
-    /// `Some(vec![])` = décision connue sans acteur extrait.
+    /// A decision's actors by `public_id`, in a stable order (`party` >
+    /// `law_firm` > `counsel_name`, then `applicant` before `defendant`, then
+    /// `ord`). `None` for an unknown decision (404), `Some(vec![])` for a known
+    /// decision with no actor extracted.
     pub async fn decision_parties(
         &self,
         public_id: &str,
@@ -772,8 +776,9 @@ impl DecisionRepository<'_> {
             .query(
                 "SELECT p.quality, p.side, p.value, p.nature, p.barreau, p.entity_uid, \
                         p.ord, p.party_ord \
-                 FROM decision_party p \
-                 JOIN decisions d ON d.id = p.decision_id \
+                 FROM decisions d \
+                 JOIN decision_actors x ON x.decision_id = d.id \
+                 CROSS JOIN LATERAL public.lj_actor_rows(x.actors) p \
                  WHERE d.public_id = $1 \
                  ORDER BY \
                    CASE p.quality WHEN 'party' THEN 0 WHEN 'law_firm' THEN 1 \
@@ -801,13 +806,11 @@ impl DecisionRepository<'_> {
 
     // ── Annuaire des entités ──────────────────────────────────────────────────
 
-    /// Rafraîchissement annuaire SCOPÉ (fin d'un run `reextract-fields` ciblé) :
-    /// recompte `decision_count` des seules entités actuellement liées aux décisions
-    /// du lot (recount absolu par entité, servi par l'index partiel `entity_uid` de
-    /// `decision_party`). Ni remise à 0 des entités totalement déliées, ni reseed
-    /// d'`annuaire_registre` — le `parties-relink` dominical repasse en pleine
-    /// table. Transaction propre, timeout levé. Renvoie le nombre d'entités
-    /// recomptées.
+    /// Scoped directory refresh (end of a targeted `reextract-fields` run):
+    /// recounts `decision_count` of the entities linked from the batch's
+    /// decisions alone. Neither zeroes an entity unlinked everywhere nor reseeds
+    /// `annuaire_registre`: a full `parties-relink` does the full table. Own
+    /// transaction, timeout lifted. Returns the number of entities recounted.
     #[tracing::instrument(name = "db.refresh_annuaire_scoped", skip_all, fields(db.system = "postgresql", ids = decision_ids.len()))]
     pub async fn refresh_annuaire_scoped(&self, decision_ids: &[i64]) -> Result<u64> {
         if decision_ids.is_empty() {
@@ -821,19 +824,24 @@ impl DecisionRepository<'_> {
             let n = self
                 .conn
                 .execute(
-                    "UPDATE entity e \
+                    "WITH touched AS ( \
+                         SELECT DISTINCT a.entity_uid AS uid \
+                         FROM decision_actors x \
+                         CROSS JOIN LATERAL public.lj_actor_rows(x.actors) a \
+                         WHERE x.decision_id = ANY($1) AND a.entity_uid IS NOT NULL \
+                     ), cnt AS ( \
+                         SELECT t.uid, ( \
+                             SELECT count(*) FROM decision_actors x \
+                             JOIN decisions d ON d.id = x.decision_id \
+                             WHERE public.lj_actor_terms(x.actors) @> ARRAY['e|' || t.uid] \
+                               AND d.deleted_at IS NULL \
+                         ) AS n \
+                         FROM touched t \
+                     ) \
+                     UPDATE entity e \
                      SET decision_count = cnt.n \
-                     FROM ( \
-                         SELECT p.entity_uid, count(DISTINCT p.decision_id) AS n \
-                         FROM decision_party p \
-                         JOIN decisions d ON d.id = p.decision_id \
-                         WHERE p.entity_uid IN ( \
-                             SELECT DISTINCT entity_uid FROM decision_party \
-                             WHERE decision_id = ANY($1) AND entity_uid IS NOT NULL) \
-                           AND d.deleted_at IS NULL \
-                         GROUP BY p.entity_uid \
-                     ) cnt \
-                     WHERE e.uid = cnt.entity_uid AND e.decision_count <> cnt.n",
+                     FROM cnt \
+                     WHERE e.uid = cnt.uid AND e.decision_count <> cnt.n",
                     &[&decision_ids],
                 )
                 .await?;
@@ -860,30 +868,20 @@ impl DecisionRepository<'_> {
                 .batch_execute("SET LOCAL statement_timeout = 0")
                 .await?;
             self.conn
-                .execute(
-                    "UPDATE entity e \
-                     SET decision_count = cnt.n \
-                     FROM ( \
-                         SELECT p.entity_uid, count(DISTINCT p.decision_id) AS n \
-                         FROM decision_party p \
-                         JOIN decisions d ON d.id = p.decision_id \
-                         WHERE p.entity_uid IS NOT NULL AND d.deleted_at IS NULL \
-                         GROUP BY p.entity_uid \
-                     ) cnt \
-                     WHERE e.uid = cnt.entity_uid AND e.decision_count <> cnt.n",
-                    &[],
-                )
-                .await?;
-            self.conn
-                .execute(
-                    "UPDATE entity e \
-                     SET decision_count = 0 \
+                .batch_execute(
+                    "CREATE TEMP TABLE lj_annuaire_counts ON COMMIT DROP AS \
+                     SELECT a.entity_uid AS uid, count(DISTINCT a.decision_id) AS n \
+                     FROM decision_actor a \
+                     JOIN decisions d ON d.id = a.decision_id \
+                     WHERE a.entity_uid IS NOT NULL AND d.deleted_at IS NULL \
+                     GROUP BY a.entity_uid; \
+                     ANALYZE lj_annuaire_counts; \
+                     UPDATE entity e SET decision_count = c.n \
+                     FROM lj_annuaire_counts c \
+                     WHERE e.uid = c.uid AND e.decision_count <> c.n; \
+                     UPDATE entity e SET decision_count = 0 \
                      WHERE e.decision_count > 0 \
-                       AND NOT EXISTS ( \
-                           SELECT 1 FROM decision_party p \
-                           JOIN decisions d ON d.id = p.decision_id \
-                           WHERE p.entity_uid = e.uid AND d.deleted_at IS NULL)",
-                    &[],
+                       AND NOT EXISTS (SELECT 1 FROM lj_annuaire_counts c WHERE c.uid = e.uid)",
                 )
                 .await?;
             self.conn
@@ -1027,9 +1025,8 @@ impl DecisionRepository<'_> {
     /// récente (`MAX(GREATEST(date_lecture, updated_at::date))`), capée à
     /// `current_date`. `local_id` = uid privé de son préfixe `{namespace}:`.
     ///
-    /// Le `GROUP BY` sur le join `entity × decision_party × decisions` dépasse le
-    /// `statement_timeout` du pool (30 s) : levé localement dans une transaction
-    /// dédiée. Batch quotidien du cron, pas de chemin requête utilisateur.
+    /// The `GROUP BY` over `entity`, `decision_actor` and `decisions` exceeds the
+    /// pool's `statement_timeout`: lifted locally in its own transaction.
     #[tracing::instrument(name = "db.iter_entities_for_sitemap", skip(self), fields(db.system = "postgresql"))]
     pub async fn iter_entities_for_sitemap(
         &self,
@@ -1048,7 +1045,7 @@ impl DecisionRepository<'_> {
                            MAX(GREATEST(d.date_lecture, d.updated_at::date))::date
                                AS lastmod
                     FROM entity e
-                    JOIN decision_party p ON p.entity_uid = e.uid
+                    JOIN decision_actor p ON p.entity_uid = e.uid
                     JOIN decisions d ON d.id = p.decision_id AND d.deleted_at IS NULL
                     WHERE e.decision_count > 0 AND e.category <> 'avocats'
                     GROUP BY e.uid

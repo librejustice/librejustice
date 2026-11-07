@@ -27,15 +27,24 @@ impl Identity {
             None => Identity::Unknown,
         }
     }
+
+    /// The identity a request from `address` without a session resolves to.
+    pub fn of_address(address: IpAddr) -> Self {
+        Identity::Network(network(address))
+    }
 }
 
 pub(crate) fn client_network(headers: &HeaderMap) -> Option<String> {
     let raw = headers.get("cf-connecting-ip")?.to_str().ok()?;
-    match raw.parse::<IpAddr>().ok()? {
-        IpAddr::V4(v4) => Some(v4.to_string()),
+    Some(network(raw.parse::<IpAddr>().ok()?))
+}
+
+fn network(address: IpAddr) -> String {
+    match address {
+        IpAddr::V4(v4) => v4.to_string(),
         IpAddr::V6(v6) => {
             let s = v6.segments();
-            Some(format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3]))
+            format!("{:x}:{:x}:{:x}:{:x}::/64", s[0], s[1], s[2], s[3])
         }
     }
 }

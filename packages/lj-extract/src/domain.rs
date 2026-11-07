@@ -613,9 +613,7 @@ mod tests {
             refine_with_terms(None, &votes).as_deref(),
             Some("legal_domain:CIVIL_DROIT_LOCATIF")
         );
-        // A firm leaf now yields to a sibling of the same parent, at the
-        // reinforced threshold: 5 occurrences, 3x the runner-up. Measured on
-        // the bench: +9 correct, -9 wrong.
+        // A firm leaf yields to a same-parent sibling at 5 occurrences and 3x the runner-up.
         assert_eq!(
             refine_with_terms(Some("legal_domain:CIVIL_DROIT_ASSURANCES".into()), &votes)
                 .as_deref(),

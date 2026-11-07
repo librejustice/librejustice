@@ -27,7 +27,7 @@ const DEPARTEMENTS: [&str; 4] = ["06", "13", "83", "84"];
 /// A notice open today was published within this window: the search offers no
 /// deadline filter, so the publication date is the only handle on the stock.
 const FENETRE_JOURS: i32 = 120;
-/// 134 notices over the window on 15/09/2026, ten a page.
+/// Ten notices a page, well past what the window holds.
 const PAGES_MAX: usize = 60;
 const FICHES_EN_VOL: usize = 4;
 
@@ -360,8 +360,7 @@ mod tests {
         );
     }
 
-    /// `L. 2122-1-1` cut the object after four words before the rule on the
-    /// length of the word preceding the stop.
+    /// The stop behind `L.` ends no sentence: the word before it is too short.
     #[test]
     fn an_abbreviation_does_not_end_the_sentence() {
         assert_eq!(

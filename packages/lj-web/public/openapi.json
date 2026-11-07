@@ -2,9 +2,10 @@
   "openapi": "3.1.0",
   "info": {
     "title": "API publique LibreJustice",
-    "version": "1",
+    "version": "beta",
     "summary": "Recherche de jurisprudence française et européenne et de textes normatifs.",
-    "description": "La même base que le site librejustice.fr et que le connecteur MCP, en REST.\n\nLa clé est gratuite : créez un compte, puis une clé depuis https://librejustice.fr/profile. Le guide d'intégration est sur https://librejustice.fr/api-guide.\n\nLes autres chemins de librejustice.fr ne sont pas une API : ils servent le front, changent sans préavis et ne sont pas décrits ici. Une rupture de contrat sur les chemins ci-dessous prendra un `/api/v2`.\n\nLes requêtes s'écrivent en français : le fonds est en langue française.",
+    "description": "La même base que le site librejustice.fr et que le connecteur MCP, en REST, sous les noms de paramètres et de champs des outils MCP. L'API est en bêta : ces noms peuvent encore changer.\n\nLa clé est gratuite : créez un compte, puis une clé depuis https://librejustice.fr/profile. Le guide d'intégration est sur https://librejustice.fr/api-guide.\n\nLes requêtes s'écrivent en français : le fonds est en langue française.",
+    "termsOfService": "https://librejustice.fr/terms",
     "contact": {
       "name": "LibreJustice",
       "url": "https://librejustice.fr/feedback"
@@ -45,10 +46,10 @@
           "Jurisprudence"
         ],
         "summary": "Rechercher des décisions",
-        "description": "Recherche hybride sens + mots-clés sur le fonds de décisions, avec filtres structurés et comptes par facette.\n\nLes valeurs des axes à vocabulaire (`solution`, `procedure`, `office`, `legalDomain`, `publication`, `jurisdictionCode`, `chamber`) ne sont pas listées ici : elles bougent avec le référentiel. Sur les axes fermés (`solution`, `procedure`, `office`, `legalDomain`, `publication`), un token inconnu rend un 422 dont `ctx` porte les valeurs acceptées ; sur `jurisdictionCode` et `chamber`, il nomme les plus proches. Dans tous les cas `facets` renvoie celles qui portent des résultats sous la requête courante, réutilisables telles quelles en filtre.",
+        "description": "Recherche hybride sens + mots-clés sur le fonds de décisions, avec filtres structurés et comptes par facette.\n\nLes valeurs des axes à vocabulaire (`solution`, `procedure`, `office`, `legal_domain`, `publication`, `jurisdiction_code`, `seat`) ne sont pas listées ici : elles bougent avec le référentiel. Sur les axes fermés (`solution`, `procedure`, `office`, `legal_domain`, `publication`), un token inconnu rend un 422 dont `ctx` porte les valeurs acceptées ; sur `jurisdiction_code` et `seat`, il nomme les plus proches. Dans tous les cas `facets` renvoie celles qui portent des résultats sous la requête courante, réutilisables telles quelles en filtre.",
         "parameters": [
           {
-            "name": "q",
+            "name": "query",
             "in": "query",
             "required": true,
             "description": "Requête en français, 512 caractères au plus. Les guillemets et les opérateurs `ET` / `OU` / `SAUF` / `PROCHE<n>` basculent en appariement littéral.",
@@ -60,7 +61,7 @@
             "example": "trouble anormal de voisinage"
           },
           {
-            "name": "jurisdictionType",
+            "name": "jurisdiction_type",
             "in": "query",
             "description": "Catégorie de juridiction. Répétable, valeurs cumulées en OU.",
             "schema": {
@@ -79,8 +80,11 @@
                   "CONSTIT",
                   "TC",
                   "CNIL",
+                  "DDD",
+                  "ADLC",
                   "CEDH",
-                  "CJUE"
+                  "CJUE",
+                  "COMEU"
                 ]
               }
             },
@@ -88,7 +92,7 @@
             "explode": true
           },
           {
-            "name": "jurisdictionCode",
+            "name": "jurisdiction_code",
             "in": "query",
             "description": "Cour précise par son code de référentiel : `cc`, `ce`, `cnda`, `cedh`, `cjue`, ou `<type>_<ville>` (`ca_paris`, `ta_marseille`, `tj_paris`, `tcom_lyon`). Répétable.",
             "schema": {
@@ -104,7 +108,21 @@
           {
             "name": "seat",
             "in": "query",
-            "description": "Siège, en chemin pointé du type de juridiction à la salle : `CC`, `CC.SOCIALE`, `CA.PARIS`, `CA.PARIS.P5.C6`. Un chemin matche lui-même et tout ce qui est dessous, et dit à lui seul ce que `jurisdictionType` et `jurisdictionCode` disent à ses deux premières profondeurs. Répétable.",
+            "description": "Siège, en chemin pointé de l'ordre juridique à la salle : `FR`, `FR.CC`, `FR.CC.SOCIALE`, `FR.CA.PARIS`, `FR.CA.PARIS.P5.C6`, `EU.CJUE`. Un chemin matche lui-même et tout ce qui est dessous, et dit à lui seul ce que `jurisdiction_type` et `jurisdiction_code` disent à ses deuxième et troisième profondeurs. Répétable.",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "maxLength": 60
+              }
+            },
+            "style": "form",
+            "explode": true
+          },
+          {
+            "name": "formation",
+            "in": "query",
+            "description": "Formation qui a statué, en chemin pointé sous le type de juridiction : `FR.TJ.JEX`, `FR.TA.JUGE_REFERES`, `FR.CC.RESTREINTE`. Un chemin matche lui-même et tout ce qui est dessous ; les chemins se lisent dans `facets.formation`. Répétable.",
             "schema": {
               "type": "array",
               "items": {
@@ -131,7 +149,7 @@
           {
             "name": "procedure",
             "in": "query",
-            "description": "Voie procédurale (référés, QPC, renvoi préjudiciel, révision…). Répétable.",
+            "description": "Retiré : ne filtre plus. La réponse porte l'en-tête `x-lj-warning`. La formation se filtre par `formation`, une sorte de référé ou une QPC par `legal_article`.",
             "schema": {
               "type": "array",
               "items": {
@@ -139,12 +157,13 @@
               }
             },
             "style": "form",
-            "explode": true
+            "explode": true,
+            "deprecated": true
           },
           {
             "name": "office",
             "in": "query",
-            "description": "Juge spécialisé (JLD, JAF, JEX, juge des enfants…). Répétable.",
+            "description": "Retiré : ne filtre plus. La réponse porte l'en-tête `x-lj-warning`. La formation se filtre par `formation`, une sorte de référé ou une QPC par `legal_article`.",
             "schema": {
               "type": "array",
               "items": {
@@ -152,10 +171,11 @@
               }
             },
             "style": "form",
-            "explode": true
+            "explode": true,
+            "deprecated": true
           },
           {
-            "name": "legalDomain",
+            "name": "legal_domain",
             "in": "query",
             "description": "Domaine juridique de l'arbre curaté : 9 racines et leurs feuilles. Sélectionner une racine prend aussi ses feuilles. Répétable.",
             "schema": {
@@ -181,7 +201,7 @@
             "explode": true
           },
           {
-            "name": "legalInstrument",
+            "name": "legal_instrument",
             "in": "query",
             "description": "Décisions citant un code ou une loi, par slug (`code-civil`) ou par nom exact (`Code civil`). Répétable, 10 valeurs au plus.",
             "schema": {
@@ -196,7 +216,7 @@
             "explode": true
           },
           {
-            "name": "legalArticle",
+            "name": "legal_article",
             "in": "query",
             "description": "Décisions citant un article précis, en clé composite `<texte>|<article>` (`code-civil|1240`). Le préfixe de texte est obligatoire : le même numéro existe dans plusieurs codes. Répétable, 20 valeurs au plus.",
             "schema": {
@@ -211,7 +231,7 @@
             "explode": true
           },
           {
-            "name": "dateFrom",
+            "name": "date_from",
             "in": "query",
             "description": "Date de lecture minimale, incluse.",
             "schema": {
@@ -220,13 +240,31 @@
             }
           },
           {
-            "name": "dateTo",
+            "name": "date_to",
             "in": "query",
             "description": "Date de lecture maximale, incluse.",
             "schema": {
               "type": "string",
               "format": "date"
             }
+          },
+          {
+            "name": "search_in",
+            "in": "query",
+            "description": "Partie de la décision où chercher : `headnote` (le sommaire ou l'analyse de la juridiction), `judgment` (la décision sans ses moyens annexés), `annexes` (les moyens annexés des arrêts de la Cour de cassation). Toutes en l'absence du paramètre. Répétable.",
+            "schema": {
+              "type": "array",
+              "items": {
+                "type": "string",
+                "enum": [
+                  "headnote",
+                  "judgment",
+                  "annexes"
+                ]
+              }
+            },
+            "style": "form",
+            "explode": true
           },
           {
             "name": "mode",
@@ -256,12 +294,12 @@
             }
           },
           {
-            "name": "aiMode",
+            "name": "ai_rerank",
             "in": "query",
-            "description": "Réordonne la tête de liste par pertinence réelle avec un reranker LLM. Améliore nettement la qualité de la sélection, contre quelques secondes de latence.",
+            "description": "Réordonne la tête de liste par pertinence réelle avec un reranker LLM. Améliore nettement la qualité de la sélection, contre quelques secondes de latence. Actif par défaut, comme sur l'outil MCP.",
             "schema": {
               "type": "boolean",
-              "default": false
+              "default": true
             }
           },
           {
@@ -302,7 +340,7 @@
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "aiSummary": {
+                          "ai_summary": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -316,7 +354,7 @@
                           "chars": {
                             "type": "integer"
                           },
-                          "citedArticles": {
+                          "cited_articles": {
                             "additionalProperties": {
                               "items": {
                                 "type": "string"
@@ -325,7 +363,18 @@
                             },
                             "type": "object"
                           },
-                          "dateLecture": {
+                          "court_summary": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "date": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -337,7 +386,7 @@
                             "default": null,
                             "format": "date"
                           },
-                          "docketNumbers": {
+                          "docket_numbers": {
                             "anyOf": [
                               {
                                 "items": {
@@ -351,7 +400,13 @@
                             ],
                             "default": null
                           },
-                          "legalDomain": {
+                          "formation": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "legal_domain": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -362,29 +417,7 @@
                             ],
                             "default": null
                           },
-                          "office": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
-                          "officialUrl": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
-                          "procedure": {
+                          "official_url": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -508,10 +541,9 @@
         "description": "Retrouve un article à partir de son objet ou de sa formulation quand le numéro est inconnu. Apparie les intitulés (survalorisés) et les corps.",
         "parameters": [
           {
-            "name": "q",
+            "name": "query",
             "in": "query",
-            "required": true,
-            "description": "Requête en français, 512 caractères au plus.",
+            "description": "Requête en français, 512 caractères au plus. Absente, la réponse liste des textes entiers, le dernier modifié en tête.",
             "schema": {
               "type": "string",
               "minLength": 1,
@@ -530,13 +562,22 @@
           {
             "name": "jurisdiction",
             "in": "query",
-            "description": "Pays ou ordre juridique, en code ISO 3166 alpha-2 (`FR`, `SN`, `MA`…), plus `UE` pour le droit de l'Union et `INTL` pour les traités.",
+            "description": "Pays ou ordre juridique, en code ISO 3166 alpha-2 (`FR`, `SN`, `MA`…), plus `EU` pour le droit de l'Union et `INTL` pour les traités. Un chemin à points restreint à un type de texte : `FR.LOI`, `FR.DECRET`, `EU.DIRECTIVE`, `INTL.TREATY`, comme dans `facets.jurisdiction`.",
             "schema": {
               "type": "string"
             }
           },
           {
-            "name": "date",
+            "name": "valid_from",
+            "in": "query",
+            "description": "Entrée en vigueur la plus ancienne, incluse, des versions servies, qui sont celles en vigueur à `as_of`, à défaut aujourd'hui. La publication d'un texte vaut sa première version.",
+            "schema": {
+              "type": "string",
+              "format": "date"
+            }
+          },
+          {
+            "name": "as_of",
             "in": "query",
             "description": "Date de consultation : cherche dans les versions valides ce jour-là. Absente, cherche dans celles en vigueur aujourd'hui.",
             "schema": {
@@ -591,7 +632,7 @@
                           "title": {
                             "type": "string"
                           },
-                          "titlePath": {
+                          "title_path": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -604,6 +645,30 @@
                           },
                           "url": {
                             "type": "string"
+                          },
+                          "valid_from": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "format": "date"
+                          },
+                          "valid_to": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "format": "date"
                           }
                         },
                         "required": [
@@ -672,7 +737,7 @@
           "Jurisprudence"
         ],
         "summary": "Lire une décision entière",
-        "description": "Texte intégral et métadonnées. L'identifiant est celui que porte chaque résultat de recherche et chaque URL `/decision/{juridiction}/{id}` ; il est opaque et ne s'énumère pas.",
+        "description": "Texte intégral et métadonnées. L'identifiant est celui que porte chaque résultat de recherche et chaque URL `/decision/{jurisdiction}/{id}` ; il est opaque et ne s'énumère pas.",
         "parameters": [
           {
             "name": "id",
@@ -692,25 +757,14 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "appellateFate": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null
-                    },
-                    "caseChronology": {
+                    "case_chronology": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
                           "current": {
                             "type": "boolean"
                           },
-                          "linkToNext": {
+                          "link_to_next": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -755,17 +809,13 @@
                       },
                       "type": "array"
                     },
-                    "commentaires": {
+                    "commentaries": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "access": {
+                          "author": {
                             "anyOf": [
                               {
-                                "enum": [
-                                  "libre",
-                                  "abonnes"
-                                ],
                                 "type": "string"
                               },
                               {
@@ -774,7 +824,7 @@
                             ],
                             "default": null
                           },
-                          "author": {
+                          "body": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -810,6 +860,7 @@
                           },
                           "kind": {
                             "enum": [
+                              "summary",
                               "conclusions",
                               "note"
                             ],
@@ -878,7 +929,7 @@
                       },
                       "type": "array"
                     },
-                    "dateLecture": {
+                    "date": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -890,7 +941,7 @@
                       "default": null,
                       "format": "date"
                     },
-                    "docketNumbers": {
+                    "docket_numbers": {
                       "anyOf": [
                         {
                           "items": {
@@ -904,7 +955,13 @@
                       ],
                       "default": null
                     },
-                    "jurisdictionCode": {
+                    "formation": {
+                      "items": {
+                        "type": "string"
+                      },
+                      "type": "array"
+                    },
+                    "jurisdiction_code": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -915,10 +972,10 @@
                       ],
                       "default": null
                     },
-                    "jurisdictionType": {
+                    "jurisdiction_type": {
                       "type": "string"
                     },
-                    "legalDomain": {
+                    "legal_domain": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -929,29 +986,7 @@
                       ],
                       "default": null
                     },
-                    "office": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null
-                    },
-                    "officialUrl": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null
-                    },
-                    "procedure": {
+                    "official_url": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -1003,7 +1038,7 @@
                   "required": [
                     "title",
                     "url",
-                    "jurisdictionType",
+                    "jurisdiction_type",
                     "text"
                   ],
                   "type": "object"
@@ -1023,7 +1058,7 @@
         }
       }
     },
-    "/api/norm/{juridiction}/{code}": {
+    "/api/norm/{jurisdiction}/{code}": {
       "get": {
         "summary": "Lire un texte sans passer par un article",
         "description": "Un texte sans articles (circulaire, décret de publication, lignes directrices) rend son corps ; un texte qui en porte rend son sommaire, les corps courts attachés dessous.",
@@ -1047,7 +1082,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "articleCount": {
+                    "article_count": {
                       "type": "integer"
                     },
                     "articles": {
@@ -1061,7 +1096,7 @@
                             ],
                             "type": "string"
                           },
-                          "num": {
+                          "number": {
                             "type": "string"
                           },
                           "section": {
@@ -1076,7 +1111,7 @@
                         },
                         "required": [
                           "kind",
-                          "num",
+                          "number",
                           "url"
                         ],
                         "type": "object"
@@ -1086,17 +1121,13 @@
                     "code": {
                       "type": "string"
                     },
-                    "commentaires": {
+                    "commentaries": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "access": {
+                          "author": {
                             "anyOf": [
                               {
-                                "enum": [
-                                  "libre",
-                                  "abonnes"
-                                ],
                                 "type": "string"
                               },
                               {
@@ -1105,7 +1136,7 @@
                             ],
                             "default": null
                           },
-                          "author": {
+                          "body": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -1141,6 +1172,7 @@
                           },
                           "kind": {
                             "enum": [
+                              "summary",
                               "conclusions",
                               "note"
                             ],
@@ -1209,7 +1241,7 @@
                       },
                       "type": "array"
                     },
-                    "dateDebut": {
+                    "date": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -1221,30 +1253,7 @@
                       "default": null,
                       "format": "date"
                     },
-                    "dateFin": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null,
-                      "format": "date"
-                    },
-                    "etat": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null
-                    },
-                    "modifiedBy": {
+                    "legislative_history": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
@@ -1282,7 +1291,46 @@
                       },
                       "type": "array"
                     },
-                    "nota": {
+                    "modified_by": {
+                      "description": "Texts that created, modified or repealed this article.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "date": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "format": "date"
+                          },
+                          "href": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "label"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "note": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -1293,7 +1341,7 @@
                       ],
                       "default": null
                     },
-                    "num": {
+                    "number": {
                       "type": "string"
                     },
                     "omitted": {
@@ -1315,7 +1363,18 @@
                       ],
                       "type": "object"
                     },
-                    "sourceUrl": {
+                    "source_url": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "status": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -1340,56 +1399,45 @@
                     "title": {
                       "type": "string"
                     },
-                    "travauxParlementaires": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "date": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null,
-                            "format": "date"
-                          },
-                          "href": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
-                          "label": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "label"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
                     "url": {
                       "type": "string"
+                    },
+                    "valid_from": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "format": "date"
+                    },
+                    "valid_to": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "format": "date"
                     },
                     "versions": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "dateDebut": {
+                          "status": {
+                            "type": "string"
+                          },
+                          "valid_from": {
                             "format": "date",
                             "type": "string"
                           },
-                          "dateFin": {
+                          "valid_to": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -1400,14 +1448,11 @@
                             ],
                             "default": null,
                             "format": "date"
-                          },
-                          "etat": {
-                            "type": "string"
                           }
                         },
                         "required": [
-                          "etat",
-                          "dateDebut"
+                          "status",
+                          "valid_from"
                         ],
                         "type": "object"
                       },
@@ -1437,7 +1482,7 @@
         }
       }
     },
-    "/api/norm/{juridiction}/{code}/{article}": {
+    "/api/norm/{jurisdiction}/{code}/{article}": {
       "get": {
         "summary": "Lire un article ou une division",
         "description": "Un article dans sa version en vigueur, ou telle qu'elle était à la date passée en `date`. Le même emplacement nomme une division du texte par le chemin de ses segments (`livre-i/titre-v`), celui que portent les `url` du sommaire : elle rend ses articles attachés, et lire un chapitre ne coûte qu'un appel.",
@@ -1456,7 +1501,7 @@
             "$ref": "#/components/parameters/ArticleKey"
           },
           {
-            "name": "date",
+            "name": "as_of",
             "in": "query",
             "description": "Version en vigueur à cette date. Absente, la version en vigueur aujourd'hui. Aucune version à cette date rend un 404.",
             "schema": {
@@ -1474,7 +1519,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "articleCount": {
+                    "article_count": {
                       "type": "integer"
                     },
                     "articles": {
@@ -1488,7 +1533,7 @@
                             ],
                             "type": "string"
                           },
-                          "num": {
+                          "number": {
                             "type": "string"
                           },
                           "section": {
@@ -1503,7 +1548,7 @@
                         },
                         "required": [
                           "kind",
-                          "num",
+                          "number",
                           "url"
                         ],
                         "type": "object"
@@ -1513,17 +1558,13 @@
                     "code": {
                       "type": "string"
                     },
-                    "commentaires": {
+                    "commentaries": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "access": {
+                          "author": {
                             "anyOf": [
                               {
-                                "enum": [
-                                  "libre",
-                                  "abonnes"
-                                ],
                                 "type": "string"
                               },
                               {
@@ -1532,7 +1573,7 @@
                             ],
                             "default": null
                           },
-                          "author": {
+                          "body": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -1568,6 +1609,7 @@
                           },
                           "kind": {
                             "enum": [
+                              "summary",
                               "conclusions",
                               "note"
                             ],
@@ -1636,7 +1678,7 @@
                       },
                       "type": "array"
                     },
-                    "dateDebut": {
+                    "date": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -1648,30 +1690,7 @@
                       "default": null,
                       "format": "date"
                     },
-                    "dateFin": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null,
-                      "format": "date"
-                    },
-                    "etat": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null
-                    },
-                    "modifiedBy": {
+                    "legislative_history": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
@@ -1709,7 +1728,46 @@
                       },
                       "type": "array"
                     },
-                    "nota": {
+                    "modified_by": {
+                      "description": "Texts that created, modified or repealed this article.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "date": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "format": "date"
+                          },
+                          "href": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "label"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "note": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -1720,7 +1778,7 @@
                       ],
                       "default": null
                     },
-                    "num": {
+                    "number": {
                       "type": "string"
                     },
                     "omitted": {
@@ -1742,7 +1800,18 @@
                       ],
                       "type": "object"
                     },
-                    "sourceUrl": {
+                    "source_url": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "status": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -1767,56 +1836,45 @@
                     "title": {
                       "type": "string"
                     },
-                    "travauxParlementaires": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "date": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null,
-                            "format": "date"
-                          },
-                          "href": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
-                          "label": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "label"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
                     "url": {
                       "type": "string"
+                    },
+                    "valid_from": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "format": "date"
+                    },
+                    "valid_to": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "format": "date"
                     },
                     "versions": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "dateDebut": {
+                          "status": {
+                            "type": "string"
+                          },
+                          "valid_from": {
                             "format": "date",
                             "type": "string"
                           },
-                          "dateFin": {
+                          "valid_to": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -1827,14 +1885,11 @@
                             ],
                             "default": null,
                             "format": "date"
-                          },
-                          "etat": {
-                            "type": "string"
                           }
                         },
                         "required": [
-                          "etat",
-                          "dateDebut"
+                          "status",
+                          "valid_from"
                         ],
                         "type": "object"
                       },
@@ -1887,7 +1942,7 @@
             "example": "LEGIARTI000006419282"
           },
           {
-            "name": "date",
+            "name": "as_of",
             "in": "query",
             "description": "Version en vigueur à cette date. Absente, la version en vigueur aujourd'hui. Aucune version à cette date rend un 404.",
             "schema": {
@@ -1905,7 +1960,7 @@
                 "schema": {
                   "additionalProperties": false,
                   "properties": {
-                    "articleCount": {
+                    "article_count": {
                       "type": "integer"
                     },
                     "articles": {
@@ -1919,7 +1974,7 @@
                             ],
                             "type": "string"
                           },
-                          "num": {
+                          "number": {
                             "type": "string"
                           },
                           "section": {
@@ -1934,7 +1989,7 @@
                         },
                         "required": [
                           "kind",
-                          "num",
+                          "number",
                           "url"
                         ],
                         "type": "object"
@@ -1944,17 +1999,13 @@
                     "code": {
                       "type": "string"
                     },
-                    "commentaires": {
+                    "commentaries": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "access": {
+                          "author": {
                             "anyOf": [
                               {
-                                "enum": [
-                                  "libre",
-                                  "abonnes"
-                                ],
                                 "type": "string"
                               },
                               {
@@ -1963,7 +2014,7 @@
                             ],
                             "default": null
                           },
-                          "author": {
+                          "body": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -1999,6 +2050,7 @@
                           },
                           "kind": {
                             "enum": [
+                              "summary",
                               "conclusions",
                               "note"
                             ],
@@ -2067,7 +2119,7 @@
                       },
                       "type": "array"
                     },
-                    "dateDebut": {
+                    "date": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -2079,30 +2131,7 @@
                       "default": null,
                       "format": "date"
                     },
-                    "dateFin": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null,
-                      "format": "date"
-                    },
-                    "etat": {
-                      "anyOf": [
-                        {
-                          "type": "string"
-                        },
-                        {
-                          "type": "null"
-                        }
-                      ],
-                      "default": null
-                    },
-                    "modifiedBy": {
+                    "legislative_history": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
@@ -2140,7 +2169,46 @@
                       },
                       "type": "array"
                     },
-                    "nota": {
+                    "modified_by": {
+                      "description": "Texts that created, modified or repealed this article.",
+                      "items": {
+                        "additionalProperties": false,
+                        "properties": {
+                          "date": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null,
+                            "format": "date"
+                          },
+                          "href": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
+                          "label": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "label"
+                        ],
+                        "type": "object"
+                      },
+                      "type": "array"
+                    },
+                    "note": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -2151,7 +2219,7 @@
                       ],
                       "default": null
                     },
-                    "num": {
+                    "number": {
                       "type": "string"
                     },
                     "omitted": {
@@ -2173,7 +2241,18 @@
                       ],
                       "type": "object"
                     },
-                    "sourceUrl": {
+                    "source_url": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "status": {
                       "anyOf": [
                         {
                           "type": "string"
@@ -2198,56 +2277,45 @@
                     "title": {
                       "type": "string"
                     },
-                    "travauxParlementaires": {
-                      "items": {
-                        "additionalProperties": false,
-                        "properties": {
-                          "date": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null,
-                            "format": "date"
-                          },
-                          "href": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
-                          "label": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "label"
-                        ],
-                        "type": "object"
-                      },
-                      "type": "array"
-                    },
                     "url": {
                       "type": "string"
+                    },
+                    "valid_from": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "format": "date"
+                    },
+                    "valid_to": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null,
+                      "format": "date"
                     },
                     "versions": {
                       "items": {
                         "additionalProperties": false,
                         "properties": {
-                          "dateDebut": {
+                          "status": {
+                            "type": "string"
+                          },
+                          "valid_from": {
                             "format": "date",
                             "type": "string"
                           },
-                          "dateFin": {
+                          "valid_to": {
                             "anyOf": [
                               {
                                 "type": "string"
@@ -2258,14 +2326,11 @@
                             ],
                             "default": null,
                             "format": "date"
-                          },
-                          "etat": {
-                            "type": "string"
                           }
                         },
                         "required": [
-                          "etat",
-                          "dateDebut"
+                          "status",
+                          "valid_from"
                         ],
                         "type": "object"
                       },
@@ -2315,7 +2380,7 @@
     },
     "parameters": {
       "Jurisdiction": {
-        "name": "juridiction",
+        "name": "jurisdiction",
         "in": "path",
         "required": true,
         "description": "La juridiction qui édicte le texte, par son code ISO 3166-1 alpha-2 en minuscules : `fr`, `be`, `ch`, `eu` pour l'Union, `intl` pour ce qu'aucun État n'édicte seul.",

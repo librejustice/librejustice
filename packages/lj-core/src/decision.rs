@@ -6,12 +6,6 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Cible `visa_trim` : 500 tokens estimés via `CHARS_PER_TOKEN_MEDIAN` (3.41).
-pub const VISA_TRIM_TARGET_TOKENS: usize = 500;
-/// `VISA_TRIM_MAX_CHARS` ≈ 1705 (= 500 × 3.41 tronqué).
-pub const VISA_TRIM_MAX_CHARS: usize =
-    (VISA_TRIM_TARGET_TOKENS as f64 * lj_vocab::tokens::CHARS_PER_TOKEN_MEDIAN) as usize;
-
 /// Décision attaquée telle que la source la déclare (champ `contested`
 /// Judilibre) : matière brute du lien de chronologie — les clés canoniques se
 /// dérivent dans `lj-extract::chrono`.
@@ -80,6 +74,10 @@ pub struct Decision {
     pub publication_codes: Vec<String>,
     /// XML opendata uniquement.
     pub avocat_requerant: Option<String>,
+    /// Counsel the source lists without placing them on a side (DILA judicial
+    /// `AVOCATS`), each a person or a firm.
+    #[serde(default)]
+    pub listed_counsel: Vec<String>,
     /// Thèmes Judilibre (`payload["themes"]` : matière → chaîne de mots-clés),
     /// verbatim. Vide pour les autres sources.
     pub themes: Vec<String>,
@@ -94,8 +92,6 @@ pub struct Decision {
     // ── Préfixes embedding (jamais stockés en DB) ─────────────────────────
     /// 3 lignes : jur|date / recours|solution / formation.
     pub metadata_header: String,
-    /// Début du visa, ≤ `VISA_TRIM_MAX_CHARS`, paragraph-aware.
-    pub visa_trim: String,
     pub parse_warnings: Vec<String>,
 }
 

@@ -3,15 +3,9 @@
 # (résumé, display-name, password-link, unlink, email-change, delete). All
 # require auth (RequiredUser).
 #
-# These tests assert the UNAUTHENTICATED contract (401 shape) for every
+# These tests assert the UNAUTHENTICATED contract (status 401) for every
 # endpoint. The authenticated path lives in `authed.hurl`, which opens a real
 # session.
-#
-# KNOWN PARITY RISK (see notes): the 401 BODY differs between oracles.
-#   Python (FastAPI HTTPException) -> JSON  {"detail":"auth_required"}
-#   Rust   (ApiError::Unauthorized) -> text/plain  "unauthorized"
-# We assert ONLY status==401 here so the file is green against BOTH oracles;
-# the body divergence is documented for the A/B differ to flag.
 # ============================================================================
 
 # ── GET /internal/me, unauth ────────────────────────────────────────────────

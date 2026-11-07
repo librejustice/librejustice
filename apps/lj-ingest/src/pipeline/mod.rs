@@ -8,43 +8,57 @@
 //! - batch de [`BATCH_SIZE`], idempotence via `content_checksum` (xxh3-64 du
 //!   payload brut).
 //!
-//! Deux ordonnancements sur le même chemin de code : `run_stream` (flux à étages
-//! découplés, le mur vaut l'embed) pour les sources de volume,
-//! `drain_batch`/`drain_batch_in_txn` (séquentiel) pour la maintenance et les
-//! écritures sous transaction de l'appelant.
+//! Two schedulings over one code path: `run_stream` (decoupled stages, the embed
+//! sets the pace) for the volume sources, `drain_batch` (sequential) for maintenance.
 
-mod adde;
+mod adlc;
 mod affiliations;
 mod annonces;
 mod annonces_couverture;
 mod applicability_events;
 mod ariane;
 mod article_commentaires;
+mod article_text;
 mod assertions;
 mod attract;
 mod backfill;
 mod batch;
 mod bofip;
+mod bulletins;
 mod ce_list;
 mod chronicle_move;
 mod circulaires;
 mod cnb_history;
+mod cnb_reduced;
 mod cnb_rekey;
 mod cnda;
 mod cnda_solution;
+mod comeu;
 mod corpus_toc;
+mod court_summaries;
+mod ddd;
+mod decision_text;
 mod dila;
+mod dila_judi;
+mod doctrine_names;
+mod doctrine_oai;
 mod embed;
 mod embed_missing;
+mod eu_bodies;
 pub(crate) mod eu_catalog;
 mod eu_law;
 mod eu_rproc;
 mod europe;
 mod false_merges;
 mod files;
+mod formations;
+mod gazette;
 mod hal;
+mod identity_probe;
 mod jorf;
+mod jorf_publication;
 mod juricaf;
+mod jurisdiction_seed;
 mod kali;
 mod legal_corpus;
 mod legi;
@@ -53,26 +67,29 @@ mod parties;
 mod precompute;
 mod prepare;
 mod quantum;
+mod raa;
 mod reconcile;
 mod reextract;
 mod registries;
 mod rekey;
-mod resplit;
 mod roles;
 mod scope_alsace;
 mod scope_compteurs;
 mod seats;
+mod service_public;
 mod slugs;
+pub mod submissions;
 mod suggest_build;
 mod text_refs;
 mod text_rename;
+mod text_stamps;
 mod toc_paths;
+mod treaty_articles;
 mod treaty_bodies;
 mod union_filing;
-mod unmerge;
-mod unmerge_dila;
+mod wiki_names;
 
-pub use adde::sync_adde;
+pub use adlc::sync_adlc;
 pub use affiliations::derive_affiliations;
 pub use annonces::{
     annonces, annonces_backfill, annonces_contenu, annonces_decp, annonces_discover,
@@ -82,9 +99,13 @@ pub use annonces::{
 pub use annonces_couverture::annonces_couverture;
 pub use ariane::sync_ariane;
 pub use article_commentaires::{reconcile_article_commentaires, seed_article_commentaires};
+pub use article_text::{backfill_article_text, ArticleFond};
 pub use assertions::{assertions_compile, assertions_control, assertions_coverage, CompileOptions};
-pub use backfill::{backfill_canonical_ref, backfill_ecli, merge_cross_source_duplicates};
+pub use backfill::{
+    absorb_copies, backfill_canonical_ref, backfill_ecli, merge_cross_source_duplicates,
+};
 pub use bofip::{ingest_bofip, sync_bofip};
+pub use bulletins::sync_bulletins;
 pub use ce_list::sync_ce_list;
 pub use chronicle_move::move_chronicle;
 pub use circulaires::{sync_circulaires, sync_circulaires_bodies};
@@ -92,56 +113,71 @@ pub use cnb_history::replay_cnb_history;
 pub use cnb_rekey::rekey_cnb;
 pub use cnda::{ingest_cnda, sync_cnda};
 pub use cnda_solution::backfill_cnda_solution;
+pub use comeu::sync_comeu;
+pub use court_summaries::sync_court_summaries;
+pub use ddd::{ingest_ddd, sync_ddd};
+pub use decision_text::{
+    annex_starts, backfill_decision_text, headnote_tags, recase_texts, TextFond,
+};
 pub use dila::{ingest_dila, sync_dila, Fond};
-pub use embed_missing::embed_missing;
+pub use doctrine_names::{sync_doctrine_names, DoctrineNamesScan};
+pub use doctrine_oai::{sync_doctrine_oai, DoctrineScan};
+pub use embed_missing::{embed_missing, parse_shard};
+pub use eu_bodies::fill_eu_bodies;
 pub(crate) use eu_catalog::{canonical_of, datasets_a_retirer};
 pub use eu_catalog::{ingest_eu_catalog, merge_eu_swapped_uids, sync_eu_catalog, sync_eu_jorf};
 pub use eu_law::sync_eu_law;
 pub use eu_rproc::ingest_eu_rproc;
 pub use europe::{
-    backfill_cjue_joined_cases, cache_cedh, ingest_cedh, ingest_cjue, sync_cedh, sync_cjue,
+    backfill_cjue_joined_cases, backfill_cjue_titles, cache_cedh, ingest_cedh, ingest_cjue,
+    sync_cedh, sync_cjue,
 };
 pub use false_merges::analyze_false_merges;
+pub use formations::resolve_formations;
+pub use gazette::{gazette, parse_gazette_source, GazetteMode};
 pub use hal::{sync_hal, HalScan};
+pub use identity_probe::probe_identity;
 pub use jorf::{backfill_jorf_bodies, ingest_jorf, sync_jorf};
-pub use juricaf::juricaf_probe;
+pub use jorf_publication::backfill_jorf_publications;
+pub use juricaf::{juricaf_probe, sync_juricaf};
+pub use jurisdiction_seed::seed_jurisdictions;
 pub use kali::{ingest_kali, requalifier_kali, sync_kali};
 pub use legal_corpus::{
     canonicalize_source_labels, load_legal_corpus, reading_ranks, relabel_sources, stamp_freshness,
 };
 pub use legi::{
-    audit_legi_versions, backfill_links, backfill_textes, backfill_toc, ingest_legi, sync_legi,
+    audit_legi_versions, backfill_links, backfill_textes, backfill_toc, ingest_legi,
+    redate_dila_versions, sync_legi,
 };
-pub use opendata::{ingest_judilibre, ingest_opendata, refetch_judilibre, reingest_stale_opendata};
-pub use parties::{reconcile_parties, relink_parties};
+pub use opendata::{ingest_judilibre, ingest_opendata, refetch_judilibre};
+pub use parties::relink_parties;
 pub use precompute::{precompute_all, resync_corpus_counts, resync_jurisdiction_counts};
 pub use quantum::{extract_quantum, load_quantum_gold, load_quantum_readings};
+pub use raa::sync_raa;
 pub use reconcile::{reconcile_all, resolve_pending_citations};
-pub use reextract::reextract_fields;
+pub use reextract::{reextract_fields, Worklist};
 pub use registries::{load_registries, RegistrySource};
 pub use rekey::{destar_article_keys, rekey_article_keys, rekey_identity_keys};
-pub use resplit::resplit_false_merges;
 pub use roles::backfill_text_roles;
 pub use scope_alsace::scope_backfill_alsace;
 pub use scope_compteurs::scope_backfill_compteurs;
 pub use seats::resolve_seats;
+pub use service_public::sync_service_public;
 pub use slugs::{assign_slugs, drop_country_suffix, remint_text_slugs};
 pub use suggest_build::build_suggest;
 pub use text_refs::extract_text_refs;
 pub use text_rename::rename_texts;
+pub use text_stamps::stamp_texts;
 pub use toc_paths::audit_toc_paths;
+pub use treaty_articles::treaty_articles;
 pub use treaty_bodies::backfill_treaty_bodies;
 pub use union_filing::refile_union_texts;
-pub use unmerge::unmerge_same_source;
-pub use unmerge_dila::unmerge_same_source_dila;
+pub use wiki_names::sync_wiki_names;
 
 use lj_core::decision::Decision;
 use lj_extract::link::{CatalogText, LinkSnapshot};
-use lj_parse::DilaFond;
-use lj_store::db::Connection;
+use lj_pg::db::Connection;
 use lj_store::repository::{DecisionRepository, ExtractedFields};
-
-use lj_chunk::Chunk;
 
 pub const BATCH_SIZE: usize = 128;
 
@@ -162,11 +198,12 @@ pub(crate) struct ExtractCtx {
     /// Source code to canonical code, the resolution `ensure_jurisdictions` runs
     /// at write time: the seat paths are derived before it.
     pub jur_codes: std::collections::HashMap<String, String>,
+    pub successors: std::collections::HashMap<String, String>,
     /// Libellés du référentiel `chamber`, keyés `(code source, clé)` comme le
     /// reste des snapshots : le siège d'un titre les lit, il ne les recompose pas.
-    /// Noms d'usage à porteur unique, pour les citations que le corps fait par
-    /// le nom. Posé par la projection des renvois, donc à jour d'elle : une
-    /// passe d'extraction avant la projection cite sous des noms périmés.
+    /// Usage names, for the citations a body makes by name. Set by the renvois
+    /// projection, so as fresh as it: an extraction pass before the projection
+    /// cites under stale names.
     pub case_names: lj_extract::case_link::CaseNameSnapshot,
     /// What each court calls its rooms, read from the seat as WRITTEN.
     /// Empty on the pass that first writes the seats, so nothing resolves
@@ -181,6 +218,7 @@ impl ExtractCtx {
             vocab: &self.vocab,
             chrono: &self.chrono,
             jur_codes: &self.jur_codes,
+            successors: &self.successors,
             case_names: &self.case_names,
             seats: &self.seats,
         }
@@ -217,25 +255,15 @@ pub(crate) async fn extract_ctx(conn: &Connection) -> anyhow::Result<&'static Ex
                 .iter()
                 .map(|j| (j.source_code.clone(), j.code.clone()))
                 .collect();
-            let chrono = lj_extract::chrono::ChronoSnapshot::new(
+            let successors: std::collections::HashMap<String, String> =
+                repo.jurisdiction_successors().await?.into_iter().collect();
+            let chrono = lj_extract::chrono::ChronoSnapshot::with_closed(
                 jurisdictions
                     .into_iter()
                     .filter_map(|j| Some((j.code, j.jurisdiction_type, j.city?))),
+                successors.keys().cloned().collect(),
             );
-            let case_names = lj_extract::case_link::CaseNameSnapshot::new(
-                repo.unambiguous_case_names().await?.into_iter().filter_map(
-                    |(cle, code, dockets, date)| {
-                        Some((
-                            cle,
-                            lj_core::address::CaseAddress::new(
-                                code.as_deref()?,
-                                dockets.first()?,
-                                date.as_deref().unwrap_or_default(),
-                            ),
-                        ))
-                    },
-                ),
-            );
+            let case_names = lj_extract_rows::case_name_snapshot(repo.named_cases().await?);
             let seats = lj_extract::seat_link::SeatVocabulary::new(
                 repo.seat_vocabulary()
                     .await?
@@ -254,6 +282,7 @@ pub(crate) async fn extract_ctx(conn: &Connection) -> anyhow::Result<&'static Ex
                 chrono,
                 jur_labels,
                 jur_codes,
+                successors,
                 case_names,
                 seats,
             })
@@ -265,9 +294,9 @@ pub(crate) async fn extract_ctx(conn: &Connection) -> anyhow::Result<&'static Ex
 ///
 /// - [`IngestMode::MissingHash`] (défaut) : skip si le hash est identique, et
 ///   fast-skip d'un fichier entièrement ingéré via le manifeste.
-/// - [`IngestMode::All`] : relit tout, **ignore le hash ET le manifeste**, force
-///   un UPDATE complet de chaque décision existante. Trappe de re-traitement
-///   total (ré-chunk / ré-embed) quand le pipeline pur a changé.
+/// - [`IngestMode::All`]: rereads everything, **ignoring hash and manifest**, and
+///   rewrites every existing decision, after a change of the pure pipeline. A
+///   decision whose text and header come out unchanged keeps its passages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
 pub enum IngestMode {
     MissingHash,
@@ -333,6 +362,9 @@ fn base64_urlsafe(input: &[u8]) -> String {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum WriteMode {
     Full,
+    /// Rewrites the decision and its provenance, and keeps its passages and
+    /// their embeddings: the text they are cut from has not changed.
+    KeepPassages,
     SourceXmlOnly,
 }
 
@@ -340,6 +372,7 @@ impl WriteMode {
     fn as_str(self) -> &'static str {
         match self {
             WriteMode::Full => "full",
+            WriteMode::KeepPassages => "keep_passages",
             WriteMode::SourceXmlOnly => "source_xml_only",
         }
     }
@@ -354,13 +387,11 @@ struct Candidate {
     raw_payload: Vec<u8>,
     payload_format: String,
     write_mode: WriteMode,
-    /// Fond DILA (`payload_format == "dila-xml"`) : sélectionne le sous-bloc
-    /// `META_JURI_*` pour reconstruire `source_fields`. `None` pour les autres
-    /// formats (XML opendata, JSON Judilibre).
-    dila_fond: Option<DilaFond>,
-    /// `false` for a text that is not its decision's lead: it is neither cut
-    /// nor embedded.
+    /// `false` for a text its decision is not read in: its write leaves the
+    /// passages alone.
     passages: bool,
+    /// See [`BulkDecisionWrite::distinct`].
+    distinct: bool,
     /// `source_fields` déjà construits (`payload_format == "html"`, CEDH/CJUE) :
     /// les métadonnées HUDOC/CDM verbatim (colonnes/prédicats) plus les sections
     /// rebasées sur `full_text`. `None` pour les formats dont `prepare_write`
@@ -374,26 +405,26 @@ struct Candidate {
     prebuilt_extracted: Option<ExtractedFields>,
 }
 
-/// Décision préparée (clean + chunk).
-///
-/// L'extraction structurée arrive **après** l'embed (`extract_write`) : elle seule
-/// dépend du contexte d'extraction, dont l'hydratation se cache ainsi derrière le
-/// GPU au lieu de retarder le premier lot.
+/// A decision prepared: cleaned and rebuilt from its `source_fields`. The
+/// structured extraction comes after (`extract_write`), the only stage that
+/// needs the extraction context.
 struct PreparedDecision {
     decision_id: Option<i64>,
     public_id: String,
     decision: Decision,
     content_checksum: String,
     write_mode: WriteMode,
-    chunks: Vec<Chunk>,
+    /// See [`Candidate::passages`].
+    passages: bool,
     payload_format: String,
-    /// Rempli par `extract_write` (étage post-embed) ; `None` en sortie de chunk.
+    /// Filled by `extract_write`, `None` out of the prepare stage.
     extracted: Option<ExtractedFields>,
     /// Champs préconstruits par le parser source (CNDA, ArianeWeb…), superposés
     /// au résultat de l'extracteur routé par `extract_write`.
     prebuilt_extracted: Option<ExtractedFields>,
     /// Payload moins le texte, offsets rebasés sur `full_text`.
     source_fields: serde_json::Value,
+    distinct: bool,
 }
 
 /// Cumul des compteurs d'un run.
@@ -404,8 +435,11 @@ struct IngestCounts {
     skipped: usize,
     errors: usize,
     empty_skipped: usize,
-    chunks_created: usize,
+    passages_dropped: usize,
+    passages_kept: usize,
     dedup_in_batch: usize,
+    copies: usize,
+    held: usize,
 }
 
 impl IngestCounts {
@@ -415,8 +449,11 @@ impl IngestCounts {
         self.skipped += other.skipped;
         self.errors += other.errors;
         self.empty_skipped += other.empty_skipped;
-        self.chunks_created += other.chunks_created;
+        self.passages_dropped += other.passages_dropped;
+        self.passages_kept += other.passages_kept;
         self.dedup_in_batch += other.dedup_in_batch;
+        self.copies += other.copies;
+        self.held += other.held;
     }
 }
 
@@ -449,11 +486,11 @@ mod tests_support {
             solution: None,
             publication_codes: vec![],
             avocat_requerant: None,
+            listed_counsel: Vec::new(),
             texte_integral_raw: String::new(),
             texte_integral_clean: String::new(),
             sections: vec![],
             metadata_header: String::new(),
-            visa_trim: String::new(),
             themes: Vec::new(),
             attacked: None,
             parse_warnings: vec![],

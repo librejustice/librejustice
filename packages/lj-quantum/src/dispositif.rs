@@ -4503,8 +4503,8 @@ mod tests {
                 .and_then(|p| p.montant_alloue)
         };
         assert_eq!(of("PEP"), Some(1_000.0), "{:?}", v.postes);
-        // Each figure keeps its own label or none: 396 was read as souffrances
-        // endurées and 2 000 as préjudice esthétique, one rank too far.
+        // Each figure keeps its own label or none: no label reaches one rank too
+        // far, 396 to souffrances endurées or 2 000 to préjudice esthétique.
         let shifted = |m: f64| v.postes.iter().any(|p| p.montant_alloue == Some(m));
         assert!(!shifted(396.0) && !shifted(2_000.0), "{:?}", v.postes);
     }

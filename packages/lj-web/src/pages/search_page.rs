@@ -21,6 +21,7 @@ use leptos_router::hooks::use_query_map;
 use lj_dtos::{PinnedDecision, QueryMode, SearchResponse};
 
 use crate::components::client_only::ClientOnly;
+use crate::components::decision_bar::{carry_seed, search_origin, ResultNavSeed};
 use crate::components::layout::{CONTENT_COL, GRID_3COL, SHELL, SIDE_RAIL};
 use crate::components::search::compact_search::search_data::{
     cached_search, count_resource, search_is_loading, search_resource, SearchResult, SeenSearchKeys,
@@ -393,7 +394,7 @@ fn MobileSummary(
 fn SearchResults(
     #[prop(into)] query: Signal<String>,
     resource: Resource<SearchResult>,
-    #[prop(into)] key: Signal<crate::components::search::compact_search::search_state::SearchKey>,
+    #[prop(into)] key: Signal<SearchKey>,
     #[prop(into)] show_skeleton: Signal<bool>,
     #[prop(into)] default_view: Signal<CardView>,
 ) -> impl IntoView {
@@ -487,7 +488,7 @@ fn SearchResults(
 fn ResultsBody(
     result: SearchResponse,
     #[prop(into)] query: Signal<String>,
-    #[prop(into)] key: Signal<crate::components::search::compact_search::search_state::SearchKey>,
+    #[prop(into)] key: Signal<SearchKey>,
     animate: bool,
     #[prop(into)] default_view: Signal<CardView>,
 ) -> impl IntoView {
@@ -542,13 +543,17 @@ fn ResultsBody(
     let pages = total_pages(total) as u32;
     let hits = result.hits;
     let all_hit_paths = result.all_hit_paths;
-    let page = key.get_untracked().page;
+    let SearchKey { page, query, .. } = key.get_untracked();
+    let highlight = matches!(result.query_mode, QueryMode::Lexical | QueryMode::Hybrid)
+        .then_some(query)
+        .filter(|q| !q.trim().is_empty());
     view! {
         <div class="flex min-w-0 flex-col gap-6">
             <PinnedCard pinned=pinned more=pinned_more />
             <ResultList
                 hits=hits
                 all_hit_paths=all_hit_paths
+                highlight=highlight
                 page=page
                 page_size=SEARCH_PAGE_SIZE
                 default_view=default_view
@@ -607,11 +612,20 @@ fn PinnedRow(decision: PinnedDecision) -> impl IntoView {
         .solution
         .filter(|t| t.key != "AUTRE")
         .map(|t| t.label);
-    let procedure = decision.procedure.map(|t| t.label);
+    let on_navigate = |ev: leptos::ev::MouseEvent| {
+        carry_seed(
+            &ev,
+            &ResultNavSeed {
+                nav: None,
+                from_search: Some(search_origin(None)),
+            },
+        );
+    };
     view! {
         <li class="flex flex-col gap-0.5">
             <A
-                href=lj_dtos::decision_path(decision.jurisdiction_type, &decision.id)
+                href=lj_dtos::decision_path(decision.jurisdiction_type, decision.jurisdiction_code.as_deref(), &decision.id)
+                on:click=on_navigate
                 attr:class="font-sans text-base leading-snug text-[var(--color-ink)] no-underline transition-colors hover:text-[var(--color-accent)]"
             >
                 {decision.title}
@@ -623,7 +637,6 @@ fn PinnedRow(decision: PinnedDecision) -> impl IntoView {
                     })}
                 <div class="ml-auto flex flex-wrap justify-end gap-1.5">
                     {solution.map(|label| view! { <Badge tone=BadgeTone::Outline>{label}</Badge> })}
-                    {procedure.map(|label| view! { <Badge tone=BadgeTone::Accent>{label}</Badge> })}
                 </div>
             </div>
         </li>

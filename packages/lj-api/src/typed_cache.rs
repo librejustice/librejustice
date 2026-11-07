@@ -12,8 +12,8 @@ type Erased = Arc<dyn Any + Send + Sync>;
 type Inner = moka::future::Cache<String, Erased>;
 
 /// A moka cache of `V` by `String` key. moka monomorphises its machinery once
-/// per `Cache<K, V>` and once per init future, 45 % of this crate's LLVM IR over
-/// 23 caches: one erased value type and boxed futures keep a single copy.
+/// per `Cache<K, V>` and once per init future, a large share of this crate's LLVM
+/// IR: one erased value type and boxed futures keep a single copy.
 pub struct TypedCache<V> {
     inner: Inner,
     value: PhantomData<fn() -> V>,

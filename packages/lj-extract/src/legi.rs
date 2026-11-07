@@ -71,6 +71,10 @@ pub struct LegiCode {
     /// NOR (`META_COMMUN/NOR`) — identité cross-diffuseur, clé de résolution du
     /// linker pour les actes datés (arrêtés, décrets).
     pub nor: Option<String>,
+    /// `META_TEXTE_CHRONICLE/DATE_TEXTE` and `DATE_PUBLI`, ISO, raw: a code
+    /// carries the 2999-01-01 sentinel.
+    pub date_texte: Option<String>,
+    pub date_publi: Option<String>,
     pub derniere_modification: Option<String>,
     pub versions_a_venir: Vec<String>,
     pub liens: Vec<LegiLien>,
@@ -300,7 +304,7 @@ pub(crate) fn date_or_none(raw: Option<String>) -> Option<String> {
 /// `clean_texte` d'un `CONTENU`, `None` si vide après nettoyage. `pub(crate)` :
 /// partagé avec le parser JORF (même `BLOC_TEXTUEL/CONTENU`).
 pub(crate) fn clean_contenu(node: Option<&XmlNode>) -> Option<String> {
-    node_text(node)
+    node.and_then(XmlNode::html_text)
         .map(|raw| clean_texte(&raw))
         .filter(|t| !t.is_empty())
 }
@@ -547,6 +551,10 @@ pub fn parse_legi_texte(raw: &[u8]) -> Result<LegiCode, CoreError> {
     let nor = node_text(find_anywhere(&root, "META_TEXTE_CHRONICLE/NOR"))
         .or_else(|| node_text(find_anywhere(&root, "META_COMMUN/NOR")))
         .filter(|n| !n.is_empty());
+    let date_texte = node_text(find_anywhere(&root, "META_TEXTE_CHRONICLE/DATE_TEXTE"))
+        .filter(|d| !d.is_empty());
+    let date_publi = node_text(find_anywhere(&root, "META_TEXTE_CHRONICLE/DATE_PUBLI"))
+        .filter(|d| !d.is_empty());
     let derniere_modification = node_text(find_anywhere(
         &root,
         "META_TEXTE_CHRONICLE/DERNIERE_MODIFICATION",
@@ -566,6 +574,8 @@ pub fn parse_legi_texte(raw: &[u8]) -> Result<LegiCode, CoreError> {
         titre_full,
         nature,
         nor,
+        date_texte,
+        date_publi,
         derniere_modification,
         versions_a_venir,
         liens: collect_liens(&root)?,
@@ -953,6 +963,8 @@ mod tests {
 </TEXTE_VERSION>"#;
         let c = parse_legi_texte(xml.as_bytes()).expect("texte");
         assert_eq!(c.nor.as_deref(), Some("ECOC9300166D"));
+        assert_eq!(c.date_texte.as_deref(), Some("1994-01-05"));
+        assert_eq!(c.date_publi.as_deref(), Some("1994-01-19"));
     }
 
     #[test]

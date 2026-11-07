@@ -15,7 +15,7 @@ pub fn Privacy() -> impl IntoView {
                 "Politique de confidentialité"
             </h1>
             <p class="mt-2 text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                "En vigueur au 28 septembre 2026"
+                "En vigueur au 21 octobre 2026"
             </p>
 
             <Section title="Responsable de traitement">
@@ -36,7 +36,7 @@ pub fn Privacy() -> impl IntoView {
             <Section title="Données collectées">
                 <p>
                     <strong>"Compte utilisateur."</strong>
-                    " Votre adresse e-mail, votre nom si vous l'avez indiqué, et votre identifiant Google ou Microsoft si vous vous connectez par l'un d'eux. Nous notons aussi la langue de votre navigateur, votre pays, la date de votre inscription et celle de votre dernière visite. Si vous connectez un assistant IA à votre compte, nous lui transmettons votre adresse e-mail. Tout est effacé quand vous supprimez votre compte. Nous gardons aussi la trace des e-mails que nous vous envoyons et de votre éventuel désabonnement."
+                    " Votre adresse e-mail, votre nom si vous l'avez indiqué, et votre identifiant Google ou Microsoft si vous vous connectez par l'un d'eux. Nous notons aussi la langue de votre navigateur, votre pays, la date de votre inscription et celle de votre dernière visite. Si vous connectez un assistant IA à votre compte, nous lui transmettons votre adresse e-mail. Nous gardons aussi la trace des e-mails que nous vous envoyons et de votre éventuel désabonnement. Tout est effacé quand vous supprimez votre compte."
                 </p>
                 <p class="mt-3">
                     <strong>"Signets."</strong>
@@ -44,11 +44,15 @@ pub fn Privacy() -> impl IntoView {
                 </p>
                 <p class="mt-3">
                     <strong>"Journaux techniques."</strong>
-                    " Le fonctionnement du service repose sur des journaux applicatifs et des traces de performance, qui servent à mesurer les temps de réponse et à diagnostiquer les erreurs. Ils peuvent contenir les paramètres des requêtes, dont les termes de recherche, ainsi que le type de client utilisé (navigateur, API ou assistant IA). Ces données sont pseudonymisées : aucun nom ni adresse e-mail n'y figure, l'utilisateur n'y apparaît que sous un identifiant technique dérivé. Elles sont supprimées automatiquement au bout de 30 jours."
+                    " Le fonctionnement du service repose sur des journaux applicatifs et des traces de performance, qui servent à mesurer les temps de réponse, à diagnostiquer les erreurs, à suivre l'utilisation du service et à repérer les usages interdits par les conditions d'utilisation. Ils peuvent contenir les paramètres des requêtes, dont les termes de recherche, ainsi que le type de client utilisé (navigateur, API ou assistant IA). Ces données sont pseudonymisées : aucun nom ni adresse e-mail n'y figure, l'utilisateur n'y apparaît que sous un identifiant technique dérivé. Elles sont supprimées automatiquement au bout de 30 jours."
                 </p>
                 <p class="mt-3">
                     <strong>"Mesure d'audience."</strong>
-                    " Pour suivre l'utilisation du service et orienter ses évolutions, nous produisons des indicateurs de fréquentation consolidés à la journée : le volume des recherches et des consultations, et leur répartition par canal d'accès. Ces indicateurs agrégés reposent sur de simples décomptes, sans conserver les paramètres ou le contenu des requêtes individuelles. Ils ne font appel à aucun cookie ni traceur, et aucune adresse IP n'est enregistrée."
+                    " Pour suivre l'utilisation du service et orienter ses évolutions, nous produisons des indicateurs de fréquentation consolidés à la journée : le volume des recherches et des consultations, les pages les plus consultées, les fonctionnalités et les filtres utilisés, le site d'où arrivent les visiteurs et la répartition par canal d'accès. Ces indicateurs se limitent à des décomptes : ils ne conservent ni les termes recherchés, ni les pages lues par une personne. Ils ne font appel à aucun cookie, et aucune adresse IP n'est enregistrée."
+                </p>
+                <p class="mt-3">
+                    <strong>"Décisions versées."</strong>
+                    " Le fichier que vous versez et votre compte. Le fichier est effacé une fois relu. Si la décision est publiée, votre compte reste attaché à sa provenance et n'est jamais affiché."
                 </p>
                 <p class="mt-3">
                     <strong>"Signalement d'un problème."</strong>
@@ -58,7 +62,7 @@ pub fn Privacy() -> impl IntoView {
 
             <Section title="Cookies et stockage local">
                 <p>
-                    "Nous n'utilisons aucun cookie publicitaire ni aucun traceur soumis à consentement. Si vous êtes connecté, votre navigateur garde seulement un jeton de session, qui s'efface à la déconnexion."
+                    "Nous n'utilisons aucun cookie publicitaire ni aucun traceur soumis à consentement. Notre mesure d'audience est configurée pour respecter votre vie privée, conformément aux recommandations de la CNIL : c'est pourquoi ce site n'affiche pas de bandeau. Si vous êtes connecté, votre navigateur garde un jeton de session qui s'efface à la déconnexion. L'onglet garde aussi le contexte de votre recherche jusqu'à sa fermeture, pour revenir aux résultats et surligner les termes cherchés dans une décision."
                 </p>
             </Section>
 
@@ -70,7 +74,16 @@ pub fn Privacy() -> impl IntoView {
                     </li>
                     <li>
                         <strong>"Cloudflare Lda."</strong>
-                        " (Lisbonne) : CDN, protection, mesure d'audience."
+                        " (Lisbonne) : CDN, protection, mesure d'audience et analyse sémantique des recherches. Ses "
+                        <a
+                            class="text-[var(--color-accent)] underline-offset-4 hover:underline"
+                            href="https://developers.cloudflare.com/workers-ai/platform/data-usage/"
+                            rel="noreferrer"
+                            target="_blank"
+                        >
+                            "conditions d'utilisation des données"
+                        </a>
+                        " excluent l'entraînement de ses modèles sur ces recherches."
                     </li>
                     <li>
                         <strong>"Grafana Cloud"</strong>
@@ -78,7 +91,16 @@ pub fn Privacy() -> impl IntoView {
                     </li>
                     <li>
                         <strong>"Mistral AI"</strong>
-                        " (Paris) : résumés des décisions et reclassement des résultats de recherche."
+                        " (Paris) : résumés des décisions et reclassement des résultats de recherche. L'entraînement de ses modèles sur ce que nous lui envoyons est désactivé, et sa "
+                        <a
+                            class="text-[var(--color-accent)] underline-offset-4 hover:underline"
+                            href="https://legal.mistral.ai/terms/privacy-policy/"
+                            rel="noreferrer"
+                            target="_blank"
+                        >
+                            "politique de confidentialité"
+                        </a>
+                        " fixe la durée de conservation."
                     </li>
                     <li>
                         <strong>"Resend"</strong>
@@ -90,6 +112,9 @@ pub fn Privacy() -> impl IntoView {
             <Section title="Personnes citées dans les données publiées">
                 <p>
                     "Les décisions indexées sont publiées par l'État, pseudonymisées à la source (Judilibre, Open Data du Conseil d'État). Les fiches de l'annuaire des acteurs du contentieux (avocats, entités) sont dérivées de ces décisions publiques."
+                </p>
+                <p class="mt-3">
+                    "Une décision versée par un utilisateur a été anonymisée par lui avant sa publication."
                 </p>
                 <p class="mt-3">
                     "Si vous êtes cité dans une décision ou une fiche (anonymisation défaillante, donnée inexacte, ou simple volonté de ne plus apparaître), vous pouvez exercer votre droit d'opposition ou demander une correction par courriel à "
@@ -110,7 +135,7 @@ pub fn Privacy() -> impl IntoView {
                 <p class="mt-3">
                     "Le bouton « Supprimer mon compte » sur votre "
                     <A
-                        href="/profil"
+                        href="/profile"
                         attr:class="text-[var(--color-accent)] underline-offset-4 hover:underline"
                     >
                         "page profil"

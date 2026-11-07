@@ -1,7 +1,7 @@
-//! Grain acteur de `decision_party` : à partir des 7 cellules NER plates,
-//! construit les lignes canoniques — valeur, qualité, côté, `resolve_key`,
-//! `nature` et spans-évidences (`char_starts`/`char_ends`, codepoints sur
-//! `full_text`).
+//! A decision's actors: from the 7 flat NER cells, builds the canonical rows,
+//! value, quality, side, `resolve_key`, `nature`, evidence spans
+//! (`char_starts`/`char_ends`, codepoints of `full_text`) and the mentions the
+//! scan read.
 //!
 //! Les spans se dérivent par matching replié déterministe de la valeur dans le
 //! texte (`lj_fold`, runs d'espaces équivalents). Une valeur de provenance
@@ -14,6 +14,8 @@
 //! les côtés contradictoires fusionnent en côté indéterminé.
 
 use lj_fold::fold_chars;
+
+use crate::registry::{PartyRegistry, Quality, Side};
 
 /// Sigles de forme juridique dépouillés en tête de clé (les dénominations
 /// SIRENE ne portent pas la forme — colonne `forme` séparée).
@@ -49,6 +51,10 @@ const SOC_QUALIFS: &[&str] = &[
     "professionnelle",
     "d'exercice",
 ];
+
+/// Past it, a value is a sentence or a run of names; and Postgres caps the size
+/// of a GIN entry, which would fail the write.
+const MAX_RESOLVE_KEY_BYTES: usize = 250;
 
 /// Clé de résolution : pliage canonique, tête dépouillée (article, sigle de
 /// forme, « société » et ses qualificatifs). Vide après dépouille → repli
@@ -753,7 +759,7 @@ fn slugify(s: &str) -> String {
     out
 }
 
-/// Une ligne `decision_party` au grain acteur, prête à persister.
+/// An actor of the decision, ready to persist.
 #[derive(Debug, Clone)]
 pub struct ActorRow {
     pub quality: &'static str,
@@ -775,6 +781,9 @@ pub struct ActorRow {
     pub sub_ord: Option<i32>,
     pub char_starts: Vec<i32>,
     pub char_ends: Vec<i32>,
+    /// The registry mentions this actor was read from, `[start, end, …]` in
+    /// chars of `full_text`, sorted and disjoint. Empty for a metadata value.
+    pub mentions: Vec<i32>,
 }
 
 /// Cellule NER plate ; l'ordre des cellules définit `ord` intra-décision.
@@ -817,18 +826,116 @@ impl<'a> Cell<'a> {
 /// sa nature et sa clé de résolution.
 pub fn actor_rows(full_text: &str, cells: &[Cell<'_>]) -> Vec<ActorRow> {
     let norm = crate::compiled::Norm::new(full_text);
-    rows_on(&norm.folded, &norm.byte2char, cells)
+    rows_on(&norm.folded, &norm.byte2char, cells, None)
 }
 
 /// Same, on the text the scan already folded (prod path): no second fold per
-/// decision.
+/// decision, and each actor gets the mentions the scan read it from.
 pub fn actor_rows_scanned(scan: &crate::scan::DocScan, cells: &[Cell<'_>]) -> Vec<ActorRow> {
-    rows_on(scan.folded(), scan.byte2char(), cells)
+    rows_on(
+        scan.folded(),
+        scan.byte2char(),
+        cells,
+        Some(scan.party_registry()),
+    )
+}
+
+/// The registry cell a flat cell projects.
+fn registry_cell(cell: &Cell<'_>) -> Option<(Option<Side>, Quality)> {
+    let side = match cell.side {
+        Some("applicant") => Some(Side::Applicant),
+        Some("defendant") => Some(Side::Defendant),
+        _ => None,
+    };
+    let quality = match cell.quality {
+        "party" if cell.nature == Some(Nature::Physique) => Quality::Individual,
+        "party" => Quality::Party,
+        "law_firm" => Quality::LawFirm,
+        "counsel_name" => Quality::CounselName,
+        "intervenor" => Quality::Intervenor,
+        _ => return None,
+    };
+    Some((side, quality))
+}
+
+/// The registry mentions of a cell, one list per value. A mention goes to the
+/// value its rendering folds to, else to the one value whose words contain its
+/// own or are contained in them: the flat cell trims, merges and dedupes what
+/// the registry read. A mention matching no value or several stays unattributed.
+fn cell_mentions(registry: &PartyRegistry, cell: &Cell<'_>) -> Vec<Vec<i32>> {
+    let mut out = vec![Vec::new(); cell.values.len()];
+    let Some((side, quality)) = registry_cell(cell) else {
+        return out;
+    };
+    let words = |v: &str| -> Vec<String> {
+        lj_fold::slug(v, ' ')
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let values: Vec<Vec<String>> = cell.values.iter().map(|v| words(v)).collect();
+    for entity in registry.mentions(side, quality) {
+        let read = if quality == Quality::CounselName {
+            words(&crate::extract::trim_counsel_tail(entity.value.clone()))
+        } else {
+            words(&entity.value)
+        };
+        if read.is_empty() {
+            continue;
+        }
+        let exact: Vec<usize> = (0..values.len()).filter(|&i| values[i] == read).collect();
+        let target = match exact[..] {
+            [i] => Some(i),
+            [] => {
+                let near: Vec<usize> = (0..values.len())
+                    .filter(|&i| {
+                        !values[i].is_empty()
+                            && (read.iter().all(|w| values[i].contains(w))
+                                || values[i].iter().all(|w| read.contains(w)))
+                    })
+                    .collect();
+                match near[..] {
+                    [i] => Some(i),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        if let Some(i) = target {
+            out[i].extend([entity.s as i32, entity.e as i32]);
+        }
+    }
+    out
+}
+
+/// Flat `[start, end, …]` pairs sorted by start, overlapping pairs merged.
+fn disjoint(mentions: Vec<i32>) -> Vec<i32> {
+    let mut pairs: Vec<(i32, i32)> = mentions
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|[s, e]| (*s, *e))
+        .collect();
+    pairs.sort_unstable();
+    let mut out: Vec<i32> = Vec::with_capacity(mentions.len());
+    for (s, e) in pairs {
+        match out.last_mut() {
+            Some(last) if s < *last => *last = (*last).max(e),
+            _ => out.extend([s, e]),
+        }
+    }
+    out
 }
 
 /// Les spans se calculent sur les chars pliés et sortent en chars de
 /// `full_text`, un char source pouvant se plier en plusieurs.
-fn rows_on(folded: &str, byte2char: &[usize], cells: &[Cell<'_>]) -> Vec<ActorRow> {
+fn rows_on(
+    folded: &str,
+    byte2char: &[usize],
+    cells: &[Cell<'_>],
+    registry: Option<&PartyRegistry>,
+) -> Vec<ActorRow> {
     let source: Vec<usize> = folded
         .char_indices()
         .map(|(b, _)| byte2char[b])
@@ -837,13 +944,21 @@ fn rows_on(folded: &str, byte2char: &[usize], cells: &[Cell<'_>]) -> Vec<ActorRo
     let folded: Vec<char> = folded.chars().collect();
     let mut rows = Vec::new();
     for cell in cells {
+        let mut read = registry
+            .map(|r| cell_mentions(r, cell))
+            .unwrap_or_default()
+            .into_iter();
         for value in cell.values {
+            let mentions = read.next().unwrap_or_default();
             let (char_starts, char_ends) = evidence_spans(&folded, value);
             let (key, barreau, role) = if cell.quality == "counsel_name" {
                 counsel_evidence(&folded, value, &char_starts, &char_ends)
             } else {
                 (resolve_key(value), None, None)
             };
+            if key.len() > MAX_RESOLVE_KEY_BYTES {
+                continue;
+            }
             rows.push(ActorRow {
                 quality: cell.quality,
                 side: cell.side,
@@ -857,6 +972,7 @@ fn rows_on(folded: &str, byte2char: &[usize], cells: &[Cell<'_>]) -> Vec<ActorRo
                 sub_ord: None,
                 char_starts,
                 char_ends,
+                mentions,
             });
         }
     }
@@ -880,6 +996,7 @@ fn rows_on(folded: &str, byte2char: &[usize], cells: &[Cell<'_>]) -> Vec<ActorRo
                 if prev.role.is_none() {
                     prev.role = r.role;
                 }
+                prev.mentions.extend(r.mentions);
             }
             std::collections::hash_map::Entry::Vacant(v) => {
                 v.insert(out.len());
@@ -981,6 +1098,7 @@ fn rows_on(folded: &str, byte2char: &[usize], cells: &[Cell<'_>]) -> Vec<ActorRo
         }
         row.char_starts = starts;
         row.char_ends = ends;
+        row.mentions = disjoint(std::mem::take(&mut row.mentions));
     }
     out
 }
@@ -1053,6 +1171,17 @@ mod tests {
     }
 
     #[test]
+    fn a_value_too_long_for_a_name_is_no_actor() {
+        let values = vec![
+            "[R] [J] ".repeat(200).trim_end().to_string(),
+            "société Yoplait France".to_string(),
+        ];
+        let rows = actor_rows("", &[Cell::new("party", Some("applicant"), &values)]);
+        let kept: Vec<&str> = rows.iter().map(|r| r.value.as_str()).collect();
+        assert_eq!(kept, ["société Yoplait France"]);
+    }
+
+    #[test]
     fn les_spans_sortent_en_chars_source_quand_le_pliage_s_allonge() {
         let text = "Le BŒUF et la société Cœur de Lœw gagnent.";
         let value = vec!["société Cœur de Lœw".to_string()];
@@ -1098,11 +1227,11 @@ mod tests {
     #[test]
     fn l_arete_pointe_la_partie_du_connecteur() {
         let texte = "APPELANTE : SAS Gondrand, représentée par Me Javert INTIMÉE : \
-                     SA Verrerie du Nord, représentée par Me Bouyssou";
+                     SA Verrerie du Nord, représentée par Me Grantaire";
         let app = vec!["SAS Gondrand".to_string()];
         let def = vec!["SA Verrerie du Nord".to_string()];
         let ca = vec!["Javert".to_string()];
-        let cd = vec!["Bouyssou".to_string()];
+        let cd = vec!["Grantaire".to_string()];
         let cells = [
             Cell::new("party", Some("applicant"), &app),
             Cell::new("party", Some("defendant"), &def),
@@ -1117,12 +1246,12 @@ mod tests {
                 .unwrap()
         };
         assert_eq!(de("Javert"), Some(0));
-        assert_eq!(de("Bouyssou"), Some(1));
+        assert_eq!(de("Grantaire"), Some(1));
         assert_eq!(de("SAS Gondrand"), None);
 
         let indiv = vec!["A B".to_string()];
         let cells = [Cell::physique("party", Some("applicant"), &indiv)];
-        let rows = actor_rows("Par une requête, M. A B, représenté par Me Airiau", &cells);
+        let rows = actor_rows("Par une requête, M. A B, représenté par Me Lemaire", &cells);
         assert_eq!(rows[0].nature, Some(Nature::Physique));
     }
 
@@ -1256,6 +1385,47 @@ mod tests {
         let brevet = rows.iter().find(|r| r.value == "Brevet").unwrap();
         assert_eq!(brevet.side, Some("defendant"));
         assert_eq!(brevet.role, Some("substituant"));
+    }
+
+    #[test]
+    fn an_actor_keeps_the_mentions_the_scan_read_it_from() {
+        let text = "Par une requête, M. A, représenté par Me Jean-Claude Lemaire de la SELARL Lemaire Avocats, demande à la cour d'annuler l'arrêté. M. A soutient à tort qu'il a été notifié à la SCI A.";
+        let scan = crate::scan::scan(text);
+        let r = scan.party_registry();
+        let individuals = r.view(Some(Side::Applicant), Quality::Individual);
+        let counsel = vec![
+            "Jean-Claude Lemaire".to_string(),
+            "Me Boulanger".to_string(),
+        ];
+        let cells = [
+            Cell::physique("party", Some("applicant"), &individuals),
+            Cell::new("counsel_name", Some("applicant"), &counsel),
+        ];
+        let rows = actor_rows_scanned(&scan, &cells);
+        let chars: Vec<char> = text.chars().collect();
+        let read = |row: &ActorRow| -> Vec<String> {
+            row.mentions
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|[s, e]| chars[*s as usize..*e as usize].iter().collect())
+                .collect()
+        };
+        let a = rows.iter().find(|r| r.value == "A").unwrap();
+        assert!(a.char_starts.len() > 3);
+        assert_eq!(read(a), ["A"]);
+        let lemaire = rows
+            .iter()
+            .find(|r| r.value == "Jean-Claude Lemaire")
+            .unwrap();
+        assert!(read(lemaire)[0].starts_with("Jean-Claude Lemaire"));
+        let boulanger = rows.iter().find(|r| r.value == "Me Boulanger").unwrap();
+        assert!(boulanger.mentions.is_empty());
+    }
+
+    #[test]
+    fn mentions_come_out_sorted_and_disjoint() {
+        assert_eq!(disjoint(vec![40, 46, 3, 9, 5, 12, 3, 9]), [3, 12, 40, 46]);
     }
 
     /// Construit les lignes d'un côté demandeur et rend, par valeur counsel, la

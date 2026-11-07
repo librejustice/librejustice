@@ -10,6 +10,7 @@
 //! rotation: its quota is a daily count held per project, announced only in the
 //! body of a 429, so a refused key is parked rather than metered.
 
+pub mod anthropic;
 pub mod backend;
 pub mod cache;
 pub mod cloudflare;

@@ -19,6 +19,20 @@ pub struct SourceRef<'a> {
     pub ariane_ref: Option<(&'a str, &'a str)>,
 }
 
+/// Provenances whose official URL is on Légifrance. A decision carrying one
+/// links there, whichever provenance is its authority.
+pub const LEGIFRANCE_SOURCES: &[&str] = &[
+    "dila-jade",
+    "dila-cnil",
+    "dila-cass",
+    "dila-inca",
+    "dila-capp",
+];
+
+/// The catalogue notice of a Défenseur des droits decision, before its id.
+pub const DDD_NOTICE_URL: &str =
+    "https://juridique.defenseurdesdroits.fr/index.php?lvl=notice_display&id=";
+
 /// URL chez l'éditeur officiel, ou `None` quand la provenance n'en expose pas.
 pub fn official_url(src: &SourceRef<'_>) -> Option<String> {
     let uid = src
@@ -30,6 +44,11 @@ pub fn official_url(src: &SourceRef<'_>) -> Option<String> {
     match src.source {
         "dila-jade" => Some(format!("https://www.legifrance.gouv.fr/ceta/id/{uid}")),
         "dila-cnil" => Some(format!("https://www.legifrance.gouv.fr/cnil/id/{uid}")),
+        // A section of a multi-judgment file is `<JURITEXT>/<k>`.
+        "dila-cass" | "dila-inca" | "dila-capp" => uid
+            .split('/')
+            .next()
+            .map(|juritext| format!("https://www.legifrance.gouv.fr/juri/id/{juritext}")),
         "dila-constit" => src.published_url.map(str::to_string),
         "judilibre" => Some(format!("https://www.courdecassation.fr/decision/{uid}")),
         "cjue" => uid.split_once('/').map(|(celex, lang)| {
@@ -42,6 +61,11 @@ pub fn official_url(src: &SourceRef<'_>) -> Option<String> {
         "cnda" => src
             .published_url
             .map(|path| format!("https://www.cnda.fr{path}")),
+        "ddd" => Some(format!("{DDD_NOTICE_URL}{uid}")),
+        "adlc" => src.published_url.map(str::to_string),
+        "comeu" => uid
+            .split_once("-DEC")
+            .map(|(case, _)| format!("https://competition-cases.ec.europa.eu/cases/{case}")),
         // La forme `dce/<id>` répond 500 chez eux, seul `numéro@date` résout :
         // l'uid le porte côté `ariane-web`, le payload côté `ariane-dce`.
         "ariane-web" => uid
@@ -91,6 +115,16 @@ mod tests {
                 "dila-cnil",
                 "dila-cnil/CNILTEXT000051911372",
                 "https://www.legifrance.gouv.fr/cnil/id/CNILTEXT000051911372",
+            ),
+            (
+                "dila-inca",
+                "dila-inca/JURITEXT000007041234",
+                "https://www.legifrance.gouv.fr/juri/id/JURITEXT000007041234",
+            ),
+            (
+                "dila-cass",
+                "dila-cass/JURITEXT000006969584/2",
+                "https://www.legifrance.gouv.fr/juri/id/JURITEXT000006969584",
             ),
             (
                 "judilibre",
@@ -202,8 +236,15 @@ mod tests {
     }
 
     #[test]
+    fn a_defenseur_des_droits_decision_links_to_its_catalogue_notice() {
+        assert_eq!(
+            official_url(&r("ddd", "ddd/61013")).as_deref(),
+            Some("https://juridique.defenseurdesdroits.fr/index.php?lvl=notice_display&id=61013")
+        );
+    }
+
+    #[test]
     fn sans_permalien_public_rien_nest_invente() {
-        assert!(official_url(&r("adde", "adde/caa-paris-30-janvier-2026-24pa04236")).is_none());
         assert!(official_url(&r("cnda", "cnda/455708")).is_none());
         assert!(official_url(&r("ariane-web", "ariane-web/dce/115849")).is_none());
         assert!(official_url(&r("ariane-dce", "ariane-dce/89327")).is_none());

@@ -7,16 +7,14 @@ use tokio::sync::mpsc;
 use anyhow::{anyhow, Result};
 use rayon::prelude::*;
 
-use lj_llm::backend::Embedder;
-use lj_store::db::Connection;
+use lj_pg::db::Connection;
 use lj_store::repository::{
     BulkDecisionWrite, DecisionRepository, ExistingDecisionState, UpsertStatus,
 };
 
-use lj_chunk::DEFAULT_CHUNK_TOKENS;
-
-use super::embed::{embed_prepared, to_bulk_write, EmbeddedDecision};
-use super::prepare::{chunk_write, extract_write, triage_candidates};
+use super::prepare::{
+    extract_write, keep_unchanged_passages, prepare_write, to_bulk_write, triage_candidates,
+};
 use super::{
     Candidate, ExtractCtx, IngestCounts, IngestMode, PreparedDecision, WriteMode, BATCH_SIZE,
 };
@@ -61,6 +59,12 @@ async fn write_writes_inner(
             counts.updated += 1;
             continue;
         }
+        if let Some(e) = &write.extracted {
+            if repo.is_withdrawn(e).await? {
+                tracing::warn!(uid = %write.decision.source_uid, "record at a withdrawn address, not written");
+                continue;
+            }
+        }
 
         let decision_id = match write.decision_id {
             None => {
@@ -72,8 +76,8 @@ async fn write_writes_inner(
                         write.extracted.as_ref(),
                         write.canonical_ref.as_deref(),
                         &write.source_fields,
-                        write.embed_version,
                         &write.payload_format,
+                        write.distinct,
                     )
                     .await?;
                 match result.status {
@@ -81,6 +85,15 @@ async fn write_writes_inner(
                     UpsertStatus::Updated => counts.updated += 1,
                     UpsertStatus::Skipped => {
                         counts.skipped += 1;
+                        continue;
+                    }
+                    UpsertStatus::Copy => {
+                        counts.copies += 1;
+                        continue;
+                    }
+                    UpsertStatus::Held => {
+                        tracing::warn!(uid = %write.decision.source_uid, decision_id = result.id, "record held: neither the copy of that decision nor another one");
+                        counts.held += 1;
                         continue;
                     }
                 }
@@ -95,7 +108,6 @@ async fn write_writes_inner(
                     write.extracted.as_ref(),
                     write.canonical_ref.as_deref(),
                     &write.source_fields,
-                    write.embed_version,
                     &write.payload_format,
                 )
                 .await?;
@@ -103,18 +115,18 @@ async fn write_writes_inner(
                 id
             }
         };
-        if !write.chunks.is_empty()
-            && repo.authority_source_uid(decision_id).await?.as_deref()
-                == Some(write.decision.source_uid.as_str())
+        if write.drop_passages
+            && repo
+                .writes_passage_text(decision_id, &write.decision.source_uid)
+                .await?
         {
-            counts.chunks_created += repo
-                .replace_chunks(decision_id, &write.decision, &write.chunks)
-                .await?;
+            counts.passages_dropped += repo.drop_passages(&[decision_id]).await? as usize;
         }
         repo.set_payload_format(decision_id, &write.payload_format)
             .await?;
         fresh_ids.push(decision_id);
     }
+    super::reextract::fuse_written(repo, &fresh_ids).await?;
     // Sonde inversée : les décisions du lot attirent les citations/liens
     // pendants qui les visaient. Dernier statement avant le COMMIT de
     // l'appelant : fenêtre minimale du verrou advisory de l'attract.
@@ -122,16 +134,12 @@ async fn write_writes_inner(
     Ok(())
 }
 
-/// Phase **1** d'un lot : lecture d'état (DB), triage, chunk (CPU).
-/// N'écrit rien, n'embed rien, **n'extrait rien** — elle rend les décisions
-/// chunkées, prêtes à être vectorisées. Elle ne dépend pas du contexte
-/// d'extraction.
+/// Stage **1** of a batch: state read (DB), triage, clean (CPU). Writes and
+/// extracts nothing, and needs no extraction context.
 async fn stage_prepare(
     conn: &Connection,
     candidates: Vec<Candidate>,
-    require_embeddings: bool,
     mode: IngestMode,
-    chunk_tokens: usize,
 ) -> Result<(Vec<PreparedDecision>, IngestCounts, Duration)> {
     let mut counts = IngestCounts::default();
     let started = Instant::now();
@@ -144,20 +152,33 @@ async fn stage_prepare(
         .map(|c| c.decision.source_uid.clone())
         .collect();
     let existing = fetch_states(conn, &uids).await?;
-    let (survivors, skipped, deduped) =
-        triage_candidates(candidates, &existing, require_embeddings, mode);
+    let (survivors, skipped, deduped) = triage_candidates(candidates, &existing, mode);
     counts.skipped += skipped;
     counts.dedup_in_batch += deduped;
     if survivors.is_empty() {
         return Ok((Vec::new(), counts, started.elapsed()));
     }
 
-    // Chunk CPU parallèle, déporté sur un thread bloquant : `into_par_iter`
-    // monopolise son appelant jusqu'au bout.
+    let rewritten: Vec<String> = survivors
+        .iter()
+        .filter(|c| c.decision_id.is_some() && c.write_mode == WriteMode::Full && c.passages)
+        .map(|c| c.decision.source_uid.clone())
+        .collect();
+    let stored = DecisionRepository::new(conn)
+        .passage_inputs(&rewritten)
+        .await?;
+
+    // On a blocking thread: `into_par_iter` holds its caller to the end.
     let prepared: Vec<Result<Option<PreparedDecision>>> = tokio::task::spawn_blocking(move || {
         survivors
             .into_par_iter()
-            .map(|cand| chunk_write(cand, chunk_tokens))
+            .map(|cand| {
+                let stored = stored.get(&cand.decision.source_uid);
+                Ok(prepare_write(cand)?.map(|p| match stored {
+                    Some(stored) => keep_unchanged_passages(p, stored),
+                    None => p,
+                }))
+            })
             .collect()
     })
     .await?;
@@ -165,37 +186,23 @@ async fn stage_prepare(
     let mut writes = Vec::with_capacity(prepared.len());
     for item in prepared {
         match item? {
-            Some(p) => writes.push(p),
+            Some(p) => {
+                if p.write_mode == WriteMode::KeepPassages {
+                    counts.passages_kept += 1;
+                }
+                writes.push(p);
+            }
             None => counts.empty_skipped += 1,
         }
     }
     Ok((writes, counts, started.elapsed()))
 }
 
-/// Phase **2** d'un lot : vectorisation. Poste dominant et non parallélisable
-/// (le GPU sature).
-async fn stage_embed<E: Embedder>(
-    embedder: Option<&E>,
-    writes: Vec<PreparedDecision>,
-    chunk_tokens: usize,
-) -> Result<(Vec<EmbeddedDecision>, Duration)> {
-    if writes.is_empty() {
-        return Ok((Vec::new(), Duration::ZERO));
-    }
-    let started = Instant::now();
-    let embedded = embed_prepared(embedder, writes, chunk_tokens).await?;
-    Ok((embedded, started.elapsed()))
-}
-
-/// Phase **3** d'un lot : extraction structurée (CPU) + assemblage des
-/// écritures.
-///
-/// Placée **après** l'embed : elle seule dépend du contexte d'extraction
-/// (linker + vocab), dont l'hydratation est le coût fixe du run — en aval du
-/// GPU, il se paie pendant que l'embedder travaille.
+/// Stage **2** of a batch: structured extraction (CPU) and the writes. The
+/// only stage that needs the extraction context (linker, vocabulary).
 async fn stage_extract(
     ctx: &'static ExtractCtx,
-    items: Vec<EmbeddedDecision>,
+    items: Vec<PreparedDecision>,
 ) -> Result<(Vec<BulkDecisionWrite>, Duration)> {
     if items.is_empty() {
         return Ok((Vec::new(), Duration::ZERO));
@@ -204,9 +211,7 @@ async fn stage_extract(
     let extracted: Vec<Result<BulkDecisionWrite>> = tokio::task::spawn_blocking(move || {
         items
             .into_par_iter()
-            .map(|(prepared, embeds)| {
-                extract_write(prepared, ctx).map(|p| to_bulk_write(p, embeds))
-            })
+            .map(|prepared| extract_write(prepared, ctx).map(to_bulk_write))
             .collect()
     })
     .await?;
@@ -226,140 +231,88 @@ async fn fetch_states(
     Ok(repo.find_ingest_states(uids).await?)
 }
 
-/// Triage + traitement d'un batch de candidats (lecture states → triage →
-/// prepare → embed → écriture). Chemin séquentiel : une transaction par batch,
-/// aucun recouvrement. Reste le chemin des sources à faible volume et des
-/// commandes de maintenance.
-pub(super) async fn drain_batch<E: Embedder>(
+/// Triage and process one batch of candidates (states, triage, prepare,
+/// extract, write), one transaction, without overlap: the path of the
+/// low-volume sources and of the maintenance commands.
+pub(super) async fn drain_batch(
     conn: &Connection,
-    embedder: Option<&E>,
     candidates: Vec<Candidate>,
-    require_embeddings: bool,
     mode: IngestMode,
     counts: &mut IngestCounts,
 ) -> Result<()> {
-    let (writes, staged, _) = stage_prepare(
-        conn,
-        candidates,
-        require_embeddings,
-        mode,
-        DEFAULT_CHUNK_TOKENS,
-    )
-    .await?;
+    let (writes, staged, _) = stage_prepare(conn, candidates, mode).await?;
     counts.merge(&staged);
-    let (embedded, _) = stage_embed(embedder, writes, DEFAULT_CHUNK_TOKENS).await?;
-    if embedded.is_empty() {
+    if writes.is_empty() {
         return Ok(());
     }
     let ctx = super::extract_ctx(conn).await?;
-    let (bulk, _) = stage_extract(ctx, embedded).await?;
+    let (bulk, _) = stage_extract(ctx, writes).await?;
     let written = write_writes(conn, bulk).await?;
     counts.merge(&written);
     Ok(())
 }
 
-/// Variante de [`drain_batch`] écrivant **sous la transaction de l'appelant**
-/// (pas de `BEGIN`/`COMMIT` propre) : le re-split enveloppe chaque cluster dans
-/// sa propre transaction et y enchaîne create_split + re-ingest.
-pub(super) async fn drain_batch_in_txn<E: Embedder>(
-    conn: &Connection,
-    embedder: Option<&E>,
-    candidates: Vec<Candidate>,
-    require_embeddings: bool,
-    mode: IngestMode,
-    counts: &mut IngestCounts,
-) -> Result<()> {
-    let (writes, staged, _) = stage_prepare(
-        conn,
-        candidates,
-        require_embeddings,
-        mode,
-        DEFAULT_CHUNK_TOKENS,
-    )
-    .await?;
-    counts.merge(&staged);
-    let (embedded, _) = stage_embed(embedder, writes, DEFAULT_CHUNK_TOKENS).await?;
-    if embedded.is_empty() {
-        return Ok(());
-    }
-    let ctx = super::extract_ctx(conn).await?;
-    let (bulk, _) = stage_extract(ctx, embedded).await?;
-    let repo = DecisionRepository::new(conn);
-    write_writes_inner(&repo, bulk, counts).await
-}
-
-/// Temps cumulé par nature de travail, sur la durée d'un [`run_stream`].
+/// Time spent by kind of work over a [`run_stream`].
 #[derive(Default)]
 struct Phases {
-    /// Lecture d'état + triage + chunk (DB en lecture, puis CPU).
+    /// State read, triage, clean (DB read, then CPU).
     prepare: Duration,
-    /// Appels au backend d'embedding.
-    embed: Duration,
-    /// Extraction structurée + assemblage des écritures (CPU).
+    /// Structured extraction and the writes (CPU).
     extract: Duration,
-    /// Transactions d'écriture.
+    /// Write transactions.
     write: Duration,
 }
 
-/// Profondeur des canaux entre étages, en lots.
+/// Depth of the channels between stages, in batches.
 const STAGE_QUEUE: usize = 1;
 
-/// Profondeur du canal embed → extract, en lots.
-///
-/// L'étage d'extraction ne consomme rien tant que son contexte s'hydrate : ce
-/// canal absorbe les lots que l'embedder produit pendant ce temps, sinon la
-/// contre-pression remonte et le GPU s'arrête.
+/// Depth of the prepare → extract channel, in batches: the extraction stage
+/// consumes nothing while its context hydrates, and the prepare stage runs
+/// ahead meanwhile.
 const EXTRACT_QUEUE: usize = 4;
 
-/// Ingest **en flux**, pour toute source capable d'émettre des candidats.
+/// Ingest **as a stream**, for any source that emits candidates.
 ///
-/// Les étages sont des boucles indépendantes reliées par des canaux bornés :
-/// chacun consomme dès qu'il a de quoi, et le run coûte le **max des sommes** —
-/// c'est-à-dire l'embed seul, poste dominant qui sature à débit constant quel
-/// que soit le nombre de requêtes en vol.
+/// The stages are independent loops joined by bounded channels: each consumes
+/// as soon as it has something, and the run costs the **max of the sums**.
 ///
 /// ```text
-/// produce ─→ [candidats] ─→ prepare ─→ [préparés] ─→ embed ─→ [embarqués] ─→ extract ─→ [bulk] ─→ write
+/// produce ─→ [candidates] ─→ prepare ─→ [prepared] ─→ extract ─→ [bulk] ─→ write
 /// ```
 ///
-/// `produce` est le seul point d'adaptation par source.
+/// `produce` is the only point a source adapts.
 ///
-/// **Les écritures restent séquentielles et dans l'ordre.** Un seul étage écrit,
-/// sur une seule connexion : la résolution d'identité de l'upsert (`source_uid`
-/// → ECLI → `canonical_ref`) est un lire-puis-écrire non atomique.
+/// **Writes stay sequential and in order.** One stage writes, on one
+/// connection: the upsert resolves identity (`source_uid`, then the decision's
+/// address) with a non-atomic read-then-write.
 ///
-/// `prepare` lit donc l'état d'avant le commit des lots en vol : un `source_uid`
-/// présent deux fois dans cette fenêtre échappe au triage, et c'est l'upsert qui
-/// le rattrape en rendant `Skipped`/`Updated`.
-pub(super) async fn run_stream<E, P, Fut>(
+/// `prepare` thus reads the state from before the batches in flight commit: a
+/// `source_uid` present twice in that window escapes the triage, and the upsert
+/// catches it, returning `Skipped`/`Updated`.
+pub(super) async fn run_stream<P, Fut>(
     read_conn: &Connection,
     write_conn: &Connection,
-    embedder: Option<&E>,
-    require_embeddings: bool,
     mode: IngestMode,
     produce: P,
 ) -> Result<IngestCounts>
 where
-    E: Embedder,
     P: FnOnce(mpsc::Sender<Candidate>) -> Fut,
     Fut: std::future::Future<Output = Result<IngestCounts>>,
 {
     let (cand_tx, cand_rx) = mpsc::channel::<Candidate>(BATCH_SIZE * (STAGE_QUEUE + 1));
-    let (prep_tx, prep_rx) = mpsc::channel::<Vec<PreparedDecision>>(STAGE_QUEUE);
-    let (emb_tx, emb_rx) = mpsc::channel::<Vec<EmbeddedDecision>>(EXTRACT_QUEUE);
+    let (prep_tx, prep_rx) = mpsc::channel::<Vec<PreparedDecision>>(EXTRACT_QUEUE);
     let (bulk_tx, bulk_rx) = mpsc::channel::<Vec<BulkDecisionWrite>>(STAGE_QUEUE);
 
     let started = Instant::now();
     let mut phases = Phases::default();
 
-    let (source_counts, prepare_out, embed_out, extract_out, write_out) = tokio::try_join!(
+    let (source_counts, prepare_out, extract_out, write_out) = tokio::try_join!(
         async {
             let counts = produce(cand_tx).await?;
             Result::<_>::Ok(counts)
         },
-        prepare_loop(read_conn, cand_rx, prep_tx, require_embeddings, mode),
-        embed_loop(embedder, prep_rx, emb_tx),
-        extract_loop(write_conn, emb_rx, bulk_tx),
+        prepare_loop(read_conn, cand_rx, prep_tx, mode),
+        extract_loop(write_conn, prep_rx, bulk_tx),
         write_loop(write_conn, bulk_rx),
     )?;
 
@@ -367,14 +320,12 @@ where
     counts.merge(&prepare_out.0);
     counts.merge(&write_out.0);
     phases.prepare = prepare_out.1;
-    phases.embed = embed_out;
     phases.extract = extract_out;
     phases.write = write_out.1;
 
     tracing::info!(
         wall_s = started.elapsed().as_secs_f64().round() as u64,
         prepare_s = phases.prepare.as_secs_f64().round() as u64,
-        embed_s = phases.embed.as_secs_f64().round() as u64,
         extract_s = phases.extract.as_secs_f64().round() as u64,
         write_s = phases.write.as_secs_f64().round() as u64,
         "pipeline_phases"
@@ -382,12 +333,11 @@ where
     Ok(counts)
 }
 
-/// Étage 1 : agrège les candidats en lots et les prépare.
+/// Stage 1: gathers the candidates into batches and prepares them.
 async fn prepare_loop(
     conn: &Connection,
     mut rx: mpsc::Receiver<Candidate>,
     tx: mpsc::Sender<Vec<PreparedDecision>>,
-    require_embeddings: bool,
     mode: IngestMode,
 ) -> Result<(IngestCounts, Duration)> {
     let mut counts = IngestCounts::default();
@@ -395,8 +345,8 @@ async fn prepare_loop(
     let mut buffer: Vec<Candidate> = Vec::with_capacity(BATCH_SIZE);
     let mut closed = false;
     loop {
-        // `recv_many` rend dès qu'**un** candidat est disponible : cette boucle de
-        // remplissage groupe le lot avant `fetch_states` et l'embed.
+        // `recv_many` returns as soon as **one** candidate is there: this loop
+        // fills the batch before `fetch_states`.
         while !closed && buffer.len() < BATCH_SIZE {
             let room = BATCH_SIZE - buffer.len();
             if rx.recv_many(&mut buffer, room).await == 0 {
@@ -407,8 +357,7 @@ async fn prepare_loop(
             break;
         }
         let batch = std::mem::take(&mut buffer);
-        let (writes, batch_counts, took) =
-            stage_prepare(conn, batch, require_embeddings, mode, DEFAULT_CHUNK_TOKENS).await?;
+        let (writes, batch_counts, took) = stage_prepare(conn, batch, mode).await?;
         counts.merge(&batch_counts);
         elapsed += took;
         // Récepteur tombé = un étage aval a échoué ; `try_join!` porte l'erreur.
@@ -419,32 +368,14 @@ async fn prepare_loop(
     Ok((counts, elapsed))
 }
 
-/// Étage 2 : vectorise. Poste dominant du pipeline.
-async fn embed_loop<E: Embedder>(
-    embedder: Option<&E>,
-    mut rx: mpsc::Receiver<Vec<PreparedDecision>>,
-    tx: mpsc::Sender<Vec<EmbeddedDecision>>,
-) -> Result<Duration> {
-    let mut elapsed = Duration::ZERO;
-    while let Some(writes) = rx.recv().await {
-        let (embedded, took) = stage_embed(embedder, writes, DEFAULT_CHUNK_TOKENS).await?;
-        elapsed += took;
-        if !embedded.is_empty() && tx.send(embedded).await.is_err() {
-            break;
-        }
-    }
-    Ok(elapsed)
-}
-
-/// Étage 3 : extraction structurée + assemblage des écritures.
+/// Stage 2: structured extraction and the writes.
 ///
-/// Hydrate le contexte d'extraction **avant** de consommer : le coût fixe du run
-/// se paie pendant que l'embedder travaille. La connexion est celle de
-/// l'écriture, oisive tant que rien n'est extrait ; l'hydratation (lecture seule,
-/// une fois par process) est finie avant la première transaction.
+/// Hydrates the extraction context **before** consuming. The connection is the
+/// writer's, idle while nothing is extracted; the hydration (read only, once
+/// per process) is over before the first transaction.
 async fn extract_loop(
     conn: &Connection,
-    mut rx: mpsc::Receiver<Vec<EmbeddedDecision>>,
+    mut rx: mpsc::Receiver<Vec<PreparedDecision>>,
     tx: mpsc::Sender<Vec<BulkDecisionWrite>>,
 ) -> Result<Duration> {
     let ctx = super::extract_ctx(conn).await?;
@@ -459,7 +390,7 @@ async fn extract_loop(
     Ok(elapsed)
 }
 
-/// Étage 4 : une transaction par lot, séquentielles et dans l'ordre.
+/// Stage 3: one transaction per batch, sequential and in order.
 async fn write_loop(
     conn: &Connection,
     mut rx: mpsc::Receiver<Vec<BulkDecisionWrite>>,

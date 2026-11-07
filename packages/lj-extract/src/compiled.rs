@@ -20,6 +20,7 @@ use regex::Regex;
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use lj_core::address::CaseAddress;
+use lj_core::docket_key::{POURVOI, ROLE, ROLE_SLASHED};
 
 use crate::data::instrument_aliases;
 use crate::data::LINK_ALIASES_TSV;
@@ -825,13 +826,18 @@ fn lex_code(
 /// Acte FR daté/numéroté : qualificatifs d'identité, n°, date, puis extension
 /// éventuelle au titre catalogue épelé verbatim (queue officielle).
 fn lex_dated(vocab: &CompiledVocab, folded: &str, bs: usize, be: usize) -> Option<Mention> {
-    if !case_window(folded, be, 40)
+    let mut pos = be;
+    if &folded[bs..be] == "circulaire" {
+        if let Some(c) = RE_LEX_CIRC_AUTHOR.captures(&folded[be..]) {
+            pos += c.get(1).expect("author group").end();
+        }
+    }
+    if !case_window(folded, pos, 40)
         .bytes()
         .any(|b| b.is_ascii_digit())
     {
         return None;
     }
-    let mut pos = be;
     if let Some(m) = RE_LEX_DATED_QUAL.find(&folded[pos..]) {
         pos += m.end();
     }
@@ -1662,8 +1668,7 @@ fn case_cjue_aff(
         }
         // A case number of the Court carries a two-digit year after the slash,
         // `6/64` as `561/19`; longer is a French docket written short, `affaire
-        // n° 20/515`. Measured 10/09/2026: the bound at five sent 1 131 dockets
-        // to a family that cannot bear them, and saved 2 citations of 15 384.
+        // n° 20/515`.
         None if second.trim().len() > 2 => {
             let num = rg_num_key(chars, byte2char, be + n.start(), be + n.end());
             push_case(
@@ -1754,10 +1759,8 @@ fn cjue_scan(
     }
 }
 
-/// Only the General Court numbers past three digits, `T-1193/23`. Measured
-/// 10/09/2026 over 13 358 linked refs: 941 at most for `c`, 148 for `f`, 1 193
-/// for `t`. A four-digit `c` is a flattened ECLI or a French docket, never a
-/// case: 255 citations, none of them ever linked.
+/// Only the General Court numbers past three digits, `T-1193/23`. A four-digit
+/// `c` is a flattened ECLI or a French docket, never a case.
 fn over_series_ceiling(prefix: &str, num: &str) -> bool {
     prefix != "t"
         && num
@@ -1769,7 +1772,7 @@ fn over_series_ceiling(prefix: &str, num: &str) -> bool {
 /// A `.NNN` behind a slashnum ends a Cassation pourvoi (`T 17-21.405`), not a
 /// CJEU docket. Spaced, the guard only holds without a slash (`F 12-13. 669`):
 /// after one, the dot closes the sentence and the digits number a paragraph
-/// (`C-495/10. 31`). Measured 10/09/2026: 749 pourvois in, 246 of them linked.
+/// (`C-495/10. 31`).
 fn pourvoi_tail(folded: &str, num: &str, abs_e: usize) -> bool {
     let rest = &folded.as_bytes()[abs_e..];
     if rest.first() != Some(&b'.') {
@@ -2684,7 +2687,26 @@ fn scan_all(
             }
             let after = folded[be..].trim_start();
             let paren_self_ref = aws > 0 && bytes[aws - 1] == b'(' && after.starts_with(')');
-            if after.starts_with(':') || after.starts_with('–') || paren_self_ref {
+            // « DECIDE : Article 1er. - La requête est rejetée », the older dispositif,
+            // its article opening a clause where a cited one follows « l' » or « de ».
+            let before = folded[..aws].trim_end();
+            let dash_heading = folded[aws..awe].starts_with("article")
+                && bytes[bs].is_ascii_digit()
+                && (before.is_empty()
+                    || before.ends_with([':', '.', ';'])
+                    || before.ends_with("decide"))
+                && ["- ", ". - ", ".- "].iter().any(|d| {
+                    after.strip_prefix(d).is_some_and(|ruling| {
+                        ["la ", "le ", "les ", "l'", "il ", "expedition "]
+                            .iter()
+                            .any(|w| ruling.starts_with(w))
+                    })
+                });
+            if after.starts_with(':')
+                || after.starts_with('\u{2013}')
+                || dash_heading
+                || paren_self_ref
+            {
                 pos = be;
                 continue;
             }
@@ -3831,6 +3853,15 @@ static RE_LEX_DATED_QUAL: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
+/// The author a circulaire names before its date, « du ministre de
+/// l'intérieur », « de la Première ministre » : group 1, up to the « du » the
+/// date opens with.
+static RE_LEX_CIRC_AUTHOR: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^(\s+(?:du|des|de\s+la)\s+(?:premiere?\s+)?minist(?:re|res|ere)\b(?:\s*,?\s+[\p{L}'\u{2019}-]+){0,12}?)\s+(?:en\s+date\s+)?du\s+\d",
+    )
+    .unwrap()
+});
 /// Numéro d'acte FR : préfixé « n°/no » (numéro libre) ou nu (forme NN-NNN
 /// exigée).
 static RE_LEX_NUM: LazyLock<Regex> = LazyLock::new(|| {
@@ -3884,12 +3915,6 @@ static RE_LEX_EU_DATED: LazyLock<Regex> = LazyLock::new(|| {
     )
     .unwrap()
 });
-// Forme du n° de pourvoi (7 chiffres) et ses graphies réelles : point absent
-// (« 11-25536 »), espace après le point (« 06-41. 614 »), virgule
-// (« 02-14,799 »), second tiret (« 09-72-219 »), tiret initial absent
-// (« 0430.583 »), point déplacé (« 08-215.47 »). Le span émis est le
-// groupe 1 ; la lettre de série Cassation reste hors span comme hors clé.
-const CC_NUM: &str = r"(?:\d{2}[-.]\s?\d{2}[-.,]?\s?\d{3}|\d{4}\.\d{3}|\d{2}-\d{3}\.\d{2})";
 /// Marqueur de numéro : « n° », « n°s », « no », « n » nu (la forme stricte
 /// du pourvoi discrimine), « RG : » (bandeaux d'en-tête), parenthèse ouvrante
 /// (« par arrêt en date du 29 juin 2017 (16-13.988) »), date de l'arrêt cité
@@ -3903,21 +3928,21 @@ const CC_DATE: &str = r"(?:\d{1,2}(?:er)?\s+[a-z]+\.?\s+\d{4}\s*[-,']?\s*)?";
 static RE_CASE_POURVOI: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"(?x)^\s*\(?\s*(?:en\s+cassation\s+)?(?:incidents?\s+|principaux\s+|principal\s+)?
-          (?:,?\s*\(?\s*n\s*[°oº]?\s*s?\s*[:.]?\s*)?(?:[a-z]\s*)?({CC_NUM})\b"
+          (?:,?\s*\(?\s*n\s*[°oº]?\s*s?\s*[:.]?\s*)?(?:[a-z]\s*)?({POURVOI})\b"
     ))
     .unwrap()
 });
 /// Pourvoi en fenêtre (« Cass. 3e civ., 16 mars 2022, n° 18-23.954 ») : un
 /// marqueur est exigé.
 static RE_CASE_POURVOI_WIN: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(&format!(r"{CC_MARK}\s*(?:[a-z]\s*)?({CC_NUM})\b")).unwrap());
+    LazyLock::new(|| Regex::new(&format!(r"{CC_MARK}\s*(?:[a-z]\s*)?({POURVOI})\b")).unwrap());
 /// Maillon d'énumération : « et 18-23.955 », « au n° W 00-44.846 » (plage),
 /// « à W 00-44.846 » (« à » plié en « a »), date intercalée (« ; 25 juin
 /// 1996, n 94-15130 »).
 static RE_CASE_POURVOI_NEXT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"(?x)^\s*(?:,\s*(?:et\s+)?|et\s+|au?\s+|;\s*){CC_DATE}
-          (?:n\s*[°oº]?\s*s?\s*[:.]?\s*)?(?:[a-z]\s*)?({CC_NUM})\b"
+          (?:n\s*[°oº]?\s*s?\s*[:.]?\s*)?(?:[a-z]\s*)?({POURVOI})\b"
     ))
     .unwrap()
 });
@@ -4131,25 +4156,20 @@ static RE_CASE_ADMIN_CAA: LazyLock<Regex> =
 static RE_CASE_ADMIN_CAA_NEXT: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:,|et)\s*(?:n\s*[°oº]\s*s?\s*)?(\d{2}[a-z]{2}\d{5})\b").unwrap()
 });
-/// Formes de numéro de rôle : slashnum (« 21/04532 », « 09/ 497 »), TCOM
-/// lettré (« 2015F00459 », « 2018j1016 », « 2023IP00245 »), TI historique
-/// (« 11-04-000227 »), tiret (« 06-06235 », « 14-08937 »), TCOM Paris
-/// tout-chiffres (« 91040813 », « 2023063685 »), TCOM espacé (« 2015 2815 »).
-const RG_NUM: &str = r"(?:\d{1,4}\s*/\s*\d{2,7}|\d{4}(?:\s?[a-z]\s?|[a-z]{2})\d{3,6}|\d{2}-\d{2}-\d{3,6}|\d{2}-\d{2,6}|\d{8,10}|\d{4}\s\d{3,4})";
 /// RG derrière l'ancre « RG / Rôle / répertoire général » : « RG n°
 /// 21/04532 », « RG : 18/00064 », « sous le n° 11/00094 », « RG n° F
 /// 12/06470 » (lettre de section).
 static RE_CASE_RG: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"(?x)^\s*[:.]?\s*(?:sous\s+le\s+)?(?:n(?:umero)?\s*[°oº]?\s*s?)?\s*:?\s*(?:[a-z]\s*)?
-          ({RG_NUM})\b"
+          ({ROLE})\b"
     ))
     .unwrap()
 });
 static RE_CASE_RG_NEXT: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"^\s*(?:,|et)\s*(?:(?:n\s*[°oº]\s*s?\s*)?(?:rg\s*:?\s*)?)\s*(\d{1,4}\s*/\s*\d{2,7})\b",
-    )
+    Regex::new(&format!(
+        r"^\s*(?:,|et)\s*(?:(?:n\s*[°oº]\s*s?\s*)?(?:rg\s*:?\s*)?)\s*({ROLE_SLASHED})\b"
+    ))
     .unwrap()
 });
 /// « enregistrée sous le no 20/00325 », « enrôlées sous les numéros 18/02640
@@ -4157,23 +4177,23 @@ static RE_CASE_RG_NEXT: LazyLock<Regex> = LazyLock::new(|| {
 static RE_CASE_ENROL: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(&format!(
         r"(?x)^(?:\(e\))?s?\s*(?:au\s+repertoire\s+general\s+)?
-          sous\s+l(?:e|es)\s+n(?:umeros?|os?)?\s*[°oº]?\s*s?\s*[:.]?\s*(?:[a-z]\s+)?({RG_NUM})\b"
+          sous\s+l(?:e|es)\s+n(?:umeros?|os?)?\s*[°oº]?\s*s?\s*[:.]?\s*(?:[a-z]\s+)?({ROLE})\b"
     ))
     .unwrap()
 });
 /// « CA [Localité 8], 14 nov. 2019, n°18/04366 » : sigle CA + ville/date puis
 /// marqueur n° STRICT et slashnum.
 static RE_CASE_CA: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?x)^\s*(?:\[[^\]]{1,30}\]|(?:de\s+)?[a-z][a-z'\- ]{1,25})?\s*,?\s*
-          (?:\d{1,2}(?:er)?\s+[a-z]+\.?\s+\d{4}\s*,?\s*)?n\s*[°oº]\s*s?\s*(\d{1,4}\s*/\s*\d{2,7})\b",
-    )
+    Regex::new(&format!(
+        r"(?x)^\s*(?:\[[^\]]{{1,30}}\]|(?:de\s+)?[a-z][a-z'\- ]{{1,25}})?\s*,?\s*
+          (?:\d{{1,2}}(?:er)?\s+[a-z]+\.?\s+\d{{4}}\s*,?\s*)?n\s*[°oº]\s*s?\s*({ROLE_SLASHED})\b"
+    ))
     .unwrap()
 });
 /// « DÉCISION DÉFÉRÉE : 21/00287 » — bandeau CA sans « RG », deux-points
 /// exigés, numéro immédiat.
 static RE_CASE_DEFEREE_NUM: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"^\s*(?:a\s+la\s+cour\s*)?:\s*(\d{1,4}\s*/\s*\d{2,7})\b").unwrap()
+    Regex::new(&format!(r"^\s*(?:a\s+la\s+cour\s*)?:\s*({ROLE_SLASHED})\b")).unwrap()
 });
 /// « ARRÊT AU FOND DU 25 MARS 2011 N° 2011/183 » — ordinal d'arrêt CA
 /// (année/n°), clé nue jamais résolue.
@@ -4189,11 +4209,11 @@ static RE_CASE_RG_OWN: LazyLock<Regex> =
 /// (instance n° 14-08937) », « ordonnance d'injonction de payer
 /// n° 2023IP00245 ».
 static RE_CASE_ADMIN_RG: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(
-        r"(?x)^\s*(?:rendue?\s+le\s+[\d/.-]{8,10}\s*)?(?:d'injonction\s+de\s+payer\s+)?
+    Regex::new(&format!(
+        r"(?x)^\s*(?:rendue?\s+le\s+[\d/.-]{{8,10}}\s*)?(?:d'injonction\s+de\s+payer\s+)?
           \(?\s*(?:instance\s+)?n\s*[°oº]\s*s?\s*(?:rg\s*:?\s*)?(?:[a-z]\s+)?
-          (\d{1,4}\s*/\s*\d{2,7}|\d{4}(?:\s?[a-z]\s?|[a-z]{2})\d{3,6}|\d{2}-\d{5,6})\b",
-    )
+          ({ROLE_SLASHED}|\d{{4}}(?:\s?[a-z]\s?|[a-z]{{2}})\d{{3,6}}|\d{{2}}-\d{{5,6}})\b"
+    ))
     .unwrap()
 });
 /// Forme juridictionnelle au voisinage d'un RG (amont : dernière occurrence ;
@@ -4757,6 +4777,54 @@ mod tests {
     }
 
     #[test]
+    fn a_circulaire_named_by_its_author_before_its_date_links_like_the_bare_form() {
+        let mut texts = Vec::new();
+        for uid in ["cir_44486", "cir_36120"] {
+            let mut c = text(
+                uid,
+                "Conditions d'examen des demandes d'admission au séjour déposées par \
+                 des ressortissants étrangers en situation irrégulière",
+                "Conditions d'examen des demandes d'admission au séjour déposées par \
+                 des ressortissants étrangers en situation irrégulière",
+                "CIRCULAIRE",
+                0,
+            );
+            c.date_texte = "2012-11-28".parse().ok();
+            texts.push(c);
+        }
+        let snap = LinkSnapshot::build(texts.clone(), vec![]);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        for (text, surface) in [
+            (
+                "Vu :\n- la circulaire du ministre de l'intérieur du 28 novembre 2012 relative \
+                 aux conditions d'examen des demandes d'admission au séjour ;",
+                "circulaire du ministre de l'intérieur du 28 novembre 2012",
+            ),
+            (
+                "le préfet a méconnu la circulaire du ministre de l'économie, des finances et \
+                 de l'industrie du 28 novembre 2012.",
+                "circulaire du ministre de l'économie, des finances et de l'industrie du 28 \
+                 novembre 2012",
+            ),
+        ] {
+            let out = extract_citations(text, &vocab, &snap, None);
+            let c = out.first().expect("author form emitted");
+            assert_eq!(
+                text.chars()
+                    .skip(c.char_start)
+                    .take(c.char_end - c.char_start)
+                    .collect::<String>(),
+                surface
+            );
+            assert_eq!(
+                c.target.ref_text_uid.as_deref(),
+                Some("cir_44486"),
+                "{text}"
+            );
+        }
+    }
+
+    #[test]
     fn circulaire_qualificatif_non_distinctif_resout_comme_la_forme_nue() {
         let out = cites(
             "la circulaire ministérielle du 28 novembre 2012 relative aux \
@@ -5121,6 +5189,11 @@ mod tests {
         let out = cites(
             "D É C I D E : Article 1er : La requête est rejetée. Article 2 : \
              Le jugement sera notifié.",
+        );
+        assert!(out.iter().all(|c| c.article.is_none()));
+        let out = cites(
+            "DÉCIDE : Article 1er. - La requête est rejetée. Article 2 - Les dépens \
+             sont mis à la charge de l'Etat.",
         );
         assert!(out.iter().all(|c| c.article.is_none()));
     }
@@ -5775,8 +5848,7 @@ mod tests {
         );
     }
 
-    /// Surfaces du fonds où le numéro précède l'ancre : c'est la forme du visa,
-    /// et c'est elle qui domine les citations TC ratées.
+    /// The docket ahead of the anchor, the shape of a visa.
     #[test]
     fn case_tc_reads_the_docket_ahead_of_the_anchor() {
         for (text, num) in [
@@ -6405,7 +6477,7 @@ mod tests {
     }
 
     #[test]
-    fn v68_aliases_resolve() {
+    fn preamble_and_numbered_convention_aliases_resolve() {
         let (vocab, snap) = forum_engine();
         let out = extract_citations(
             "le onzième alinéa du Préambule de la Constitution de 1946",

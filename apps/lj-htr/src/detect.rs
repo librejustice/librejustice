@@ -17,7 +17,7 @@ pub struct Segment {
 /// Probability above which a pixel is text.
 const THRESHOLD: f32 = 0.3;
 /// Mean probability over its pixels below which a region is dropped. Taken
-/// over its box instead, a slanted handwritten line fell to 0.41.
+/// over its box instead, a slanted handwritten line would fall below it.
 const BOX_THRESHOLD: f32 = 0.5;
 /// The detector draws the core of a line; its box grows by the area times
 /// this over the perimeter to take the whole letters back.

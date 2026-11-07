@@ -29,6 +29,17 @@ use tantivy::{Index, Score, Term};
 /// Budget de caractères par défaut d'un snippet.
 pub const DEFAULT_MAX_CHARS: usize = 500;
 
+/// The three lines the cross-engine rail block shows of a snippet.
+pub const TEASER_MAX_CHARS: usize = 140;
+
+/// Snippet budget of a search served in `context`: `full` outside the rail block.
+pub fn budget(context: lj_dtos::SearchContext, full: usize) -> usize {
+    match context {
+        lj_dtos::SearchContext::User => full,
+        lj_dtos::SearchContext::Teaser => TEASER_MAX_CHARS,
+    }
+}
+
 /// Pattern du tokenizer ParadeDB répliqué : la source unique est
 /// `lj_textsearch::body_tok`, dont les migrations `CREATE INDEX ... USING bm25`
 /// portent la copie.

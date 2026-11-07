@@ -56,7 +56,7 @@
 		lb_retry_match method GET
 		lb_retry_match {
 			method POST
-			path /mcp*
+			path /mcp* /redact/mcp*
 		}
 
 		# Sans tampon, le corps d'un POST n'est pas rejouable : le rejeu part à

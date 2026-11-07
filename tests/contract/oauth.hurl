@@ -131,8 +131,8 @@ jsonpath "$.resource" endsWith "/mcp"
 jsonpath "$.authorization_servers" isCollection
 jsonpath "$.authorization_servers" count == 1
 jsonpath "$.authorization_servers[0]" isString
-# The three scopes here too: this is the document ChatGPT reads most often, and
-# a resource that lists `mcp` alone reads as a provider without identity.
+# The three scopes here too: ChatGPT reads this document, and a resource that
+# lists `mcp` alone reads as a provider without identity.
 jsonpath "$.scopes_supported" count == 3
 jsonpath "$.scopes_supported[0]" == "mcp"
 jsonpath "$.scopes_supported[1]" == "openid"
@@ -154,9 +154,8 @@ jsonpath "$.scopes_supported[0]" == "mcp"
 jsonpath "$.bearer_methods_supported[0]" == "header"
 
 # -----------------------------------------------------------------------------
-# 3bis. Discovery préfixée par la ressource — `/mcp/.well-known/*`.
-#       Forme tentée en premier par Perplexity-MCP et aisec-registry.
-#       Mêmes documents que les chemins racine.
+# 3bis. Resource-prefixed discovery, `/mcp/.well-known/*`: the shape some MCP
+#       clients try first. Same documents as the root paths.
 # -----------------------------------------------------------------------------
 GET {{base}}/mcp/.well-known/oauth-protected-resource
 HTTP 200
@@ -227,10 +226,7 @@ Content-Type: application/json
 }
 HTTP 400
 
-# 4d. register — empty redirect_uris.
-#   DIVERGENCE: Python Field(min_length=1) -> FastAPI 422 (validation).
-#   Rust accepts empty Vec then branch returns 400 invalid_redirect_uri.
-#   Status differs (422 vs 400); differ should flag. Asserting it is non-2xx.
+# 4d. register: empty redirect_uris -> non-2xx.
 POST {{base}}/oauth/register
 Content-Type: application/json
 {
@@ -255,8 +251,7 @@ HTTP 400
 GET {{base}}/oauth/authorize?response_type=code&client_id=lj_does_not_exist&redirect_uri=https://claude.ai/cb&code_challenge=abc
 HTTP 400
 
-# 5d. missing required query param (no code_challenge).
-#   DIVERGENCE: Python (required query arg) -> 422; Rust Query reject -> 400.
+# 5d. missing required query param (no code_challenge) -> non-2xx.
 GET {{base}}/oauth/authorize?response_type=code&client_id=lj_x&redirect_uri=https://claude.ai/cb
 HTTP *
 [Asserts]
@@ -287,8 +282,7 @@ client_id: lj_x
 redirect_uri: https://claude.ai/cb
 HTTP 400
 
-# 6c. missing required form field (no redirect_uri).
-#   DIVERGENCE: Python Form(...) required -> 422; Rust Form reject -> 400/415.
+# 6c. missing required form field (no redirect_uri) -> non-2xx.
 POST {{base}}/oauth/token
 Content-Type: application/x-www-form-urlencoded
 [FormParams]

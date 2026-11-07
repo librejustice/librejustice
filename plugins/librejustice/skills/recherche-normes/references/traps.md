@@ -16,15 +16,15 @@ Rule: filters resolve slugs and official names only. Acronyms and usual names be
 
 ## 3. Foreign texts served in a single unversioned state
 
-`code-de-la-famille-sen/40` returns `etat: VIGUEUR` with an empty `dateDebut` and no timeline: the corpus holds one curated version of each foreign text. Nothing warns you when the country amended the code after curation.
+`code-de-la-famille-sen/40` returns `status: VIGUEUR` with an empty `valid_from` and no timeline: the corpus holds one curated version of each foreign text. Nothing warns you when the country amended the code after curation.
 
-Rule: for foreign law, date the text yourself (enactment references are usually in the text or the title, « loi n° 61-55 du 23 juin 1961 »), check the `source` (official publisher vs aggregator), and for a contested point say explicitly which version and source you relied on. French and EU texts, by contrast, carry their full timeline: trust `date` there.
+Rule: for foreign law, date the text yourself (enactment references are usually in the text or the title, « loi n° 61-55 du 23 juin 1961 »), check the `source` (official publisher vs aggregator), and for a contested point say explicitly which version and source you relied on. French and EU texts, by contrast, carry their full timeline: trust `as_of` there.
 
 ## 4. « Not found » read as « never existed »
 
 Fetching a treaty article at a date before its avenant introduced it returns « law article or code not found ». The same error shape covers a wrong slug, a wrong key, and a date outside every version's window.
 
-Rule: on not-found, re-fetch without `date` (full timeline), then consider a renumbering (rule below) or a wrong key, before concluding anything about the law's history.
+Rule: on not-found, re-fetch without `as_of` (full timeline), then consider a renumbering (rule below) or a wrong key, before concluding anything about the law's history.
 
 ## 5. The renumbering blind spot
 

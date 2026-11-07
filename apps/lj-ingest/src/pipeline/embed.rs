@@ -1,32 +1,25 @@
-//! Construction des backends embedding + embed/re-chunk d'un batch (I/O tokio).
+//! The embedding backends, and the tokenizer of the exact BPE cut.
 
 use anyhow::{anyhow, Result};
 use std::sync::OnceLock;
 
-use lj_chunk::{chunk_bpe, Tokenizer, DEFAULT_OVERLAP_MAX, DEFAULT_OVERLAP_MIN, EMBED_VERSION};
-use lj_llm::backend::{AnyEmbedder, DummyEmbedder, Embedder, LocalHost};
+use lj_chunk::Tokenizer;
+use lj_llm::backend::{AnyEmbedder, DummyEmbedder, Link};
 use lj_llm::cloudflare::CloudflareWorkersAIEmbedder;
-use lj_llm::error::EmbedError;
-use lj_llm::hosts::EmbedHost;
+use lj_llm::hosts::{EmbedHost, Entry};
 use lj_llm::openai_http::OpenAIHttpEmbedder;
-use lj_store::repository::{BulkDecisionWrite, ChunkWrite};
 
 use crate::config::Settings;
 
-use super::{PreparedDecision, WriteMode};
-
-/// Construit l'embedder documentaire selon `settings.embed_backend`. `none` doit
-/// être filtré par l'appelant : le pipeline n'instancie pas d'embedder dans ce
-/// cas.
+/// The passage embedder `settings.embed_backend` names; `none` embeds nothing
+/// and is refused.
 ///
-/// `auto` chains the local hosts of `embed_hosts` in priority order, each behind
-/// its own breaker, then Cloudflare Workers AI once every host is down. The
-/// `ingest_neuron_budget` cap applies on every Cloudflare path.
+/// `auto` chains the links of `embed_chain` in priority order, each behind its own
+/// breaker, up to `cloudflare-aiworker`. The `ingest_neuron_budget` cap applies on
+/// every Cloudflare path.
 pub(super) async fn build_embedder(settings: &Settings) -> Result<AnyEmbedder> {
     match settings.embed_backend.as_str() {
-        "none" => Err(anyhow!(
-            "build_embedder appelé avec backend=none (l'appelant doit ne pas embedder)"
-        )),
+        "none" => Err(anyhow!("backend=none embeds nothing")),
         "dummy" => Ok(AnyEmbedder::Dummy(DummyEmbedder::default())),
         "openai-http" => Ok(build_openai_http(single_host(settings)?)),
         "cloudflare" => build_cloudflare(settings),
@@ -37,16 +30,6 @@ pub(super) async fn build_embedder(settings: &Settings) -> Result<AnyEmbedder> {
     }
 }
 
-/// Embedder « par défaut » des sources qui embeddent à l'ingest : `None` si
-/// `embed_backend == "none"`, sinon l'embedder du backend configuré (`auto` →
-/// local/Cloudflare). Renvoie `(embedder, require_embeddings)`.
-pub(super) async fn build_embedder_opt(settings: &Settings) -> Result<(Option<AnyEmbedder>, bool)> {
-    if settings.embed_backend == "none" {
-        return Ok((None, false));
-    }
-    Ok((Some(build_embedder(settings).await?), true))
-}
-
 pub(super) async fn build_local_strict(settings: &Settings) -> Result<AnyEmbedder> {
     match settings.embed_backend.as_str() {
         "dummy" => Ok(AnyEmbedder::Dummy(DummyEmbedder::default())),
@@ -54,7 +37,7 @@ pub(super) async fn build_local_strict(settings: &Settings) -> Result<AnyEmbedde
             "re-embed maintenance refuse backend=cloudflare (coût) : configure le local (openai-http/auto)"
         )),
         _ => {
-            for host in &settings.embed_hosts {
+            for host in hosts(settings) {
                 if probe_host(host).await {
                     tracing::info!(url = %host.url, "re-embed maintenance: openai-http reachable, using openai-http (strict)");
                     return Ok(build_openai_http(host));
@@ -77,74 +60,66 @@ fn build_openai_http(host: &EmbedHost) -> AnyEmbedder {
     ))
 }
 
-/// `openai-http` has no breaker to walk a list with.
+/// `openai-http` has no breaker to walk a chain with.
 fn single_host(settings: &Settings) -> Result<&EmbedHost> {
-    match settings.embed_hosts.as_slice() {
-        [host] => Ok(host),
-        hosts => Err(anyhow!(
-            "backend=openai-http takes one LIBREJUSTICE_EMBED_URL, got {}: a list needs backend=auto",
-            hosts.len()
+    match settings.embed_chain.as_slice() {
+        [Entry::Host(host)] => Ok(host),
+        chain => Err(anyhow!(
+            "backend=openai-http takes one URL in LIBREJUSTICE_EMBED_URL, got {} entries: a chain needs backend=auto",
+            chain.len()
         )),
     }
 }
 
+fn hosts(settings: &Settings) -> impl Iterator<Item = &EmbedHost> {
+    settings.embed_chain.iter().filter_map(|entry| match entry {
+        Entry::Host(host) => Some(host),
+        Entry::Cloudflare => None,
+    })
+}
+
 fn urls(settings: &Settings) -> String {
-    let urls: Vec<&str> = settings
-        .embed_hosts
-        .iter()
-        .map(|h| h.url.as_str())
-        .collect();
+    let urls: Vec<&str> = hosts(settings).map(|h| h.url.as_str()).collect();
     urls.join(", ")
 }
 
 async fn build_auto(settings: &Settings) -> Result<AnyEmbedder> {
-    let (Some(account_id), Some(token)) = (
-        settings.cloudflare_account_id.clone(),
-        settings.cloudflare_backend_token.clone(),
-    ) else {
-        let [host] = settings.embed_hosts.as_slice() else {
-            return Err(anyhow!(
-                "backend=auto over several hosts needs the Cloudflare credentials: the breaker chain ends on Cloudflare"
-            ));
-        };
-        tracing::warn!(
-            url = %host.url,
-            "backend=auto without Cloudflare credentials: openai-http alone, no fallback"
-        );
-        return Ok(build_openai_http(host));
-    };
-    tracing::info!(
-        urls = %urls(settings),
-        "backend=auto: local hosts vs Cloudflare breaker armed"
-    );
-    Ok(AnyEmbedder::Auto {
-        locals: settings.embed_hosts.iter().map(LocalHost::new).collect(),
-        cloudflare: CloudflareWorkersAIEmbedder::new(
-            account_id,
-            token,
-            CloudflareWorkersAIEmbedder::DEFAULT_MODEL,
-        )
-        .with_neuron_budget(settings.ingest_neuron_budget),
-    })
+    let chain = &settings.embed_chain;
+    // Passages run to 8,192 tokens: the chain ends at Cloudflare.
+    let end = chain
+        .iter()
+        .position(|entry| *entry == Entry::Cloudflare)
+        .map_or(chain.len(), |i| i + 1);
+    tracing::info!(urls = %urls(settings), "backend=auto: breaker chain armed");
+    let links = chain[..end]
+        .iter()
+        .map(|entry| match entry {
+            Entry::Host(host) => Ok(Link::local(host)),
+            Entry::Cloudflare => build_cloudflare_embedder(settings).map(Link::cloudflare),
+        })
+        .collect::<Result<_>>()?;
+    Ok(AnyEmbedder::Auto(links))
+}
+
+fn build_cloudflare(settings: &Settings) -> Result<AnyEmbedder> {
+    build_cloudflare_embedder(settings).map(AnyEmbedder::Cloudflare)
 }
 
 /// Embedder Cloudflare Workers AI, avec cap neurons issu de `Settings`.
-fn build_cloudflare(settings: &Settings) -> Result<AnyEmbedder> {
+fn build_cloudflare_embedder(settings: &Settings) -> Result<CloudflareWorkersAIEmbedder> {
     let account_id = settings
         .cloudflare_account_id
         .clone()
-        .ok_or_else(|| anyhow!("backend=cloudflare : LIBREJUSTICE_CLOUDFLARE_ACCOUNT_ID requis"))?;
+        .ok_or_else(|| anyhow!("Cloudflare Workers AI needs LIBREJUSTICE_CLOUDFLARE_ACCOUNT_ID"))?;
     let token = settings.cloudflare_backend_token.clone().ok_or_else(|| {
-        anyhow!("backend=cloudflare : LIBREJUSTICE_CLOUDFLARE_BACKEND_TOKEN requis")
+        anyhow!("Cloudflare Workers AI needs LIBREJUSTICE_CLOUDFLARE_BACKEND_TOKEN")
     })?;
-    Ok(AnyEmbedder::Cloudflare(
-        CloudflareWorkersAIEmbedder::new(
-            account_id,
-            token,
-            CloudflareWorkersAIEmbedder::DEFAULT_MODEL,
-        )
-        .with_neuron_budget(settings.ingest_neuron_budget),
-    ))
+    Ok(CloudflareWorkersAIEmbedder::new(
+        account_id,
+        token,
+        CloudflareWorkersAIEmbedder::DEFAULT_MODEL,
+    )
+    .with_neuron_budget(settings.ingest_neuron_budget))
 }
 
 /// Probes a local host: GET `…/v1/models`, derived from its URL, short timeout.
@@ -164,60 +139,6 @@ async fn probe_host(host: &EmbedHost) -> bool {
     matches!(req.send().await, Ok(resp) if resp.status().is_success())
 }
 
-/// Décision embarquée : préparée + vecteurs de ses chunks (`None` sans
-/// embedder). Forme intermédiaire entre l'embed et l'extraction.
-pub(super) type EmbeddedDecision = (PreparedDecision, Option<Vec<Vec<f32>>>);
-
-/// Construit le `BulkDecisionWrite` à partir d'un préparé + embeddings
-/// optionnels. Appelé après [`super::prepare::extract_write`] :
-/// `prepared.extracted` est rempli à ce stade.
-pub(super) fn to_bulk_write(
-    prepared: PreparedDecision,
-    embeddings: Option<Vec<Vec<f32>>>,
-) -> BulkDecisionWrite {
-    let n = prepared.chunks.len();
-    let had_embeddings = embeddings.is_some();
-    let mut embeds: Vec<Option<Vec<f32>>> = match embeddings {
-        Some(v) => {
-            debug_assert_eq!(v.len(), n, "embeddings/chunks count mismatch");
-            v.into_iter().map(Some).collect()
-        }
-        None => vec![None; n],
-    };
-    let chunks: Vec<ChunkWrite> = prepared
-        .chunks
-        .into_iter()
-        .enumerate()
-        .map(|(i, chunk)| ChunkWrite {
-            chunk_index: chunk.chunk_index as i32,
-            char_start: chunk.char_start as i32,
-            char_end: chunk.char_end as i32,
-            body: chunk.body,
-            embedding: embeds.get_mut(i).and_then(Option::take),
-        })
-        .collect();
-
-    // `canonical_ref` calculé à l'ingest, passé à l'upsert : lj-store ne tire plus
-    // l'extracteur.
-    let canonical_ref = lj_extract_rows::canonical_ref(&prepared.decision);
-
-    BulkDecisionWrite {
-        decision_id: prepared.decision_id,
-        public_id: prepared.public_id,
-        decision: prepared.decision,
-        content_checksum: prepared.content_checksum,
-        canonical_ref,
-        write_mode: prepared.write_mode.as_str().to_string(),
-        chunks,
-        payload_format: prepared.payload_format,
-        extracted: prepared.extracted,
-        source_fields: prepared.source_fields,
-        // embed_version tague les embeddings qu'on vient d'écrire ; None quand on
-        // chunke sans embedder (les chunks portent un embedding NULL).
-        embed_version: had_embeddings.then_some(EMBED_VERSION),
-    }
-}
-
 /// Tokenizer Qwen3-Embedding-0.6B, récupéré au build (`build.rs`) et figé dans le
 /// binaire `lj-ingest` — seul consommateur du mode BPE exact (`lj-core` reste pur,
 /// ne reçoit qu'un `&Tokenizer`).
@@ -233,127 +154,24 @@ pub(super) fn get_tokenizer() -> &'static Tokenizer {
     })
 }
 
-/// Re-chunke un batch en mode BPE exact.
-///
-/// Appelé quand l'embedder rejette un chunk trop long (sous-estimation du mode
-/// char). Le tokenizer Qwen donne le budget token exact → `embedding_text`
-/// garanti ≤ `chunk_tokens`. Les écritures `SourceXmlOnly` (sans chunk
-/// embeddable) sont laissées telles quelles.
-fn rechunk_bpe(
-    writes: Vec<PreparedDecision>,
-    chunk_tokens: usize,
-) -> Result<Vec<PreparedDecision>> {
-    let tokenizer = get_tokenizer();
-    let mut out = Vec::with_capacity(writes.len());
-    for mut w in writes {
-        if w.write_mode == WriteMode::SourceXmlOnly || w.chunks.is_empty() {
-            out.push(w);
-            continue;
-        }
-        w.chunks = chunk_bpe(
-            &w.decision.texte_integral_clean,
-            &w.decision.metadata_header,
-            &w.decision.visa_trim,
-            chunk_tokens,
-            DEFAULT_OVERLAP_MIN,
-            DEFAULT_OVERLAP_MAX,
-            tokenizer,
-            None,
-        )
-        .map_err(|e| anyhow!("rechunk BPE {}: {e}", w.decision.source_uid))?;
-        out.push(w);
-    }
-    Ok(out)
-}
-
-/// Embed les chunks d'un batch préparé.
-///
-/// Aplatit tous les textes de chunk, appelle `embed_passages`, redécoupe par
-/// décision. Sans embedder → tous les embeddings à `None`. L'assemblage en
-/// `BulkDecisionWrite` n'arrive qu'après l'extraction ([`to_bulk_write`]).
-pub(super) async fn embed_prepared<E: Embedder>(
-    embedder: Option<&E>,
-    writes: Vec<PreparedDecision>,
-    chunk_tokens: usize,
-) -> Result<Vec<EmbeddedDecision>> {
-    let Some(embedder) = embedder else {
-        return Ok(writes.into_iter().map(|w| (w, None)).collect());
-    };
-
-    let mut writes = writes;
-    let mut flat_texts: Vec<String> = writes
-        .iter()
-        .flat_map(|w| w.chunks.iter().map(|c| c.embedding_text()))
-        .collect();
-    if flat_texts.is_empty() {
-        return Ok(writes.into_iter().map(|w| (w, None)).collect());
-    }
-
-    // Le chunk nominal est en mode char (heuristique chars/token) : il peut
-    // sous-estimer sur un texte dense et produire un chunk > 8192 tokens, que
-    // l'embedder rejette. On re-chunke alors le batch en BPE exact (budget token
-    // réel) et on ré-essaie une fois.
-    let vecs = match embedder.embed_passages(&flat_texts).await {
-        Ok(v) => v,
-        Err(EmbedError::InputTooLong) => {
-            tracing::warn!(
-                batch = writes.len(),
-                "embed: overflow contexte (mode char) → re-chunk BPE exact + retry"
-            );
-            writes = rechunk_bpe(writes, chunk_tokens)?;
-            flat_texts = writes
-                .iter()
-                .flat_map(|w| w.chunks.iter().map(|c| c.embedding_text()))
-                .collect();
-            embedder
-                .embed_passages(&flat_texts)
-                .await
-                .map_err(|e| anyhow!("embed_passages (post re-chunk BPE): {e}"))?
-        }
-        Err(e) => return Err(anyhow!("embed_passages: {e}")),
-    };
-
-    let mut out = Vec::with_capacity(writes.len());
-    let mut offset = 0usize;
-    for write in writes {
-        let count = write.chunks.len();
-        let mut embeds = Vec::with_capacity(count);
-        for i in 0..count {
-            embeds.push(vecs.row(offset + i).to_vec());
-        }
-        offset += count;
-        out.push((write, Some(embeds)));
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lj_chunk::{DEFAULT_CHUNK_TOKENS, DEFAULT_OVERLAP_MAX, DEFAULT_OVERLAP_MIN};
+    use lj_chunk::{chunk_bpe, embedding_prefix, DEFAULT_CHUNK_TOKENS};
 
-    /// En mode BPE exact, `embedding_text` d'aucun chunk ne dépasse le budget
-    /// token K — invariant qui rend correct le re-chunk de secours (`rechunk_bpe`).
+    /// In exact BPE mode no chunk's `embedding_text` exceeds the token budget K:
+    /// what makes the fallback cut of `embed-missing` sound.
     #[test]
     fn bpe_rechunk_keeps_embedding_text_within_budget() {
         let tok = get_tokenizer();
         let paragraph = "Il résulte de l'instruction que la requête est rejetée. ";
         let long_text = vec![paragraph; 1200].join("\n\n");
-        let header = "Tribunal administratif de Paris — 2024";
-        let visa =
-            "Vu la requête enregistrée le 1er janvier 2024 ; Vu le code de justice administrative ;";
+        let prefix = embedding_prefix(
+            "Tribunal administratif de Paris, 2024",
+            Some("Le tribunal rejette la requête, faute d'intérêt à agir."),
+        );
 
-        let chunks = chunk_bpe(
-            &long_text,
-            header,
-            visa,
-            DEFAULT_CHUNK_TOKENS,
-            DEFAULT_OVERLAP_MIN,
-            DEFAULT_OVERLAP_MAX,
-            tok,
-            None,
-        )
-        .unwrap();
+        let chunks = chunk_bpe(&long_text, &prefix, DEFAULT_CHUNK_TOKENS, tok, None).unwrap();
         assert!(
             chunks.len() >= 2,
             "le texte doit produire plusieurs chunks, got {}",

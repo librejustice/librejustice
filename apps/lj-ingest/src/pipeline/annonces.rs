@@ -54,8 +54,8 @@ fn echecs_et_muets(hotes: &[HoteVerdict], muets: &HashSet<String>) -> (u32, u32)
 
 /// Share of the live fleet down past which a multi-host engine is degraded. The
 /// collected/announced ratio is blind to it: the announced total only sums over
-/// hosts that ANSWERED. 40 % sits above the census floor not yet aged into muet
-/// (12 of 49 on Safetender, 9 of 49 on Atexo) and under the 46 of 49 of 27/08/2026.
+/// hosts that ANSWERED. 40 % sits above the census's dead hosts not yet aged into
+/// muet, and under a fleet-wide outage.
 const ECHECS_MAX: f64 = 0.40;
 
 /// No engine may eat the harvest's whole budget: past this, the other sixteen
@@ -74,9 +74,7 @@ macro_rules! rapport_rattrapage {
 }
 
 /// Notices the harvest pulls for the rows it has just written. The ceiling is a
-/// runaway guard, not a ration: a night discovers 400 to 900 markets to visit,
-/// 1 900 at the measured peak. A backlog above it is a catch-up, and it is run
-/// by hand.
+/// runaway guard well above a night's discoveries: a backlog past it is a catch-up, run by hand.
 const FICHES_PAR_NUIT: i64 = 6_000;
 
 /// Minutes each engine gets for its notices. One host that rations them sets the
@@ -88,8 +86,7 @@ const BUDGET_FICHES_MIN: u64 = 30;
 /// Unchanged from the chain step it replaces.
 const RESOLUTIONS_PAR_NUIT: i64 = 500;
 
-/// Uncategorised markets the weekly net reads back. 304 145 carried no division
-/// the day the classifier landed, so the archive drains over a few weeks.
+/// Uncategorised markets the weekly net reads back, so an archive drains over a few weeks.
 const CPV_PAR_SEMAINE: i64 = 60_000;
 const METIER_PAR_SEMAINE: i64 = 200_000;
 
@@ -112,8 +109,7 @@ async fn borne_a(
 }
 
 /// The Centrale walks a date window, so its budget follows it instead of the
-/// flat one: 471 s for the seven days of the daily run, measured on 15/09/2026,
-/// and a manual catch-up asks for months.
+/// flat one: a manual catch-up asks for months.
 fn budget_centrale(jours: i32) -> std::time::Duration {
     BUDGET_MOTEUR.max(std::time::Duration::from_secs(70 * jours.max(0) as u64))
 }
@@ -131,7 +127,7 @@ pub async fn annonces(centrale_jours: i32, relancer_muets: bool) -> Result<()> {
     let debut = std::time::Instant::now();
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // Upserts de masse par unnest : hors statement_timeout.
     conn.batch_execute("SET statement_timeout = 0")
@@ -308,9 +304,8 @@ pub async fn annonces(centrale_jours: i32, relancer_muets: bool) -> Result<()> {
 
     // The lifecycle of what was just written, then the notices. Order is what
     // makes this cheap: twinning merges a platform row into the BOAMP one that
-    // already carries the four fields, and 9 936 of the 20 179 open markets with
-    // a platform channel have such a sibling. Pulling first pays for half of them
-    // twice.
+    // already carries the four fields, and about half the open markets with a
+    // platform channel have such a sibling. Pulling first pays for those twice.
     for (phase, res) in [
         ("régularisation", regulariser(&repo, false).await),
         ("jumelage", jumeler(&repo, true).await),
@@ -326,8 +321,7 @@ pub async fn annonces(centrale_jours: i32, relancer_muets: bool) -> Result<()> {
 
     // Here and not in a queue read tomorrow: a queue ordered by closing date
     // serves what shuts soonest, so a market with a distant one waits behind
-    // every new arrival. Measured before the switch: 46 of the 149 markets
-    // discovered eleven days earlier had had their notice read.
+    // every new arrival.
     if let Err(e) = tirer_les_fiches(
         &repo,
         FICHES_PAR_NUIT,
@@ -448,7 +442,7 @@ pub async fn annonces_backfill(
     let debut = std::time::Instant::now();
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -530,7 +524,7 @@ pub async fn annonces_contenu(
     let debut = std::time::Instant::now();
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -660,7 +654,7 @@ async fn reconcilier_et_ecrire(
 pub async fn annonces_regulariser(formes: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -1086,7 +1080,7 @@ fn hote_et_moteur(depot: &str, moteurs: &HashMap<String, String>) -> Option<(Str
         return Some((hote_de_service(&hote, m, moteurs), m.clone()));
     }
     // The census merges through `canon_host` before probing, so the table holds
-    // the canonical host and a declared typo finds nothing: 31 rows on 11/09.
+    // the canonical host and a declared typo finds nothing.
     let canon = lj_sources_annonces::discover::canon_host(&hote);
     if let Some(m) = moteurs.get(&canon) {
         return Some((hote_de_service(&canon, m, moteurs), m.clone()));
@@ -1181,9 +1175,8 @@ const TITRE_CORROBORE: f64 = 0.55;
 const ACHETEUR_CORROBORE: f64 = 0.7;
 
 /// The floor every pair crosses, whatever key proposed it: a close title, the
-/// same deadline to the day, or a buyer that concurs. A reference carrying none
-/// of the three paired a Mayotte market to a Var one on 11/09, on the serial
-/// number `20260006`; it refuses 1 of the 1 014 pairs of the day.
+/// same deadline to the day, or a buyer that concurs. A bare reference can be a
+/// serial number two unrelated buyers share.
 fn corrobore(ligne: &lj_store::repository::AnnonceAJumeler, jumelle: &AnnonceChamps) -> bool {
     use lj_annonces::similarite_titres;
     let meme_echeance = ligne.echeance.is_some()
@@ -1196,8 +1189,7 @@ fn corrobore(ligne: &lj_store::repository::AnnonceAJumeler, jumelle: &AnnonceCha
 }
 
 /// The same floor on the consultation a search brings back, which is not in
-/// stock yet and has no buyer entity: 2 of the 78 pairs of the 11/09 pass had
-/// none of the three, one of them naming an airport and holding a heat pump.
+/// stock yet and has no buyer entity.
 fn corrobore_brute(ligne: &lj_store::repository::AnnonceAJumeler, brute: &AnnonceBrute) -> bool {
     use lj_annonces::similarite_titres;
     let meme_echeance = ligne
@@ -1311,8 +1303,7 @@ fn jumelle_par_reference<'a>(
         (Some(a), Some(b)) if a != b => Jumelage::Aucune,
         (Some(_), Some(_)) => Jumelage::Une(&seule.uid),
         // A reference of digits alone is a serial number carrying nothing of its
-        // buyer: 8.9 % of those in the open stock are borne by several buyers,
-        // against 0.9 % of those carrying a letter.
+        // buyer: several buyers share one far more often than one carrying a letter.
         _ if reference.chars().all(|c| c.is_ascii_digit())
             && ligne
                 .echeance
@@ -1400,9 +1391,8 @@ fn jumelle_par_titre_echeance<'a>(
     }
 }
 
-/// Measured on the fund on 11/09: in the 0.75 to 0.85 band, 17 sampled pairs
-/// out of 18 designate the same market, the divergence being a typography, an
-/// article, or the reference the buyer prefixes its own title with.
+/// In the 0.75 to 0.85 band nearly every pair designates the same market, the divergence
+/// being a typography, an article, or the reference the buyer prefixes its own title with.
 const TITRE_PROCHE: f64 = 0.75;
 
 /// The same buyer on both sides, the title then only having to approach. That
@@ -1467,11 +1457,8 @@ fn jumelle_par_titre_proche<'a>(
 /// Résout par la recherche de la plateforme les lignes ouvertes qui n'ont que
 /// la racine d'un hôte.
 ///
-/// L'énumération d'une instance et son index de recherche ne couvrent pas le
-/// même ensemble : `marches-securises.fr` annonce 1 493 consultations dans sa
-/// liste, on en moissonne autant, et une consultation ouverte peut n'être dans
-/// aucune des deux — sa seule porte est la recherche par référence. On la
-/// pousse donc, annonce par annonce, avec la référence que l'avis publie.
+/// An instance's listing and its search index do not cover the same set: an open
+/// consultation may be in neither, its only door the search by the reference its notice publishes.
 ///
 /// La ligne trouvée entre par le chemin d'écriture de la moisson, et la passe
 /// apparie elle-même : une référence qui ne rend qu'une consultation sur l'hôte
@@ -1480,7 +1467,7 @@ fn jumelle_par_titre_proche<'a>(
 pub async fn annonces_resoudre(limite: i64, applique: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -1725,7 +1712,7 @@ fn moteur_statique(moteur: &str) -> &'static str {
 pub async fn annonces_jumeler(applique: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -1831,8 +1818,8 @@ async fn jumeler(repo: &DecisionRepository<'_>, applique: bool) -> Result<()> {
     let mut paires: Vec<(&lj_store::repository::AnnonceAJumeler, &str, String)> = Vec::new();
     for ligne in &candidates {
         // An extracted join key is an exact join, so no title overrides it. But a
-        // key that attached nothing does not prove the target absent: 15 of those
-        // 42 rows have a unique same-buyer near title (11/09), their only key.
+        // key that attached nothing does not prove the target absent: a unique
+        // same-buyer near title can be its only key.
         let avec_cle = !lj_annonces::cles_jointure_depuis_urls(
             ligne
                 .urls
@@ -2238,8 +2225,8 @@ async fn ecrire_resultats_ted(
 }
 
 /// Trigram similarity below which the buyer of an award and the buyer of the
-/// market it would close are not the same. On the 286 unambiguous references of
-/// 15/09/2026, seven named another buyer and all seven fell under 0.4.
+/// market it would close are not the same: an unambiguous reference naming another
+/// buyer falls under it.
 const SEUIL_ACHETEUR_AWS: f64 = 0.4;
 
 const FICHES_AWS_EN_VOL: usize = 8;
@@ -2385,7 +2372,7 @@ pub async fn annonces_decp(depuis: Option<&str>, applique: bool) -> Result<()> {
     }
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -2442,14 +2429,14 @@ pub async fn annonces_decp(depuis: Option<&str>, applique: bool) -> Result<()> {
 const SEUIL_ACHETEUR_DECP: f64 = 0.4;
 
 /// Trigram similarity below which an object and a title do not name the same
-/// contract. On 300 declarations drawn on 15/09/2026 the band above is right
-/// without exception; just under, « Assurances pour les besoins du SDIS du
+/// contract. On a sample of declarations the band above is right without
+/// exception; just under, « Assurances pour les besoins du SDIS du
 /// Loir-et-Cher » pairs with « assurances pour les besoins du SIS 68 » at 0.62.
 const SEUIL_OBJET_DECP: i32 = 70;
 
 /// Object threshold when the buyer is the same SIREN and the CPV division
-/// agrees. Both guards earn their place: on 40 pairs drawn on 16/09/2026 the
-/// band holds 1 false under them, and 4 under the CPV alone at 0.45.
+/// agrees. Both guards earn their place: the CPV alone at a lower threshold lets
+/// more false pairs through.
 const SEUIL_OBJET_DECP_CPV: i32 = 55;
 
 /// Months a declaration may look back for the consultation it closes.
@@ -2458,16 +2445,12 @@ const RECUL_DECP_JOURS: i32 = RECUL_DECP_MOIS * 31;
 
 /// Days of notification the scheduled pass walks. The export filters on the
 /// notification date, so a declaration whose buyer took longer than this to
-/// declare it is never in window again: on the 14,820 rows the 2022 set
-/// published between 17/08 and 16/09/2026, 34 % were notified inside 30 days,
-/// 65 % inside 90 and 80 % inside 180. At 180 the pass reads 67,817
-/// declarations in 31 s and resolves its buyer edges in 12 s, where the manual
-/// pass that goes and fetches the rest of the history costs 105 min.
+/// declare it is never in window again: most are declared inside it, and the
+/// manual pass fetches the rest of the history.
 const FENETRE_DECP_JOURS: i64 = 180;
 
-/// Rare tokens of a title, the blocking key. Comparing every declaration with
-/// every market is 272,000 times 159,000 similarities; a pair above the object
-/// threshold always shares a word of more than four letters.
+/// Rare tokens of a title, the blocking key: a pair above the object threshold
+/// always shares a word of more than four letters.
 fn jetons(s: &str) -> HashSet<String> {
     lj_fold::fold(s)
         .split(|c: char| !c.is_alphanumeric())
@@ -2847,8 +2830,7 @@ const LOT_DETAIL: usize = 200;
 /// la file.
 fn bloc_detail(d: &annonces::DetailAnnonce) -> serde_json::Value {
     let mut bloc = serde_json::Map::new();
-    // The day the current parser read the notice. 1 851 of the 2 017 rows the
-    // content queue held had already answered nothing, and came back weekly.
+    // The day the current parser read the notice.
     let vu = Timestamp::now().to_zoned(TimeZone::UTC).date().to_string();
     bloc.insert("vu".into(), serde_json::json!(vu));
     if let Some(cpv) = &d.cpv {
@@ -2995,7 +2977,7 @@ pub async fn annonces_enrichir(
 ) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -3013,7 +2995,7 @@ pub async fn annonces_discover() -> Result<()> {
     let debut = std::time::Instant::now();
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -3090,7 +3072,7 @@ pub async fn annonces_sonder_liens(par_moteur: i64) -> Result<()> {
     let debut = std::time::Instant::now();
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -3172,8 +3154,7 @@ mod tests {
     use super::*;
     use lj_store::repository::{AnnonceAJumeler, AnnonceOrpheline};
 
-    /// La nuit du 27/08 sur Safetender, réduite : trois portails vivants, un
-    /// hôte déjà muet depuis des semaines, un qui tombe pour la première fois.
+    /// Three live portals, one host already muet, one down for the first time.
     #[test]
     fn l_hote_deja_muet_sort_du_compte_des_echecs_celui_qui_tombe_y_entre() {
         let verdict = |host: &str, joignable| HoteVerdict {
@@ -3181,23 +3162,22 @@ mod tests {
             joignable,
         };
         let hotes = [
-            verdict("marchespublics-aude.safetender.com", true),
-            verdict("achat-sante.safetender.com", true),
-            verdict("asf-consultations.safetender.com", true),
-            verdict("marchespublicscalvados.safetender.com", false),
-            verdict("ght06.safetender.com", false),
+            verdict("portail-a.safetender.com", true),
+            verdict("portail-b.safetender.com", true),
+            verdict("portail-c.safetender.com", true),
+            verdict("portail-d.safetender.com", false),
+            verdict("portail-e.safetender.com", false),
         ];
-        let muets = HashSet::from(["marchespublicscalvados.safetender.com".to_string()]);
+        let muets = HashSet::from(["portail-d.safetender.com".to_string()]);
         assert_eq!(echecs_et_muets(&hotes, &muets), (1, 1));
 
         // Le jour où le mort répond, il rentre au compte sans rien y ajouter.
-        let ressuscite = [verdict("marchespublicscalvados.safetender.com", true)];
+        let ressuscite = [verdict("portail-d.safetender.com", true)];
         assert_eq!(echecs_et_muets(&ressuscite, &muets), (0, 0));
     }
 
-    /// Safetender on 26 and 27/08/2026, at the figures from the journal: a normal
-    /// night collects everything it announces, the vendor outage leaves three
-    /// portals standing which serve theirs cleanly.
+    /// A fleet mostly down degrades the engine even when the portals still
+    /// standing serve all they announce.
     #[test]
     fn la_flotte_qui_tombe_degrade_meme_quand_les_survivants_servent_tout() {
         let brute = AnnonceBrute {
@@ -3228,18 +3208,18 @@ mod tests {
             rows: vec![brute.clone(); collecte],
         };
 
-        let normale = run(389, 389);
-        assert!(!degrade(&normale, 0, 37), "une nuit normale est saine");
+        let normale = run(100, 100);
+        assert!(!degrade(&normale, 0, 10), "une nuit normale est saine");
         assert!(
-            !degrade(&normale, 12, 49),
+            !degrade(&normale, 2, 10),
             "le socle du recensement pas encore muet ne dégrade pas"
         );
         assert!(
-            degrade(&run(51, 51), 34, 37),
+            degrade(&run(10, 10), 8, 10),
             "la flotte à terre dégrade, collecté et annoncé fussent-ils égaux"
         );
         assert!(
-            !degrade(&run(389, 389), 0, 0),
+            !degrade(&run(100, 100), 0, 0),
             "un moteur à point d'entrée unique n'a pas de flotte à juger"
         );
     }
@@ -3377,10 +3357,8 @@ mod tests {
         ));
     }
 
-    /// A reference of digits alone is a serial number two unrelated buyers both
-    /// carry, measured at 8.9 % of the open stock against 0.9 % as soon as a
-    /// letter figures in it. Without a resolved buyer on both sides it needs the
-    /// deadline day to depart.
+    /// A reference of digits alone can be a serial number two unrelated buyers both
+    /// carry. Without a resolved buyer on both sides it needs the deadline day to depart.
     #[test]
     fn une_reference_de_chiffres_seuls_ne_departage_pas_sans_corroboration() {
         let plateforme = AnnonceChamps {
@@ -3550,8 +3528,8 @@ mod tests {
     }
 
     /// The deposit declares the front door, the connector questions the serving
-    /// instance: the search by reference used to fire at `megalis.bretagne.bzh`,
-    /// whose `/api/v2` answers HTML. Two sub-domains settle nothing.
+    /// instance: `megalis.bretagne.bzh` resolves to `marches.megalis.bretagne.bzh`.
+    /// Two sub-domains settle nothing.
     #[test]
     fn the_declared_host_resolves_to_the_instance_a_connector_questions() {
         let moteurs: HashMap<String, String> = [
@@ -3860,8 +3838,8 @@ mod tests {
         ));
     }
 
-    /// The two titles are the measured false positive of the low band: one
-    /// buyer, two sibling lots that one word separates.
+    /// Two sibling lots of one buyer, one word apart, stay apart below the
+    /// threshold.
     #[test]
     fn deux_lots_freres_ne_se_confondent_pas_sous_le_seuil() {
         let ligne = a_jumeler_entite(

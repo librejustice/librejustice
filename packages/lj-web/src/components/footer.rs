@@ -34,6 +34,10 @@ pub fn Footer() -> impl IntoView {
                         "Confidentialité"
                     </a>
                     " "
+                    <a class="hover:text-[var(--color-ink)]" href="/terms">
+                        "Conditions d'utilisation"
+                    </a>
+                    " "
                     <a
                         class="hover:text-[var(--color-ink)]"
                         href="https://github.com/librejustice/librejustice"

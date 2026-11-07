@@ -1,6 +1,8 @@
 //! Backfills hors-migration et dédup rétroactive (canonical_ref, fusion
 //! cross-source, ECLI, normalisation caractères du référentiel).
 
+use std::collections::{BTreeMap, BTreeSet};
+
 use anyhow::{anyhow, Result};
 use rayon::prelude::*;
 
@@ -30,7 +32,7 @@ pub async fn backfill_canonical_ref(force: bool) -> Result<()> {
     let settings = Settings::from_env()?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // Backfill de maintenance : on lève la borne API (`build_pool` pose
     // `statement_timeout=30s`). Les scans de frontière du keyset au resume et les
@@ -138,7 +140,7 @@ fn canonical_ref_one(
 pub async fn merge_cross_source_duplicates() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -173,6 +175,48 @@ pub async fn merge_cross_source_duplicates() -> Result<()> {
     Ok(())
 }
 
+/// Absorbs each record holding no ruling into the same-day decision that joins its number,
+/// which then carries both, on the days Judilibre fed in the last `days`.
+pub async fn absorb_copies(days: i32) -> Result<()> {
+    let settings = Settings::from_env()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    conn.batch_execute("SET statement_timeout = 0")
+        .await
+        .map_err(|e| anyhow!("set statement_timeout: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+
+    let mut keepers_of: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
+    for pair in repo.joinder_copy_pairs(days).await? {
+        if !lj_extract::joinder::holds_ruling(&pair.copy_text)
+            && pair
+                .dockets
+                .iter()
+                .any(|d| lj_extract::joinder::joins(&pair.keeper_text, d))
+        {
+            keepers_of.entry(pair.copy).or_default().insert(pair.keeper);
+        }
+    }
+    let mut keepers = Vec::new();
+    for (copy, named_by) in keepers_of {
+        let [keeper] = named_by.iter().copied().collect::<Vec<_>>()[..] else {
+            tracing::info!(
+                copy,
+                ?named_by,
+                "absorb-copies: named by several decisions, left apart"
+            );
+            continue;
+        };
+        repo.absorb_into(copy, keeper).await?;
+        tracing::info!(copy, keeper, "absorb-copies: decision absorbed");
+        keepers.push(keeper);
+    }
+    super::reextract::fuse_written(&repo, &keepers).await?;
+    tracing::info!(absorbed = keepers.len(), "absorb-copies done");
+    Ok(())
+}
+
 /// Backfill batché de la colonne `decisions.ecli` depuis
 /// `source_fields->>'ecli'` (champ d'affichage/interop). Boucle keyset sur
 /// `backfill_ecli_batch`. Idempotent : n'écrit que les lignes `ecli IS NULL`
@@ -180,7 +224,7 @@ pub async fn merge_cross_source_duplicates() -> Result<()> {
 pub async fn backfill_ecli() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // Backfill de maintenance : on lève la borne API (`build_pool` pose
     // `statement_timeout=30s`). Les scans de frontière du keyset au resume et les

@@ -1,11 +1,11 @@
 //! En-tête décision + barre d'actions.
 //!
-//! `DecisionHeader` alimente la barre sticky (`components::decision_bar`) côté
-//! client, en consommant la graine de navigation posée par la carte résultat /
-//! la voisine (origine recherche + prev/next ; SSR : aucune barre).
+//! `DecisionHeader` feeds the sticky bar (`components::decision_bar`) on the
+//! client from the seed of the visit: search origin and prev/next. No bar on the
+//! server.
 
 use leptos::prelude::*;
-use lj_dtos::DecisionDetail;
+use lj_dtos::{DecisionDetail, UiAction};
 
 use crate::pages::decision_page::reference::build_decision_references;
 
@@ -13,9 +13,7 @@ use crate::pages::decision_page::reference::build_decision_references;
 #[cfg(feature = "hydrate")]
 use crate::api::ApiClient;
 #[cfg(feature = "hydrate")]
-use crate::components::decision_bar::{
-    persist_seed, restore_seed, use_decision_bar, use_result_nav, use_seed_memory, DecisionBarState,
-};
+use crate::components::decision_bar::{use_decision_bar, visit_seed, DecisionBarState};
 
 /// Pousse les métadonnées dans la barre sticky.
 #[component]
@@ -24,36 +22,20 @@ pub fn DecisionHeader(detail: DecisionDetail) -> impl IntoView {
     {
         let title = build_decision_references(&detail).heading;
         let id = detail.id.clone();
-        let path = lj_dtos::decision_path(detail.jurisdiction_type, &id);
+        let path = lj_dtos::decision_path(
+            detail.jurisdiction_type,
+            detail.jurisdiction_code.as_deref(),
+            &id,
+        );
         let bar = use_decision_bar();
-        let seed = use_result_nav();
-        let memory = use_seed_memory();
+        let location = leptos_router::hooks::use_location();
         Effect::new(move |_| {
-            // Consomme la graine (one-shot) en la mémorisant par id ; sans graine (back
-            // navigateur depuis un article de loi, lien direct, signets), on restaure le
-            // dernier contexte DE CETTE décision — jamais celui d'une autre. Aucun
-            // contexte connu → barre sans nav (titre + retour « Recherche »).
-            let consumed = match seed.get_untracked() {
-                Some(s) => {
-                    memory.update_value(|m| {
-                        m.insert(id.clone(), s.clone());
-                    });
-                    persist_seed(&id, &s);
-                    s
-                }
-                // Mémoire vive d'abord, puis l'onglet : la RAM ne survit pas au rechargement,
-                // `sessionStorage` si.
-                None => memory
-                    .with_value(|m| m.get(&id).cloned())
-                    .or_else(|| restore_seed(&id))
-                    .unwrap_or_default(),
-            };
-            seed.set(None);
+            let seed = visit_seed(&path, &location);
             bar.set(Some(DecisionBarState {
                 title: title.clone(),
                 path: path.clone(),
-                nav: consumed.nav,
-                from_search: consumed.from_search,
+                nav: seed.nav,
+                from_search: seed.from_search,
             }));
         });
         on_cleanup(move || bar.set(None));
@@ -85,6 +67,7 @@ pub fn DecisionActions(detail: DecisionDetail) -> impl IntoView {
                 <button
                     type="button"
                     on:click=on_print
+                    data-usage=UiAction::DecisionPrint.as_str()
                     class="inline-flex shrink-0 items-center gap-2 rounded-sm border border-[var(--color-rule)] px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
                     aria-label="Impression"
                     title="Impression"
@@ -95,6 +78,7 @@ pub fn DecisionActions(detail: DecisionDetail) -> impl IntoView {
                 // only renders on one. The filename comes from the API's `Content-Disposition`.
                 <a
                     href=pdf_href
+                    data-usage=UiAction::DecisionPdf.as_str()
                     rel="external nofollow noopener"
                     target="_blank"
                     class="inline-flex shrink-0 items-center gap-2 rounded-sm border border-[var(--color-rule)] px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] no-underline transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
@@ -176,6 +160,7 @@ fn BookmarkButton(decision_id: String) -> impl IntoView {
             <button
                 type="button"
                 on:click=toggle
+                data-usage=UiAction::DecisionBookmark.as_str()
                 disabled=move || busy.get()
                 aria-pressed=move || is_on.get().to_string()
                 aria-label=label
@@ -273,6 +258,7 @@ fn CopyReferenceButton(full: String, short: String) -> impl IntoView {
             >
                 <CopyMenuButton
                         label="Copier la référence complète"
+                        usage=UiAction::DecisionCopyFull
                         value=full.clone()
                         copied=Signal::derive(move || copied.get() == Some("full"))
                         on_copy=Callback::new({
@@ -282,6 +268,7 @@ fn CopyReferenceButton(full: String, short: String) -> impl IntoView {
                     />
                     <CopyMenuButton
                         label="Copier la référence abrégée"
+                        usage=UiAction::DecisionCopyShort
                         value=short.clone()
                         copied=Signal::derive(move || copied.get() == Some("short"))
                         on_copy=Callback::new({
@@ -298,6 +285,7 @@ fn CopyReferenceButton(full: String, short: String) -> impl IntoView {
 #[component]
 fn CopyMenuButton(
     label: &'static str,
+    usage: UiAction,
     value: String,
     #[prop(into)] copied: Signal<bool>,
     on_copy: Callback<()>,
@@ -306,6 +294,7 @@ fn CopyMenuButton(
         <button
             type="button"
             on:click=move |_| on_copy.run(())
+            data-usage=usage.as_str()
             class="flex w-full flex-col items-start gap-1 rounded-sm px-3 py-2 text-left transition-colors hover:bg-[var(--color-vellum)]"
         >
             <span class="text-sm text-[var(--color-ink)]">

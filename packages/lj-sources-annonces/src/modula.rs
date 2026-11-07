@@ -22,8 +22,7 @@ const PORTAILS: [&str; 6] = [
 ];
 
 const PAR_PAGE: u64 = 200;
-/// Garde-fou de pagination : 8 000 annonces par portail, deux ordres de grandeur
-/// au-dessus du plus gros listing filtré.
+/// Pagination guard, far above the largest filtered listing of a portal.
 const MAX_PAGES: u64 = 40;
 
 fn listing_url(host: &str, page: u64) -> String {
@@ -341,7 +340,7 @@ pub async fn detail(url_avis: &str) -> Result<super::DetailAnnonce> {
 }
 
 /// A buyer files its notice as the rendered form, or as the Word file it wrote
-/// it in, which two of ten sampled do. The form is read from its bold, the Word
+/// it in, as some do. The form is read from its bold, the Word
 /// text has no use for one: there a label closes on a colon.
 ///
 /// Poppler, not the in-process extractor: pdf-extract panics on an invalid
@@ -419,8 +418,8 @@ mod tests {
 		</table>
 	</div>
 	<div style="float:right;" align=right>
-		<div class="post-button" onClick="javascript:OuvrirPopup('/publisher_portail/PublicationPdfGeneric;jsessionid=F5190CD0?iIdMarche=36083&iIdPublicationType=1&id=AAPC_36083&sts=8a10097963c9d91b',800, 600,'menubar=no')">Visualiser l'avis</div>
-		<div class="post-button" onClick='javascript:window.name="mainWindow";OuvrirPopup("/publisher_portail/public/annonce/popupTelechargementDCEAnonyme.jsp;jsessionid=F5190CD0?idMarche=36083",800,315,"menubar=no")'>Télécharger le DCE</div>
+		<div class="post-button" onClick="javascript:OuvrirPopup('/publisher_portail/PublicationPdfGeneric;jsessionid=0000AAAA?iIdMarche=36083&iIdPublicationType=1&id=AAPC_36083&sts=0000000000000000',800, 600,'menubar=no')">Visualiser l'avis</div>
+		<div class="post-button" onClick='javascript:window.name="mainWindow";OuvrirPopup("/publisher_portail/public/annonce/popupTelechargementDCEAnonyme.jsp;jsessionid=0000AAAA?idMarche=36083",800,315,"menubar=no")'>Télécharger le DCE</div>
 		<div class="post-button repondre" onClick='Redirect("/publisher_portail/public/inscription/inscriptionOrganisation.jsp")'>Répondre à la consultation</div>
 	</div>
 </div>"#;
@@ -439,7 +438,7 @@ mod tests {
 			<tr><td><strong>Date de publication :</strong><br>8 Aout 2026 à 00:00 heures</td></tr>
 			<tr><td><table><tr>
 				<td style="vertical-align: middle;">Publié sur le site :  </td>
-				<td><img src="/include/images/rossel/logo_import.png;jsessionid=D692F9E9" alt="n.c." style="width:70px;" /></td>
+				<td><img src="/include/images/rossel/logo_import.png;jsessionid=0000BBBB" alt="n.c." style="width:70px;" /></td>
 			</tr></table></td></tr>
 		</table>
 		<table style="display:inline-grid; text-align:right; width:16%" align="right">
@@ -478,12 +477,12 @@ mod tests {
 			<tr><td><strong>Date de publication :</strong><br>31 Juillet 2026 à 00:00 heures</td></tr>
 			<tr><td><strong>Date limite :</strong><br>21 Septembre 2026 à 12:00 heures</td></tr>
 			<tr><td style="text-align:left"><table><tr><td><strong>Publié sur :</strong></td>
-				<td><img src="/templatesClients/rossel/images/logo_annonces.png;jsessionid=F5190CD0?v=2.0" width="70px"></td>
+				<td><img src="/templatesClients/rossel/images/logo_annonces.png;jsessionid=0000AAAA?v=2.0" width="70px"></td>
 			</tr></table></td></tr>
 		</table>
 	</div>
 	<div style="float:right;" align=right>
-		<div class="post-button" onClick='javascript:window.name="mainWindow";OuvrirPopup("/publisher_portail/public/annonce/displayPetiteAnnonceDetail.jsp;jsessionid=F5190CD0?iIdMarche=1d4ed465be393a66",800,600,"menubar=no")'>Visualiser l'annonce</div>
+		<div class="post-button" onClick='javascript:window.name="mainWindow";OuvrirPopup("/publisher_portail/public/annonce/displayPetiteAnnonceDetail.jsp;jsessionid=0000AAAA?iIdMarche=1d4ed465be393a66",800,600,"menubar=no")'>Visualiser l'annonce</div>
 	</div>
 </div>"#;
 
@@ -602,8 +601,8 @@ mod tests {
     }
 
     /// Real « Avis liés au marché » block. A consultation that published no
-    /// notice keeps the block and loses both of its buttons, which is the case
-    /// of half the open cards sampled, and then nothing is left to read.
+    /// notice keeps the block and loses both of its buttons, and then nothing is
+    /// left to read.
     #[test]
     fn le_lien_de_l_avis_sort_du_bouton_telecharger() {
         let bloc = r#"<div class="enLigne"><strong>Avis de marché : </strong></div>

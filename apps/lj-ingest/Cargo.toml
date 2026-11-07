@@ -10,19 +10,24 @@ path = "src/main.rs"
 
 # CLI ingest (clap). Settings prefix LIBREJUSTICE_. Pipelines offline.
 [dependencies]
+bytes = { workspace = true }
 lj-annonces = { workspace = true }
+lj-bucket = { workspace = true }
 lj-chunk = { workspace = true }
 lj-core = { workspace = true }
 lj-parse = { workspace = true }
+lj-redact-core = { workspace = true }
 lj-norm = { workspace = true }
 lj-versions = { workspace = true }
 lj-dtos = { workspace = true }
 lj-fold = { workspace = true }
+lj-gazette = { workspace = true }
 lj-vocab = { workspace = true }
 lj-extract = { workspace = true }
 lj-quantum = { workspace = true }
 lj-extract-rows = { workspace = true }
 lj-store = { workspace = true }
+lj-pg = { workspace = true }
 lj-sources = { workspace = true }
 lj-sources-annonces = { workspace = true }
 lj-llm = { workspace = true }

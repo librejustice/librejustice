@@ -1,8 +1,7 @@
 //! Trade of a market, folded from the BOAMP descriptors, PURE.
 //!
 //! They classify who answers where the CPV classifies what is bought, and do
-//! not nest under it: on the markets carrying both, a descriptor's mean head
-//! share over a division is 0.63 and `Prestations de services` spans 39 of them.
+//! not nest under it: `Prestations de services` spans many divisions.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -187,8 +186,7 @@ static LEXIQUE: LazyLock<Lexique> = LazyLock::new(|| {
 
 /// Words of the title, plus the bigram of two adjacent ones: `espaces verts`,
 /// `gros oeuvre` and `courants faibles` are trades in two words whose halves
-/// each point elsewhere. Worth 2.7 points of first answer on the market the
-/// BOAMP describes, 5.1 on the one it does not.
+/// each point elsewhere.
 fn jetons(titre: &str) -> HashSet<String> {
     let plie = fold(titre);
     let mots: Vec<&str> = plie
@@ -202,16 +200,13 @@ fn jetons(titre: &str) -> HashSet<String> {
 }
 
 /// Log-score gap under which a runner-up is posted beside the winner, capped at
-/// `RETENUS`. Measured on the open fund: at 4.0 the axis names a trade the
-/// market really carries 86.5 % of the time against 77.2 % for the winner alone,
-/// for 1.50 trades posted per market instead of 1.00.
+/// `RETENUS`: the axis then names a trade the market really carries more often
+/// than the winner alone does.
 const MARGE: f32 = 4.0;
 const RETENUS: usize = 3;
 
 /// The `metier:<code>` a title reads as, for the engines that publish no
-/// descriptor. Empty only when no token of the title is in the table. Measured
-/// on 197 such markets labelled by hand, the first answer names a trade the
-/// market carries 82.2 % of the time, one of those posted 89.8 %.
+/// descriptor. Empty only when no token of the title is in the table.
 pub fn metiers_du_titre(titre: &str) -> Vec<String> {
     let l = &*LEXIQUE;
     let mut scores: Vec<f32> = l.metiers.iter().map(|(_, prior, _)| *prior).collect();

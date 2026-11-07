@@ -9,7 +9,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 use leptos_router::params::ParamsMap;
-use lj_dtos::SearchFacets;
+use lj_dtos::{SearchFacets, UiAction};
 
 use super::annonce_results::date_fr;
 use super::compact_search::{query_state, DraftQuery};
@@ -29,45 +29,35 @@ pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<Act
     let all = |key: &str| map.get_all(key).unwrap_or_default();
     let mut chips = Vec::new();
 
-    // Seat: one key, from the court type down to the room. A leaf says nothing
-    // on its own, « 3e chambre » living under 110 courts, so the chip carries
-    // the label of its parent too.
-    let seat = facets.map(|f| f.seat.as_slice()).unwrap_or_default();
-    for v in all("seat") {
-        let node = seat.iter().find(|c| c.value == v);
-        let parent = node
-            .and_then(|c| c.parent.as_deref())
-            .and_then(|p| seat.iter().find(|c| c.value == p));
-        let label = match (parent, node) {
-            (Some(parent), Some(node)) => format!("{} · {}", parent.label, node.label),
-            (None, Some(node)) => node.label.clone(),
-            _ => v.clone(),
-        };
-        chips.push(ActiveChip {
-            key: "seat",
-            value: v,
-            label,
-        });
-    }
-
-    // Office : facette plate à valeurs suffixe (`JEX`).
-    let office = facets.map(|f| f.office.as_slice()).unwrap_or_default();
-    for v in all("office") {
-        let label = office
-            .iter()
-            .find(|c| c.value == v)
-            .map(|c| c.label.clone())
-            .unwrap_or_else(|| v.clone());
-        chips.push(ActiveChip {
-            key: "office",
-            value: v,
-            label,
-        });
+    // Seat and formation: paths from the order down. A leaf says nothing on
+    // its own, « 3e chambre » living under 110 courts, so the chip carries the
+    // label of its parent too, unless that parent is the order.
+    for (key, choices) in [
+        ("seat", facets.map(|f| f.seat.as_slice())),
+        ("formation", facets.map(|f| f.formation.as_slice())),
+    ] {
+        let choices = choices.unwrap_or_default();
+        for v in all(key) {
+            let node = choices.iter().find(|c| c.value == v);
+            let parent = node
+                .and_then(|c| c.parent.as_deref())
+                .filter(|p| p.contains('.'))
+                .and_then(|p| choices.iter().find(|c| c.value == p));
+            let label = match (parent, node) {
+                (Some(parent), Some(node)) => format!("{} · {}", parent.label, node.label),
+                (None, Some(node)) => node.label.clone(),
+                _ => v.clone(),
+            };
+            chips.push(ActiveChip {
+                key,
+                value: v,
+                label,
+            });
+        }
     }
     for (key, choices) in [
         ("legalDomain", facets.map(|f| f.legal_domain.as_slice())),
         ("solution", facets.map(|f| f.solution.as_slice())),
-        ("procedure", facets.map(|f| f.procedure.as_slice())),
         ("publication", facets.map(|f| f.publication.as_slice())),
     ] {
         let choices = choices.unwrap_or_default();
@@ -129,6 +119,20 @@ pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<Act
         });
     }
 
+    let parts = query_state::parts_searched(map);
+    if parts.len() < query_state::PARTS.len() {
+        let labels: Vec<&str> = query_state::PARTS
+            .iter()
+            .filter(|(v, _, _)| parts.contains(v))
+            .map(|(_, l, _)| *l)
+            .collect();
+        chips.push(ActiveChip {
+            key: "searchIn",
+            value: String::new(),
+            label: format!("Dans : {}", labels.join(", ")),
+        });
+    }
+
     let from = map.get("dateFrom").unwrap_or_default();
     let to = map.get("dateTo").unwrap_or_default();
     let jour = |iso: &str| date_fr(iso).unwrap_or_else(|| iso.to_string());
@@ -175,6 +179,8 @@ pub fn ActiveFilterChips(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> 
     let remove = move |chip: &ActiveChip| {
         let qs = if chip.key == "dates" {
             query_state::with_dates(&effective_map(), None, None)
+        } else if chip.key == "searchIn" {
+            query_state::with_values(&effective_map(), "searchIn", &[])
         } else {
             query_state::toggle_multi(&effective_map(), chip.key, &chip.value)
         };
@@ -186,7 +192,10 @@ pub fn ActiveFilterChips(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> 
 
     view! {
         <Show when=move || !chips.with(|c| c.is_empty())>
-            <div class="flex flex-wrap items-center gap-2">
+            <div
+                class="flex flex-wrap items-center gap-2"
+                data-usage=UiAction::SearchFilterChip.as_str()
+            >
                 // Clé = key:value:LABEL : le libellé arrive avec les facettes, après la chip
                 // rendue d'abord sur la valeur brute ; l'inclure dans la clé reconstruit la
                 // ligne à la résolution.
@@ -248,34 +257,43 @@ mod tests {
         SearchFacets {
             seat: vec![
                 FacetChoice {
-                    value: "TJ".into(),
+                    value: "FR.TJ".into(),
                     label: "Tribunal judiciaire".into(),
                     count: 10,
-                    parent: None,
+                    parent: Some("FR".into()),
                     hint: None,
                 },
                 FacetChoice {
-                    value: "TJ.PARIS".into(),
+                    value: "FR.TJ.PARIS".into(),
                     label: "TJ de Paris".into(),
                     count: 4,
-                    parent: Some("TJ".into()),
+                    parent: Some("FR.TJ".into()),
                     hint: None,
                 },
                 FacetChoice {
-                    value: "TJ.PARIS.C3".into(),
+                    value: "FR.TJ.PARIS.C3".into(),
                     label: "3e chambre".into(),
                     count: 2,
-                    parent: Some("TJ.PARIS".into()),
+                    parent: Some("FR.TJ.PARIS".into()),
                     hint: None,
                 },
             ],
-            office: vec![FacetChoice {
-                value: "JEX".into(),
-                label: "Juge de l'exécution".into(),
-                count: 2,
-                parent: None,
-                hint: None,
-            }],
+            formation: vec![
+                FacetChoice {
+                    value: "FR.TJ".into(),
+                    label: "Tribunal judiciaire".into(),
+                    count: 2,
+                    parent: Some("FR".into()),
+                    hint: None,
+                },
+                FacetChoice {
+                    value: "FR.TJ.JEX".into(),
+                    label: "Juge de l'exécution".into(),
+                    count: 2,
+                    parent: Some("FR.TJ".into()),
+                    hint: None,
+                },
+            ],
             legal_domain: vec![FacetChoice {
                 value: "civil".into(),
                 label: "Civil".into(),
@@ -284,13 +302,6 @@ mod tests {
                 hint: None,
             }],
             solution: Vec::new(),
-            procedure: vec![FacetChoice {
-                value: "QPC".into(),
-                label: "Question prioritaire de constitutionnalité".into(),
-                count: 3,
-                parent: None,
-                hint: None,
-            }],
             publication: Vec::new(),
             date_lecture_year: Vec::new(),
             legal_instrument: vec![LegalInstrumentFacet {
@@ -313,12 +324,11 @@ mod tests {
     #[test]
     fn labels_resolved_from_facets() {
         let m = map_of(&[
-            ("seat", "TJ"),
-            ("seat", "TJ.PARIS"),
-            ("seat", "TJ.PARIS.C3"),
-            ("office", "JEX"),
+            ("seat", "FR.TJ"),
+            ("seat", "FR.TJ.PARIS"),
+            ("seat", "FR.TJ.PARIS.C3"),
+            ("formation", "FR.TJ.JEX"),
             ("legalDomain", "civil"),
-            ("procedure", "QPC"),
         ]);
         let chips = decision_chips(&m, Some(&facets()));
         let labels: Vec<&str> = chips.iter().map(|c| c.label.as_str()).collect();
@@ -328,9 +338,8 @@ mod tests {
                 "Tribunal judiciaire",
                 "Tribunal judiciaire · TJ de Paris",
                 "TJ de Paris · 3e chambre",
-                "Juge de l'exécution",
-                "Civil",
-                "Question prioritaire de constitutionnalité"
+                "Tribunal judiciaire · Juge de l'exécution",
+                "Civil"
             ]
         );
     }

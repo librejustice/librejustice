@@ -33,7 +33,7 @@ pub async fn sync_ce_list() -> Result<()> {
     let (pages, entries) = enumerate(&client).await?;
     let (anchors, pseudonymes, sans_nom) = harvest(&client, &dir, &entries).await?;
 
-    let pool = lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
+    let pool = lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 

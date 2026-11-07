@@ -1,6 +1,6 @@
-//! Fiche entité : identité registre + agrégats contentieux dérivés de
-//! `decision_party`, décisions citantes paginées, et encart « Parties » d'une
-//! décision.
+//! Entity page: registry identity and litigation aggregates from the actors
+//! linked to it, paginated citing decisions, and a decision's « Parties »
+//! panel.
 //!
 //! Fonctions pures `(&AppState, …) -> Result<Dto>` ; les adaptateurs axum
 //! (path/query, headers de cache) vivent dans [`crate::routes`]. Tout le SQL vit
@@ -160,7 +160,7 @@ pub async fn entity_decisions(
         .into_iter()
         .map(|r| (r.decision_id, (r.quality, r.side)))
         .collect();
-    let hits = crate::search::hits_for_decision_ids(&conn, &ids, &refs).await?;
+    let hits = crate::search::hits_for_decision_ids(&conn, &ids, "", &refs).await?;
     let items = hits
         .into_iter()
         .map(|(decision_id, hit)| {

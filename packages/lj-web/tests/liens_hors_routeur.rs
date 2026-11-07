@@ -1,15 +1,13 @@
-//! Un lien qui quitte la table de routes doit quitter le routeur.
+//! A link that leaves the route table must leave the router.
 //!
-//! `leptos_router` intercepte tout clic sur une ancre same-origin, sauf si elle
-//! porte `download` ou `rel="external"` (`location::handle_anchor_click`). Une
-//! ancre vers une surface de données sans l'un des deux part donc en navigation
-//! cliente, aucune route ne matche, et l'utilisateur reçoit la page 404 ; elle
-//! ne se lève qu'au refresh, le serveur répondant enfin. C'est exactement ce qui
-//! est arrivé au bouton Google le 14/08/2026.
+//! `leptos_router` intercepts every click on a same-origin anchor unless it
+//! carries `download` or `rel="external"` (`location::handle_anchor_click`). An
+//! anchor to a data surface without either goes into client navigation, no
+//! route matches, and the user gets the 404 page, cleared only on a refresh.
 //!
-//! Ce harnais lit les sources du crate plutôt que le DOM rendu : le défaut vit
-//! dans l'attribut, et un rendu suffisant pour l'observer demanderait un
-//! navigateur — c'est le rôle du smoke de parcours, pas d'un `cargo test`.
+//! This harness reads the crate's sources rather than the rendered DOM: the
+//! defect lives in the attribute, and a render enough to observe it would need
+//! a browser, which is the journey smoke's job rather than a `cargo test`'s.
 
 use std::path::{Path, PathBuf};
 

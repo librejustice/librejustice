@@ -1,18 +1,17 @@
-//! Étapes pures (CPU, parallélisables via rayon) : classify, triage idempotent,
-//! clean + chunk + extract d'un candidat.
+//! Pure stages (CPU, parallel through rayon): classify, idempotent triage, clean
+//! and extract a candidate.
 
 use std::collections::HashMap;
 
 use anyhow::{anyhow, Context, Result};
 
-use lj_chunk::{chunk_char, DEFAULT_OVERLAP_MAX, DEFAULT_OVERLAP_MIN};
 use lj_core::decision::Decision;
 use lj_parse::{
     build_source_fields, build_source_fields_dila, build_source_fields_xml, parse_judilibre,
     parse_xml, FromSourceFields,
 };
 use lj_sources::downloader::parse_decision_line;
-use lj_store::repository::ExistingDecisionState;
+use lj_store::repository::{BulkDecisionWrite, ExistingDecisionState, PassageInputs};
 
 use super::{
     content_checksum, generate_public_id, Candidate, IngestMode, PreparedDecision, WriteMode,
@@ -37,8 +36,8 @@ pub(super) fn classify_xml(raw: Vec<u8>, member: &str, archive_name: &str) -> Op
         raw_payload: raw,
         payload_format: "xml".to_string(),
         write_mode: WriteMode::Full,
-        dila_fond: None,
         passages: true,
+        distinct: false,
         prebuilt_source_fields: None,
         prebuilt_extracted: None,
     })
@@ -61,8 +60,8 @@ pub(super) fn classify_judilibre(line: Vec<u8>) -> Result<Option<Candidate>> {
         raw_payload: line,
         payload_format: "json".to_string(),
         write_mode: WriteMode::Full,
-        dila_fond: None,
         passages: true,
+        distinct: false,
         prebuilt_source_fields: None,
         prebuilt_extracted: None,
     }))
@@ -71,13 +70,9 @@ pub(super) fn classify_judilibre(line: Vec<u8>) -> Result<Option<Candidate>> {
 /// Triage idempotent d'un batch (mode `MISSING_HASH`) : dédup intra-batch par
 /// `source_uid` (last-wins) + précheck DB groupé. Renvoie
 /// `(survivants, skipped_unchanged, deduped)`.
-///
-/// `require_embeddings` : si la décision existe, qu'elle a le même hash mais
-/// qu'il manque ses embeddings, on la re-traite quand même (re-embed).
 pub(super) fn triage_candidates(
     candidates: Vec<Candidate>,
     existing: &HashMap<String, ExistingDecisionState>,
-    require_embeddings: bool,
     mode: IngestMode,
 ) -> (Vec<Candidate>, usize, usize) {
     let total = candidates.len();
@@ -103,12 +98,6 @@ pub(super) fn triage_candidates(
                 }
                 let same_hash = prev.content_checksum == cand.content_checksum;
                 if same_hash {
-                    if require_embeddings && !prev.has_embeddings {
-                        cand.decision_id = Some(prev.id);
-                        cand.public_id = prev.public_id.clone().unwrap_or_else(generate_public_id);
-                        survivors.push(cand);
-                        continue;
-                    }
                     if prev.source_uid != uid || prev.public_id.is_none() {
                         cand.decision_id = Some(prev.id);
                         cand.public_id = prev.public_id.clone().unwrap_or_else(generate_public_id);
@@ -134,17 +123,11 @@ pub(super) fn triage_candidates(
     (survivors, skipped, deduped)
 }
 
-/// Clean + chunk d'un survivant.
-/// `None` → texte vide après clean (embargo Judilibre / XML vide) : skip non
-/// fatal, comptabilisé dans `empty_skipped`.
-///
-/// Volontairement **sans contexte d'extraction** : c'est ce qui permet au premier
-/// lot de partir vers l'embedder pendant que le contexte s'hydrate. L'extraction
-/// structurée arrive après l'embed ([`extract_write`]).
-pub(super) fn chunk_write(
-    candidate: Candidate,
-    chunk_tokens: usize,
-) -> Result<Option<PreparedDecision>> {
+/// Cleans a survivor and rebuilds it from its `source_fields`. `None` for a
+/// text empty once cleaned (a Judilibre embargo, an empty XML), counted in
+/// `empty_skipped`. Without the extraction context, which [`extract_write`]
+/// reads.
+pub(super) fn prepare_write(candidate: Candidate) -> Result<Option<PreparedDecision>> {
     if candidate.write_mode == WriteMode::SourceXmlOnly {
         // Backfill du `public_id` (+ format) seul : la ligne `decisions` n'est pas
         // réécrite → pas de source_fields à bâtir (la provenance porte déjà le sien).
@@ -154,11 +137,12 @@ pub(super) fn chunk_write(
             decision: candidate.decision,
             content_checksum: candidate.content_checksum,
             write_mode: candidate.write_mode,
-            chunks: Vec::new(),
+            passages: candidate.passages,
             payload_format: candidate.payload_format,
             extracted: None,
             prebuilt_extracted: None,
             source_fields: serde_json::Value::Null,
+            distinct: candidate.distinct,
         }));
     }
 
@@ -182,15 +166,9 @@ pub(super) fn chunk_write(
                 build_source_fields(&payload, &candidate.decision.sections)
             }
             "xml" => build_source_fields_xml(&candidate.raw_payload),
-            "dila-xml" => {
-                let fond = candidate
-                    .dila_fond
-                    .ok_or_else(|| anyhow!("source_fields dila-xml sans fond {source_uid}"))?;
-                // `raw_payload` porte les octets DÉJÀ réparés (mojibake + entités) :
-                // `source_fields` est donc propre, alors que `content_checksum` reste calculé sur
-                // le brut pré-repair.
-                build_source_fields_dila(&candidate.raw_payload, fond)
-            }
+            // `raw_payload` holds the repaired bytes (mojibake, entities), so `source_fields`
+            // is clean, while `content_checksum` stays computed on the raw bytes.
+            "dila-xml" => build_source_fields_dila(&candidate.raw_payload),
             "html" | "pdf" => {
                 // `source_fields` préconstruits au classify, pas reconstruits du `raw_payload`
                 // (qui ne porte plus le texte source) : CEDH/CJUE depuis les métadonnées
@@ -217,30 +195,10 @@ pub(super) fn chunk_write(
         &source_uid,
     );
 
-    let cleaned = &decision.texte_integral_clean;
-    if cleaned.is_empty() {
+    if decision.texte_integral_clean.is_empty() {
         tracing::warn!(uid = %source_uid, "Empty text after clean, skip");
         return Ok(None);
     }
-
-    // Chunking en mode char (tokenizer=None) : chemin nominal, sans tokenizer. Si
-    // l'heuristique chars/token sous-estime et qu'un chunk dépasse le contexte de
-    // l'embedder, `embed_prepared` re-chunke ce batch en BPE exact (`rechunk_bpe`) et
-    // ré-essaie.
-    let chunks = if candidate.passages {
-        chunk_char(
-            cleaned,
-            &decision.metadata_header,
-            &decision.visa_trim,
-            chunk_tokens,
-            DEFAULT_OVERLAP_MIN,
-            DEFAULT_OVERLAP_MAX,
-            None,
-        )
-        .map_err(|e| anyhow!("chunk_char {source_uid}: {e}"))?
-    } else {
-        Vec::new()
-    };
 
     Ok(Some(PreparedDecision {
         decision_id: candidate.decision_id,
@@ -248,12 +206,51 @@ pub(super) fn chunk_write(
         decision,
         content_checksum: candidate.content_checksum,
         write_mode: candidate.write_mode,
-        chunks,
+        passages: candidate.passages,
         payload_format: candidate.payload_format,
         extracted: None,
         prebuilt_extracted: candidate.prebuilt_extracted,
         source_fields,
+        distinct: candidate.distinct,
     }))
+}
+
+/// Keeps the passages of a decision a new payload rewrites when the text and
+/// header they are cut from come out the same as the stored ones (`stored`: its
+/// provenance's `source_fields` and text): so would their embeddings.
+pub(super) fn keep_unchanged_passages(
+    mut prepared: PreparedDecision,
+    stored: &PassageInputs,
+) -> PreparedDecision {
+    let (source_fields, full_text) = stored;
+    let before =
+        Decision::from_source_fields(full_text, source_fields, &prepared.decision.source_uid);
+    let after = &prepared.decision;
+    if before.texte_integral_clean == after.texte_integral_clean
+        && before.metadata_header == after.metadata_header
+    {
+        prepared.write_mode = WriteMode::KeepPassages;
+    }
+    prepared
+}
+
+/// The write of a prepared decision, once [`extract_write`] has filled
+/// `prepared.extracted`.
+pub(super) fn to_bulk_write(prepared: PreparedDecision) -> BulkDecisionWrite {
+    let canonical_ref = lj_extract_rows::canonical_ref(&prepared.decision);
+    BulkDecisionWrite {
+        decision_id: prepared.decision_id,
+        public_id: prepared.public_id,
+        decision: prepared.decision,
+        content_checksum: prepared.content_checksum,
+        canonical_ref,
+        write_mode: prepared.write_mode.as_str().to_string(),
+        drop_passages: prepared.write_mode == WriteMode::Full && prepared.passages,
+        payload_format: prepared.payload_format,
+        extracted: prepared.extracted,
+        source_fields: prepared.source_fields,
+        distinct: prepared.distinct,
+    }
 }
 
 /// Extraction structurée d'un préparé : l'extracteur routé tourne pour TOUTES les
@@ -309,8 +306,8 @@ mod tests {
                 raw_payload: vec![],
                 payload_format: "xml".to_string(),
                 write_mode: WriteMode::Full,
-                dila_fond: None,
                 passages: true,
+                distinct: false,
                 prebuilt_source_fields: None,
                 prebuilt_extracted: None,
             }
@@ -322,7 +319,6 @@ mod tests {
                 id: 1,
                 source_uid: "a".to_string(),
                 content_checksum: "h1".to_string(),
-                has_embeddings: true,
                 public_id: Some("pa".to_string()),
             },
         );
@@ -332,14 +328,13 @@ mod tests {
                 id: 2,
                 source_uid: "b".to_string(),
                 content_checksum: "old".to_string(),
-                has_embeddings: true,
                 public_id: Some("pb".to_string()),
             },
         );
 
         let candidates = vec![cand("a", "h1"), cand("b", "new"), cand("c", "h3")];
         let (survivors, skipped, deduped) =
-            triage_candidates(candidates, &existing, false, IngestMode::MissingHash);
+            triage_candidates(candidates, &existing, IngestMode::MissingHash);
         assert_eq!(skipped, 1);
         assert_eq!(deduped, 0);
         let by_uid: HashMap<&str, &Candidate> = survivors
@@ -349,6 +344,63 @@ mod tests {
         assert_eq!(survivors.len(), 2);
         assert_eq!(by_uid["b"].decision_id, Some(2));
         assert_eq!(by_uid["c"].decision_id, None);
+    }
+
+    #[test]
+    fn a_republication_keeps_its_passages_unless_what_they_are_cut_from_changes() {
+        fn prepared(
+            publication: serde_json::Value,
+            solution: &str,
+            text: &str,
+        ) -> PreparedDecision {
+            let line = serde_json::json!({
+                "id": "69f2e231cdc6046d470bcc33",
+                "jurisdiction": "tj",
+                "location": "tj75056",
+                "chamber": "Chambre JAF",
+                "decision_date": "2026-04-29",
+                "update_date": if publication.is_null() { "2026-04-30" } else { "2026-10-28" },
+                "number": "26/00220",
+                "numbers": ["26/00220"],
+                "type": "other",
+                "solution": solution,
+                "publication": publication,
+                "text": text,
+                "zones": {
+                    "introduction": [{ "start": 0, "end": 28 }],
+                    "dispositif": [{ "start": 29, "end": text.chars().count() }],
+                },
+            });
+            let cand = classify_judilibre(serde_json::to_vec(&line).unwrap())
+                .unwrap()
+                .unwrap();
+            prepare_write(cand).unwrap().unwrap()
+        }
+        let text = "TRIBUNAL JUDICIAIRE DE PARIS\nPAR CES MOTIFS, prononce le divorce des époux.";
+        let first = prepared(serde_json::Value::Null, "Prononce le divorce", text);
+        let stored = (
+            first.source_fields.clone(),
+            first.decision.texte_integral_clean.clone(),
+        );
+
+        let republished = keep_unchanged_passages(
+            prepared(serde_json::json!([]), "Prononce le divorce", text),
+            &stored,
+        );
+        assert_eq!(republished.write_mode, WriteMode::KeepPassages);
+
+        let other_text = text.replace("des époux", "des deux époux");
+        let rewritten = keep_unchanged_passages(
+            prepared(serde_json::json!([]), "Prononce le divorce", &other_text),
+            &stored,
+        );
+        assert_eq!(rewritten.write_mode, WriteMode::Full);
+
+        let other_header = keep_unchanged_passages(
+            prepared(serde_json::json!([]), "Rejette la demande", text),
+            &stored,
+        );
+        assert_eq!(other_header.write_mode, WriteMode::Full);
     }
 
     #[test]
@@ -363,8 +415,8 @@ mod tests {
                 raw_payload: vec![],
                 payload_format: "xml".to_string(),
                 write_mode: WriteMode::Full,
-                dila_fond: None,
                 passages: true,
+                distinct: false,
                 prebuilt_source_fields: None,
                 prebuilt_extracted: None,
             }
@@ -372,7 +424,7 @@ mod tests {
         let existing = HashMap::new();
         let candidates = vec![cand("a", "h1"), cand("a", "h2")];
         let (survivors, _skipped, deduped) =
-            triage_candidates(candidates, &existing, false, IngestMode::MissingHash);
+            triage_candidates(candidates, &existing, IngestMode::MissingHash);
         assert_eq!(deduped, 1);
         assert_eq!(survivors.len(), 1);
         assert_eq!(survivors[0].content_checksum, "h2");
@@ -389,8 +441,8 @@ mod tests {
                 raw_payload: vec![],
                 payload_format: "xml".to_string(),
                 write_mode: WriteMode::Full,
-                dila_fond: None,
                 passages: true,
+                distinct: false,
                 prebuilt_source_fields: None,
                 prebuilt_extracted: None,
             }
@@ -402,13 +454,11 @@ mod tests {
                 id: 7,
                 source_uid: "a".to_string(),
                 content_checksum: "same".to_string(),
-                has_embeddings: true,
                 public_id: Some("pa".to_string()),
             },
         );
         let candidates = vec![cand("a", "same")];
-        let (survivors, skipped, _) =
-            triage_candidates(candidates, &existing, false, IngestMode::All);
+        let (survivors, skipped, _) = triage_candidates(candidates, &existing, IngestMode::All);
         assert_eq!(skipped, 0);
         assert_eq!(survivors.len(), 1);
         assert_eq!(survivors[0].decision_id, Some(7));

@@ -7,6 +7,8 @@ license.workspace = true
 # I/O sources : client Judilibre (reqwest), downloader ZIP opendata, lecteur ZIP.
 [dependencies]
 lj-parse = { workspace = true }
+lj-gazette = { workspace = true }
+lj-pdf = { workspace = true }
 anyhow = { workspace = true }
 # `blocking` requis pour `sync_opendata` (port synchrone de `requests`).
 reqwest = { workspace = true, features = ["blocking"] }
@@ -19,6 +21,7 @@ serde_json = { workspace = true }
 # sonic-rs : parse JSON SIMD sur le hot-path ingest (Judilibre). serde_json ailleurs.
 sonic-rs = { workspace = true }
 tokio = { workspace = true }
+futures = { workspace = true }
 zip = { workspace = true }
 csv = { workspace = true }
 # gzip pour les archives Judilibre `.jsonl.gz` (port du module `gzip` Python).
@@ -33,6 +36,8 @@ tracing = { workspace = true }
 regex = { workspace = true }
 # Extraction texte DOCX born-digital (docx.rs) : parse word/document.xml.
 quick-xml = { workspace = true }
+html-escape = { workspace = true }
+sevenz-rust2 = { workspace = true }
 lj-workspace-hack = { version = "0.1", path = "../lj-workspace-hack" }
 
 [dev-dependencies]

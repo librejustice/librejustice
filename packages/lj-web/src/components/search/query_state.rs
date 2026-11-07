@@ -140,6 +140,49 @@ pub fn toggle_multi(map: &ParamsMap, key: &str, value: &str) -> String {
     })
 }
 
+/// The parts of a decision a search runs in: URL value, label, hint.
+pub const PARTS: [(&str, &str, Option<&str>); 3] = [
+    (
+        "headnote",
+        "Sommaire",
+        Some("Le sommaire ou l'analyse publiés par la juridiction."),
+    ),
+    ("judgment", "Décision", None),
+    ("annexes", "Moyens annexés", None),
+];
+
+/// The parts searched: the ones `searchIn` lists, every part when it lists none.
+pub fn parts_searched(map: &ParamsMap) -> Vec<&'static str> {
+    let listed = map.get_all("searchIn").unwrap_or_default();
+    let kept: Vec<&'static str> = PARTS
+        .iter()
+        .map(|(v, _, _)| *v)
+        .filter(|v| listed.iter().any(|l| l == v))
+        .collect();
+    if kept.is_empty() {
+        PARTS.iter().map(|(v, _, _)| *v).collect()
+    } else {
+        kept
+    }
+}
+
+/// Toggles one part. The last part searched stays, and `searchIn` goes once
+/// every part is searched again. Drops `page`.
+pub fn toggle_part(map: &ParamsMap, value: &str) -> String {
+    let searched = parts_searched(map);
+    let next: Vec<String> = PARTS
+        .iter()
+        .map(|(v, _, _)| *v)
+        .filter(|v| (*v == value) != searched.contains(v))
+        .map(str::to_string)
+        .collect();
+    match next.len() {
+        0 => mutate(map, false, |_| {}),
+        n if n == PARTS.len() => with_values(map, "searchIn", &[]),
+        _ => with_values(map, "searchIn", &next),
+    }
+}
+
 /// Réécrit les bornes de dates (`from`/`to`) en une passe. Drop `page`. Port du
 /// `onChange` du DateRangePicker.
 pub fn with_dates(map: &ParamsMap, from: Option<&str>, to: Option<&str>) -> String {
@@ -230,5 +273,32 @@ mod tests {
         let m = map_of(&[("q", "x"), ("sort", "date_desc")]);
         let qs = with_param(&m, "sort", None, true);
         assert!(!qs.contains("sort="));
+    }
+
+    #[test]
+    fn parts_are_toggled_from_every_part_and_keep_one() {
+        let parts: Vec<lj_dtos::DecisionPart> = PARTS
+            .iter()
+            .map(|(v, _, _)| serde_json::from_value(serde_json::json!(v)).unwrap())
+            .collect();
+        assert_eq!(parts, lj_dtos::DecisionPart::ALL);
+
+        let all = map_of(&[("q", "x"), ("page", "3")]);
+        assert_eq!(
+            toggle_part(&all, "annexes"),
+            "q=x&searchIn=headnote&searchIn=judgment"
+        );
+        let judgment = map_of(&[("q", "x"), ("searchIn", "judgment")]);
+        assert_eq!(toggle_part(&judgment, "judgment"), "q=x&searchIn=judgment");
+        assert_eq!(
+            toggle_part(&judgment, "headnote"),
+            "q=x&searchIn=headnote&searchIn=judgment"
+        );
+        let two = map_of(&[
+            ("q", "x"),
+            ("searchIn", "headnote"),
+            ("searchIn", "judgment"),
+        ]);
+        assert_eq!(toggle_part(&two, "annexes"), "q=x");
     }
 }

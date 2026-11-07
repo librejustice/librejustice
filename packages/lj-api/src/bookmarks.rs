@@ -63,14 +63,15 @@ pub async fn fetch_bookmarks(
         .map_err(|e| ApiError::Internal(format!("pool: {e}")))?;
     let rows = conn
         .query(
-            "SELECT \
+            &format!(
+                "SELECT \
                d.public_id, \
                d.jurisdiction_type, \
                d.jurisdiction_code, \
                to_char(d.date_lecture, 'YYYY-MM-DD') AS date_lecture, \
                d.docket_numbers, \
                d.solution_uid, \
-               (SELECT dt.summary FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead), \
+               {summary}, \
                b.created_at, \
                COUNT(*) OVER() AS total \
              FROM user_bookmarks b \
@@ -78,6 +79,8 @@ pub async fn fetch_bookmarks(
              WHERE b.user_sub = $1 \
              ORDER BY b.created_at DESC \
              LIMIT $2 OFFSET $3",
+                summary = lj_store::repository::pick::text("p.summary", "d")
+            ),
             &[&user_sub, &limit, &offset],
         )
         .await
@@ -111,10 +114,13 @@ pub async fn fetch_bookmarks(
             title,
             jurisdiction_type: parse_jurisdiction_type(jur_type_raw)?,
             jurisdiction_name,
+            jurisdiction_code,
             date_lecture,
             docket_numbers,
             solution: solution_uid.as_deref().map(|u| refs.tag(u)),
-            summary: row.get(6),
+            summary: row
+                .get::<_, Option<&str>>(6)
+                .map(lj_summary::summary_teaser),
             bookmarked_at: ts_to_rfc3339(row.get(7)),
         });
     }

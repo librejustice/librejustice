@@ -2,57 +2,38 @@
 //! et résumé arrivent tous deux dans le payload de recherche (résumé garanti en
 //! base, joint au hot path) : les deux vues sont instantanées, sans aucun fetch.
 //!
-//! Navigation : lien `/decision/{id}`. Au clic, on pose la graine de navigation
-//! (`ResultNavSeed` : `hit_paths` + origine recherche) consommée par
-//! la barre décision de la page cible (cf. `components::decision_bar`).
+//! Navigation: a `/decision/{id}` link, whose click pushes the visit's seed
+//! (`hit_paths`, search origin, query to highlight) with its history entry, read
+//! by the target page's decision bar (see `components::decision_bar`).
 
 use std::sync::Arc;
 
 use leptos::prelude::*;
 use leptos_router::components::A;
-use lj_dtos::{FacetTag, SearchHit};
+use lj_dtos::{FacetTag, SearchHit, UiAction};
 
-use crate::components::decision_bar::{
-    use_result_nav, FromSearch, ResultNav, ResultNavSeed, ResultNavSignal,
-};
+use crate::components::decision_bar::{carry_seed, search_origin, ResultNav, ResultNavSeed};
+use crate::components::ui::{shown_summary, SummaryBadge, SummaryFold};
 use crate::helpers::{format_decision_jurisdiction, format_iso_date};
 
 use super::compact_search::highlight::Highlighted;
 use super::view_prefs::CardView;
 
-/// Origine recherche capturée au clic : query string + scroll courant. Vide en
-/// SSR (le clic n'y survient pas).
-#[cfg(feature = "hydrate")]
-fn navigation_origin() -> (String, f64) {
-    web_sys::window()
-        .map(|w| {
-            (
-                w.location().search().unwrap_or_default(),
-                w.scroll_y().unwrap_or(0.0),
-            )
-        })
-        .unwrap_or_default()
-}
-
-#[cfg(not(feature = "hydrate"))]
-fn navigation_origin() -> (String, f64) {
-    (String::new(), 0.0)
-}
-
-/// Sets the navigation seed (search origin + position/total + `hit_paths` for
-/// prev/next). `hit_paths` is passed by reference (refcounted upstream) and not
-/// through a reactive value: a `StoredValue` is tied to the owner of `ResultList`,
-/// disposed on re-render (SWR revalidation), so `get_value()` would panic in this
-/// deferred click handler, aborting the seed.
-fn set_nav_seed(seed: ResultNavSignal, hit_paths: &[String]) {
-    let (search, scroll_y) = navigation_origin();
-    seed.set(Some(ResultNavSeed {
+/// The seed of a visit opened from this result list. `hit_paths` is borrowed
+/// from the list's `Arc` rather than read from a reactive value: a `StoredValue`
+/// tied to the owner of `ResultList` is disposed on re-render (SWR revalidation),
+/// and reading it in a deferred click handler would panic.
+fn result_seed(hit_paths: &[String], highlight: Option<String>) -> ResultNavSeed {
+    ResultNavSeed {
         nav: Some(ResultNav {
             hit_paths: hit_paths.to_vec(),
         }),
-        from_search: Some(FromSearch { search, scroll_y }),
-    }));
+        from_search: Some(search_origin(highlight)),
+    }
 }
+
+/// About six lines of a card: past it, the card folds its summary.
+const CARD_SUMMARY_FOLD_AT: usize = 600;
 
 #[component]
 pub fn ResultCard(
@@ -70,6 +51,9 @@ pub fn ResultCard(
     /// l'entité sur sa fiche : Demandeur / Défendeur / Conseil).
     #[prop(optional_no_strip)]
     role_badge: Option<String>,
+    /// The query whose terms the opened decision highlights.
+    #[prop(optional_no_strip)]
+    highlight: Option<String>,
 ) -> impl IntoView {
     // Dérogation locale, effacée dès que la bascule d'en-tête bouge : sans ça
     // une carte dérogée resterait sourde à une commande d'ensemble.
@@ -85,19 +69,25 @@ pub fn ResultCard(
 
     let position = (page as usize - 1) * page_size as usize + index + 1;
     let numeral = format!("{position:02}");
-    let decision_href = lj_dtos::decision_path(hit.jurisdiction_type, &hit.id);
+    let decision_href = lj_dtos::decision_path(
+        hit.jurisdiction_type,
+        hit.jurisdiction_code.as_deref(),
+        &hit.id,
+    );
 
-    // Graine de navigation posée au clic : la barre décision de la page cible la
-    // consomme (origine recherche + liste d'`id` pour prev/next).
-    // Inerte en SSR (le clic ne s'y produit pas ; `navigation_origin` y est vide).
-    let seed = use_result_nav();
+    // The visit's seed rides in its history entry, set on the link at click.
     let on_navigate_title = {
         let hit_paths = hit_paths.clone();
-        move |_| set_nav_seed(seed, &hit_paths)
+        let highlight = highlight.clone();
+        move |ev: leptos::ev::MouseEvent| {
+            carry_seed(&ev, &result_seed(&hit_paths, highlight.clone()));
+        }
     };
     let on_navigate_footer = {
         let hit_paths = hit_paths.clone();
-        move |_| set_nav_seed(seed, &hit_paths)
+        move |ev: leptos::ev::MouseEvent| {
+            carry_seed(&ev, &result_seed(&hit_paths, highlight.clone()));
+        }
     };
 
     // Titre : `title_html` sinon fallback construit (juridiction, date, n° rôle).
@@ -127,11 +117,18 @@ pub fn ResultCard(
     let matched_docket = hit.matched_docket.clone();
 
     // Extrait et résumé sont tous deux dans le payload : rendu direct.
-    let embedded_summary = hit.summary.clone();
+    let shown = hit.summary.as_deref().map(|summary| {
+        shown_summary(
+            hit.jurisdiction_type,
+            summary,
+            hit.summary_quote.as_ref(),
+            hit.summary_body.as_ref(),
+        )
+    });
+    let jurisdiction_type = hit.jurisdiction_type;
     let snippet = hit.best_chunk.snippet.clone();
 
     let hit_solution = hit.solution.clone();
-    let hit_procedure = hit.procedure.clone();
     let hit_publication_codes = hit.publication_codes.clone();
 
     let style = if animate {
@@ -144,7 +141,6 @@ pub fn ResultCard(
     };
 
     let snippet_for_view = snippet.clone();
-    let embedded_for_view = embedded_summary.clone();
     let content = move || {
         let v = view_sig.get();
         if v == CardView::Snippet {
@@ -155,15 +151,24 @@ pub fn ResultCard(
             }
             .into_any();
         }
-        // Vue résumé (embarqué dans le payload).
-        match embedded_for_view.clone() {
-            Some(s) => view! {
-                <p class="text-[0.95rem] leading-relaxed text-[var(--color-ink-muted)]">{s}</p>
+        // Summary view (embedded in the payload), the snippet when there is none.
+        match shown.clone() {
+            Some(shown) => view! {
+                <SummaryFold
+                    text=shown.text
+                    court=shown.court
+                    fold_at=CARD_SUMMARY_FOLD_AT
+                    clamp="line-clamp-6"
+                    class="text-[0.95rem] leading-relaxed text-[var(--color-ink-muted)]"
+                    unfold="Lire la suite"
+                >
+                    <SummaryBadge jurisdiction_type court=shown.court class="mr-2 align-middle" />
+                </SummaryFold>
             }
             .into_any(),
             None => view! {
-                <p class="text-[0.95rem] leading-relaxed text-[var(--color-ink-subtle)] italic">
-                    "Résumé indisponible pour cette décision."
+                <p class="text-[0.95rem] leading-relaxed text-[var(--color-ink-muted)]">
+                    <Highlighted text=snippet_for_view.clone() />
                 </p>
             }
             .into_any(),
@@ -226,14 +231,16 @@ pub fn ResultCard(
                             })}
                         <ResultMetaBadges
                             solution=hit_solution
-                            procedure=hit_procedure
                             publication_codes=hit_publication_codes
                         />
                     </div>
                 </div>
                 {content}
                 <div class="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 pt-1">
-                    <div class="flex items-center gap-1.5">
+                    <div
+                        class="flex items-center gap-1.5"
+                        data-usage=UiAction::SearchCardView.as_str()
+                    >
                         <button
                             type="button"
                             on:click=move |_| local.set(Some(CardView::Snippet))
@@ -268,26 +275,20 @@ pub fn ResultCard(
     }
 }
 
-/// Badges depuis les tags référentiels servis : solution (sauf AUTRE), voie,
-/// portée notable (majeure/importante) — lecture normalisée inter-ordres ; le
-/// détail « Publié au bulletin » reste dans la Synthèse de la décision.
+/// Badges from the served referential tags: the solution (except AUTRE) and a
+/// notable reach (major or important), read alike across orders. The
+/// « Publié au bulletin » detail stays in the decision's Synthèse.
 #[component]
-fn ResultMetaBadges(
-    solution: Option<FacetTag>,
-    procedure: Option<FacetTag>,
-    publication_codes: Vec<String>,
-) -> impl IntoView {
+fn ResultMetaBadges(solution: Option<FacetTag>, publication_codes: Vec<String>) -> impl IntoView {
     use crate::components::ui::{Badge, BadgeTone};
     use crate::pages::decision_page::labels::publication_badge;
 
     let solution_badge = solution.filter(|t| t.key != "AUTRE").map(|t| t.label);
-    let procedure_badge = procedure.map(|t| t.label);
     let publication = publication_badge(&publication_codes);
 
     view! {
         {solution_badge
             .map(|label| view! { <Badge tone=BadgeTone::Outline>{label}</Badge> })}
-        {procedure_badge.map(|label| view! { <Badge tone=BadgeTone::Accent>{label}</Badge> })}
         {publication.map(|label| view! { <Badge tone=BadgeTone::Neutral>{label}</Badge> })}
     }
 }

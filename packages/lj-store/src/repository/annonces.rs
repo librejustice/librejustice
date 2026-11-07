@@ -331,9 +331,7 @@ pub struct EntityAnnonceRow {
 const DETAILS_PRESERVES: &str = "ARRAY['detail', 'resultat']";
 
 /// The keys a batch that leaves them empty does not erase. The BOAMP stops
-/// diffusing a notice at its own deadline, which another channel may extend,
-/// and 555 open markets carrying a BOAMP channel had lost its descriptors on
-/// 23/09/2026.
+/// diffusing a notice at its own deadline, which another channel may extend.
 const DETAILS_DURABLES: &str = "ARRAY['descripteurs', 'lots', 'criteres', 'montant_estime', \
      'cpv', 'reference', 'procedure', 'depot']";
 
@@ -356,15 +354,13 @@ fn metiers_declares(ligne: &str) -> String {
 }
 
 /// A code a source published, which the listing carries under `cpv` and the
-/// notice page under `detail.cpv`. 4 228 of the 15 923 open markets carrying a
-/// division on 17/09/2026 had it in the second alone.
+/// notice page under `detail.cpv`.
 fn code_cpv_publie(ligne: &str) -> String {
     format!("COALESCE({ligne}.details->>'cpv', {ligne}.details->'detail'->>'cpv') IS NOT NULL")
 }
 
-/// A description repeating the title carries nothing, and 4 660 of the 17 043
-/// open markets that had one were in that case. Refused at write, so the column
-/// means "adds something to the title".
+/// A description repeating the title carries nothing. Refused at write, so the
+/// column means "adds something to the title".
 fn description_utile(valeur: &str, titre: &str) -> String {
     format!("CASE WHEN lower(btrim({valeur})) = lower(btrim({titre})) THEN NULL ELSE {valeur} END")
 }
@@ -416,10 +412,9 @@ fn ouverte(alias: &str) -> String {
     )
 }
 
-/// La fenêtre « ferme sous N jours ». Elle porte sa propre borne basse au lieu
-/// de la tenir d'[`ouverte`] : `closes` retire cette dernière, et la fenêtre
-/// compterait alors tout l'historique clos — sur ce fond, 725 k lignes au lieu
-/// de 10 k. `jours` est un placeholder ou une colonne de l'appelant.
+/// The "closes within N days" window. It carries its own lower bound rather
+/// than taking [`ouverte`]'s: `closes` drops that one, and the window would
+/// count the whole closed history. `jours` is a placeholder or a caller column.
 fn fenetre_echeance(alias: &str, jours: &str) -> String {
     format!(
         "{alias}.echeance > NOW() \
@@ -1358,9 +1353,8 @@ impl DecisionRepository<'_> {
     }
 
     /// The market a buyer reference designates, when it designates only one:
-    /// `2026-01` runs over 966 rows on 15/09/2026 and joins nothing. Markets
-    /// already awarded drop out, their notice costing a request each. No index
-    /// on the expression, a 1.7 s seq scan per harvest.
+    /// `2026-01` runs over many rows and joins nothing. Markets already awarded
+    /// drop out, their notice costing a request each.
     #[tracing::instrument(name = "db.marches_par_reference", skip(self, references), fields(db.system = "postgresql", n = references.len()))]
     pub async fn marches_par_reference(
         &self,
@@ -1392,11 +1386,11 @@ impl DecisionRepository<'_> {
     }
 
     /// The closed markets an award declaration could still close, over a window
-    /// of deadlines. Whole rows, not a per-declaration lookup: matching 272,000
-    /// declarations one query at a time is a trigram index probe each, and the
-    /// window holds 159,000 rows on 15/09/2026. A result naming neither a notice
-    /// nor a text is one this same channel wrote, and comes back in: no other
-    /// channel writes that shape, and a rerun has to be able to repose it.
+    /// of deadlines. Whole rows, not a per-declaration lookup: matching every
+    /// declaration one query at a time is a trigram index probe each. A result
+    /// naming neither a notice nor a text is one this same channel wrote, and
+    /// comes back in: no other channel writes that shape, and a rerun has to be
+    /// able to repose it.
     #[tracing::instrument(name = "db.marches_clos_sans_resultat", skip(self), fields(db.system = "postgresql"))]
     pub async fn marches_clos_sans_resultat(
         &self,
@@ -1476,10 +1470,8 @@ impl DecisionRepository<'_> {
     /// The open rows of a fund that no platform carries: the harvest could not
     /// attach them, and only their platform twin can join them. One more
     /// publication channel, TED over a notice already on BOAMP, gives no door
-    /// and does not take a row out of the queue: 505 candidates against 2 087 on
-    /// 10/09. A declared deposit is not required, the buyer key having no use for
-    /// it: 21 of the 69 doorless rows that hold a same-buyer twin at an
-    /// approaching title declare none (11/09).
+    /// and does not take a row out of the queue. A declared deposit is not
+    /// required, the buyer key having no use for it.
     #[tracing::instrument(name = "db.annonces_a_jumeler", skip(self), fields(db.system = "postgresql"))]
     pub async fn annonces_a_jumeler(&self, fond: &str) -> Result<Vec<AnnonceAJumeler>> {
         let publication: Vec<String> = lj_vocab::CANAUX_PUBLICATION
@@ -1629,8 +1621,7 @@ impl DecisionRepository<'_> {
     /// consultation — seul son état change.
     ///
     /// Transactional: the posed block takes the row out of every queue, so a
-    /// `details.resultat` without its channel is an orphan no rerun reaches. A
-    /// break between the two writes made 13 136 of them on 15/09/2026.
+    /// `details.resultat` without its channel is an orphan no rerun reaches.
     #[tracing::instrument(name = "db.poser_resultats", skip(self, poses), fields(db.system = "postgresql", n = poses.len()))]
     pub async fn poser_resultats(&self, poses: &[ResultatPose]) -> Result<u64> {
         if poses.is_empty() {
@@ -1693,8 +1684,7 @@ impl DecisionRepository<'_> {
     /// `url_avis` and whose page still has something to say, `sans_fiche` dropping
     /// the ones whose page repeats the listing. Freshest arrival first
     /// (`min(annonce_source.first_seen_at)`): by deadline a notice published today
-    /// queued behind 6 358 rows, and 62 % of the rows open under 24 h carried a CPV
-    /// against 76 % of the stock (16/09/2026). The catch-ups keep the deadline order.
+    /// queues behind the whole stock. The catch-ups keep the deadline order.
     ///
     /// `sans_acheteur` échange le critère de file : les lignes sans libellé
     /// d'acheteur, visitées ou non. C'est le rattrapage des fiches lues avant que
@@ -1720,8 +1710,8 @@ impl DecisionRepository<'_> {
              WHERE b.annonce_uid = a.uid AND b.source_uid LIKE 'boamp:%')";
         let ordre = enrichment_order_by(file);
         // A catch-up leaves out what the current parser has already read, which
-        // is what `vu` stamps: 2 343 of the 2 510 rows the three held on
-        // 17/09/2026 had answered nothing and came back every week.
+        // is what `vu` stamps: a row that answers nothing would come back every
+        // week.
         let relu = match file {
             FileEnrichissement::NonVisitees => "",
             _ => "AND NOT (COALESCE(a.details -> 'detail', '{}'::jsonb) ? 'vu')",
@@ -1877,7 +1867,7 @@ impl DecisionRepository<'_> {
     /// The probe goes through the `&&` overlap operator on
     /// `lj_fold_all(denominations)`, the only shape that borrows the
     /// `entity_folded_all_idx` GIN: an `IN (…)` on the unfolded column
-    /// recomputes `lj_fold_all` over the 29 M entities. The key array is passed
+    /// recomputes `lj_fold_all` over every entity. The key array is passed
     /// as a parameter, so constant to the planner, and the population is
     /// restricted before the variants are expanded.
     ///
@@ -1885,8 +1875,7 @@ impl DecisionRepository<'_> {
     /// deadline on. The buyer edge is what makes the DECP channel exact, and
     /// the daily harvest only ever posts it on open rows.
     ///
-    /// Either scope needs the caller to have lifted `statement_timeout`: the
-    /// closed population is 433 638 rows where the open one is 20 000.
+    /// Either scope needs the caller to have lifted `statement_timeout`.
     #[tracing::instrument(name = "db.relier_annonces_par_denomination", skip(self), fields(db.system = "postgresql"))]
     pub async fn relier_annonces_par_denomination(
         &self,
@@ -2095,8 +2084,7 @@ impl DecisionRepository<'_> {
     /// The deposit hosts of open rows with no door to a consultation, heaviest
     /// first, with the count of rows each one holds. A host a notice names but
     /// that no notice cites as its own is absent from `profil_acheteur`, hence
-    /// out of the census fed by the notices alone: 83 of them on 10/09, for 130
-    /// open rows.
+    /// out of the census fed by the notices alone.
     #[tracing::instrument(name = "db.hotes_depot_sans_porte", skip(self), fields(db.system = "postgresql"))]
     pub async fn hotes_depot_sans_porte(
         &self,
@@ -2577,10 +2565,10 @@ mod tests {
     }
 
     #[test]
-    fn only_the_nightly_queue_is_served_by_arrival() {
-        let nocturne = enrichment_order_by(FileEnrichissement::NonVisitees);
-        assert!(nocturne.contains("min(v.first_seen_at)"));
-        assert!(nocturne.ends_with("DESC"));
+    fn only_the_unvisited_queue_is_served_by_arrival() {
+        let unvisited = enrichment_order_by(FileEnrichissement::NonVisitees);
+        assert!(unvisited.contains("min(v.first_seen_at)"));
+        assert!(unvisited.ends_with("DESC"));
         for file in [
             FileEnrichissement::SansAcheteur,
             FileEnrichissement::SansZone,

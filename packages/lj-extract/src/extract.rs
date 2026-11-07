@@ -69,7 +69,7 @@ fn is_admin(d: &Decision) -> bool {
 pub fn is_judiciaire(d: &Decision) -> bool {
     matches!(
         d.jurisdiction_type.as_deref(),
-        Some("CC") | Some("CA") | Some("TJ") | Some("TCOM")
+        Some("CC") | Some("CA") | Some("TJ") | Some("TCOM") | Some("CPH")
     )
 }
 
@@ -80,8 +80,8 @@ pub fn is_judiciaire(d: &Decision) -> bool {
 pub fn routed(decision: &Decision) -> Result<()> {
     match decision.jurisdiction_type.as_deref() {
         Some(
-            "TA" | "CAA" | "CE" | "CC" | "CA" | "TJ" | "TCOM" | "CONSTIT" | "TC" | "CEDH" | "CJUE"
-            | "CNDA" | "CNIL",
+            "TA" | "CAA" | "CE" | "CC" | "CA" | "TJ" | "TCOM" | "CPH" | "CONSTIT" | "TC" | "CEDH"
+            | "CJUE" | "CNDA" | "CNIL" | "DDD" | "ADLC" | "COMEU",
         ) => Ok(()),
         _ => Err(lj_core::error::CoreError::UnknownJuridiction(
             decision.jurisdiction_type.clone(),
@@ -116,9 +116,17 @@ pub fn docket_numbers_scanned(
             .into_iter()
             .collect(),
     };
+    // A Bulletin reference (`Bull. 1965, I, n° 611`) is one number.
     let mut base: Vec<Option<String>> = raw
         .iter()
-        .flat_map(|nd| re_sep.split(nd.trim()).map(|s| Some(s.to_string())))
+        .flat_map(|nd| {
+            let nd = nd.trim();
+            if nd.starts_with("Bull. ") {
+                vec![Some(nd.to_string())]
+            } else {
+                re_sep.split(nd).map(|s| Some(s.to_string())).collect()
+            }
+        })
         .collect();
     base.extend(dockets::joined_pourvois(scan).into_iter().map(Some));
     if let Some(joined) = dockets::joined_docket_numbers(d, scan) {
@@ -164,13 +172,18 @@ pub fn formation_axes_scanned(
     } else if !is_judiciaire(d) {
         return crate::formation::FormationAxes::default();
     } else if jt == Some("CC") {
-        crate::formation::parse_formation(
+        let mut axes = crate::formation::parse_formation(
             jt,
             d.chamber.as_deref(),
             None,
             None,
             d.formation.as_deref(),
-        )
+        );
+        crate::formation::name_on_date(&mut axes, extract_date_lecture(d).as_deref());
+        if axes.formation_uid.is_none() {
+            axes.formation_uid = scan.and_then(|s| s.cc_formation());
+        }
+        axes
     } else {
         // Le champ source `chamber` prime ; le bandeau scanné complète les axes
         // (spécialisation quand le greffe ne donne que la position).
@@ -194,7 +207,7 @@ pub fn formation_axes_scanned(
     // signé en pied). En appel et en cassation le récit d'en-tête décrit la
     // juridiction ATTAQUÉE : seule l'adresse à SON juge des référés compte (« au
     // juge des référés du Conseil d'État », « juge des référés de la cour »).
-    let first_instance = matches!(jt, Some("TA") | Some("TJ") | Some("TCOM"));
+    let first_instance = matches!(jt, Some("TA") | Some("TJ") | Some("TCOM") | Some("CPH"));
     if axes.formation_uid.is_none() {
         if let Some(s) = scan {
             let sig = s.procedure_signals();
@@ -213,8 +226,17 @@ pub fn formation_axes_scanned(
                     _ => false,
                 }
             };
-            if ju {
+            // An administrative order is signed by the one judge who made it.
+            if ju || (is_admin(d) && s.ordonnance()) {
                 axes.formation_uid = Some("formation:JUGE_UNIQUE");
+            }
+            // A tribunal's or a cour's judgment names its bench when it closes.
+            if axes.formation_uid.is_none() && matches!(jt, Some("TA") | Some("CAA")) {
+                axes.formation_uid = match s.siege_judges() {
+                    Some(3) => Some("formation:A_TROIS"),
+                    Some(5) => Some("formation:A_CINQ"),
+                    _ => None,
+                };
             }
         }
     }
@@ -257,15 +279,21 @@ pub fn jurisdiction_scanned(
     })
 }
 
-/// Nom de juridiction : réécriture canonique du nom de greffe admin, table
-/// `location` Judilibre (+ renommage TAE lu dans l'en-tête scanné) côté
-/// judiciaire, `None` hors de ces deux nomenclatures.
+/// Court name: the canonical rewrite of the administrative registry's name, the Judilibre
+/// `location` table on the judicial side (with the TAE renaming read in the scanned header),
+/// the parser's own for the authorities whose source names them, `None` otherwise.
 pub fn jurisdiction_name_scanned(
     d: &Decision,
     scan: Option<&crate::scan::DocScan>,
 ) -> Option<String> {
     if is_admin(d) {
         return jurisdiction_names::admin_name(d);
+    }
+    if matches!(
+        d.jurisdiction_type.as_deref(),
+        Some("DDD" | "ADLC" | "COMEU")
+    ) {
+        return d.jurisdiction_name.clone();
     }
     if !is_judiciaire(d) {
         return None;
@@ -386,6 +414,8 @@ fn solution_from_label(low: &str) -> Option<&'static str> {
         ("satisfaction partielle", "SATISFACTION_PARTIELLE"),
         ("annulation partielle", "SATISFACTION_PARTIELLE"),
         ("admission partielle", "SATISFACTION_PARTIELLE"),
+        ("cassation partielle", "SATISFACTION_PARTIELLE"),
+        ("cassation", "SATISFACTION_TOTALE"),
         ("annulation", "SATISFACTION_TOTALE"),
         ("satisfaction", "SATISFACTION_TOTALE"),
         ("rejet", "REJET"),
@@ -413,6 +443,25 @@ fn solution_from_label(low: &str) -> Option<&'static str> {
     None
 }
 
+// DILA normalises the Conseil constitutionnel's dispositif into this label, which
+// alone decides.
+fn constit_solution(low: &str) -> &'static str {
+    const PREFIXES: &[(&str, &str)] = &[
+        ("conformité", "CONFORMITE"),
+        ("non conformité", "NON_CONFORMITE"),
+        ("inéligibilité", "INELIGIBILITE"),
+        ("annulation", "ANNULATION"),
+        ("réformation", "REFORMATION"),
+        ("rejet", "REJET"),
+        ("irrecevabilité", "IRRECEVABILITE"),
+        ("non lieu", "NON_LIEU_A_STATUER"),
+    ];
+    PREFIXES
+        .iter()
+        .find(|(prefix, _)| low.starts_with(prefix))
+        .map_or("AUTRE", |(_, key)| key)
+}
+
 fn solution_uid(key: &str) -> String {
     format!("solution:{key}")
 }
@@ -427,6 +476,10 @@ pub fn extract_solution(d: &Decision) -> Option<String> {
 }
 
 pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Option<String> {
+    let raw = d.solution.as_deref().unwrap_or("").trim().to_lowercase();
+    if d.jurisdiction_type.as_deref() == Some("CONSTIT") && !raw.is_empty() {
+        return Some(solution_uid(constit_solution(&raw)));
+    }
     let text = scan.and_then(|s| s.outcome());
     // vocabulaire cassation : la juridiction (métadonnée) fait foi, le gabarit texte
     // rattrape les fonds sans métadonnée ; le pourvoi CE (gabarit Admin sans pivot
@@ -436,7 +489,6 @@ pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Op
         || (d.jurisdiction_type.as_deref() == Some("CE")
             && scan.is_some_and(|s| s.header_has_pourvoi()));
     let admin = !cc && is_admin(d);
-    let raw = d.solution.as_deref().unwrap_or("").trim().to_lowercase();
     // détection texte qui prime le label — sauf label de satisfaction
     if let Some((k, true)) = text {
         if !(raw.starts_with("satisfaction")
@@ -757,7 +809,7 @@ fn procedure_key(
     }
     // pas sur un désistement : l'instance s'interrompt, comme pour la PAPC
     if sig.refere_civil
-        && matches!(jt, Some("CA") | Some("TJ") | Some("TCOM"))
+        && matches!(jt, Some("CA") | Some("TJ") | Some("TCOM") | Some("CPH"))
         && !sol.contains("desist")
         && !sig.desist_bandeau
     {
@@ -786,10 +838,7 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
     ));
     // office/domaine : formation d'abord, texte ensuite — les offices
     // texte (premier président, JEX) sont judiciaires par construction
-    let judiciaire = matches!(
-        d.jurisdiction_type.as_deref(),
-        Some("CC") | Some("CA") | Some("TJ") | Some("TCOM")
-    );
+    let judiciaire = is_judiciaire(d);
     let mut out = procedure_from_chamber(d, &sig).unwrap_or_default();
     if out.office_uid.is_none() && out.legal_domain_uid.is_none() {
         if sig.hospi {
@@ -810,6 +859,19 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
             // l'exécution » désigne le juge du jugement ATTAQUÉ
             out.office_uid = office_uid("JEX").office_uid;
         }
+    }
+    // A rétention or a psychiatric-care order is the JLD's, its appeal the premier
+    // président's, whatever the domain the chain above has posed.
+    if out.office_uid.is_none()
+        && judiciaire
+        && (sig.hospi || sig.retention || sig.premier_president)
+    {
+        out.office_uid = match d.jurisdiction_type.as_deref() {
+            Some("CA") => office_uid("PREMIER_PRESIDENT").office_uid,
+            Some("CC") if sig.premier_president => office_uid("PREMIER_PRESIDENT").office_uid,
+            Some("TJ") if sig.hospi || sig.retention => office_uid("JLD").office_uid,
+            _ => None,
+        };
     }
     let voie = procedure_key(d, &sig, &chamber);
     // Axe office INDÉPENDANT du domaine : un OQTF juge unique porte domaine
@@ -836,14 +898,17 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
     {
         out.office_uid = office_uid("MAGISTRAT_DESIGNE").office_uid;
     }
-    // CA/TJ : l'ordonnance signée « le juge/conseiller de la mise en état », « le
-    // magistrat chargé d'instruire l'affaire » est l'œuvre d'un magistrat délégué →
-    // MAGISTRAT_DESIGNE.
-    if out.office_uid.is_none()
-        && matches!(d.jurisdiction_type.as_deref(), Some("CA") | Some("TJ"))
-        && sig.magdes_tail
-    {
-        out.office_uid = office_uid("MAGISTRAT_DESIGNE").office_uid;
+    // CA/TJ: an order signed by the judge of the mise en état is that judge's; one
+    // signed « le magistrat chargé d'instruire l'affaire », a delegated magistrate's.
+    // At the cour d'appel the header's « ordonnance du juge de la mise en état » is
+    // the order under appeal.
+    let jt = d.jurisdiction_type.as_deref();
+    if out.office_uid.is_none() && matches!(jt, Some("CA") | Some("TJ")) {
+        if sig.mee_signed || (jt == Some("TJ") && sig.mee_banner) {
+            out.office_uid = office_uid("MISE_EN_ETAT").office_uid;
+        } else if sig.magdes_tail {
+            out.office_uid = office_uid("MAGISTRAT_DESIGNE").office_uid;
+        }
     }
     // Raffinement domaine par le vocabulaire du texte (ordre admin) — porté
     // en HINT, pas posé : le vote citations garde la priorité (un code
@@ -896,9 +961,8 @@ fn counsel(scan: Option<&crate::scan::DocScan>) -> crate::scan::CounselOut {
     scan.map(|s| s.counsel()).unwrap_or_default()
 }
 
-/// Opendata `avocat_requerant`: applicant side in 97 of the 102 decidable gold
-/// cases, the body being only a fallback. The semicolon separates counsel and
-/// never belongs to a name: no gold cell out of 2 714 carries one.
+/// Opendata `avocat_requerant` names the applicant's side, the body being only a
+/// fallback. The semicolon separates counsel and never belongs to a name.
 fn avocat_requerant_meta(d: &Decision) -> Vec<(String, bool)> {
     let Some(brut) = d.avocat_requerant.as_deref() else {
         return Vec::new();
@@ -949,7 +1013,7 @@ fn classe_conseil_meta(compact: String) -> (String, bool) {
 /// NEBOT de la SELASU NEBOT AVOCAT » → « Jean-Claude NEBOT ») et du titre nu
 /// final (« Julie GALLAND … Avocat »). La structure reste captée par les
 /// champs `*_law_firms` ; la valeur counsel est la personne seule.
-fn trim_counsel_tail(v: String) -> String {
+pub(crate) fn trim_counsel_tail(v: String) -> String {
     static RE_FIRM_TAIL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     static RE_TITLE_TAIL: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
     let re_firm = RE_FIRM_TAIL.get_or_init(|| {
@@ -1091,6 +1155,50 @@ pub fn defendant_law_firms_scanned(scan: Option<&crate::scan::DocScan>) -> Optio
     common::unique_nonempty(&recase_by_text(scan, firms))
 }
 
+/// The counsel the source lists without a side, `(names, firms)`, less those a
+/// placed value already names: two values one of whose words all appear in the
+/// other are the same counsel.
+pub fn listed_counsel_scanned(
+    d: &Decision,
+    scan: Option<&crate::scan::DocScan>,
+    placed_names: &[String],
+    placed_firms: &[String],
+) -> (Vec<String>, Vec<String>) {
+    let words = |v: &str| -> Vec<String> {
+        lj_fold::slug(v, ' ')
+            .split(' ')
+            .filter(|w| !w.is_empty())
+            .map(str::to_string)
+            .collect()
+    };
+    let placed = |v: &str, among: &[String]| {
+        let w = words(v);
+        among.iter().map(|p| words(p)).any(|p| {
+            !p.is_empty() && (p.iter().all(|x| w.contains(x)) || w.iter().all(|x| p.contains(x)))
+        })
+    };
+    let (mut names, mut firms) = (Vec::new(), Vec::new());
+    for item in &d.listed_counsel {
+        match classe_conseil_meta(common::normalize_spaces(item)) {
+            (firm, true) => {
+                if !placed(&firm, placed_firms) && !common::is_anonymized_firm(&firm) {
+                    firms.push(firm);
+                }
+            }
+            (name, false) => {
+                let name = trim_counsel_tail(name);
+                if !placed(&name, placed_names) && !common::is_anonymized_person(&name) {
+                    names.push(name);
+                }
+            }
+        }
+    }
+    (
+        common::unique_nonempty(&recase_by_text(scan, names)).unwrap_or_default(),
+        common::unique_nonempty(&recase_by_text(scan, firms)).unwrap_or_default(),
+    )
+}
+
 /// Personnes morales parties : gabarit (pivot CC / blocs / requête admin) détecté
 /// dans le flux de tokens.
 fn companies(scan: Option<&crate::scan::DocScan>) -> (Vec<String>, Vec<String>) {
@@ -1186,11 +1294,11 @@ mod generic_tests {
             solution: None,
             publication_codes: vec![],
             avocat_requerant: None,
+            listed_counsel: Vec::new(),
             texte_integral_raw: String::new(),
             texte_integral_clean: String::new(),
             sections: vec![],
             metadata_header: String::new(),
-            visa_trim: String::new(),
             themes: Vec::new(),
             attacked: None,
             parse_warnings: vec![],

@@ -241,9 +241,9 @@ impl Proof {
     }
 }
 
-/// Une case est confirmée quand deux chemins **porteurs d'information** y
-/// arrivent. Un taux de partage de 1 recopie la valeur :
-/// le compter portait le total de 310 à 508 sur la vérité terrain.
+/// A cell is confirmed when two paths **carrying information** reach it. A
+/// sharing rate of 1 copies the value, and counting it would inflate the
+/// confirmed total.
 fn confirms(sources: &FxHashSet<String>) -> bool {
     sources.iter().filter(|s| !is_copy(s)).count() > 1
 }
@@ -291,8 +291,8 @@ fn head_cell(vi: usize, pi: usize, path: &str) -> String {
 /// holds: a percentage cannot write a third, and 66,67 % misses 14,82 on an
 /// assiette of 296 374,20. It stops holding once a poste is spared.
 fn rate_of(v: &Victime, t: &Spreadsheet, vi: usize) -> (f64, bool) {
-    // Deriving the ratio under a written 100 % made a 0,981998 that spread one
-    // aggregate's gap over every poste and hid the only wrong cell.
+    // A ratio derived under a written 100 % would spread one aggregate's gap
+    // over every poste and hide the only wrong cell.
     let pct = v.owed_pct();
     if pct == Some(100.0) {
         return (1.0, false);

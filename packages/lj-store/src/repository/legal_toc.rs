@@ -9,7 +9,7 @@ use chrono::NaiveDate;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::Type;
 
-use super::types::{TocEdgeRow, TocOwner, TocTreeRow};
+use super::types::{SectionArticle, SectionArticles, TocEdgeRow, TocOwner, TocTreeRow};
 use super::DecisionRepository;
 use crate::error::Result;
 
@@ -35,8 +35,14 @@ macro_rules! window {
     };
 }
 
-/// An article version's `texte` and `nota`.
-pub type ArticleBody = (Option<String>, Option<String>);
+/// An article version's `texte` and `nota`, and the key of that version.
+#[derive(Default)]
+pub struct ArticleBody {
+    pub texte: Option<String>,
+    pub nota: Option<String>,
+    pub num_key: String,
+    pub date_debut: NaiveDate,
+}
 
 impl DecisionRepository<'_> {
     /// Remplace les arêtes de chaque propriétaire du batch : DELETE par clés
@@ -162,7 +168,7 @@ impl DecisionRepository<'_> {
                  WHERE t.child_kind = 'section' AND t.depth < 32 AND ",
             window!("c", "$2"),
             ") SELECT child_kind, child_uid, child_cid, child_num_key, label, etat, depth \
-              FROM tree ORDER BY path",
+              FROM tree WHERE child_kind = 'section' OR child_num_key <> '' ORDER BY path",
         );
         let rows = self.conn.query(sql, &[&text_uid, &at]).await?;
         Ok(rows
@@ -189,14 +195,24 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT source_uid, texte, nota FROM legal_article \
+                "SELECT source_uid, texte, nota, num_key, date_debut FROM legal_article \
                  WHERE text_uid = $1 AND source_uid = ANY($2)",
                 &[&text_uid, &source_uids],
             )
             .await?;
         Ok(rows
             .iter()
-            .map(|r| (r.get(0), (r.get(1), r.get(2))))
+            .map(|r| {
+                (
+                    r.get(0),
+                    ArticleBody {
+                        texte: r.get(1),
+                        nota: r.get(2),
+                        num_key: r.get(3),
+                        date_debut: r.get(4),
+                    },
+                )
+            })
             .collect())
     }
 
@@ -211,6 +227,61 @@ impl DecisionRepository<'_> {
             )
             .await?;
         Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// The articles under each section asked, a version uid or a cid, in force at `at`.
+    #[tracing::instrument(name = "db.section_articles", skip(self, ids), fields(db.system = "postgresql", n = ids.len()))]
+    pub async fn section_articles(
+        &self,
+        ids: &[String],
+        at: NaiveDate,
+    ) -> Result<HashMap<String, SectionArticles>> {
+        let sql = concat!(
+            "WITH RECURSIVE cids AS ( \
+                 SELECT i.id, coalesce((SELECT e.child_cid FROM legal_toc_edge e \
+                                        WHERE e.child_uid = i.id AND e.child_cid IS NOT NULL \
+                                        LIMIT 1), i.id) AS cid \
+                 FROM unnest($1::text[]) AS i(id) \
+             ), cur AS ( \
+                 SELECT DISTINCT ON (c.id) c.id, e.child_uid AS sec, e.text_uid \
+                 FROM cids c JOIN legal_toc_edge e \
+                   ON e.child_kind = 'section' AND e.child_cid = c.cid \
+                 WHERE ",
+            window!("e", "$2"),
+            "    ORDER BY c.id, e.date_debut DESC NULLS LAST \
+             ), tree AS ( \
+                 SELECT cur.id, cur.text_uid, e.child_kind, e.child_uid, e.child_num_key, \
+                        e.label, ARRAY[e.seq] AS path, 1 AS depth \
+                 FROM cur JOIN legal_toc_edge e ON e.owner_uid = cur.sec \
+                 WHERE ",
+            window!("e", "$2"),
+            "    UNION ALL \
+                 SELECT t.id, t.text_uid, e.child_kind, e.child_uid, e.child_num_key, \
+                        e.label, t.path || e.seq, t.depth + 1 \
+                 FROM tree t JOIN legal_toc_edge e ON e.owner_uid = t.child_uid \
+                 WHERE t.child_kind = 'section' AND t.depth < 32 AND ",
+            window!("e", "$2"),
+            ") SELECT id, text_uid, child_uid, label, child_num_key FROM tree \
+              WHERE child_kind = 'article' AND child_num_key <> '' \
+              ORDER BY id, path",
+        );
+        let rows = self.conn.query(sql, &[&ids, &at]).await?;
+        let mut sections: HashMap<String, SectionArticles> = HashMap::new();
+        for r in &rows {
+            sections
+                .entry(r.get(0))
+                .or_insert_with(|| SectionArticles {
+                    text_uid: r.get(1),
+                    articles: Vec::new(),
+                })
+                .articles
+                .push(SectionArticle {
+                    uid: r.get(2),
+                    num: r.get(3),
+                    num_key: r.get(4),
+                });
+        }
+        Ok(sections)
     }
 
     /// Every text with a structure.

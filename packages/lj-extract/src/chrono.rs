@@ -7,7 +7,7 @@
 //! docket of the arrêt it attacks, so that address goes out with court and date
 //! alone and the common parties settle it.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 use lj_core::address::CaseAddress;
@@ -57,16 +57,29 @@ impl PriorRef {
 /// an address without a court, never a raw string.
 pub struct ChronoSnapshot {
     by_type_city: HashMap<(String, String), Option<String>>,
+    /// Courts filed under another, closed or seated at a tribunal judiciaire,
+    /// named only by a label in their own form.
+    closed: HashSet<String>,
 }
 
 impl ChronoSnapshot {
     /// `rows` = `(code, jurisdiction_type, city)` of the `jurisdiction`
-    /// referential. CPH is empty today and fills at the ingest of the first
-    /// prud'homales decisions.
+    /// referential.
     pub fn new(rows: impl IntoIterator<Item = (String, String, String)>) -> Self {
+        Self::with_closed(rows, HashSet::new())
+    }
+
+    /// Such a court stays out of the city map, where a tribunal de grande
+    /// instance and the tribunal judiciaire that succeeded it share a city.
+    pub fn with_closed(
+        rows: impl IntoIterator<Item = (String, String, String)>,
+        closed: HashSet<String>,
+    ) -> Self {
         let mut by_type_city: HashMap<(String, String), Option<String>> = HashMap::new();
         for (code, jt, city) in rows {
-            if !matches!(jt.as_str(), "CA" | "TJ" | "TCOM" | "TA" | "CAA" | "CPH") {
+            if !matches!(jt.as_str(), "CA" | "TJ" | "TCOM" | "TA" | "CAA" | "CPH")
+                || closed.contains(&code)
+            {
                 continue;
             }
             for city_key in city_keys(&normalize_component(&city)) {
@@ -82,13 +95,14 @@ impl ChronoSnapshot {
                 }
             }
         }
-        Self { by_type_city }
+        Self {
+            by_type_city,
+            closed,
+        }
     }
 
     pub fn empty() -> Self {
-        Self {
-            by_type_city: HashMap::new(),
-        }
+        Self::new([])
     }
 
     /// Address of a target named in the clear ("Aix-en-Provence", "21/00123"):
@@ -123,6 +137,29 @@ impl ChronoSnapshot {
             .as_deref()
     }
 
+    /// A closed court its own form names: « tribunal de grande instance de
+    /// Bordeaux » is `tgi_bordeaux` when the referential holds it.
+    fn closed_code(&self, folded: &str) -> Option<String> {
+        const FORMS: &[(&str, &str)] = &[
+            ("tribunal de grande instance ", "tgi"),
+            ("tribunal d instance ", "ti"),
+            ("juridiction de proximite ", "prox"),
+            ("juge de proximite ", "prox"),
+            ("tribunal des affaires de securite sociale ", "tass"),
+            ("tribunal paritaire des baux ruraux ", "tpbr"),
+            ("tribunal superieur d appel ", "tsa"),
+            ("conseil de prud hommes ", "cph"),
+        ];
+        let (prefix, form) = FORMS.iter().find(|(p, _)| folded.starts_with(p))?;
+        let words: Vec<&str> = strip_articles(&folded[prefix.len()..])
+            .split_whitespace()
+            .collect();
+        (1..=words.len())
+            .rev()
+            .map(|n| format!("{form}_{}", words[..n].join("_")))
+            .find(|code| self.closed.contains(code))
+    }
+
     /// The longest prefix in words that names a court of `jt`. Cuts on its own
     /// what the recogniser over-captured, a trailing pronoun ("de paris lui")
     /// or a relative ("de nimes auquel la requete"), without a stop list.
@@ -134,9 +171,9 @@ impl ChronoSnapshot {
     }
 }
 
-/// Liens de chronologie d'une décision — vide quand rien d'exploitable
-/// (première instance, discriminants manquants, juridiction cible hors
-/// nomenclature type CPH). `scan` est le scan unique du MÊME texte.
+/// Chronology links of a decision, empty when nothing reads (first instance,
+/// missing discriminants, a target court outside the referential). `scan` is
+/// the single scan of the SAME text.
 pub fn prior_decision_refs(
     d: &Decision,
     snap: &ChronoSnapshot,
@@ -195,8 +232,13 @@ fn from_attacked_meta(d: &Decision, snap: &ChronoSnapshot) -> Option<PriorRef> {
         });
     }
 
-    let (target_jt, city) = jurisdiction_from_label(&label)?;
-    let address = snap.target_address_folded(target_jt, &city, number, date)?;
+    let address = match snap.closed_code(&label) {
+        Some(code) => Some(CaseAddress::new(&code, number, date)).filter(|a| a.docket.is_some()),
+        None => {
+            let (target_jt, city) = jurisdiction_from_label(&label)?;
+            snap.target_address_folded(target_jt, &city, number, date)
+        }
+    }?;
     let link_type = match source_jt {
         "CC" => LinkType::PourvoiContre,
         _ => LinkType::AppelDe,
@@ -204,9 +246,8 @@ fn from_attacked_meta(d: &Decision, snap: &ChronoSnapshot) -> Option<PriorRef> {
     Some(PriorRef { link_type, address })
 }
 
-/// Le greffe met la formation sur une seconde ligne (« cour d'appel de Paris\n
-/// Pôle 6 - Chambre 10 »), qui n'entre dans aucune clé. Mesuré au fonds :
-/// 7 024 libellés en deux lignes, dont pas un ne met la ville sur la seconde.
+/// The registry puts the formation on a second line (« cour d'appel de Paris\n
+/// Pôle 6 - Chambre 10 »), which enters no key; the city is always on the first.
 fn attacked_label(raw: &str) -> String {
     normalize_component(raw.split('\n').next().unwrap_or(raw))
 }
@@ -217,8 +258,7 @@ fn attacked_label(raw: &str) -> String {
 ///
 /// The administrative order names an overseas court by its territory
 /// ("tribunal administratif de la Guadeloupe") where the judgment under appeal
-/// is cited by its seat ("de Basse-Terre"). Measured 21/09/2026, that single
-/// gap leaves 275 chronology steps unnamed.
+/// is cited by its seat ("de Basse-Terre").
 fn city_keys(folded: &str) -> Vec<String> {
     let mut keys = vec![folded.to_string()];
     for article in ["la ", "le ", "les "] {
@@ -242,13 +282,17 @@ fn city_keys(folded: &str) -> Vec<String> {
 /// extraction goes through, and the one the backfill of the old keys reuses so
 /// a name reads the same on both sides.
 pub fn court_from_label(label: &str, snap: &ChronoSnapshot) -> Option<String> {
-    let (jt, city) = jurisdiction_from_label(&normalize_component(label))?;
+    let folded = normalize_component(label);
+    if let Some(code) = snap.closed_code(&folded) {
+        return Some(code);
+    }
+    let (jt, city) = jurisdiction_from_label(&folded)?;
     snap.city_prefix_code(jt, &city).map(str::to_string)
 }
 
-/// Libellé plié (`cour d appel d aix en provence`) → (type, ville pliée).
-/// Le juge de l'exécution et l'ex-TGI/TI sont des formations du TJ de la même
-/// ville. CPH, tribunaux paritaires, cours d'assises : hors nomenclature.
+/// Folded label (`cour d appel d aix en provence`) to (type, folded city). The
+/// juge de l'exécution and a TGI or TI the referential does not hold read as the
+/// TJ of their city; tribunaux paritaires and cours d'assises read as nothing.
 fn jurisdiction_from_label(folded: &str) -> Option<(&'static str, String)> {
     const FORMS: &[(&str, &str)] = &[
         ("cour administrative d appel ", "CAA"),
@@ -267,6 +311,7 @@ fn jurisdiction_from_label(folded: &str) -> Option<(&'static str, String)> {
         ("tribunal de commerce ", "TCOM"),
         ("tribunal mixte de commerce ", "TCOM"),
         ("tc ", "TCOM"),
+        ("conseil de prud hommes ", "CPH"),
     ];
     for (prefix, jt) in FORMS {
         if let Some(rest) = folded.strip_prefix(prefix) {
@@ -585,10 +630,9 @@ static RE_POURVOI_ARRET_DE: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// Arrêt de CA attaqué par un pourvoi, lu dans l'en-tête faute d'un `contested`.
-/// Le texte nomme la cour et la date, jamais le RG (101 textes sur 3 000, mesuré
-/// le 25/08) : la clé sort dans la famille `ca-parties|`, que la résolution
-/// départage par les parties, cour et date ne désignant qu'un arrêt sur 44.
+/// CA judgment a pourvoi attacks, read in the header when no `contested` names it. The text
+/// names the court and the date, seldom the RG: the key falls in the `ca-parties|` family,
+/// which resolution decides by the parties, court and date seldom designating one judgment.
 fn from_pourvoi_text(
     d: &Decision,
     snap: &ChronoSnapshot,
@@ -645,12 +689,9 @@ static RE_RENVOI_CC: LazyLock<Regex> = LazyLock::new(|| {
     .unwrap()
 });
 
-/// Arrêt de cassation renvoyant l'affaire, lu dans l'en-tête de l'arrêt de CA
-/// faute d'un `contested` qui le nomme. La date DOIT précéder le numéro, l'ordre
-/// inverse désignant l'arrêt cassé. Fenêtre mesurée le 23/08 sur les 93 081
-/// arrêts de CA portant « pourvoi » et « cassation » : 1 500 caractères rendent
-/// 1 099 candidats, 1 019 résolus dont 1 018 visant une cassation ; tout le
-/// texte ajoute 621 mentions à 35 % de rejets, soit des citations d'autorité.
+/// Cassation judgment remanding the case, read in the CA judgment's header when no `contested`
+/// names it. The date MUST precede the number, the reverse order designating the quashed judgment.
+/// Past the header, a mention is a citation of authority.
 fn from_renvoi_text(d: &Decision, scan: &crate::scan::DocScan) -> Option<PriorRef> {
     if d.jurisdiction_type.as_deref() != Some("CA") || scan_lacks(scan, "cassation") {
         return None;
@@ -697,6 +738,35 @@ mod tests {
         ])
     }
 
+    #[test]
+    fn a_closed_court_answers_to_its_own_form_and_leaves_its_city_to_the_living() {
+        let snap = ChronoSnapshot::with_closed(
+            vec![
+                ("tj_bordeaux".into(), "TJ".into(), "Bordeaux".into()),
+                ("tgi_bordeaux".into(), "TJ".into(), "Bordeaux".into()),
+                ("cph_nimes".into(), "CPH".into(), "Nîmes".into()),
+            ],
+            ["tgi_bordeaux".to_string()].into_iter().collect(),
+        );
+        let court = |label: &str| court_from_label(label, &snap);
+        assert_eq!(
+            court("Tribunal de grande instance de Bordeaux").as_deref(),
+            Some("tgi_bordeaux")
+        );
+        assert_eq!(
+            court("Tribunal judiciaire de Bordeaux").as_deref(),
+            Some("tj_bordeaux")
+        );
+        assert_eq!(
+            court("Tribunal d'instance de Bordeaux").as_deref(),
+            Some("tj_bordeaux")
+        );
+        assert_eq!(
+            court("Conseil de prud'hommes de Nîmes").as_deref(),
+            Some("cph_nimes")
+        );
+    }
+
     fn decision(jt: &str, text: &str) -> Decision {
         Decision {
             source_uid: "test".to_string(),
@@ -720,11 +790,11 @@ mod tests {
             solution: None,
             publication_codes: vec![],
             avocat_requerant: None,
+            listed_counsel: Vec::new(),
             texte_integral_raw: text.to_string(),
             texte_integral_clean: text.to_string(),
             sections: vec![],
             metadata_header: String::new(),
-            visa_trim: String::new(),
             themes: Vec::new(),
             attacked: None,
             parse_warnings: vec![],
@@ -738,7 +808,7 @@ mod tests {
         format!("{}|{}|{}", c(&a.court), c(&a.docket), c(&a.date))
     }
 
-    /// Le scan unique du même texte, comme en prod : la chronologie s'y garde.
+    /// The links read through the one scan the extraction runs on the same text.
     fn liens(d: &Decision, snap: &ChronoSnapshot) -> Vec<PriorRef> {
         prior_decision_refs(d, snap, &crate::scan::scan(&d.texte_integral_clean))
     }
@@ -950,11 +1020,11 @@ mod tests {
         let d = decision(
             "CC",
             "LA COUR DE CASSATION, DEUXIÈME CHAMBRE CIVILE, a rendu l'arrêt suivant : \
-             Statuant sur le pourvoi formé par Mme [L] [J], domiciliée [Adresse 1], 12 rue \
-             des Longues Raies, résidence Les Hauts de Sainte-Marie, bâtiment C, escalier 3, \
-             appartement 41, 54000 Nancy, agissant tant en son nom personnel qu'en qualité \
-             d'ayant droit de [R] [J], et Mme [B] [J], domiciliée [Adresse 2], 8 avenue du \
-             Général Leclerc, 54140 Jarville-la-Malgrange, contre l'arrêt rendu le \
+             Statuant sur le pourvoi formé par Mme [L] [J], domiciliée [Adresse 1], 1 rue \
+             de la Paix, résidence Les Tilleuls du Parc Central Est, bâtiment A, escalier 1, \
+             appartement 100, 54000 Nancy, agissant tant en son nom personnel qu'en qualité \
+             d'ayant droit de [R] [J] et Mme [B] [J], domiciliée [Adresse 2], 5 place de la \
+             Grande Liberté, 54140 Jarville-la-Malgrange, contre l'arrêt rendu le \
              5 avril 2022 par la cour d'appel de Nancy (chambre sociale), dans le litige \
              les opposant à la société Y.",
         );
@@ -997,8 +1067,7 @@ mod tests {
         assert_eq!(cible(&refs[0]), "ca_nancy|21/00987|2022-04-05");
     }
 
-    /// Hors en-tête, une mention de la Cour de cassation est une citation
-    /// d'autorité : 35 % des arrêts ainsi visés sont des rejets (mesuré le 23/08).
+    /// Outside the header, a mention of the Cour de cassation is a citation of authority.
     #[test]
     fn cassation_cited_in_the_body_is_not_a_renvoi() {
         let filler = "Sur le premier moyen, la cour observe que les pieces produites \

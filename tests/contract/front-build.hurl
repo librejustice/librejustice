@@ -13,7 +13,7 @@ HTTP 401
 [Asserts]
 header "x-lj-front-build" matches "^[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+$"
 
-GET {{base}}/internal/search?q=responsabilite&limit=1
+GET {{base}}/internal/search?query=responsabilite&limit=1
 HTTP 200
 [Asserts]
 header "cache-control" contains "public"

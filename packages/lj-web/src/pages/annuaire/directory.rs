@@ -183,7 +183,7 @@ fn directory_view(
                     }
                 })}
             <span aria-hidden="true">"·"</span>
-            <span class="normal-case tracking-normal">"classées par volume de contentieux"</span>
+            <span class="normal-case tracking-normal">"classées par nombre de décisions"</span>
         </p>
         <ul class="mt-4 flex flex-col gap-3">{rows}</ul>
         {pagination}
@@ -329,10 +329,6 @@ fn NamedSearchPage(kind: Kind, term: Signal<String>) -> impl IntoView {
                             </A>
                         </p>
                         <h1 class="font-sans text-3xl text-[var(--color-ink)]">{kind.plural()}</h1>
-                        <p class="max-w-prose text-[var(--color-ink-muted)]">
-                            "Cette catégorie ne se parcourt pas : les personnes physiques s'y "
-                            "cherchent par leur nom, depuis un compte."
-                        </p>
                     </header>
 
                     {category_chips(Some(kind))}
@@ -395,6 +391,7 @@ fn named_view(state: NamedState, login_href: &str, empty: &str) -> AnyView {
 #[component]
 fn DirectoryUnknown() -> impl IntoView {
     mark_not_found();
+    crate::pages::not_found::signaler_lien_mort();
     view! {
         <Title text="Catégorie introuvable - LibreJustice" />
         <Meta name="robots" content="noindex" />

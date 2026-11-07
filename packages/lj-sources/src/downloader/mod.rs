@@ -8,7 +8,8 @@
 //!
 //! - opendata : I/O HTTP synchrone via `reqwest::blocking`, pas de
 //!   parallélisme ;
-//! - judilibre : `sync_judilibre` est mono-thread, ordre séquentiel.
+//! - judilibre : `sync_judilibre` lit l'historique page à page et les
+//!   décisions d'une page en parallèle.
 
 mod calendar;
 mod compact;
@@ -19,7 +20,11 @@ mod opendata;
 mod sha256;
 
 pub use compact::compact_archives;
-pub use judilibre::{parse_decision_line, read_jsonl_gz_lines, sync_judilibre};
+pub use judilibre::{
+    court_total, list_slices, month_slices, parse_decision_line, read_jsonl_gz_lines,
+    reconcile_fetch, reconcile_tombstone, slice_totals, sync_judilibre, year_slices, Fetched,
+    Slice,
+};
 pub use manifest::{Entry, JurState, Manifest, MonthState};
 pub use opendata::sync_opendata;
 

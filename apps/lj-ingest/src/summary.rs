@@ -19,11 +19,14 @@ use anyhow::{anyhow, bail, Result};
 use lj_llm::codex;
 use lj_llm::gemini::{GeminiClient, GeminiError};
 use lj_llm::luna::{LunaClient, LunaError, LunaSeat};
-use lj_llm::mistral::{MistralClient, MistralError};
-use lj_store::repository::{CollageRow, Credential, DecisionRepository, MissingSummaryRow};
+use lj_store::repository::{
+    CollageRow, Credential, DecisionRepository, MissingSummaryRow, StoredSummary, SummaryContext,
+};
 use lj_summary::{
-    assemble_collage, build_summary_input, clean_summary, SummaryEngine, Thinking,
-    COLLAGE_PROSE_MIN,
+    analysis_resumes, assemble_collage, assemble_rewrite, body_text_from_full_text, clean_summary,
+    collage_quote, decision_title, reclean_parts, repair_collage, repaste_collage, repaste_quote,
+    Header, Provenance, SummaryEngine, Written, COLLAGE_PROSE_MIN, CONTEXT_FIELDS, CONTEXT_SOURCES,
+    JURISDICTION_TIERS,
 };
 
 use crate::config::Settings;
@@ -60,8 +63,7 @@ impl Engines {
     }
 }
 
-/// Thinking tokens are charged here too, so this is the bench's 16 000 and not the
-/// 2 000 that sufficed while no Gemini engine reasoned: the summary is about 101.
+/// Thinking tokens are charged here too.
 const GEMINI_MAX_OUTPUT_TOKENS: u32 = 16_000;
 
 /// A model a run may spend, each writing with the engines of the current
@@ -69,7 +71,7 @@ const GEMINI_MAX_OUTPUT_TOKENS: u32 = 16_000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Model {
     // No collage on gemini, and not for want of quality: a request is what this
-    // door is rationed on, 500 a day and per key, and a collage spends a whole one
+    // door is rationed on, per day and per key, and a collage spends a whole one
     // on two sentences the token metered door writes for almost nothing.
     #[value(name = "gemini-3.1-flash-lite")]
     Gemini31FlashLite,
@@ -77,12 +79,6 @@ pub enum Model {
     Gemini35FlashLite,
     #[value(name = "gpt-6-luna")]
     Gpt6Luna,
-    // Out of the chain while the live search rerank shares these keys: on
-    // 20/09/2026 the backfill held the twenty at zero tokens a minute and 81 % of
-    // rankings came back degraded. It writes at 13 to 16 euros per thousand,
-    // twelve times luna for the same substance.
-    #[value(name = "mistral-medium-latest")]
-    MistralMedium,
 }
 
 /// What the scheduled chain spends. The free gemini quota is held per model, so a
@@ -100,13 +96,12 @@ impl Model {
             collage: None,
         };
         match self {
-            Self::Gemini31FlashLite => rewrite(SummaryEngine::Gemini31MonoV10),
-            Self::Gemini35FlashLite => rewrite(SummaryEngine::Gemini35MonoV10),
+            Self::Gemini31FlashLite => rewrite(SummaryEngine::Gemini31BlockV11),
+            Self::Gemini35FlashLite => rewrite(SummaryEngine::Gemini35BlockV11),
             Self::Gpt6Luna => Engines {
-                rewrite: Some(SummaryEngine::Luna6MonoV10),
-                collage: Some(SummaryEngine::Luna6CollageV10),
+                rewrite: Some(SummaryEngine::Luna6BlockV11),
+                collage: Some(SummaryEngine::Luna6CollageHeadedV11),
             },
-            Self::MistralMedium => rewrite(SummaryEngine::MistralMediumMonoV10),
         }
     }
 }
@@ -114,7 +109,7 @@ impl Model {
 /// The same door, serving the catch-up alone, which has nothing to rewrite.
 const LUNA_COLLAGE_ONLY: Engines = Engines {
     rewrite: None,
-    collage: Some(SummaryEngine::Luna6CollageV10),
+    collage: Some(SummaryEngine::Luna6CollageHeadedV11),
 };
 
 /// Sleep floor of a driver whose pool cannot pay: the quota says how long to wait,
@@ -122,7 +117,7 @@ const LUNA_COLLAGE_ONLY: Engines = Engines {
 const IDLE_FLOOR_S: f64 = 0.05;
 
 /// Gemini's 503 is an overloaded model, not a quota, and arrives in bursts of
-/// several minutes: a job is retried eight times over about seven minutes.
+/// several minutes: a job is retried, its back-off growing.
 const MAX_UNAVAILABLE: u32 = 8;
 const UNAVAILABLE_BACKOFF_MAX_S: f64 = 120.0;
 
@@ -132,108 +127,63 @@ const UNAVAILABLE_BACKOFF_MAX_S: f64 = 120.0;
 /// ledger holds whatever the driver count.
 const DRIVER_MARGIN: f64 = 2.0;
 
-/// Libellés humains du `jurisdiction_type`.
-fn juridiction_label(jurisdiction_type: &str) -> Option<&'static str> {
-    Some(match jurisdiction_type {
-        "TA" => "Tribunal administratif",
-        "CAA" => "Cour administrative d'appel",
-        "CE" => "Conseil d'État",
-        "CC" => "Cour de cassation",
-        "CA" => "Cour d'appel",
-        "TJ" => "Tribunal judiciaire",
-        "TCOM" => "Tribunal de commerce",
-        _ => return None,
-    })
-}
-
-const FR_MONTHS: [&str; 12] = [
-    "janvier",
-    "février",
-    "mars",
-    "avril",
-    "mai",
-    "juin",
-    "juillet",
-    "août",
-    "septembre",
-    "octobre",
-    "novembre",
-    "décembre",
-];
-
-/// « 2026-05-29 » → « 29 mai 2026 ». Passe-plat si pas une date ISO complète.
-fn format_fr_date(date_lecture: &str) -> String {
-    let parts: Vec<&str> = date_lecture.split('-').collect();
-    if parts.len() != 3 {
-        return date_lecture.to_string();
-    }
-    let (Ok(year), Ok(month), Ok(day)) = (
-        parts[0].parse::<i32>(),
-        parts[1].parse::<usize>(),
-        parts[2].parse::<i32>(),
-    ) else {
-        return date_lecture.to_string();
-    };
-    match FR_MONTHS.get(month.wrapping_sub(1)) {
-        Some(m) => format!("{day} {m} {year}"),
-        None => date_lecture.to_string(),
-    }
-}
-
-/// Nom de juridiction affichable : `jurisdiction_name` assaini, sinon libellé.
-fn decision_jurisdiction(jurisdiction_type: &str, jurisdiction_name: Option<&str>) -> String {
-    if let Some(name) = jurisdiction_name {
-        let cleaned = name.trim().replace(" ,", ",");
-        let cleaned = cleaned.trim();
-        if !cleaned.is_empty() {
-            return cleaned.to_string();
-        }
-    }
-    juridiction_label(jurisdiction_type)
-        .unwrap_or(jurisdiction_type)
-        .to_string()
-}
-
-/// Titre lisible « <juridiction>, <date FR>, <numéro> ». Date et numéro
-/// optionnels.
-pub fn decision_title(
-    jurisdiction_type: &str,
-    jurisdiction_name: Option<&str>,
-    date_lecture: Option<&str>,
-    docket_numbers: Option<&[String]>,
-) -> String {
-    let mut parts = vec![decision_jurisdiction(jurisdiction_type, jurisdiction_name)];
-    if let Some(date) = date_lecture {
-        parts.push(format_fr_date(date));
-    }
-    if let Some(dockets) = docket_numbers {
-        if let Some(first) = dockets.first() {
-            parts.push(first.clone());
-        }
-    }
-    parts.join(", ")
-}
-
-/// En-tête « [Décision] <titre> » pour donner au modèle la juridiction exacte.
-fn summary_input(body_text: &str, title: &str) -> String {
-    build_summary_input(&format!("[Décision] {title}\n\n{body_text}"))
-}
-
 /// The shape a decision is written in: its court's own words pasted, a rewrite
 /// when the court published none, and nothing when no door of the run can paste.
-/// A rewrite trades 0,96 of F-measure for 0,73 against the court's words, and the
-/// row would then be written twice.
-fn work_for(
-    row: &MissingSummaryRow,
-    commentary: Option<String>,
-    can_collage: bool,
-) -> Option<Work> {
+/// A rewrite reads worse than the court's words, and the row would then be
+/// written twice.
+fn work_for(header: Header, commentary: Option<String>, can_collage: bool) -> Option<Work> {
     match commentary {
-        Some(commentary) => can_collage.then_some(Work::Collage { commentary }),
-        None => Some(Work::Rewrite {
-            title: row_title(row),
-        }),
+        Some(commentary) => can_collage.then_some(Work::Collage { header, commentary }),
+        None => Some(Work::Rewrite { header }),
     }
+}
+
+/// The headers of a batch, by decision id, in one lookup.
+pub(crate) async fn headers(
+    repo: &DecisionRepository<'_>,
+    rows: &[MissingSummaryRow],
+) -> Result<std::collections::HashMap<i64, Header>> {
+    let ids: Vec<i64> = rows.iter().map(|row| row.decision_id).collect();
+    let contexts: std::collections::HashMap<i64, SummaryContext> = repo
+        .summary_contexts(&ids, &CONTEXT_SOURCES, &CONTEXT_FIELDS)
+        .await?
+        .into_iter()
+        .map(|context| (context.decision_id, context))
+        .collect();
+    Ok(rows
+        .iter()
+        .map(|row| {
+            let context = contexts.get(&row.decision_id);
+            let provenances: Vec<Provenance> = context
+                .map(|c| c.provenances.as_slice())
+                .unwrap_or_default()
+                .iter()
+                .map(|(source, fields)| Provenance { source, fields })
+                .collect();
+            let header = Header::new(
+                &row.jurisdiction_type,
+                row_title(row),
+                context.and_then(|c| c.case_name.clone()),
+                &provenances,
+            );
+            (row.decision_id, header)
+        })
+        .collect())
+}
+
+/// The court's commentary as a collage pastes it: an analysis cut to its résumés,
+/// recased when the court published it in capitals, as the body of such a decision
+/// is shown. `None` when an analysis leaves no résumé to paste.
+fn court_commentary(raw: &str, analysis: bool) -> Option<String> {
+    let commentary = if analysis {
+        analysis_resumes(raw)
+    } else {
+        raw.to_string()
+    };
+    if commentary.chars().count() <= COLLAGE_PROSE_MIN {
+        return None;
+    }
+    Some(lj_core::truecase::recased_summary(&commentary).unwrap_or(commentary))
 }
 
 /// A door, its quota and the engines it serves. The engine is a property of the
@@ -241,13 +191,12 @@ fn work_for(
 /// served by another model is a summary nobody measured.
 enum Pool {
     Gemini(Arc<GeminiClient>, Engines),
-    Mistral(Arc<MistralClient>, Engines),
     Luna(Arc<LunaClient>, Engines),
 }
 
 /// What a pool did with a job.
 enum Attempt {
-    Written(String),
+    Written(Written),
     /// Nothing was sent: the pool cannot pay for this many seconds.
     Busy(f64),
     /// The pool is out until the quota resets, so it takes no further job.
@@ -260,7 +209,7 @@ enum Attempt {
 impl Pool {
     fn engines(&self) -> Engines {
         match self {
-            Pool::Gemini(_, e) | Pool::Mistral(_, e) | Pool::Luna(_, e) => *e,
+            Pool::Gemini(_, e) | Pool::Luna(_, e) => *e,
         }
     }
 
@@ -276,7 +225,7 @@ impl Pool {
     fn prefers(&self) -> Shape {
         match self {
             Pool::Luna(..) => Shape::Collage,
-            Pool::Gemini(..) | Pool::Mistral(..) => Shape::Rewrite,
+            Pool::Gemini(..) => Shape::Rewrite,
         }
     }
 
@@ -289,7 +238,7 @@ impl Pool {
     fn rank(&self) -> u8 {
         match self {
             Pool::Luna(..) => 0,
-            Pool::Gemini(..) | Pool::Mistral(..) => 1,
+            Pool::Gemini(..) => 1,
         }
     }
 
@@ -297,7 +246,6 @@ impl Pool {
     fn keys(&self) -> usize {
         match self {
             Pool::Gemini(client, _) => client.key_count(),
-            Pool::Mistral(client, _) => client.live_key_count().max(1),
             Pool::Luna(client, _) => client.key_count(),
         }
     }
@@ -327,7 +275,6 @@ impl Pool {
     fn demand(&self) -> (f64, usize) {
         match self {
             Pool::Gemini(client, _) => client.demand(),
-            Pool::Mistral(client, _) => client.demand(),
             Pool::Luna(client, _) => client.demand(),
         }
     }
@@ -348,22 +295,6 @@ impl Pool {
                 Err(err @ GeminiError::Status(503)) => Attempt::Unavailable(err.to_string()),
                 Err(err) => Attempt::Failed(err.to_string()),
             },
-            Pool::Mistral(client, _) => {
-                match client
-                    .chat_now(engine.prompt(), &input, mistral_cap(engine))
-                    .await
-                {
-                    Ok(raw) => job.work.finish(&raw),
-                    Err(MistralError::Busy(wait)) => Attempt::Busy(wait),
-                    Err(MistralError::Status(429)) => Attempt::Busy(0.0),
-                    Err(MistralError::Status(code))
-                        if (code == 401 || code == 402) && client.live_key_count() == 0 =>
-                    {
-                        Attempt::Handover
-                    }
-                    Err(err) => Attempt::Failed(err.to_string()),
-                }
-            }
             Pool::Luna(client, _) => match client
                 .generate_now(engine.model(), luna_effort(engine), engine.prompt(), &input)
                 .await
@@ -383,8 +314,8 @@ impl Pool {
 /// need rewriting: the model writes the two sentences that frame it and the code
 /// pastes the commentary between them, word for word.
 enum Work {
-    Rewrite { title: String },
-    Collage { commentary: String },
+    Rewrite { header: Header },
+    Collage { header: Header, commentary: String },
 }
 
 /// Which of the two shapes a job is, and which file it waits in.
@@ -413,25 +344,28 @@ impl Work {
 
     fn input(&self, body: &str) -> String {
         match self {
-            Work::Rewrite { title } => summary_input(body, title),
-            Work::Collage { commentary } => format!(
-                "=== DÉCISION ===\n{}\n\n=== SOMMAIRE OFFICIEL DE LA JURIDICTION ===\n{commentary}\n",
-                build_summary_input(body)
-            ),
+            Work::Rewrite { header } => header.rewrite_input(body),
+            Work::Collage { header, commentary } => header.collage_input(body, commentary),
         }
     }
 
     fn finish(&self, raw: &str) -> Attempt {
-        let summary = match self {
-            Work::Rewrite { .. } => clean_summary(raw),
-            Work::Collage { commentary } => assemble_collage(raw, commentary)
-                .map(|assembled| clean_summary(&assembled))
-                .unwrap_or_default(),
+        let written = match self {
+            Work::Rewrite { .. } => assemble_rewrite(raw),
+            Work::Collage { commentary, .. } => assemble_collage(raw, commentary),
         };
-        if summary.is_empty() {
-            return Attempt::Failed("résumé vide".to_string());
+        match written {
+            Some(written) => Attempt::Written(written),
+            None => Attempt::Failed("answer without its opening and body lines".to_string()),
         }
-        Attempt::Written(summary)
+    }
+
+    /// Where the court's words sit: the body of a collage, nowhere in a rewrite.
+    fn quote(&self, written: &Written) -> Option<std::ops::Range<usize>> {
+        match self {
+            Work::Rewrite { .. } => None,
+            Work::Collage { .. } => Some(written.body.clone()),
+        }
     }
 }
 
@@ -490,7 +424,8 @@ impl Files {
 /// A summary written, on its way to the store.
 struct Done {
     decision_id: i64,
-    summary: String,
+    quote: Option<std::ops::Range<usize>>,
+    written: Written,
     engine: SummaryEngine,
 }
 
@@ -548,8 +483,7 @@ pub enum Doors {
     /// free day is left whole for the drain.
     ByRank,
     /// All of them together. A drain queues more work than any door's day holds,
-    /// so holding one back writes no summary anywhere and lets its day expire:
-    /// gemini's 8 000 free requests are lost at Pacific midnight.
+    /// so holding one back writes no summary anywhere and lets its day expire.
     All,
 }
 
@@ -588,10 +522,11 @@ async fn pull(pool: &Arc<Pool>, queue: &Queue, tx: &tokio::sync::mpsc::Sender<Do
             .engine_for(job.work.shape())
             .expect("la file ne rend que les formes que la porte sert");
         match pool.summarise(&job, engine).await {
-            Attempt::Written(summary) => {
+            Attempt::Written(written) => {
                 let done = Done {
                     decision_id: job.decision_id,
-                    summary,
+                    quote: job.work.quote(&written),
+                    written,
                     engine,
                 };
                 if tx.send(done).await.is_err() {
@@ -648,23 +583,6 @@ pub fn format_eta(seconds: f64) -> String {
     format!("{h}h{m:02}m{sec:02}s")
 }
 
-/// Corps de la décision pour le résumé, depuis `decisions.full_text` (= le
-/// `texte_integral_clean` indexé).
-///
-/// On découpe `full_text` en lignes, on trim chacune, on jette les vides, et on
-/// joint par une ligne blanche. `None` si pas de paragraphe non vide.
-fn body_text_from_full_text(full_text: &str) -> Option<String> {
-    let paragraphs: Vec<&str> = full_text
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .collect();
-    if paragraphs.is_empty() {
-        return None;
-    }
-    Some(paragraphs.join("\n\n"))
-}
-
 /// Tirage `rand01` ∈ [0, 1) non cryptographique (jitter / sampling). Dérivé de
 /// l'horloge — suffisant pour désynchroniser des workers / varier l'ordre.
 fn rand01() -> f64 {
@@ -675,41 +593,28 @@ fn rand01() -> f64 {
         / 1_000_000_000.0
 }
 
-/// Supreme and European courts, then appeal, then the authorities, then first
-/// instance. A type left out comes last.
-pub const JURISDICTION_TIERS: &[(&str, i32)] = &[
-    ("CONSTIT", 0),
-    ("TC", 0),
-    ("CE", 0),
-    ("CC", 0),
-    ("CJUE", 0),
-    ("CEDH", 0),
-    ("CAA", 1),
-    ("CA", 1),
-    ("CNIL", 2),
-    ("CNDA", 2),
-    ("TA", 3),
-    ("TJ", 3),
-    ("TCOM", 3),
-];
-
 /// Which stale decisions a run takes, and in what order.
 #[derive(Debug, Clone)]
 pub enum Order {
     /// Every one of them, by id: the sweep that finishes the corpus.
     Sweep,
-    /// Cited at least `min` times inside the corpus, most cited first. The backlog
-    /// is 3,6 million rows where a day of every door is thousands, so a run that
-    /// cannot finish spends its calls where a reader is.
-    Cited { min: i32 },
+    /// Cited at least `min` times inside the corpus, most cited first.
+    Cited {
+        min: i32,
+        only: Vec<String>,
+        named: bool,
+    },
     /// Every one of them by [`JURISDICTION_TIERS`], most recent first inside a tier:
     /// the sweep that spends a week where a reader is once the cited ones are done.
-    Jurisdiction { reverse: bool },
+    Jurisdiction {
+        reverse: bool,
+        only: Vec<String>,
+        named: bool,
+    },
     /// What engine `code` wrote, in one jurisdiction type or in all of them: the
     /// repass of a text that changed without its generation moving, which no
-    /// version predicate can select. Measured 21/09/2026 on the 280 commented
-    /// decisions, repassing the Conseil d'État repairs one faulty decision in
-    /// sixteen and takes the outcome clause from 37 to 92 %, cassation gaining none.
+    /// version predicate can select. Repassing the Conseil d'État repairs faulty
+    /// decisions and restores the outcome clause, cassation gaining none.
     Engine {
         code: i16,
         jurisdiction: Option<String>,
@@ -736,7 +641,7 @@ pub async fn backfill_summaries(
     let _run = Run::start();
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let fetch_conn = pool
         .get()
         .await
@@ -772,24 +677,13 @@ pub async fn backfill_summaries(
             .filter_map(|c| c.api_key().map(str::to_string))
             .collect()
     };
-    let live_keys = api_keys(fetch_repo.credentials("mistral").await?);
     let gemini_keys = api_keys(fetch_repo.credentials("gemini").await?);
-    let mistral_keys = live_keys.len();
-    let mut mistral = Vec::new();
     let mut gemini = Vec::new();
     let mut luna = None;
     for model in models {
         let engines = model.engines();
         let engine = engines.any();
         match model {
-            Model::MistralMedium => {
-                let client = MistralClient::with_effort(
-                    live_keys.clone(),
-                    engine.model().to_string(),
-                    engine.thinking().wire().map(str::to_string),
-                )?;
-                mistral.push((Arc::new(client), engines));
-            }
             Model::Gemini31FlashLite | Model::Gemini35FlashLite => {
                 if gemini_keys.is_empty() {
                     continue;
@@ -811,35 +705,23 @@ pub async fn backfill_summaries(
     }
     let gemini = Arc::new(gemini);
     let luna_seats = luna.as_ref().map_or(0, |(c, _)| c.key_count());
-    // A backup that runs alongside starves what it backs: sharing the queue, Mistral
-    // takes 59 jobs a minute against Gemini's 10, measured 20/09/2026, and Gemini's
-    // day of 16 000 free requests expires at 07:00 UTC where Mistral's runs to month end.
-    let gemini_day_left: u32 = gemini.iter().map(|(client, _)| client.day_left()).sum();
     let pools: Vec<Arc<Pool>> = gemini
         .iter()
         .map(|(client, engines)| Arc::new(Pool::Gemini(Arc::clone(client), *engines)))
-        .chain(
-            (gemini_day_left == 0)
-                .then(|| {
-                    mistral.iter().map(|(client, engines)| {
-                        Arc::new(Pool::Mistral(Arc::clone(client), *engines))
-                    })
-                })
-                .into_iter()
-                .flatten(),
-        )
         .chain(
             luna.iter()
                 .map(|(client, engines)| Arc::new(Pool::Luna(Arc::clone(client), *engines))),
         )
         .collect();
     let can_collage = pools.iter().any(|p| p.engine_for(Shape::Collage).is_some());
-    if !can_collage && matches!(order, Order::Engine { .. }) {
+    if !can_collage
+        && matches!(&order, Order::Engine { code, .. }
+            if SummaryEngine::from_code(*code).is_some_and(|e| SummaryEngine::COLLAGES.contains(&e)))
+    {
         bail!("repassage du collage demandé sans porte qui colle : il faut un siège luna");
     }
     let drivers: usize = pools.iter().map(|p| p.keys()).sum();
     tracing::info!(
-        mistral_keys,
         gemini_keys = gemini_keys.len(),
         luna_seats,
         pools = pools.len(),
@@ -863,7 +745,6 @@ pub async fn backfill_summaries(
     let start = std::time::Instant::now();
     let mut processed: usize = 0;
     let mut persisted: usize = 0;
-    let mut marked: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut par_moteur: std::collections::BTreeMap<&'static str, usize> = Default::default();
     let mut left_to_collage: usize = 0;
 
@@ -880,12 +761,26 @@ pub async fn backfill_summaries(
                 )
                 .await?
         }
-        Order::Cited { min } => {
+        Order::Cited { min, only, named } => {
+            let only: Vec<&str> = only.iter().map(String::as_str).collect();
             fetch_repo
-                .iter_summaries_by_citations(target_version, batch_size, limit, refresh_stale, *min)
+                .iter_summaries_by_citations(
+                    target_version,
+                    batch_size,
+                    limit,
+                    refresh_stale,
+                    *min,
+                    &only,
+                    *named,
+                )
                 .await?
         }
-        Order::Jurisdiction { reverse } => {
+        Order::Jurisdiction {
+            reverse,
+            only,
+            named,
+        } => {
+            let only: Vec<&str> = only.iter().map(String::as_str).collect();
             let (types, tiers): (Vec<&str>, Vec<i32>) = JURISDICTION_TIERS.iter().copied().unzip();
             fetch_repo
                 .iter_summaries_by_jurisdiction(
@@ -896,6 +791,8 @@ pub async fn backfill_summaries(
                     &types,
                     &tiers,
                     *reverse,
+                    &only,
+                    *named,
                 )
                 .await?
         }
@@ -920,13 +817,18 @@ pub async fn backfill_summaries(
             .collect();
         // What each decision carries decides its shape, one indexed lookup on the
         // batch's ids: a court that published its own commentary is not rewritten,
-        // its words are pasted, 0,96 of F-measure against 0,73.
+        // its words are pasted, which beats a rewrite.
         let mut commentaries: std::collections::HashMap<i64, String> = fetch_repo
             .fetch_collage_rows(&ids, COLLAGE_PROSE_MIN as i32)
             .await?
             .into_iter()
-            .map(|row| (row.decision_id, row.commentary))
+            .filter_map(|row| {
+                court_commentary(&row.commentary, row.analysis)
+                    .map(|commentary| (row.decision_id, commentary))
+            })
             .collect();
+
+        let mut headers = headers(&fetch_repo, &batch).await?;
 
         let queue: Queue = Arc::new(std::sync::Mutex::new(Files::default()));
         for row in &batch {
@@ -941,7 +843,10 @@ pub async fn backfill_summaries(
                 );
                 continue;
             };
-            let Some(work) = work_for(row, commentaries.remove(&row.decision_id), can_collage)
+            let header = headers
+                .remove(&row.decision_id)
+                .expect("one header per row of the batch");
+            let Some(work) = work_for(header, commentaries.remove(&row.decision_id), can_collage)
             else {
                 left_to_collage += 1;
                 continue;
@@ -984,7 +889,9 @@ pub async fn backfill_summaries(
             write_repo
                 .set_summary(
                     done.decision_id,
-                    &done.summary,
+                    &done.written.summary,
+                    Some(done.written.body),
+                    done.quote,
                     done.engine.prompt_version(),
                     done.engine.code(),
                 )
@@ -1001,17 +908,6 @@ pub async fn backfill_summaries(
         // and pulling the next batch would only pile up the same refusals.
         let left = queue.lock().expect("file non empoisonnée").len();
         processed -= left;
-        for (fp, status) in mistral
-            .iter()
-            .flat_map(|(client, _)| client.drain_spent_fingerprints())
-        {
-            if marked.insert(fp.clone()) {
-                write_repo
-                    .disable_credential(&fp, None, status as i16, "ingest")
-                    .await?;
-                tracing::warn!(fingerprint = %fp, status, "mistral_key_disabled_marked");
-            }
-        }
         flush_gemini_day(&write_repo, &gemini).await?;
         flush_luna_rotations(
             &write_repo,
@@ -1104,30 +1000,67 @@ async fn luna_client(
     repo: &DecisionRepository<'_>,
     picked: &impl Fn(&Credential) -> bool,
 ) -> Result<Option<Arc<LunaClient>>> {
-    let seats: Vec<LunaSeat> = repo
-        .credentials("openai")
+    let seat_of = |c: &Credential| {
+        Some(LunaSeat {
+            fingerprint: c.fingerprint.clone(),
+            account_id: c.account.clone()?,
+            access_token: c.access_token()?.to_string(),
+            refresh_token: c.refresh_token()?.to_string(),
+        })
+    };
+    let now = chrono::Utc::now();
+    let mut seats = Vec::new();
+    let mut quota_parked = Vec::new();
+    for c in repo
+        .all_credentials("openai")
         .await?
         .iter()
         .filter(|c| picked(c))
-        .filter_map(|c| {
-            Some(LunaSeat {
-                fingerprint: c.fingerprint.clone(),
-                account_id: c.account.clone()?,
-                access_token: c.access_token()?.to_string(),
-                refresh_token: c.refresh_token()?.to_string(),
-            })
-        })
-        .collect();
+    {
+        let Some(seat) = seat_of(c) else { continue };
+        match c.disabled_until {
+            Some(until) if until > now => {
+                if !crate::credential::parked_until_enabled(c) {
+                    quota_parked.push(seat);
+                }
+            }
+            _ => seats.push(seat),
+        }
+    }
+    seats.extend(reopened(repo, quota_parked).await?);
     if seats.is_empty() {
         return Ok(None);
     }
     Ok(Some(Arc::new(LunaClient::new(by_expiry(seats).await)?)))
 }
 
-/// Room for the summary alone, or none when the model reasons first: its
-/// reasoning counts against the same cap and emptied one summary in three at 6 000.
-fn mistral_cap(engine: SummaryEngine) -> Option<u32> {
-    (engine.thinking() != Thinking::High).then_some(400)
+/// The seats a 429 parked whose windows all have room again.
+async fn reopened(repo: &DecisionRepository<'_>, parked: Vec<LunaSeat>) -> Result<Vec<LunaSeat>> {
+    if parked.is_empty() {
+        return Ok(parked);
+    }
+    let http = reqwest::Client::builder()
+        .user_agent("librejustice-ingest")
+        .build()?;
+    let mut back = Vec::new();
+    for seat in parked {
+        let Ok(usage) = codex::usage(&http, &seat.access_token, &seat.account_id).await else {
+            continue;
+        };
+        let used: Vec<f64> = usage.windows().iter().map(|w| w.used_percent).collect();
+        if !windows_free(&used) {
+            continue;
+        }
+        repo.enable_credential(&seat.fingerprint).await?;
+        tracing::warn!(seat = %seat.fingerprint, used = ?used, "luna_seat_unparked_early");
+        back.push(seat);
+    }
+    Ok(back)
+}
+
+/// Every window the service reports has room left, and it reports at least one.
+fn windows_free(used_percent: &[f64]) -> bool {
+    !used_percent.is_empty() && used_percent.iter().all(|u| *u < 100.0)
 }
 
 /// The door refuses a call without an effort, which every luna engine declares.
@@ -1138,21 +1071,20 @@ fn luna_effort(engine: SummaryEngine) -> &'static str {
         .expect("un moteur luna déclare son niveau de réflexion")
 }
 
-/// Identifiers per pass of the re-cleaning. The whole stock is read, about 3,8
-/// million rows, and only what the cleaning changes is written back.
+/// Identifiers per pass of the re-cleaning. The whole stock is read, and only what
+/// the cleaning changes is written back.
 const RECLEAN_BATCH: i64 = 50_000;
 
 /// Replays [`clean_summary`] over the stored summaries and writes back the ones it
-/// changes, without touching the engine that wrote them.
+/// changes, without touching the engine that wrote them. A collage gets back where
+/// its commentary sits too, which the reader sees set apart from the model's words.
 ///
-/// The cleaning is deterministic and it gains rules: the header echo, the
-/// anonymisation placeholders, then on 21/09/2026 the glyphs outside the
-/// repertoire, which the token metered door was gluing to 1,9 % of its summaries.
-/// A rule added upstream leaves the stock behind until this runs.
+/// The cleaning is deterministic and gains rules: one added upstream leaves the stock
+/// behind until this runs.
 pub async fn reclean_summaries() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let read = pool
         .get()
         .await
@@ -1169,21 +1101,103 @@ pub async fn reclean_summaries() -> Result<()> {
     let Some((min_id, max_id)) = read_repo.decision_id_bounds().await? else {
         return Ok(());
     };
-    let (mut seen, mut repaired) = (0u64, 0u64);
+    let (mut seen, mut repaired, mut repasted, mut unplaced, mut bare) =
+        (0u64, 0u64, 0u64, 0u64, 0u64);
     let mut from = min_id;
     while from <= max_id {
         let to = from.saturating_add(RECLEAN_BATCH);
-        for (id, summary) in read_repo.summaries_in_range(from, to).await? {
+        let commentaries: std::collections::HashMap<i64, (String, bool)> = read_repo
+            .collage_commentaries_in_range(
+                from,
+                to,
+                &SummaryEngine::COLLAGES.map(SummaryEngine::code),
+                COLLAGE_PROSE_MIN as i32,
+            )
+            .await?
+            .into_iter()
+            .map(|(id, raw, analysis)| (id, (raw, analysis)))
+            .collect();
+        for stored in read_repo.summaries_in_range(from, to).await? {
+            let StoredSummary {
+                decision_id: id,
+                summary,
+                body: stored_body,
+                quote: stored_quote,
+            } = stored;
             seen += 1;
-            let cleaned = clean_summary(&summary);
-            if cleaned != summary {
-                write_repo.rewrite_summary_text(id, &cleaned).await?;
+            let raw = commentaries.get(&id);
+            let commentary = match raw.map(|(raw, analysis)| court_commentary(raw, *analysis)) {
+                Some(None) => {
+                    bare += 1;
+                    continue;
+                }
+                commentary => commentary.flatten(),
+            };
+            let Some(commentary) = commentary else {
+                // A court's summary pasted whole stays as it was pasted.
+                if stored_quote.is_some() {
+                    continue;
+                }
+                let (cleaned, body) = match stored_body.clone() {
+                    Some(at) => match reclean_parts(&summary, at) {
+                        Some(written) => (written.summary, Some(written.body)),
+                        None => {
+                            unplaced += 1;
+                            (clean_summary(&summary), None)
+                        }
+                    },
+                    None => (clean_summary(&summary), None),
+                };
+                if cleaned != summary || body != stored_body {
+                    write_repo
+                        .rewrite_summary_text(id, &cleaned, body, None)
+                        .await?;
+                    repaired += 1;
+                }
+                continue;
+            };
+            let mut cleaned = clean_summary(&summary);
+            // The stored quote says where the paste sits, which a commentary cut or
+            // recased since no longer finds; without one, the paste is found by its text.
+            let swapped = match (raw, stored_quote.clone()) {
+                (_, Some(at)) => repaste_quote(&summary, at, &commentary),
+                (Some((raw, _)), None) => {
+                    if let Some(closed) = repair_collage(&cleaned, raw)
+                        .or_else(|| repair_collage(&cleaned, &commentary))
+                    {
+                        cleaned = closed;
+                    }
+                    (*raw != commentary)
+                        .then(|| repaste_collage(&cleaned, raw, &commentary))
+                        .flatten()
+                }
+                _ => None,
+            };
+            if let Some(swapped) = swapped.filter(|swapped| *swapped != cleaned) {
+                cleaned = swapped;
+                repasted += 1;
+            }
+            let quote = collage_quote(&cleaned, &commentary);
+            if quote.is_none() {
+                unplaced += 1;
+            }
+            if cleaned != summary || quote != stored_quote || quote != stored_body {
+                write_repo
+                    .rewrite_summary_text(id, &cleaned, quote.clone(), quote)
+                    .await?;
                 repaired += 1;
             }
         }
         from = to;
     }
-    tracing::warn!(lues = seen, reparees = repaired, "resumes_renettoyes");
+    tracing::warn!(
+        lues = seen,
+        reparees = repaired,
+        repasted_collages = repasted,
+        unplaced_collages = unplaced,
+        collages_without_resume = bare,
+        "resumes_renettoyes"
+    );
     Ok(())
 }
 
@@ -1191,15 +1205,14 @@ pub async fn reclean_summaries() -> Result<()> {
 /// commentary, by pasting that commentary rather than passing it through a model.
 ///
 /// One door serves it, the token metered one, because the call is two sentences and
-/// a request metered door would spend a whole request on it. Measured 20/09/2026 on
-/// 120 decisions graded by opus, the collage scores 0,96 of F-measure and 95 % of
-/// precision where rewriting the same decisions scores 0,73.
+/// a request metered door would spend a whole request on it. The collage beats
+/// rewriting the same decisions.
 pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>) -> Result<()> {
     let doors = Doors::All;
     let _run = Run::start();
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let fetch_conn = pool
         .get()
         .await
@@ -1251,16 +1264,23 @@ pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>)
         let page: Vec<CollageRow> = fetch_repo
             .fetch_collage_rows(chunk, COLLAGE_PROSE_MIN as i32)
             .await?;
+        let mut headers = headers(&fetch_repo, &fetch_repo.summary_rows(chunk).await?).await?;
 
         let queue: Queue = Arc::new(std::sync::Mutex::new(Files::default()));
         for row in &page {
+            let Some(commentary) = court_commentary(&row.commentary, row.analysis) else {
+                tracing::warn!(decision_id = row.decision_id, "collage_no_resume");
+                continue;
+            };
+            let Some(header) = headers.remove(&row.decision_id) else {
+                tracing::warn!(decision_id = row.decision_id, "collage_no_public_id");
+                continue;
+            };
             match body_text_from_full_text(&row.full_text) {
                 Some(body) => queue.lock().expect("file non empoisonnée").push_back(Job {
                     decision_id: row.decision_id,
                     body,
-                    work: Work::Collage {
-                        commentary: row.commentary.clone(),
-                    },
+                    work: Work::Collage { header, commentary },
                     attempts: 0,
                     unavailable: 0,
                 }),
@@ -1296,7 +1316,9 @@ pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>)
             write_repo
                 .set_summary(
                     done.decision_id,
-                    &done.summary,
+                    &done.written.summary,
+                    Some(done.written.body),
+                    done.quote,
                     done.engine.prompt_version(),
                     done.engine.code(),
                 )
@@ -1390,7 +1412,7 @@ fn log_luna_seats(luna: Option<&Arc<LunaClient>>) {
     }
 }
 
-/// `mistral-medium-latest=2669 gemini-3.1-flash-lite=184`, which pool served what.
+/// `<model>=<n>` per pool, which pool served what.
 fn format_par_moteur(counts: &std::collections::BTreeMap<&'static str, usize>) -> String {
     counts
         .iter()
@@ -1418,7 +1440,7 @@ async fn flush_gemini_day(
 }
 
 /// Writes back the seats luna refreshed. The refresh token is single use, so one
-/// kept in memory dies with the process and the seat needs a browser again.
+/// kept in memory dies with the process.
 async fn flush_luna_rotations(
     repo: &DecisionRepository<'_>,
     luna: Option<&LunaClient>,
@@ -1438,6 +1460,133 @@ async fn flush_luna_rotations(
     Ok(())
 }
 
+/// What a run would send for the decisions of a bench file, a JSON list of objects
+/// carrying their `id`: the inputs of both shapes, and the parts they are built from.
+pub async fn export_inputs(bench: &std::path::Path, out: &std::path::Path) -> Result<()> {
+    let ids: Vec<i64> = serde_json::from_slice::<Vec<serde_json::Value>>(&std::fs::read(bench)?)?
+        .iter()
+        .map(|decision| {
+            let id = &decision["id"];
+            id.as_i64()
+                .or_else(|| id.as_str()?.parse().ok())
+                .ok_or_else(|| anyhow!("id illisible : {id}"))
+        })
+        .collect::<Result<_>>()?;
+    let settings = Settings::from_env()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    let rows = repo.summary_rows(&ids).await?;
+    let mut headers = headers(&repo, &rows).await?;
+    let full_texts: std::collections::HashMap<i64, String> =
+        repo.fetch_full_texts(&ids).await?.into_iter().collect();
+    let commentaries: std::collections::HashMap<i64, String> = repo
+        .fetch_collage_rows(&ids, COLLAGE_PROSE_MIN as i32)
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            court_commentary(&row.commentary, row.analysis)
+                .map(|commentary| (row.decision_id, commentary))
+        })
+        .collect();
+    let mut inputs = serde_json::Map::new();
+    for row in &rows {
+        let Some(body) = full_texts
+            .get(&row.decision_id)
+            .and_then(|full_text| body_text_from_full_text(full_text))
+        else {
+            continue;
+        };
+        let header = headers
+            .remove(&row.decision_id)
+            .expect("one header per row");
+        let commentary = commentaries.get(&row.decision_id).cloned();
+        let collage = commentary.clone().map(|commentary| {
+            Work::Collage {
+                header: header.clone(),
+                commentary,
+            }
+            .input(&body)
+        });
+        inputs.insert(
+            row.decision_id.to_string(),
+            serde_json::json!({
+                "title": header.title,
+                "case_name": header.case_name,
+                "classification": header.classification,
+                "body": body,
+                "commentary": commentary,
+                "collage": collage,
+                "rewrite": Work::Rewrite { header }.input(&body),
+            }),
+        );
+    }
+    tracing::info!(asked = ids.len(), written = inputs.len(), "summary_inputs");
+    std::fs::write(out, serde_json::to_vec(&inputs)?)?;
+    Ok(())
+}
+
+/// How [`finish_answers`] reads an answer.
+#[derive(Clone, Copy, Debug, clap::ValueEnum)]
+pub enum Answer {
+    /// One block, as the generation 10 rewrite wrote it.
+    Block,
+    /// Opening, body and outcome on three lines.
+    Parts,
+    /// Opening and outcome around the commentary of [`export_inputs`].
+    Collage,
+}
+
+/// What the store would hold for a bench's raw answers, `{id: {"summary": raw}}`,
+/// written as `{id: {"summary", "body"}}`.
+pub fn finish_answers(
+    answer: Answer,
+    inputs: &std::path::Path,
+    answers: &std::path::Path,
+    out: &std::path::Path,
+) -> Result<()> {
+    let inputs: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(inputs)?)?;
+    let answers: serde_json::Map<String, serde_json::Value> =
+        serde_json::from_slice(&std::fs::read(answers)?)?;
+    let mut finished = serde_json::Map::new();
+    for (id, raw) in &answers {
+        let raw = raw["summary"].as_str().unwrap_or_default();
+        let written = match answer {
+            Answer::Block => Some(Written {
+                summary: clean_summary(raw),
+                body: 0..0,
+            })
+            .filter(|written| !written.summary.is_empty()),
+            Answer::Parts => assemble_rewrite(raw),
+            Answer::Collage => inputs
+                .get(id)
+                .and_then(|input| input["commentary"].as_str())
+                .and_then(|commentary| assemble_collage(raw, commentary)),
+        };
+        match written {
+            Some(written) => {
+                finished.insert(
+                    id.clone(),
+                    serde_json::json!({
+                        "summary": written.summary,
+                        "body": [written.body.start, written.body.end],
+                    }),
+                );
+            }
+            None => tracing::warn!(id, "summary_answer_unfinished"),
+        }
+    }
+    tracing::info!(
+        answers = answers.len(),
+        finished = finished.len(),
+        "summary_finish"
+    );
+    std::fs::write(out, serde_json::to_vec(&finished)?)?;
+    Ok(())
+}
+
 /// Titre lisible d'une ligne de backfill, injecté dans le prompt.
 /// `docket_numbers` → premier numéro éventuel.
 fn row_title(row: &MissingSummaryRow) -> String {
@@ -1454,38 +1603,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn fr_date() {
-        assert_eq!(format_fr_date("2026-05-29"), "29 mai 2026");
-        assert_eq!(format_fr_date("2026-01-01"), "1 janvier 2026");
-        assert_eq!(format_fr_date("2026-12-31"), "31 décembre 2026");
-        assert_eq!(format_fr_date("pas-une-date-x"), "pas-une-date-x");
-        assert_eq!(format_fr_date("2026/05/29"), "2026/05/29");
-    }
-
-    #[test]
-    fn title_full() {
-        let t = decision_title(
-            "CC",
-            Some("Cour de cassation"),
-            Some("2026-05-29"),
-            Some(&["24-17.384".to_string()]),
-        );
-        assert_eq!(t, "Cour de cassation, 29 mai 2026, 24-17.384");
-    }
-
-    #[test]
-    fn title_falls_back_to_label() {
-        let t = decision_title("TA", None, Some("2026-05-29"), None);
-        assert_eq!(t, "Tribunal administratif, 29 mai 2026");
-    }
-
-    #[test]
-    fn jurisdiction_sanitised() {
-        assert_eq!(
-            decision_jurisdiction("TA", Some("  Tribunal administratif de Paris ,  ")),
-            "Tribunal administratif de Paris,"
-        );
-        assert_eq!(decision_jurisdiction("CE", Some("   ")), "Conseil d'État");
+    fn a_parked_seat_reopens_only_with_room_in_every_window() {
+        assert!(windows_free(&[0.0, 2.0]));
+        assert!(!windows_free(&[100.0, 0.0]));
+        assert!(!windows_free(&[10.0, 100.0]));
+        assert!(!windows_free(&[]));
     }
 
     #[test]
@@ -1517,10 +1639,16 @@ mod tests {
     #[test]
     fn la_file_sert_la_forme_que_la_porte_prefere_puis_l_autre() {
         let body = || "corps".to_string();
+        let header = || Header {
+            title: "titre".into(),
+            case_name: None,
+            classification: Vec::new(),
+        };
         let collage = || Job {
             decision_id: 1,
             body: body(),
             work: Work::Collage {
+                header: header(),
                 commentary: "sommaire".into(),
             },
             attempts: 0,
@@ -1529,9 +1657,7 @@ mod tests {
         let rewrite = || Job {
             decision_id: 2,
             body: body(),
-            work: Work::Rewrite {
-                title: "titre".into(),
-            },
+            work: Work::Rewrite { header: header() },
             attempts: 0,
             unavailable: 0,
         };
@@ -1539,15 +1665,12 @@ mod tests {
         let mut files = Files::default();
         files.push_back(collage());
         files.push_back(rewrite());
-        let mistral = Pool::Mistral(
-            Arc::new(MistralClient::new(vec!["k".into()], "m".into()).unwrap()),
-            Engines {
-                rewrite: Some(SummaryEngine::MistralSmallV9),
-                collage: None,
-            },
+        let gemini = Pool::Gemini(
+            Arc::new(GeminiClient::new(vec!["k".into()], "m".into(), None).unwrap()),
+            Model::Gemini31FlashLite.engines(),
         );
-        assert_eq!(files.take(&mistral).map(|j| j.decision_id), Some(2));
-        assert_eq!(files.take(&mistral).map(|j| j.decision_id), None);
+        assert_eq!(files.take(&gemini).map(|j| j.decision_id), Some(2));
+        assert_eq!(files.take(&gemini).map(|j| j.decision_id), None);
         assert_eq!(files.len(), 1);
     }
 }

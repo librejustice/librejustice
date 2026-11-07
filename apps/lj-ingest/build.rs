@@ -1,6 +1,6 @@
-//! Télécharge le tokenizer Qwen3-Embedding-0.6B au build dans `OUT_DIR` (~11 Mo,
-//! jamais committé) pour `include_bytes!` dans `lj-ingest` — seul binaire qui
-//! re-chunke en BPE exact. Aucune I/O réseau au runtime.
+//! Downloads the Qwen3-Embedding-0.6B tokenizer at build time into `OUT_DIR` (never
+//! committed) for `include_bytes!` in `lj-ingest`, the only binary that re-chunks
+//! in exact BPE. No network I/O at run time.
 
 use std::path::PathBuf;
 use std::process::Command;

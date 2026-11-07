@@ -42,7 +42,6 @@ use lj_store::repository::{DecisionRepository, ExtractedFields};
 use crate::config::Settings;
 
 use super::batch::drain_batch;
-use super::embed::build_embedder_opt;
 use super::{content_checksum, generate_public_id, Candidate, IngestCounts, IngestMode};
 
 /// Threads de crawl concurrents. Avec [`ariane::THROTTLE`] respecté par
@@ -155,7 +154,7 @@ pub async fn sync_ariane(years: Vec<u16>, census_only: bool, limit: Option<usize
     fs::create_dir_all(&dir)?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -191,34 +190,16 @@ pub async fn sync_ariane(years: Vec<u16>, census_only: bool, limit: Option<usize
             years.clone()
         }
     };
-    fill_decisions(
-        &settings,
-        &dir,
-        &conn,
-        cibles(deficits),
-        &census,
-        &mut manifest,
-    )
-    .await?;
-    sync_comments(
-        &settings,
-        &dir,
-        &conn,
-        cibles(bougees),
-        limit,
-        &census,
-        manifest,
-    )
-    .await
+    fill_decisions(&dir, &conn, cibles(deficits), &census, &mut manifest).await?;
+    sync_comments(&dir, &conn, cibles(bougees), limit, &census, manifest).await
 }
 
 /// Récolte les commentaires des années désignées et rattache leurs bundles. Une
 /// année qui passe sans erreur transitoire est marquée au manifeste sur les
 /// comptes du recensement, et sautée tant qu'ils ne bougent pas.
 async fn sync_comments(
-    settings: &Settings,
     dir: &Path,
-    conn: &lj_store::db::Connection,
+    conn: &lj_pg::db::Connection,
     years: Vec<u16>,
     limit: Option<usize>,
     census: &Census,
@@ -226,7 +207,7 @@ async fn sync_comments(
 ) -> Result<()> {
     let repo = DecisionRepository::new(conn);
     let index: HashMap<(String, String), i64> = repo
-        .ce_docket_date_index()
+        .docket_date_index("CE")
         .await?
         .into_iter()
         .map(|(dossier, date, id)| ((norm_dossier(&dossier), date), id))
@@ -334,7 +315,7 @@ async fn sync_comments(
         (0, 0)
     } else {
         let (created, attached, still_orphans) =
-            recover_dce_orphans(settings, dir, conn, index, recoverable).await?;
+            recover_dce_orphans(dir, conn, index, recoverable).await?;
         totals.orphans += still_orphans;
         (created, attached)
     };
@@ -664,9 +645,8 @@ async fn deficits_de_decisions(
 /// Énumère les années désignées, garde les hits que le fonds n'a pas, et crée
 /// leurs décisions depuis le document intégral.
 async fn fill_decisions(
-    settings: &Settings,
     dir: &Path,
-    conn: &lj_store::db::Connection,
+    conn: &lj_pg::db::Connection,
     years: Vec<u16>,
     census: &Census,
     manifest: &mut Manifest,
@@ -675,13 +655,12 @@ async fn fill_decisions(
         return Ok(());
     }
     let index: HashMap<(String, String), i64> = DecisionRepository::new(conn)
-        .ce_docket_date_index()
+        .docket_date_index("CE")
         .await?
         .into_iter()
         .map(|(dossier, date, id)| ((norm_dossier(&dossier), date), id))
         .collect();
 
-    let (embedder, require_embeddings) = build_embedder_opt(settings).await?;
     let mut counts = IngestCounts::default();
     for year in years {
         let absents = {
@@ -720,15 +699,7 @@ async fn fill_decisions(
         };
         tracing::info!(year, candidats = candidates.len(), "DCE documents read");
         let tous_lus = candidates.len() == attendus;
-        drain_batch(
-            conn,
-            embedder.as_ref(),
-            candidates,
-            require_embeddings,
-            IngestMode::MissingHash,
-            &mut counts,
-        )
-        .await?;
+        drain_batch(conn, candidates, IngestMode::MissingHash, &mut counts).await?;
         if tous_lus {
             census.mark_decisions(manifest, year);
             write_manifest(dir, manifest)?;
@@ -835,13 +806,13 @@ fn dce_candidate(
         solution: None,
         publication_codes: Vec::new(),
         avocat_requerant: None,
+        listed_counsel: Vec::new(),
         themes: Vec::new(),
         attacked: None,
         texte_integral_raw: body.clone(),
         texte_integral_clean: body,
         sections: Vec::new(),
         metadata_header: String::new(),
-        visa_trim: String::new(),
         parse_warnings: Vec::new(),
     };
     Candidate {
@@ -852,8 +823,8 @@ fn dce_candidate(
         raw_payload: Vec::new(),
         payload_format: "html".to_string(),
         write_mode: super::WriteMode::Full,
-        dila_fond: None,
         passages: true,
+        distinct: false,
         // Forme payload-Judilibre minimale : le chemin linéaire
         // (`Decision::from_source_fields_json`) reconstruit la décision
         // canonique depuis ces clés.
@@ -881,9 +852,8 @@ fn dce_candidate(
 /// Idempotent : re-jouable, skip par checksum. Retourne (créées, rattachées,
 /// restées orphelines).
 async fn recover_dce_orphans(
-    settings: &Settings,
     dir: &Path,
-    conn: &lj_store::db::Connection,
+    conn: &lj_pg::db::Connection,
     index: HashMap<(String, String), i64>,
     recoverable: Vec<((String, String), Bundle)>,
 ) -> Result<(usize, usize, usize)> {
@@ -986,22 +956,13 @@ async fn recover_dce_orphans(
     );
 
     // 2. Création (chunk + embed) via le drain standard.
-    let (embedder, require_embeddings) = build_embedder_opt(settings).await?;
     let mut counts = IngestCounts::default();
-    drain_batch(
-        conn,
-        embedder.as_ref(),
-        candidates,
-        require_embeddings,
-        IngestMode::MissingHash,
-        &mut counts,
-    )
-    .await?;
+    drain_batch(conn, candidates, IngestMode::MissingHash, &mut counts).await?;
 
     // 3. Rattachement des bundles — décisions créées et liens ratés confondus,
     //    via les clés de résolution calculées au parse.
     let index: HashMap<(String, String), i64> = repo
-        .ce_docket_date_index()
+        .docket_date_index("CE")
         .await?
         .into_iter()
         .map(|(dossier, date, id)| ((norm_dossier(&dossier), date), id))
@@ -1088,40 +1049,39 @@ mod tests {
     /// sautée, une année démentie repart, une année inconnue passe une fois.
     #[test]
     fn seul_un_compte_qui_bouge_rejoue_une_annee() {
-        let c = census(&[(1918, 158), (2026, 800)], &[(2026, 40)], &[]);
+        let c = census(&[(1918, 100), (2026, 500)], &[(2026, 20)], &[]);
         let mut m = Manifest::new();
         c.mark_comments(&mut m, 1918);
         c.mark_comments(&mut m, 2026);
         assert!(c.commented_years_moved(&m).is_empty());
 
-        let bouge = census(&[(1918, 158), (2026, 812)], &[(2026, 40)], &[]);
+        let bouge = census(&[(1918, 100), (2026, 510)], &[(2026, 20)], &[]);
         assert_eq!(bouge.commented_years_moved(&m), vec![2026]);
 
-        let neuve = census(&[(1918, 158), (1919, 3), (2026, 800)], &[(2026, 40)], &[]);
+        let neuve = census(&[(1918, 100), (1919, 3), (2026, 500)], &[(2026, 20)], &[]);
         assert_eq!(neuve.commented_years_moved(&m), vec![1919]);
     }
 
-    /// Les deux passes marquent la même année sans s'effacer : le déficit de six
-    /// de 1982 (affaires jointes comptées par dossier chez ArianeWeb) est tranché
-    /// par une énumération, et ne réénumère pas tant que le fond ne bouge pas.
+    /// The two passes mark the same year without erasing each other: an
+    /// enumeration settles the year, and does not run again while the fonds stays
+    /// put.
     #[test]
     fn une_enumeration_qui_ne_trouve_rien_clot_lannee() {
-        let c = census(&[(1982, 1600)], &[], &[(1982, 2507)]);
+        let c = census(&[(1982, 1000)], &[], &[(1982, 2000)]);
         let mut m = Manifest::new();
         c.mark_decisions(&mut m, 1982);
-        assert_eq!(m[&1982].dce, Some(2507));
+        assert_eq!(m[&1982].dce, Some(2000));
         assert_eq!(m[&1982].ajce, 0);
 
         c.mark_comments(&mut m, 1982);
-        assert_eq!(m[&1982].dce, Some(2507));
-        assert_eq!(m[&1982].ajce, 1600);
+        assert_eq!(m[&1982].dce, Some(2000));
+        assert_eq!(m[&1982].ajce, 1000);
 
-        let ajoutee = census(&[(1982, 1600)], &[], &[(1982, 2508)]);
+        let ajoutee = census(&[(1982, 1000)], &[], &[(1982, 2001)]);
         assert_ne!(m[&1982].dce, Some(super::Census::count(&ajoutee.dce, 1982)));
     }
 
-    // Clés de rattachement : cas réels de liens ratés
-    // (99137 ArianeWeb vs 099137 JADE ; date de fiche 09/06 vs ECLI 23/06).
+    // Join keys: ArianeWeb drops the leading zero JADE keeps.
     #[test]
     fn norm_dossier_zeros_de_tete() {
         assert_eq!(norm_dossier("099137"), "99137");
@@ -1145,7 +1105,7 @@ mod tests {
 
     fn hit(dossier: Option<&str>, date: Option<&str>) -> ArianeHit {
         ArianeHit {
-            id: "/Ariane_Web/AW_DCE/|57666".to_string(),
+            id: "/Ariane_Web/AW_DCE/|12345".to_string(),
             dossier: dossier.map(str::to_string),
             date_lecture: date.map(str::to_string),
             parent: None,

@@ -1,13 +1,11 @@
-//! Enums canoniques de la taxonomie décisions, partagés api ↔ web.
+//! Canonical enums of the decision taxonomy, shared by the API and the web.
 //!
-//! Schéma unifié : ordre administratif (CE/CAA/TA/CNDA/Cour des comptes/TC) ET
-//! ordre judiciaire (Cour de cassation/CA/TJ/TCOM). Les enums de facettes
-//! ([`Solution`], [`Procedure`], [`Office`], [`Domain`]) sont le **miroir
-//! compilé du seed** de la migration `0100_facet_value_jurisdiction_tables.sql` : chaque
-//! valeur sérialisée est le suffixe d'un uid `facet_value` — le test
-//! `enums_match_migration_seed` diffe enum ↔ seed, toute dérive est un build
-//! rouge. Les autres enums gardent les chaînes SCREAMING_CASE historiques des
-//! colonnes Postgres `text`.
+//! One schema for the administrative order (CE/CAA/TA/CNDA/Cour des comptes/TC)
+//! and the judicial order (Cour de cassation/CA/TJ/TCOM). The facet enums
+//! ([`Solution`], [`Domain`]) are the compiled mirror of the `facet_value` seed:
+//! each serialised value is the suffix of a uid, and `enums_match_migration_seed`
+//! diffs enum against seed, so a drift is a red build. The other enums keep the
+//! SCREAMING_CASE strings of the Postgres `text` columns.
 
 use serde::{Deserialize, Serialize};
 
@@ -85,78 +83,6 @@ impl Solution {
         Solution::SatisfactionTotale,
         Solution::SatisfactionPartielle,
         Solution::Autre,
-    ];
-}
-
-/// Voie procédurale — miroir du seed `voie:*` (migration 0100), namespace
-/// renommé `procedure:*` par la 0145. `null` = procédure contentieuse
-/// ordinaire ; vocabulaire fermé, pas de `AUTRE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Procedure {
-    RefereSuspension,
-    RefereLiberte,
-    RefereMesuresUtiles,
-    ReferePrecontractuel,
-    RefereProvision,
-    RefereCivil,
-    #[serde(rename = "FILTRAGE_R222_1")]
-    FiltrageR2221,
-    Papc,
-    Qpc,
-    QuestionPrejudicielleCjue,
-    RecoursRevision,
-    TierceOpposition,
-    RectificationInterpretation,
-}
-
-impl Procedure {
-    /// Toutes les variantes, dans l'ordre `sort` du seed 0100.
-    pub const ALL: [Procedure; 13] = [
-        Procedure::RefereSuspension,
-        Procedure::RefereLiberte,
-        Procedure::RefereMesuresUtiles,
-        Procedure::ReferePrecontractuel,
-        Procedure::RefereProvision,
-        Procedure::RefereCivil,
-        Procedure::FiltrageR2221,
-        Procedure::Papc,
-        Procedure::Qpc,
-        Procedure::QuestionPrejudicielleCjue,
-        Procedure::RecoursRevision,
-        Procedure::TierceOpposition,
-        Procedure::RectificationInterpretation,
-    ];
-}
-
-/// Juge/office spécialisé, miroir du référentiel `office:*` que les migrations
-/// laissent. `null` = formation ordinaire ; vocabulaire fermé, pas de `AUTRE`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum Office {
-    Jld,
-    Jaf,
-    Jcp,
-    Jex,
-    JugeEnfants,
-    PremierPresident,
-    MagistratDesigne,
-    PresidentSectionContentieux,
-    JugeExpropriation,
-}
-
-impl Office {
-    /// Toutes les variantes, dans l'ordre `sort` du référentiel.
-    pub const ALL: [Office; 9] = [
-        Office::Jld,
-        Office::Jaf,
-        Office::Jcp,
-        Office::Jex,
-        Office::JugeEnfants,
-        Office::PremierPresident,
-        Office::MagistratDesigne,
-        Office::PresidentSectionContentieux,
-        Office::JugeExpropriation,
     ];
 }
 
@@ -300,10 +226,12 @@ pub enum DecisionType {
     Autre,
 }
 
-/// Ordre de juridiction déduit (préfixe uid opendata / type Judilibre).
-/// Valeurs : `TA` `CAA` `CE` `TC` `CONSTIT` (admin/suprême) ; `CC` `CA` `TJ`
-/// `TCOM` (judiciaire) ; `CEDH` `CJUE` (européen) ; `CNDA` (Cour nationale du
-/// droit d'asile) ; `CNIL` (délibérations de la CNIL).
+/// Court type of a decision: `TA` `CAA` `CE` `TC` `CONSTIT` (administrative and
+/// supreme), `CC` `CA` `TJ` `TCOM` `CPH` (judicial), `CEDH` `CJUE` (European),
+/// `CNDA` (asylum court), `CNIL` (CNIL deliberations), `DDD` (the Défenseur des droits and the
+/// authorities it succeeded), `ADLC` (the Autorité de la concurrence and the Conseil before it),
+/// `COMEU` (the European Commission's competition decisions), then the families of the foreign
+/// courts, whose code starts with their place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum JurisdictionType {
     #[serde(rename = "TA")]
@@ -324,6 +252,8 @@ pub enum JurisdictionType {
     Tj,
     #[serde(rename = "TCOM")]
     Tcom,
+    #[serde(rename = "CPH")]
+    Cph,
     #[serde(rename = "CEDH")]
     Cedh,
     #[serde(rename = "CJUE")]
@@ -332,11 +262,41 @@ pub enum JurisdictionType {
     Cnda,
     #[serde(rename = "CNIL")]
     Cnil,
+    #[serde(rename = "DDD")]
+    Ddd,
+    #[serde(rename = "ADLC")]
+    Adlc,
+    #[serde(rename = "COMEU")]
+    Comeu,
+    #[serde(rename = "COUR_SUPREME")]
+    CourSupreme,
+    #[serde(rename = "COUR_CASSATION")]
+    CourCassation,
+    #[serde(rename = "COUR_CONSTITUTIONNELLE")]
+    CourConstitutionnelle,
+    #[serde(rename = "COUR_APPEL")]
+    CourAppel,
+    #[serde(rename = "COUR_ADMINISTRATIVE")]
+    CourAdministrative,
+    #[serde(rename = "TRIBUNAL_ADMINISTRATIF")]
+    TribunalAdministratif,
+    #[serde(rename = "TRIBUNAL_PREMIERE_INSTANCE")]
+    TribunalPremiereInstance,
+    #[serde(rename = "TRIBUNAL_COMMERCE")]
+    TribunalCommerce,
+    #[serde(rename = "COUR_CRIMINELLE")]
+    CourCriminelle,
+    #[serde(rename = "COUR_JUSTICE")]
+    CourJustice,
+    #[serde(rename = "CCJA")]
+    Ccja,
+    #[serde(rename = "COUR_DROITS_HOMME")]
+    CourDroitsHomme,
 }
 
 impl JurisdictionType {
     /// Toutes les variantes, dans l'ordre de déclaration.
-    pub const ALL: [JurisdictionType; 13] = [
+    pub const ALL: [JurisdictionType; 29] = [
         JurisdictionType::Ta,
         JurisdictionType::Caa,
         JurisdictionType::Ce,
@@ -346,17 +306,34 @@ impl JurisdictionType {
         JurisdictionType::Ca,
         JurisdictionType::Tj,
         JurisdictionType::Tcom,
+        JurisdictionType::Cph,
         JurisdictionType::Cedh,
         JurisdictionType::Cjue,
         JurisdictionType::Cnda,
         JurisdictionType::Cnil,
+        JurisdictionType::Ddd,
+        JurisdictionType::Adlc,
+        JurisdictionType::Comeu,
+        JurisdictionType::CourSupreme,
+        JurisdictionType::CourCassation,
+        JurisdictionType::CourConstitutionnelle,
+        JurisdictionType::CourAppel,
+        JurisdictionType::CourAdministrative,
+        JurisdictionType::TribunalAdministratif,
+        JurisdictionType::TribunalPremiereInstance,
+        JurisdictionType::TribunalCommerce,
+        JurisdictionType::CourCriminelle,
+        JurisdictionType::CourJustice,
+        JurisdictionType::Ccja,
+        JurisdictionType::CourDroitsHomme,
     ];
 
-    /// The jurisdiction segment of a decision URL, in the alphabet of text URLs.
-    pub fn url_segment(self) -> &'static str {
+    /// The jurisdiction segment of a decision URL, in the alphabet of text URLs: a foreign
+    /// court's place, read from its code.
+    pub fn url_segment(self, jurisdiction_code: Option<&str>) -> String {
         match self {
-            JurisdictionType::Cjue => "eu",
-            JurisdictionType::Cedh => "intl",
+            JurisdictionType::Cjue | JurisdictionType::Comeu => "eu".to_string(),
+            JurisdictionType::Cedh => "intl".to_string(),
             JurisdictionType::Ta
             | JurisdictionType::Caa
             | JurisdictionType::Ce
@@ -366,8 +343,15 @@ impl JurisdictionType {
             | JurisdictionType::Ca
             | JurisdictionType::Tj
             | JurisdictionType::Tcom
+            | JurisdictionType::Cph
             | JurisdictionType::Cnda
-            | JurisdictionType::Cnil => "fr",
+            | JurisdictionType::Cnil
+            | JurisdictionType::Ddd
+            | JurisdictionType::Adlc => "fr".to_string(),
+            foreign => lj_vocab::url_segment(&lj_vocab::courts::foreign_order(
+                jurisdiction_code
+                    .unwrap_or_else(|| panic!("a foreign court without a code: {foreign:?}")),
+            )),
         }
     }
 
@@ -396,7 +380,7 @@ impl JurisdictionType {
 /// de la réforme 2025, rattachés au type TCOM). Les préfixes emboîtés sont
 /// classés du plus long au plus court (« cour administrative d'appel » avant
 /// « cour d'appel »).
-const JURISDICTION_ABBREVIATIONS: [(&str, &str); 15] = [
+const JURISDICTION_ABBREVIATIONS: [(&str, &str); 21] = [
     ("cour administrative d'appel", "CAA"),
     ("cour nationale du droit d'asile", "CNDA"),
     ("cour européenne des droits de l'homme", "CEDH"),
@@ -415,6 +399,15 @@ const JURISDICTION_ABBREVIATIONS: [(&str, &str); 15] = [
         "commission nationale de l'informatique et des libertés",
         "CNIL",
     ),
+    ("défenseur des droits", "DDD"),
+    (
+        "haute autorité de lutte contre les discriminations et pour l'égalité",
+        "HALDE",
+    ),
+    ("commission nationale de déontologie de la sécurité", "CNDS"),
+    ("autorité de la concurrence", "Aut. conc."),
+    ("conseil de la concurrence", "Cons. conc."),
+    ("commission européenne", "Comm. UE"),
 ];
 
 /// Nom de juridiction abrégé pour une citation : la tête du nom est remplacée
@@ -440,8 +433,17 @@ mod tests {
     use super::*;
 
     #[test]
+    fn every_foreign_court_type_is_a_variant_sitting_in_its_place() {
+        for code in lj_vocab::courts::FOREIGN_COURT_TYPES {
+            let kind = JurisdictionType::from_code(code).unwrap_or_else(|| panic!("{code}"));
+            let court = lj_vocab::courts::foreign_court_code("sn", code, &[]);
+            assert_eq!(kind.url_segment(Some(&court)), "sn", "{code}");
+        }
+    }
+
+    #[test]
     fn abbreviate_all_corpus_jurisdictions() {
-        // Un cas par tête de nom du référentiel `jurisdiction` de prod.
+        // One case per name head of the `jurisdiction` referential.
         for (name, expected) in [
             ("Tribunal administratif de Caen", "TA de Caen"),
             ("Cour administrative d'appel de Bordeaux", "CAA de Bordeaux"),
@@ -463,6 +465,14 @@ mod tests {
                 "Commission nationale de l'informatique et des libertés",
                 "CNIL",
             ),
+            ("Défenseur des droits", "DDD"),
+            (
+                "Haute autorité de lutte contre les discriminations et pour l'égalité",
+                "HALDE",
+            ),
+            ("Commission nationale de déontologie de la sécurité", "CNDS"),
+            ("Autorité de la concurrence", "Aut. conc."),
+            ("Conseil de la concurrence", "Cons. conc."),
         ] {
             assert_eq!(abbreviate_jurisdiction_name(name), expected, "{name}");
         }
@@ -505,18 +515,10 @@ mod tests {
             ser(&Solution::SatisfactionPartielle),
             "SATISFACTION_PARTIELLE"
         );
-        assert_eq!(ser(&Procedure::FiltrageR2221), "FILTRAGE_R222_1");
-        assert_eq!(
-            ser(&Procedure::ReferePrecontractuel),
-            "REFERE_PRECONTRACTUEL"
-        );
-        assert_eq!(ser(&Office::Jex), "JEX");
         assert_eq!(ser(&Domain::CivilDroitLocatif), "CIVIL_DROIT_LOCATIF");
     }
 
-    /// État net d'une facette, migrations rejouées dans l'ordre : une ligne
-    /// `('facet:X'` sème, un `DELETE FROM facet_value` retire les uids qu'il
-    /// cite. Lire un seul fichier rendait aveugle à tout ce qui vient après lui.
+    /// A facet's uids over every migration in order, seeded by `('facet:X'`, removed by DELETE.
     fn seed_uid_suffixes(facet: &str) -> std::collections::BTreeSet<String> {
         let dir = format!("{}/../lj-store/migrations", env!("CARGO_MANIFEST_DIR"));
         let mut fichiers: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
@@ -570,12 +572,8 @@ mod tests {
     #[test]
     fn enums_match_migration_seed() {
         assert_eq!(all_codes(&Solution::ALL), seed_uid_suffixes("solution"));
-        assert_eq!(all_codes(&Procedure::ALL), seed_uid_suffixes("voie"));
-        assert_eq!(all_codes(&Office::ALL), seed_uid_suffixes("office"));
         assert_eq!(all_codes(&Domain::ALL), seed_uid_suffixes("domaine"));
         assert_eq!(Solution::ALL.len(), 17);
-        assert_eq!(Procedure::ALL.len(), 13);
-        assert_eq!(Office::ALL.len(), 9);
         assert_eq!(Domain::ALL.len(), 45);
     }
 

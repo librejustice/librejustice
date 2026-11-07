@@ -186,6 +186,7 @@ impl DecisionRepository<'_> {
                     &[&from_uid, &to_uid, &jurisdiction],
                 )
                 .await?;
+            self.stamp_legal_texts(&[to_uid.to_string()]).await?;
             let mut counts = TextRenameCounts::default();
             for (slot, sql) in [
                 (
@@ -308,6 +309,7 @@ impl DecisionRepository<'_> {
                     &[&from_uid, &into_uid],
                 )
                 .await?;
+            self.stamp_legal_texts(&[into_uid.to_string()]).await?;
             for sql in [
                 "UPDATE legal_text_slug_redirect SET text_uid = $2 WHERE text_uid = $1",
                 "INSERT INTO legal_text_slug_redirect (ancien_slug, text_uid) \

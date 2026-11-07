@@ -540,41 +540,8 @@ pub fn manifest_path(data_dir: &Path) -> std::path::PathBuf {
 }
 
 // ----------------------------------------------------------------------------
-// Cache local des payloads PDF
+// Local OCR cache
 // ----------------------------------------------------------------------------
-
-/// Chemin du PDF caché pour `numero` (`<data_dir>/cnda/payloads/<numero>.pdf`).
-/// La CNDA scrape des PDF un par un ; on les persiste comme les autres sources
-/// persistent leurs archives, pour qu'un re-run — ou une ré-extraction — relise
-/// le PDF localement au lieu de re-crawler cnda.fr.
-pub fn payload_path(data_dir: &Path, numero: &str) -> std::path::PathBuf {
-    data_dir
-        .join(CNDA_DIR)
-        .join("payloads")
-        .join(format!("{numero}.pdf"))
-}
-
-/// Lit le PDF caché pour `numero`, ou `None` si absent du cache.
-pub fn load_cached_payload(data_dir: &Path, numero: &str) -> Result<Option<Vec<u8>>> {
-    let path = payload_path(data_dir, numero);
-    if path.exists() {
-        Ok(Some(fs::read(&path)?))
-    } else {
-        Ok(None)
-    }
-}
-
-/// Écrit le PDF dans le cache (write atomique via fichier temporaire + rename).
-pub fn save_cached_payload(data_dir: &Path, numero: &str, bytes: &[u8]) -> Result<()> {
-    let path = payload_path(data_dir, numero);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("pdf.tmp");
-    fs::write(&tmp, bytes)?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
-}
 
 /// Chemin du markdown OCR caché pour `numero`
 /// (`<data_dir>/cnda/ocr/<numero>.md`). Deuxième couche de cache au-dessus du
@@ -831,22 +798,6 @@ mod tests {
         assert_eq!(
             extract_lecture_date_from_body("aucune référence").as_deref(),
             None
-        );
-    }
-
-    #[test]
-    fn cached_payload_roundtrip_and_path() {
-        let dir = tempfile::tempdir().unwrap();
-        assert_eq!(
-            payload_path(dir.path(), "25043827"),
-            dir.path().join("cnda/payloads/25043827.pdf")
-        );
-        assert_eq!(load_cached_payload(dir.path(), "25043827").unwrap(), None);
-        let bytes = b"%PDF-1.7 fake".to_vec();
-        save_cached_payload(dir.path(), "25043827", &bytes).unwrap();
-        assert_eq!(
-            load_cached_payload(dir.path(), "25043827").unwrap(),
-            Some(bytes)
         );
     }
 

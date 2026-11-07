@@ -77,6 +77,36 @@ services:
       - ${LIBREJUSTICE_STATE_DIR}/tls/origin:/etc/librejustice/origin:ro
       - ${LIBREJUSTICE_STATE_DIR}/caddy:/data
 
+  embed:
+    image: ghcr.io/ggml-org/llama.cpp:server-b11277
+    container_name: librejustice-embed
+    profiles: ["embed"]
+    restart: unless-stopped
+    volumes:
+      - ${LIBREJUSTICE_STATE_DIR}/models:/models:ro
+    command:
+      - -m
+      - /models/qwen3-embedding-0.6b-f16.gguf
+      - --embedding
+      - --pooling
+      - last
+      - --threads
+      - "6"
+      - --ctx-size
+      - "512"
+      - --parallel
+      - "1"
+      - --batch-size
+      - "512"
+      - --ubatch-size
+      - "512"
+      - --cache-ram
+      - "0"
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8080"
+
   # Conteneur applicatif unique : le binaire `lj-server` sert l'API REST
   # (/internal/*, /api/* a cle, /admin/*), OAuth/MCP (/oauth/*, /mcp, /.well-known/*), le SSR Leptos et ses
   # assets. Le TLS d'origine est terminé par le front `caddy`.
@@ -146,6 +176,7 @@ services:
     environment:
       LIBREJUSTICE_DB_URL: postgresql://librejustice:${LIBREJUSTICE_PG_PASSWORD}@postgres:5432/librejustice
       LIBREJUSTICE_EGRESS_PROXY: ${LIBREJUSTICE_EGRESS_PROXY}
+      LIBREJUSTICE_PAGE_GATEWAY: ${LIBREJUSTICE_PAGE_GATEWAY}
       LIBREJUSTICE_STATE_DIR: /var/lib/librejustice
       LOG_FORMAT: json
       LIBREJUSTICE_GRAFANA_OTLP_ENDPOINT: ${LIBREJUSTICE_GRAFANA_OTLP_ENDPOINT}

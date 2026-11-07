@@ -32,7 +32,7 @@ pub fn LoginLinkPage() -> impl IntoView {
                         <p class="text-sm text-[var(--color-ink-muted)]">
                             "Ce lien a peut-être expiré ou déjà été utilisé. "
                             <A
-                                href="/login?mode=lien"
+                                href="/login?mode=link"
                                 attr:class="text-[var(--color-accent)] underline hover:opacity-80"
                             >
                                 "Demander un nouveau lien"

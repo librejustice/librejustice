@@ -324,9 +324,9 @@ mod tests {
                         <a class="page-link" rel="next" href="/mapa/marche/?page=2">Suivant&nbsp;&raquo;</a>
                     </li>
                     <li class="page-item">
-                        <span class="badge badge-info"><b>1242</b></span> consultations
+                        <span class="badge badge-info"><b>1000</b></span> consultations
                     </li>"#;
-        assert_eq!(total_declare(nav), Some(1242));
+        assert_eq!(total_declare(nav), Some(1000));
         assert!(parse_page(nav).is_empty());
         assert_eq!(
             total_declare("<a href='/mapa/marche/'>Liste des consultations</a>"),
@@ -375,7 +375,7 @@ mod tests {
     }
 
     #[test]
-    fn sans_session_anonyme_la_fiche_est_a_retenter() {
+    fn une_page_de_profil_visiteur_est_a_retenter() {
         let html = r#"<div class="page-header">
             <h1>Renseigner votre profil visiteur</h1>
             Ce profil temporaire <b>(facultatif, gratuit et sans engagement)</b> nous permettra

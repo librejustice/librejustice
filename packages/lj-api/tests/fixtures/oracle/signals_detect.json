@@ -1,5 +1,5 @@
 {
-  "_provenance": "Généré depuis un oracle Python retiré depuis — fonctions pures de search.py / signals.py / rerank.py. NE PAS éditer à la main. Asservi par les tests Rust de lj-api.",
+  "_provenance": "Expected article and docket signals of the query-detection functions of src/signals.rs. Held by detection_signal_parity_oracle.",
   "cases": [
     {
       "query": "expulsion locative",
@@ -77,7 +77,7 @@
       "docket": false
     },
     {
-      "query": "CAA de Paris, 21 décembre 2021, n° 21PA01295",
+      "query": "CAA de Paris, 15 mars 2019, n° 19PA01234",
       "article": false,
       "docket": true
     },

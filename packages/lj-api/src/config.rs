@@ -21,8 +21,8 @@ pub struct Settings {
     pub vchord_probes: u32,
     // Embedding
     pub embed_backend: String,
-    /// Local hosts in priority order, never empty.
-    pub embed_hosts: Vec<lj_llm::hosts::EmbedHost>,
+    /// The embedding chain in priority order, never empty.
+    pub embed_chain: Vec<lj_llm::hosts::Entry>,
     pub embed_connect_timeout: f64,
     pub cloudflare_account_id: Option<String>,
     pub cloudflare_backend_token: Option<String>,
@@ -95,6 +95,11 @@ pub struct Settings {
     /// `rerank_cache`. Le dépassement n'est jamais un refus : la recherche rend
     /// l'ordre RRF (`crate::search::reranked_order`).
     pub rerank_budget_per_min: u32,
+    /// The INPI account the RNE API logs in with. Empty: no company documents.
+    pub inpi_username: String,
+    pub inpi_password: String,
+    /// The bucket the INPI files are kept in. `None` when `LIBREJUSTICE_S3_ENDPOINT` is unset.
+    pub bucket: Option<lj_bucket::Config>,
 }
 
 /// Lit `var`, renvoie `None` si absent ou chaîne vide (env vide = « non
@@ -159,6 +164,23 @@ fn parse_csv(var: &str) -> Vec<String> {
     }
 }
 
+fn bucket_config() -> Result<Option<lj_bucket::Config>> {
+    let Some(endpoint) = opt("LIBREJUSTICE_S3_ENDPOINT") else {
+        return Ok(None);
+    };
+    let required = |key: &str| {
+        opt(key)
+            .ok_or_else(|| anyhow::anyhow!("{key} is unset while LIBREJUSTICE_S3_ENDPOINT is set"))
+    };
+    Ok(Some(lj_bucket::Config {
+        endpoint,
+        region: required("LIBREJUSTICE_S3_REGION")?,
+        bucket: required("LIBREJUSTICE_S3_BUCKET")?,
+        access_key_id: required("LIBREJUSTICE_S3_ACCESS_KEY_ID")?,
+        secret_access_key: required("LIBREJUSTICE_S3_SECRET_ACCESS_KEY")?,
+    }))
+}
+
 impl Settings {
     /// Lit l'environnement (prefix `LIBREJUSTICE_API_` / `LIBREJUSTICE_`) et
     /// valide (injecte `pg_password` dans `db_url`, etc.).
@@ -180,7 +202,7 @@ impl Settings {
         let vchord_probes = parse_ranged::<u32>("LIBREJUSTICE_API_VCHORD_PROBES", 20, 1, 512)?;
 
         let embed_backend = or_default("LIBREJUSTICE_EMBED_BACKEND", "auto");
-        let embed_hosts = lj_llm::hosts::parse_hosts(
+        let embed_chain = lj_llm::hosts::parse_chain(
             opt("LIBREJUSTICE_EMBED_URL")
                 .as_deref()
                 .unwrap_or(lj_llm::hosts::DEFAULT_URL),
@@ -291,6 +313,10 @@ impl Settings {
         let rerank_budget_per_min =
             parse_ranged("LIBREJUSTICE_API_RERANK_BUDGET_PER_MIN", 20, 1, 10_000)?;
 
+        let inpi_username = or_default("LIBREJUSTICE_INPI_USERNAME", "");
+        let inpi_password = or_default("LIBREJUSTICE_INPI_PASSWORD", "");
+        let bucket = bucket_config()?;
+
         let mut settings = Settings {
             pg_password,
             db_url,
@@ -300,7 +326,7 @@ impl Settings {
             pool_max,
             vchord_probes,
             embed_backend,
-            embed_hosts,
+            embed_chain,
             embed_connect_timeout,
             cloudflare_account_id,
             cloudflare_backend_token,
@@ -342,6 +368,9 @@ impl Settings {
             search_budget_per_min,
             search_budget_enforce,
             rerank_budget_per_min,
+            inpi_username,
+            inpi_password,
+            bucket,
         };
 
         settings.inject_pg_password();
@@ -417,23 +446,17 @@ mod tests {
 
     #[test]
     fn inject_pg_password_no_existing() {
-        let got = inject_password(
-            "postgresql://librejustice@127.0.0.1:5432/librejustice",
-            "s3cr3t",
-        );
+        let got = inject_password("postgresql://app@db.example:5432/app", "s3cr3t");
         assert_eq!(
             got.as_deref(),
-            Some("postgresql://librejustice:s3cr3t@127.0.0.1:5432/librejustice")
+            Some("postgresql://app:s3cr3t@db.example:5432/app")
         );
     }
 
     #[test]
     fn inject_pg_password_skips_when_present() {
         assert_eq!(
-            inject_password(
-                "postgresql://librejustice:already@127.0.0.1:5432/librejustice",
-                "s3cr3t",
-            ),
+            inject_password("postgresql://app:already@db.example:5432/app", "s3cr3t",),
             None
         );
     }
@@ -451,7 +474,7 @@ mod tests {
     #[test]
     fn parse_ranged_rejects_out_of_bounds() {
         std::env::set_var("LIBREJUSTICE_TEST_PORT", "70000");
-        assert!(parse_ranged::<u16>("LIBREJUSTICE_TEST_PORT", 8300, 1, 65535).is_err());
+        assert!(parse_ranged::<u16>("LIBREJUSTICE_TEST_PORT", 8080, 1, 65535).is_err());
         std::env::remove_var("LIBREJUSTICE_TEST_PORT");
     }
 

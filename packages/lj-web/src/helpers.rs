@@ -30,10 +30,26 @@ pub fn format_juridiction(jur: JurisdictionType) -> &'static str {
         JurisdictionType::Ca => "Cour d'appel",
         JurisdictionType::Tj => "Tribunal judiciaire",
         JurisdictionType::Tcom => "Tribunal de commerce",
+        JurisdictionType::Cph => "Conseil de prud'hommes",
         JurisdictionType::Cedh => "Cour européenne des droits de l'homme",
         JurisdictionType::Cjue => "Cour de justice de l'Union européenne",
         JurisdictionType::Cnda => "Cour nationale du droit d'asile",
         JurisdictionType::Cnil => "Commission nationale de l'informatique et des libertés",
+        JurisdictionType::Ddd => "Défenseur des droits",
+        JurisdictionType::Adlc => "Autorité de la concurrence",
+        JurisdictionType::Comeu => "Commission européenne",
+        JurisdictionType::CourSupreme => "Cour suprême",
+        JurisdictionType::CourCassation => "Cour de cassation",
+        JurisdictionType::CourConstitutionnelle => "Cour constitutionnelle",
+        JurisdictionType::CourAppel => "Cour d'appel",
+        JurisdictionType::CourAdministrative => "Cour administrative",
+        JurisdictionType::TribunalAdministratif => "Tribunal administratif",
+        JurisdictionType::TribunalPremiereInstance => "Tribunal de première instance",
+        JurisdictionType::TribunalCommerce => "Tribunal de commerce",
+        JurisdictionType::CourCriminelle => "Cour criminelle",
+        JurisdictionType::CourJustice => "Cour de justice",
+        JurisdictionType::Ccja => "Cour commune de justice et d'arbitrage",
+        JurisdictionType::CourDroitsHomme => "Cour des droits de l'homme",
     }
 }
 
@@ -153,23 +169,21 @@ pub fn format_score(score: f64) -> String {
     format!("{score:.3}")
 }
 
-/// Forme de pagination des TROIS surfaces de recherche, decisions, textes et
-/// annonces : dix resultats par page, dix pages. La portee qui en resulte, 100,
-/// est le `MAX_RESULTS` du moteur decisions, seul des trois a etre borne par son
-/// classement ; les deux autres pourraient aller plus loin et suivent la meme
-/// forme. Mesure du 26/08/2026 : sur 15 229 recherches de 90 jours, aucune n'est
-/// allee au-dela de la page 5. Le listing annuaire n'en releve pas, c'est un
-/// catalogue qu'on parcourt et non un classement qu'on lit.
+/// Pagination shape of the THREE search surfaces, decisions, texts and notices:
+/// ten results a page, ten pages. The resulting reach, 100, is the `MAX_RESULTS`
+/// of the decision engine, the only one of the three bounded by its ranking; the
+/// other two could go further and follow the same shape. The directory listing
+/// is out of it, a catalogue one walks rather than a ranking one reads.
 ///
-/// Le plafond de pages vaut aussi en mode parcours, ou le total se compte en
-/// millions : `key_from_map` ramene toute page au-dela a la dixieme, donc sans
-/// lui la pagination offrirait des pages qui reviennent sur elles-memes.
+/// The page cap holds in browse mode too, where the total runs far past it:
+/// `key_from_map` brings any page beyond back to the tenth, so without the cap
+/// the pagination would offer pages that loop back on themselves.
 pub const SEARCH_PAGE_SIZE: u32 = 10;
 pub const SEARCH_MAX_PAGES: i64 = 10;
 
-/// Libelle FR d'un nombre de resultats. Le total est celui du fonds apparie,
-/// pas celui de la liste classee : la facette juridiction annonce « CA 178 072 »
-/// juste a cote, un « 400+ » y serait plus pauvre que la colonne voisine.
+/// French label of a result count. The total is the matched fund's, not the
+/// ranked list's: the court facet shows its full count right beside it, and a
+/// « 400+ » would read poorer than the neighbouring column.
 pub fn format_results_count(total: i64) -> String {
     match total {
         0 => "Aucun résultat".to_string(),
@@ -220,6 +234,14 @@ pub fn group_thousands(n: i64) -> String {
     }
 }
 
+/// « 1 décision », « 12 345 décisions ».
+pub fn decision_count(n: i64) -> String {
+    match n {
+        1 => "1 décision".to_string(),
+        n => format!("{} décisions", group_thousands(n)),
+    }
+}
+
 /// Nombre de pages de pagination d'une surface de recherche.
 pub fn total_pages(total: i64) -> i64 {
     let taille = i64::from(SEARCH_PAGE_SIZE);
@@ -253,14 +275,43 @@ pub fn format_iso_date(value: Option<&str>) -> String {
     lj_dtos::format_date_fr(value)
 }
 
+/// Today, ISO: the browser's own day, Paris's on the server.
+#[cfg(feature = "hydrate")]
+pub fn today_iso() -> String {
+    let d = js_sys::Date::new_0();
+    format!(
+        "{:04}-{:02}-{:02}",
+        d.get_full_year(),
+        d.get_month() + 1,
+        d.get_date()
+    )
+}
+#[cfg(not(feature = "hydrate"))]
+pub fn today_iso() -> String {
+    jiff::Zoned::now()
+        .in_tz("Europe/Paris")
+        .expect("the tz database is bundled")
+        .date()
+        .to_string()
+}
+
 /// `/decision-search?{key}={value}…`, escaped by `ParamsMap`, where a key given twice
 /// adds a value instead of replacing it: that is how a multi-valued facet passes.
 pub fn decisions_href(params: impl IntoIterator<Item = (&'static str, String)>) -> String {
+    engine_href("/decision-search", params)
+}
+
+/// `/norm-search?{key}={value}…`, on the terms of [`decisions_href`].
+pub fn norms_href(params: impl IntoIterator<Item = (&'static str, String)>) -> String {
+    engine_href("/norm-search", params)
+}
+
+fn engine_href(path: &str, params: impl IntoIterator<Item = (&'static str, String)>) -> String {
     let mut qs = leptos_router::params::ParamsMap::new();
     for (key, value) in params {
         qs.insert(key, value);
     }
-    format!("/decision-search{}", qs.to_query_string())
+    format!("{path}{}", qs.to_query_string())
 }
 
 /// What a market's zone list reads as on one line. A nationwide market carries

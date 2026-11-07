@@ -13,9 +13,10 @@ use leptos::prelude::*;
 use leptos_router::components::{ToHref, A};
 use leptos_router::hooks::{use_location, use_navigate};
 use leptos_router::NavigateOptions;
+use lj_dtos::UiAction;
 
 use crate::components::decision_bar::{
-    use_decision_bar, use_result_nav, DecisionBarState, ResultNav, ResultNavSeed, WorkbenchSignal,
+    seeded, use_decision_bar, DecisionBarState, ResultNav, ResultNavSeed, WorkbenchSignal,
 };
 use crate::helpers::cn;
 
@@ -55,8 +56,7 @@ fn WorkbenchTopBar(session: crate::pages::redact::Session) -> impl IntoView {
     }
 }
 
-/// Barre par defaut (toutes les pages hors decision) : wordmark + hamburger,
-/// une seule rangée `h-14` à toutes les tailles.
+/// The default bar, on every page but a decision's: wordmark and burger, one `h-14` row at every width.
 #[component]
 fn DefaultTopBar() -> impl IntoView {
     view! {
@@ -110,6 +110,7 @@ fn BackButton(from_search: Option<crate::components::decision_bar::FromSearch>) 
         <button
             type="button"
             on:click=on_back
+            data-usage=UiAction::DecisionBackToResults.as_str()
             aria-label=back_label
             class="flex shrink-0 items-center gap-1.5 rounded-md border border-[var(--color-rule)] px-2.5 py-1.5 text-sm font-medium text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)] lg:px-3"
         >
@@ -182,7 +183,7 @@ fn DecisionTopBar(bar: DecisionBarState) -> impl IntoView {
 
 /// Navigation precedent / suivant entre resultats : l'index courant est derive
 /// de la position dans `hit_paths`, la graine de la
-/// cible est posee avant de naviguer (la barre de la page cible la consomme).
+/// cible part avec son entree d'historique (la barre de la page cible la lit).
 #[component]
 fn DecisionNavWidget(
     nav: ResultNav,
@@ -190,7 +191,6 @@ fn DecisionNavWidget(
     from_search: Option<crate::components::decision_bar::FromSearch>,
 ) -> impl IntoView {
     let navigate = StoredValue::new_local(use_navigate());
-    let seed = use_result_nav();
 
     let idx = nav.hit_paths.iter().position(|x| *x == current_path);
     let len = nav.hit_paths.len();
@@ -211,13 +211,13 @@ fn DecisionNavWidget(
         let hit_paths = nav.hit_paths.clone();
         let from_search = from_search.clone();
         move |target: String| {
-            seed.set(Some(ResultNavSeed {
+            let seed = ResultNavSeed {
                 nav: Some(ResultNav {
                     hit_paths: hit_paths.clone(),
                 }),
                 from_search: from_search.clone(),
-            }));
-            navigate.with_value(|n| n(&target, NavigateOptions::default()));
+            };
+            navigate.with_value(|n| n(&target, seeded(&seed)));
         }
     };
 
@@ -228,6 +228,7 @@ fn DecisionNavWidget(
                 <button
                     type="button"
                     on:click=move |_| go(pid.clone())
+                    data-usage=UiAction::DecisionResultStep.as_str()
                     aria-label="Résultat précédent"
                     class=btn_class
                 >
@@ -245,6 +246,7 @@ fn DecisionNavWidget(
                 <button
                     type="button"
                     on:click=move |_| go(nid.clone())
+                    data-usage=UiAction::DecisionResultStep.as_str()
                     aria-label="Résultat suivant"
                     class=btn_class
                 >
@@ -295,7 +297,7 @@ pub(crate) fn close_on_outside_or_nav(
     let _ = (open, container_ref);
 }
 
-/// Corps du menu compte (email + Profil / Mes signets / Déconnexion), affiché
+/// Corps du menu compte (email + Profil / Signets / Déconnexion), affiché
 /// dans le panneau du hamburger (`BurgerMenu`) quand une session est active.
 #[component]
 fn AccountItems(email: String, open: RwSignal<bool>) -> impl IntoView {
@@ -332,7 +334,9 @@ fn AccountItems(email: String, open: RwSignal<bool>) -> impl IntoView {
         </div>
         <div class="py-1">
             <DropdownItem href="/profile">"Profil"</DropdownItem>
-            <DropdownItem href="/bookmarks">"Mes signets"</DropdownItem>
+            <div data-usage=UiAction::MenuBookmarks.as_str()>
+                <DropdownItem href="/bookmarks">"Signets"</DropdownItem>
+            </div>
         </div>
         <div class="border-t border-[var(--color-rule)] py-1">
             <button

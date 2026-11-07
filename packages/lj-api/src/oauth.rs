@@ -387,16 +387,15 @@ async fn authorize(
     Ok(Redirect::to(&format!("{web_base}/authorize-mcp?{qs}")).into_response())
 }
 
-/// Consentement : formulaire HTML → 303 vers le client MCP, code émis (5 min)
-/// ou refus. Le même défi rend le même code tant qu'il vit : un navigateur
-/// mobile rejoue la soumission quand le retour n'aboutit pas, 33 fois en 32 s
-/// le 28/08/2026.
+/// Consent: HTML form → 303 to the MCP client, code issued (5 min) or refusal.
+/// The same challenge gets the same code while it lives: a mobile browser
+/// replays the submission when the return does not land.
 ///
-/// `deny` n'exige pas de session — refuser n'émet rien, et le retour est validé
-/// contre le client enregistré. `approve` sans session (expirée entre le rendu
-/// de l'écran et le clic) renvoie à la connexion, le consentement complet en
-/// `next`. Un POST cross-site n'emporte pas le cookie (`SameSite=Lax`) : il
-/// retombe sur ce chemin-là, jamais sur une émission de code.
+/// `deny` needs no session: refusing issues nothing, and the return is checked
+/// against the registered client. `approve` without a session (expired between
+/// the render and the click) sends back to login, the full consent in `next`. A
+/// cross-site POST does not carry the cookie (`SameSite=Lax`): it falls on that
+/// path, never on a code issue.
 async fn approve(
     State(state): State<AppState>,
     OptionalUser(user): OptionalUser,
@@ -738,10 +737,9 @@ async fn revoke(State(state): State<AppState>, Form(body): Form<RevokeForm>) -> 
 }
 
 /// RFC 8414 and OpenID Discovery serve the **same** document under two names.
-/// Measured on 09/09/2026: over a full day the OpenAI scanner read
-/// `oauth-authorization-server` 41 times and `openid-configuration` zero, so a
-/// provider that only carries its OIDC fields under the second name is, to that
-/// reader, not a provider at all. The union is legal on both paths.
+/// The OpenAI scanner reads `oauth-authorization-server` alone, so a provider that
+/// only carries its OIDC fields under the second name is, to that reader, not a
+/// provider at all. The union is legal on both paths.
 async fn oauth_as_metadata(State(state): State<AppState>) -> Json<serde_json::Value> {
     openid_configuration(State(state)).await
 }
@@ -895,7 +893,7 @@ async fn pool_conn(state: &AppState) -> Result<deadpool_postgres::Object> {
 }
 
 fn store_err(e: deadpool_postgres::tokio_postgres::Error) -> ApiError {
-    ApiError::Internal(format!("db: {}", lj_store::error::pg_detail(&e)))
+    ApiError::Internal(format!("db: {}", lj_pg::error::pg_detail(&e)))
 }
 
 /// Nom déclaré par le client à son enregistrement (RFC 7591 §2), pour l'écran

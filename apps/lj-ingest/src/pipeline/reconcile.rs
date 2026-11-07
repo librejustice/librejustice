@@ -53,13 +53,11 @@ async fn pending_citations(repo: &DecisionRepository<'_>) -> Result<()> {
 }
 
 /// The two citation nets alone, which the ingest pass runs at its tail: a pass
-/// that dies mid-way leaves its citations pending and the Sunday `reconcile` is
-/// seven days off. Measured 10/09: 24 s per large family, 47 citations recovered
-/// over 514 611 pending keys.
+/// that dies mid-way leaves its citations pending until the weekly `reconcile`.
 pub async fn resolve_pending_citations() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -83,7 +81,7 @@ pub async fn reconcile_all() -> Result<()> {
     // côté cible par la sonde inversée `pipeline::attract`).
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -113,6 +111,15 @@ pub async fn reconcile_all() -> Result<()> {
         relinked,
         "ambiguous dated council links unlinked then re-resolved"
     );
+
+    // A party named by initials, or a natural person by a name carrying one, links to
+    // nothing: resolution no longer sets these links, this net removes those the stock holds.
+    let unnamed = filet("parties sans nom", repo.party_unlink_unnamed()).await?;
+    if unnamed > 0 {
+        tracing::warn!(unnamed, "party links without a name unlinked");
+        let annuaire = repo.refresh_annuaire().await?;
+        tracing::info!(annuaire, "annuaire: counters refreshed");
+    }
 
     // Commentaires de norme curés : le dataset sous `state_dir` est la source de
     // vérité, rejoué ici pour que le retrait d'une entrée et la correction d'une ancre

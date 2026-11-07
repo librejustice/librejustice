@@ -3,7 +3,7 @@
   "name": "fr.librejustice/librejustice",
   "title": "LibreJustice",
   "description": "Search French-language and European case law and French legal texts (codes, statutes, treaties).",
-  "version": "1.18.0",
+  "version": "1.19.0",
   "websiteUrl": "https://librejustice.fr",
   "repository": {
     "url": "https://github.com/librejustice/librejustice",

@@ -1,9 +1,6 @@
 //! What the table takes from automatic readings: a value two independent
 //! readings of the decision write identically, and nothing from a decision
-//! whose amounts may not stand on the full base. On the ground truth, one
-//! reading alone gets one value in seven to ten wrong or misfiled; under the
-//! guards two readings keep a third of the gold's, under one in a hundred
-//! disputed.
+//! whose amounts may not stand on the full base.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
@@ -142,7 +139,7 @@ pub fn unsure_base(q: &Quantum) -> bool {
 
 /// The decision repairs an aggravation, or the part of a prior state the
 /// event aggravated: its amounts complete an earlier award or leave a share
-/// out, and neither is a full valuation. On 14 801 liquidations, 915 match.
+/// out, and neither is a full valuation.
 static AGGRAVATION_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"au titre de (l'|cette |son |leur )?aggravation|(resultant|decoulant|du fait|consecuti\w*|imputables?|lie\w*|suite) (de |a |d')?(cette |l'|son |leur |une |la )?aggravation|post[- ]?aggravation|(indemnis\w*|repar\w*|liquid\w*|evalu\w*) (de |des |du |en )?(l'|son |cette |leur )?(prejudices? (subis |resultant )?(du fait )?(de |d')?(l'|cette )?)?aggravation|en aggravation|\d\s?% d'aggravation|(propre|posterieure?s?|anterieure?s?) a (l'|cette )aggravation|(date|point de depart) de (l'|cette )aggravation|nouvelle aggravation|consolidation de (l'|cette |son )aggravation",

@@ -26,7 +26,7 @@ const VOCAB_MAX: usize = 3_000_000;
 /// Texts-side df boost of the `legal_text` titles, the ideal suggestion of that
 /// mode: enough to surface in context without crushing the corpus's own words
 /// in the unigram fallback.
-const TITLE_BOOST: u32 = 2_000;
+const TITLE_BOOST: u32 = 200;
 /// Key length guard, for endless titles.
 const KEY_MAX_CHARS: usize = 64;
 

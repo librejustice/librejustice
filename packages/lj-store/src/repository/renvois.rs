@@ -75,17 +75,6 @@ pub struct TitleInputs {
     pub search_title: Option<String>,
 }
 
-/// Décision citante telle que la page décision l'affiche. Le nom porté par le
-/// renvoi n'y est pas : il désigne la cible, donc la décision de la page.
-#[derive(Debug, Clone)]
-pub struct RenvoyantRow {
-    pub public_id: String,
-    pub jurisdiction_code: Option<String>,
-    pub jurisdiction_type: String,
-    pub date_lecture: Option<String>,
-    pub docket_numbers: Option<Vec<String>>,
-}
-
 impl DecisionRepository<'_> {
     /// Remplace les renvois d'un lot de décisions commentées : le bundle est la
     /// source, la table sa projection.
@@ -175,35 +164,6 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// Décisions dont l'analyse renvoie à celle-ci, la plus récente d'abord. Une
-    /// décision citante ne compte qu'une fois, même quand deux de ses sommaires
-    /// renvoient à la même cible.
-    pub async fn renvoyants(&self, decision_id: i64, limite: i64) -> Result<Vec<RenvoyantRow>> {
-        let rows = self
-            .conn
-            .query(
-                "SELECT DISTINCT d.public_id, d.jurisdiction_code, d.jurisdiction_type,
-                        d.date_lecture::text, d.docket_numbers
-                 FROM decision_renvoi r
-                 JOIN decisions d ON d.id = r.decision_id AND d.deleted_at IS NULL
-                 WHERE r.target_decision_id = $1
-                 ORDER BY d.date_lecture::text DESC NULLS LAST, d.public_id
-                 LIMIT $2",
-                &[&decision_id, &limite],
-            )
-            .await?;
-        Ok(rows
-            .iter()
-            .map(|r| RenvoyantRow {
-                public_id: r.get(0),
-                jurisdiction_code: r.get(1),
-                jurisdiction_type: r.get(2),
-                date_lecture: r.get(3),
-                docket_numbers: r.get(4),
-            })
-            .collect())
-    }
-
     /// Le nom que les renvois donnent à chaque décision citée : celui que le
     /// plus de citantes emploient, la forme la plus longue départageant
     /// (« Société Tropic Travaux Signalisation » nomme mieux que « Tropic »).
@@ -261,9 +221,9 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// Réécrit `search_title` là où le nom d'usage l'a fait bouger, par lots :
-    /// l'index BM25 de `decisions` coûte 1,6 ms par ligne réécrite, et la
-    /// première passe en porte 30 000, bien au-delà du `statement_timeout`.
+    /// Rewrites `search_title` where the case name moved it, in batches: the BM25
+    /// index of `decisions` charges every rewritten row, and a first pass would
+    /// run past the `statement_timeout`.
     pub async fn set_search_titles(&self, titles: &[(i64, String)]) -> Result<u64> {
         let mut n = 0;
         for lot in titles.chunks(2_000) {

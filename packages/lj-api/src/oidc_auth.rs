@@ -14,6 +14,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::time::Duration;
 
+use crate::disposable::{disposable_domain, log_refusal};
 use crate::error::{ApiError, Result};
 use crate::locale;
 use crate::oauth::{form_urlencode, token_urlsafe};
@@ -105,9 +106,8 @@ fn compter_tour(fournisseur: Fournisseur, phase: &'static str) {
         );
 }
 
-/// Un scanner frappe `/start` à froid, sans `Sec-Fetch-Site: same-origin`, et
-/// ne revient jamais : sept départs sur onze le 27/08/2026, assez pour faire
-/// tomber le ratio de l'entonnoir sous son seuil sur une prod saine.
+/// A scanner hits `/start` cold, without `Sec-Fetch-Site: same-origin`, and never
+/// comes back: counted as a start, it would drag the funnel ratio under its threshold.
 fn phase_de_depart(entetes: &HeaderMap) -> &'static str {
     match entetes
         .get("sec-fetch-site")
@@ -538,6 +538,10 @@ async fn rapprocher(state: &AppState, identite: &Identite) -> Result<String> {
         }
     }
 
+    if let Some(listed) = disposable_domain(state, &identite.email).await? {
+        log_refusal(&listed, provider);
+        return Err(ApiError::BadRequest("email_jetable".into()));
+    }
     let cree = tx
         .query_opt(
             "INSERT INTO users (sub, email, display_name, email_confirmed_at) \
@@ -641,8 +645,7 @@ mod tests {
         assert_eq!(phase_de_depart(&entetes), "depart");
     }
 
-    /// Un callback périmé rouvert rendait 502 : seul `invalid_grant` est un
-    /// tour à relancer, tout autre refus reste une panne du fournisseur.
+    /// Only `invalid_grant` restarts the round; any other refusal is a provider failure.
     #[test]
     fn seul_invalid_grant_renvoie_relancer_le_tour() {
         assert!(matches!(
@@ -697,7 +700,7 @@ mod tests {
         let id = identite(
             Fournisseur::Google,
             google(json!({
-                "sub": "110248495921238986420",
+                "sub": "123456789012345678901",
                 "email": "  Jean.Dupont@Example.FR ",
                 "email_verified": true,
                 "name": "Jean Dupont",
@@ -710,7 +713,7 @@ mod tests {
             id,
             Identite {
                 fournisseur: Fournisseur::Google,
-                sub: "110248495921238986420".to_string(),
+                sub: "123456789012345678901".to_string(),
                 email: "jean.dupont@example.fr".to_string(),
                 email_verifie: true,
                 nom: Some("Jean Dupont".to_string()),

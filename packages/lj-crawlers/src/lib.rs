@@ -201,9 +201,8 @@ const DISALLOW_SEARCH: [&str; 3] = ["/decision-search?", "/norm-search?", "/norm
 /// `robots.txt` lisent la même constante.
 pub const FEEDBACK_PATH: &str = "/feedback";
 
-/// Écrans qui se pointent l'un l'autre : la barre pose `/login?next=<page>`, le
-/// pied `/feedback?from=<page>`, et `/feedback` porte les deux, donc un client qui
-/// ne dédoublonne pas rebondit sans fin. Mesuré le 23/08/2026 : 34 308 requêtes.
+/// Screens pointing at each other: the bar sets `/login?next=<page>`, the footer
+/// `/feedback?from=<page>`, `/feedback` both, so a client that does not dedupe bounces for ever.
 const DISALLOW_DEAD_ENDS: [&str; 2] = ["/login", FEEDBACK_PATH];
 
 fn disallow_crawl_space() -> impl Iterator<Item = &'static str> {
@@ -301,10 +300,9 @@ mod tests {
     use super::*;
     use std::collections::HashSet;
 
-    /// `Applebot-Extended` n'arrive jamais comme `User-Agent` — Apple s'en sert comme
-    /// jeton de contrôle `robots.txt`, pas comme robot ; la chaîne ci-dessous est
-    /// construite, pas relevée. Le test garde la règle de résolution, pas un cas de
-    /// trafic.
+    /// `Applebot-Extended` never arrives as a `User-Agent`: Apple uses it as a
+    /// `robots.txt` control token. The string below is built; the test locks the
+    /// longest-match rule.
     #[test]
     fn category_of_retient_le_match_le_plus_long() {
         const APPLEBOT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)";
@@ -314,9 +312,9 @@ mod tests {
         assert_eq!(category_of(APPLEBOT_EXTENDED), Some(Category::Training));
     }
 
-    /// Chaînes `User-Agent` **complètes**, relevées à l'edge, et la catégorie
-    /// attendue. C'est ce que voient le WAF et `category_of` — pas des tokens.
-    const UAS_RELEVES: &[(&str, Option<Category>)] = &[
+    /// Full `User-Agent` strings and their expected category, as the WAF and
+    /// `category_of` see them.
+    const FULL_UAS: &[(&str, Option<Category>)] = &[
         ("Mozilla/5.0 (compatible; YandexBot/3.0; +http://yandex.com/bots)", Some(Category::Search)),
         ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Amzn-SearchBot/0.1) Chrome/119.0.6045.214 Safari/537.36", Some(Category::Search)),
         // Variante avec l'URL de doc : l'URL contient le nom du robot
@@ -333,8 +331,8 @@ mod tests {
     ];
 
     #[test]
-    fn category_of_classe_les_agents_observes() {
-        for (ua, attendu) in UAS_RELEVES {
+    fn category_of_classe_les_chaines_completes() {
+        for (ua, attendu) in FULL_UAS {
             assert_eq!(category_of(ua), *attendu, "UA mal classé : {ua}");
         }
     }
@@ -372,7 +370,7 @@ mod tests {
     #[test]
     fn aucun_motif_refuse_ne_matche_un_ua_autorise() {
         let refuses = motifs_refuses();
-        for (ua, categorie) in UAS_RELEVES {
+        for (ua, categorie) in FULL_UAS {
             if categorie.is_some_and(Category::denies_everything) {
                 continue;
             }
@@ -386,7 +384,7 @@ mod tests {
         }
     }
 
-    /// Couvre les agents dont on n'a pas relevé de chaîne complète.
+    /// Covers the agents with no full string in `FULL_UAS`.
     #[test]
     fn aucun_motif_refuse_nest_sous_chaine_dun_token_autorise() {
         let refuses = motifs_refuses();

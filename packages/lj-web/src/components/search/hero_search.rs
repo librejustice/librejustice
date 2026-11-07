@@ -15,6 +15,7 @@
 use leptos::prelude::*;
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
+use lj_dtos::UiAction;
 
 use crate::helpers::encode_query;
 
@@ -54,19 +55,18 @@ impl Scope {
         }
     }
 
-    /// Segment d'URL du moteur (page pleine `/{param}`).
-    fn param(self) -> &'static str {
+    /// The engine's full page.
+    fn full_page_path(self) -> &'static str {
         match self {
-            Scope::Decisions => "decisions",
-            Scope::Textes => "textes",
-            Scope::Annonces => "annonces",
-            Scope::Annuaire => "annuaire",
+            Scope::Decisions => "/decision-search",
+            Scope::Textes => "/norm-search",
+            Scope::Annonces => "/notice-search",
+            Scope::Annuaire => "/entity-search",
         }
     }
 
-    /// Libellé du lien sous la barre, vers la page pleine du moteur
-    /// (`/{param}`) : les moteurs de recherche exposent leurs filtres,
-    /// l'annuaire se parcourt par catégories.
+    /// The label of the link under the bar, to the engine's full page: the
+    /// search engines show their filters, the directory is browsed by category.
     fn full_page_label(self) -> &'static str {
         match self {
             Scope::Decisions | Scope::Textes | Scope::Annonces => "Recherche avancée",
@@ -182,8 +182,8 @@ pub fn HeroSearch() -> impl IntoView {
                 </em>
             </h1>
             <p class="max-w-2xl text-base leading-relaxed text-[var(--color-ink-muted)] sm:text-lg">
-                "Recherchez dans les décisions de justice, les lois, codes et "
-                "conventions collectives, et l'annuaire des acteurs du contentieux."
+                "Cherchez dans les décisions de justice, les lois, les codes, les conventions "
+                "collectives et les marchés publics, ou dans l'annuaire des parties et des avocats."
             </p>
         </div>
     }
@@ -230,7 +230,7 @@ pub fn HeroSearch() -> impl IntoView {
                         let s = scope.get();
                         view! {
                             <A
-                                href=format!("/{}", s.param())
+                                href=s.full_page_path()
                                 attr:class="flex items-center gap-1.5 text-xs text-[var(--color-ink-muted)] underline-offset-2 transition-colors hover:text-[var(--color-ink)] hover:underline"
                             >
                                 <svg
@@ -260,7 +260,7 @@ pub fn HeroSearch() -> impl IntoView {
     // Exemples groupés par univers : le groupe enseigne, la chip pose le mode
     // du sélecteur et soumet vers le moteur du groupe.
     let examples = view! {
-        <div class="flex flex-col gap-3">
+        <div class="flex flex-col gap-3" data-usage=UiAction::HomeExample.as_str()>
             {EXAMPLE_GROUPS
                 .iter()
                 .map(|group| {

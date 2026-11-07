@@ -17,7 +17,7 @@ use std::sync::Mutex;
 const CF_DOC_TOKEN_CAP: usize = 8_192;
 /// Taille de chunk (caractères) par défaut.
 const CF_CHUNK_CHARS: usize = 24_000;
-/// Plancher de facturation neurons (CF tronque le header à 2 décimales).
+/// Neuron billing floor, the smallest spend CF's truncated header shows.
 const CF_NEURON_FLOOR: f64 = 0.01;
 
 /// Embedder Cloudflare Workers AI. Estime les tokens (heuristique chars/médiane
@@ -149,7 +149,7 @@ impl CloudflareWorkersAIEmbedder {
             )));
         }
 
-        // Plancher 0.01 (CF tronque le header à 2 décimales).
+        // Floored: CF's header truncates a small spend to zero.
         {
             let mut used = self.neurons_used.lock().expect("neurons mutex");
             *used += neurons_value.max(CF_NEURON_FLOOR);

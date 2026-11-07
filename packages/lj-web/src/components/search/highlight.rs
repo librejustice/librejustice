@@ -4,6 +4,8 @@
 //! `Mark`/`Plain` rendus en `<mark>`/texte brut. JAMAIS de `inner_html` — Leptos
 //! échappe le texte des segments `Plain` et le contenu des `Mark`.
 
+use std::ops::Range;
+
 use leptos::prelude::*;
 use leptos_router::components::A;
 use lj_dtos::{CitationSpan, CitationTarget};
@@ -87,7 +89,7 @@ fn split_spans(text: &str, spans: &[CitationSpan]) -> Vec<CiteSeg> {
 /// quand le href est prévisualisable — `at_date` = date de la décision hôte, pour
 /// servir la version d'article qu'elle appliquait) ; ≥2 cibles → [`CiteMenu`].
 /// Une cible sans `href` n'est pas décorée : texte brut.
-fn cite_view(text: String, targets: Vec<CitationTarget>, at_date: Option<&str>) -> AnyView {
+fn cite_view(text: Vec<Run>, targets: Vec<CitationTarget>, at_date: Option<&str>) -> AnyView {
     let mut linked: Vec<(String, String)> = targets
         .into_iter()
         .filter_map(|t| Some((t.href?, t.label)))
@@ -101,7 +103,7 @@ fn cite_view(text: String, targets: Vec<CitationTarget>, at_date: Option<&str>) 
                             href=href
                             attr:class="underline underline-offset-2 hover:text-[var(--color-accent)]"
                         >
-                            {text}
+                            {runs_view(text)}
                         </A>
                     };
                     view! { <HoverPreview kind=kind>{link}</HoverPreview> }.into_any()
@@ -112,12 +114,12 @@ fn cite_view(text: String, targets: Vec<CitationTarget>, at_date: Option<&str>) 
                         attr:title=label
                         attr:class="underline underline-offset-2 hover:text-[var(--color-accent)]"
                     >
-                        {text}
+                        {runs_view(text)}
                     </A>
                 }
                 .into_any(),
             },
-            None => view! { <span>{text}</span> }.into_any(),
+            None => view! { <span>{runs_view(text)}</span> }.into_any(),
         };
     }
     view! { <CiteMenu text=text linked=linked /> }.into_any()
@@ -130,7 +132,7 @@ fn cite_view(text: String, targets: Vec<CitationTarget>, at_date: Option<&str>) 
 /// panneau absolu, fermeture au clic extérieur et à Échap ; les `<a>` restent
 /// dans le DOM au SSR (crawlables), le panneau n'est masqué que par classe.
 #[component]
-fn CiteMenu(text: String, linked: Vec<(String, String)>) -> impl IntoView {
+fn CiteMenu(text: Vec<Run>, linked: Vec<(String, String)>) -> impl IntoView {
     let open = RwSignal::new(false);
     let container_ref = NodeRef::<leptos::html::Span>::new();
 
@@ -171,7 +173,7 @@ fn CiteMenu(text: String, linked: Vec<(String, String)>) -> impl IntoView {
                 on:click=move |_| open.update(|o| *o = !*o)
                 class="cursor-pointer underline underline-offset-2 hover:text-[var(--color-accent)]"
             >
-                {text}
+                {runs_view(text)}
             </button>
             <span
                 class="absolute left-0 top-full z-10 mt-1 min-w-max rounded border border-[var(--color-rule)] bg-[var(--color-background)] py-1 text-sm shadow-lg"
@@ -183,8 +185,8 @@ fn CiteMenu(text: String, linked: Vec<(String, String)>) -> impl IntoView {
     }
 }
 
-/// Chrome's HTML parser splits a text node at 65,536 UTF-16 units, and hydration
-/// then meets two nodes where the server wrote one. A char is at most two units.
+/// Chrome's HTML parser splits a long text node, and hydration then meets two nodes
+/// where the server wrote one. A char is at most two UTF-16 units: half the parser's cap.
 const TEXT_NODE_MAX_CHARS: usize = 32_768;
 
 fn text_node_chunks(text: &str) -> Vec<&str> {
@@ -223,18 +225,81 @@ pub fn CitedParagraph(
     /// vigueur à cette date.
     #[prop(optional_no_strip)]
     at_date: Option<String>,
+    /// What the search matched, in codepoints.
+    #[prop(optional)]
+    hits: Vec<Range<usize>>,
 ) -> impl IntoView {
-    if spans.is_empty() {
+    if spans.is_empty() && hits.is_empty() {
         return view! { <p>{plain_text(text)}</p> }.into_any();
     }
+    let mut at = 0;
     let views = split_spans(&text, &spans)
         .into_iter()
         .map(|seg| match seg {
-            CiteSeg::Plain(s) => view! { <span>{plain_text(s)}</span> }.into_any(),
-            CiteSeg::Cite { text, targets } => cite_view(text, targets, at_date.as_deref()),
+            CiteSeg::Plain(s) => {
+                let runs = runs(&s, &mut at, &hits);
+                view! { <span>{runs_view(runs)}</span> }.into_any()
+            }
+            CiteSeg::Cite { text, targets } => {
+                cite_view(runs(&text, &mut at, &hits), targets, at_date.as_deref())
+            }
         })
         .collect::<Vec<_>>();
     view! { <p>{views}</p> }.into_any()
+}
+
+/// A piece of a paragraph, highlighted when the search matched it.
+struct Run {
+    text: String,
+    hit: bool,
+}
+
+/// `text`, starting at codepoint `*at` of its paragraph, cut at the `hits`;
+/// moves `*at` past it.
+fn runs(text: &str, at: &mut usize, hits: &[Range<usize>]) -> Vec<Run> {
+    let chars: Vec<char> = text.chars().collect();
+    let (start, end) = (*at, *at + chars.len());
+    *at = end;
+    let piece = |a: usize, b: usize| chars[a - start..b - start].iter().collect::<String>();
+    let mut out = Vec::new();
+    let mut cursor = start;
+    for r in hits.iter().filter(|r| r.start < end && r.end > start) {
+        let (a, b) = (r.start.max(start), r.end.min(end));
+        if a > cursor {
+            out.push(Run {
+                text: piece(cursor, a),
+                hit: false,
+            });
+        }
+        out.push(Run {
+            text: piece(a, b),
+            hit: true,
+        });
+        cursor = b;
+    }
+    if cursor < end {
+        out.push(Run {
+            text: piece(cursor, end),
+            hit: false,
+        });
+    }
+    out
+}
+
+fn runs_view(mut runs: Vec<Run>) -> AnyView {
+    if let [Run { hit: false, .. }] = runs.as_slice() {
+        return plain_text(runs.pop().expect("one run").text);
+    }
+    runs.into_iter()
+        .map(|run| {
+            if run.hit {
+                view! { <mark data-hit="">{run.text}</mark> }.into_any()
+            } else {
+                plain_text(run.text)
+            }
+        })
+        .collect_view()
+        .into_any()
 }
 
 /// Rend le corps d'un article de norme avec ses renvois cliquables : même
@@ -252,7 +317,9 @@ pub fn CitedBlock(text: String, spans: Vec<CitationSpan>, class: &'static str) -
         .into_iter()
         .map(|seg| match seg {
             CiteSeg::Plain(s) => view! { <span>{plain_text(s)}</span> }.into_any(),
-            CiteSeg::Cite { text, targets } => cite_view(text, targets, None),
+            CiteSeg::Cite { text, targets } => {
+                cite_view(vec![Run { text, hit: false }], targets, None)
+            }
         })
         .collect::<Vec<_>>();
     view! { <div class=class>{views}</div> }.into_any()

@@ -10,7 +10,8 @@
 use leptos::prelude::*;
 use leptos_router::components::A;
 use lj_dtos::{
-    ArticleSearchResponse, SearchContext, SearchMode, SearchRequest, SearchResponse, SortOrder,
+    ArticleSearchHit, ArticleSearchResponse, SearchContext, SearchMode, SearchRequest,
+    SearchResponse, SortOrder,
 };
 
 use crate::api::{ApiClient, PageParams, TextesFilters};
@@ -18,6 +19,7 @@ use crate::components::ui::Skeleton;
 use crate::helpers::{encode_query, format_article_num, group_thousands};
 
 use super::compact_search::highlight::Highlighted;
+use super::text_results::article_meta_line;
 
 /// Hits affichés par teaser.
 const TEASER_ROWS: usize = 3;
@@ -74,20 +76,7 @@ pub fn TextesTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
             .hits
             .into_iter()
             .take(TEASER_ROWS)
-            .map(|h| {
-                // `numKey` vide : hit « texte entier » → page du texte ; sinon page de
-                // l'article.
-                let text = lj_vocab::norm_path(&h.jurisdiction, &h.code);
-                let (href, label) = if h.num_key.is_empty() {
-                    (text, h.code_title)
-                } else {
-                    (
-                        format!("{text}/{}", h.num_key),
-                        format!("Art. {} · {}", format_article_num(&h.num), h.code_title),
-                    )
-                };
-                teaser_row(href, label)
-            })
+            .map(|h| view! { <TextTeaserRow hit=h /> })
             .collect_view();
         let more_label = if total == 1 {
             "Voir le texte".to_string()
@@ -148,7 +137,7 @@ pub fn DecisionsTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
             .map(|h| {
                 view! {
                     <DecisionTeaserRow
-                        href=lj_dtos::decision_path(h.jurisdiction_type, &h.id)
+                        href=lj_dtos::decision_path(h.jurisdiction_type, h.jurisdiction_code.as_deref(), &h.id)
                         title_html=h.title_html
                         snippet=h.best_chunk.snippet
                     />
@@ -173,15 +162,57 @@ pub fn DecisionsTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
 #[component]
 fn DecisionTeaserRow(href: String, title_html: String, snippet: String) -> impl IntoView {
     view! {
-        <A href=href attr:class="block no-underline">
-            <span class="block truncate text-[13px] leading-snug text-[var(--color-ink-muted)] transition-colors hover:text-[var(--color-ink)]">
+        <A href=href attr:class="group block py-1 no-underline">
+            <span class="line-clamp-2 text-[13px] font-semibold leading-snug text-[var(--color-ink)] transition-colors group-hover:text-[var(--color-accent)]">
                 <Highlighted text=title_html />
             </span>
             {Some(snippet)
                 .filter(|s| !s.trim().is_empty())
                 .map(|s| {
                     view! {
-                        <span class="mt-0.5 line-clamp-2 block text-[12px] leading-snug text-[var(--color-ink-subtle)]">
+                        <span class="mt-1 line-clamp-3 text-[12px] leading-snug text-[var(--color-ink-muted)]">
+                            <Highlighted text=s />
+                        </span>
+                    }
+                })}
+        </A>
+    }
+}
+
+/// Texts teaser row, laid out like a `/norm-search` hit.
+#[component]
+fn TextTeaserRow(hit: ArticleSearchHit) -> impl IntoView {
+    // `numKey` vide : hit « texte entier » → page du texte ; sinon page de
+    // l'article.
+    let is_whole_text = hit.num_key.is_empty();
+    let text = lj_vocab::norm_path(&hit.jurisdiction, &hit.code);
+    let href = if is_whole_text {
+        text
+    } else {
+        format!("{text}/{}", hit.num_key)
+    };
+    let meta_line = article_meta_line(&hit);
+    view! {
+        <A href=href attr:class="group flex min-w-0 flex-col gap-1 py-1 no-underline">
+            <span class="line-clamp-2 text-[13px] font-semibold leading-snug text-[var(--color-ink)] transition-colors group-hover:text-[var(--color-accent)]">
+                {if is_whole_text {
+                    view! { {hit.code_title.clone()} }.into_any()
+                } else {
+                    view! {
+                        {format!("Article {}", format_article_num(&hit.num))}
+                        <span class="font-normal text-[var(--color-ink-subtle)]">
+                            {format!("\u{00A0}· {}", hit.code_title)}
+                        </span>
+                    }
+                    .into_any()
+                }}
+            </span>
+            {meta_line}
+            {Some(hit.snippet)
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| {
+                    view! {
+                        <span class="line-clamp-3 text-[12px] leading-snug text-[var(--color-ink-muted)]">
                             <Highlighted text=s />
                         </span>
                     }
@@ -198,16 +229,16 @@ fn teaser_search_request(q: &str) -> SearchRequest {
         query: q.to_string(),
         jurisdiction_type: None,
         solution: None,
-        procedure: None,
-        office: None,
         legal_domain: None,
         jurisdiction_code: None,
         seat: None,
+        formation: None,
         legal_instrument: None,
         legal_article: None,
         publication: None,
         date_from: None,
         date_to: None,
+        search_in: None,
         mode: SearchMode::Lexical,
         sort: SortOrder::Relevance,
         limit: TEASER_ROWS as u32,
@@ -256,16 +287,4 @@ fn teaser_skeleton(title: &'static str) -> AnyView {
         </div>
     }
     .into_any()
-}
-
-/// Ligne d'un hit texte (label plein, tronqué à une ligne).
-fn teaser_row(href: String, label: String) -> impl IntoView {
-    view! {
-        <A
-            href=href
-            attr:class="block truncate text-[13px] leading-snug text-[var(--color-ink-muted)] transition-colors hover:text-[var(--color-ink)]"
-        >
-            {label}
-        </A>
-    }
 }

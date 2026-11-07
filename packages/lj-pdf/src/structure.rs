@@ -18,7 +18,7 @@ pub(crate) fn page_owners(file: &PdfFile, page: ObjectRef) -> BTreeMap<i64, Vec<
 }
 
 /// One walk of the structure tree, for every page at once: walked per page, a
-/// 700-page tagged document spent 8 s re-reading the same tree.
+/// long tagged document re-reads the same tree for each of its pages.
 fn owners(file: &PdfFile) -> StructureOwners {
     let mut owners = StructureOwners::new();
     let Some(root) = file

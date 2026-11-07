@@ -4,51 +4,80 @@
 use std::collections::HashMap;
 
 use lj_core::address::CaseAddress;
-use lj_core::case_names::case_name_key as key;
+use lj_core::case_names::{case_name_key as key, NameIndex, MAX_NAME_WORDS, NAME_BEARERS_MAX};
+use lj_core::citation::name_words;
 
-/// Les noms qu'un corps peut citer, et la clé pendante que chacun désigne. Une
-/// clé de nom portée par plusieurs décisions n'y entre pas : « GISTI » nomme
-/// quatre arrêts et le corps ne dit pas lequel.
+/// A named decision, as the snapshot is built from it.
+#[derive(Debug, Clone)]
+pub struct NamedCase {
+    pub keys: Vec<String>,
+    /// `None` when the decision lacks the court or the docket an address needs.
+    pub address: Option<CaseAddress>,
+    /// Spans and renvois aiming at it, the count the search card ranks a name's bearers by.
+    pub citations: u32,
+}
+
+/// The names a body can cite: the exact key a single decision carries, and the words of every
+/// name, read as a query reads them.
 #[derive(Debug, Default, Clone)]
 pub struct CaseNameSnapshot {
     par_cle: HashMap<String, CaseAddress>,
-    /// Premier mot replié vers la longueur de la plus longue clé qui commence par
-    /// lui : une clé de 222 mots ne dicte plus la borne des 20 197 autres.
+    /// First folded word to the length of the longest key it starts, so one very
+    /// long key no longer sets the bound of all the others.
     par_tete: HashMap<String, usize>,
+    names: NameIndex,
+    /// Address and citations of each named decision, by its rank in `names`.
+    named: Vec<(Option<CaseAddress>, u32)>,
 }
 
 /// What the deciding court brings to the sorting of candidate targets.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct Citing<'a> {
-    /// `CJUE` or `CEDH`. A European court naming a French target is a homonym
-    /// 2 555 times out of 2 687, so the target is refused by default
-    /// (31/08/2026).
-    pub european: bool,
+    /// `cjue` or `cedh`, the European court that decides. A European court naming a French
+    /// target almost always names a homonym, so the target is refused by default.
+    pub european: Option<&'static str>,
     /// Reading date, ISO. A decision does not cite what comes after it.
     pub date: Option<&'a str>,
 }
 
 impl CaseNameSnapshot {
-    /// `rows` = `(clé repliée du nom, adresse de la décision nommée)`.
-    pub fn new(rows: impl IntoIterator<Item = (String, CaseAddress)>) -> Self {
+    pub fn new(named: impl IntoIterator<Item = NamedCase>) -> Self {
+        let named: Vec<NamedCase> = named.into_iter().collect();
+        let mut porteurs: HashMap<&str, usize> = HashMap::new();
+        for cle in named.iter().flat_map(|n| &n.keys) {
+            *porteurs.entry(cle).or_default() += 1;
+        }
         let mut par_cle = HashMap::new();
         let mut par_tete: HashMap<String, usize> = HashMap::new();
-        for (cle, address) in rows {
-            if cle.is_empty() {
-                continue;
+        for n in &named {
+            let Some(address) = &n.address else { continue };
+            for cle in &n.keys {
+                if cle.is_empty() || porteurs[cle.as_str()] > 1 {
+                    continue;
+                }
+                let mut mots = cle.split(' ');
+                let Some(tete) = mots.next() else { continue };
+                let n = mots.count() + 1;
+                let borne = par_tete.entry(tete.to_string()).or_default();
+                *borne = (*borne).max(n);
+                par_cle.insert(cle.clone(), address.clone());
             }
-            let mut mots = cle.split(' ');
-            let Some(tete) = mots.next() else { continue };
-            let n = mots.count() + 1;
-            let borne = par_tete.entry(tete.to_string()).or_default();
-            *borne = (*borne).max(n);
-            par_cle.insert(cle, address);
         }
-        CaseNameSnapshot { par_cle, par_tete }
+        let names = NameIndex::new(named.iter().map(|n| n.keys.clone()));
+        let named = named
+            .into_iter()
+            .map(|n| (n.address, n.citations))
+            .collect();
+        CaseNameSnapshot {
+            par_cle,
+            par_tete,
+            names,
+            named,
+        }
     }
 
     pub fn is_empty(&self) -> bool {
-        self.par_cle.is_empty()
+        self.named.is_empty()
     }
 }
 
@@ -58,17 +87,14 @@ const COURS_EUROPEENNES: [&str; 2] = ["cjue", "cedh"];
 /// Codepoints of the identity block a European decision opens with (`AFFAIRE
 /// LA ROSA ET 3 AUTRES c. ITALIE (No 5)`, `En l'affaire Granata c. France`).
 /// It names the present case, and the catalogue answers with a sibling of the
-/// same family: 299 of the 21 489 European spans, every reread one false
-/// (31/08/2026).
+/// same family.
 const EUROPEAN_HEADER: usize = 400;
 
-/// What the name key alone cannot see, measured on the 24 216 production spans
-/// (31/08/2026): 2 555 attach the European judgment a European judge names
-/// (`arrêt Kadi`) to a homonymous French decision, 929 point at a decision
-/// handed down after the citing one.
+/// What the name key alone cannot see: a European judge's `arrêt Kadi` taken for a
+/// homonymous French decision, a decision handed down after the citing one.
 fn impossible(cle: &str, cible: &CaseAddress, citing: &Citing<'_>, banniere: Option<&str>) -> bool {
     let cour = cible.court.as_deref().unwrap_or_default();
-    if citing.european
+    if citing.european.is_some()
         && !COURS_EUROPEENNES.contains(&cour)
         && !nomme_le_droit_francais(cle, banniere)
     {
@@ -81,9 +107,8 @@ fn impossible(cle: &str, cible: &CaseAddress, citing: &Citing<'_>, banniere: Opt
 }
 
 /// A European decision whose respondent state is France reviews French law and
-/// names it: 132 of the 2 687 French targets a European court points at, and the
-/// only ones that hold up on reread (`décision Czabaj` 57, Darmont 8,
-/// Gardedieu 5, Nicolo 3). Unless the name is the applicant's own, which the
+/// names it (`décision Czabaj`, Darmont, Gardedieu, Nicolo). Unless the name is
+/// the applicant's own, which the
 /// banner also carries: `SANCHEZ c. FRANCE` writing `Sanchez` names itself.
 fn nomme_le_droit_francais(cle: &str, banniere: Option<&str>) -> bool {
     let Some(b) = banniere else {
@@ -102,7 +127,6 @@ const LIAISONS: [&str; 2] = ["dite", "dit"];
 /// Punctuation between the locution and the name: the greffe banner
 /// (`AFFAIRE : Marie-Claude X…`), the apposed party (`l'agent d'affaires,
 /// Beaufils`), the sentence already closed (`de cette décision. Gaston B…`).
-/// 455 spans of the 24 216 in production, every reread one false (31/08/2026).
 fn severed(separator: &str) -> bool {
     separator.contains(['.', ';', ':', '!', '?', ',', '\n'])
 }
@@ -133,6 +157,7 @@ pub fn cited_case_name_spans(
     // applicant's name, which nothing else brings to the extraction.
     let banniere = citing
         .european
+        .is_some()
         .then(|| key(&text.chars().take(EUROPEAN_HEADER).collect::<String>()));
     let mut spans: Vec<(usize, usize, CaseAddress)> = Vec::new();
     let mut cle = String::new();
@@ -154,54 +179,273 @@ pub fn cited_case_name_spans(
         if tete >= mots.len() || mots[rang + 1..=tete].iter().any(|m| severed(m.avant)) {
             continue;
         }
-        let mot_tete = key(mots[tete].mot);
-        // Un mot qui ne commence aucune clé ferme le cas ici, ce qui est le sort
-        // des 11 locutions d'une décision moyenne : rien n'est replié au-delà.
-        let Some(&borne) = snap.par_tete.get(&mot_tete) else {
+        let par_mots = !egal_plie(mot.mot, "affaires", false)
+            && mot.mot.chars().any(char::is_lowercase)
+            && !(rang > 0
+                && DETERMINANTS
+                    .iter()
+                    .any(|d| egal_plie(mots[rang - 1].mot, d, false)));
+        let lu = par_la_cle(&mots, tete, snap, &mut cle, &mut coupes).or_else(|| {
+            par_mots
+                .then(|| par_les_mots(&mots, tete, snap, soi, &citing, banniere.as_deref()))
+                .flatten()
+        });
+        let Some((fin, cle_lue, nommee)) = lu else {
             continue;
         };
-        let lim = borne.min(mots.len() - tete);
-        // Les clés d'un même départ sont préfixes les unes des autres : on étend
-        // une fois jusqu'à `lim`, puis on relit les coupes de la plus longue à la
-        // plus courte.
-        cle.clear();
-        coupes.clear();
-        cle.push_str(&mot_tete);
-        coupes.push(cle.len());
-        for i in 1..lim {
-            cle.push(' ');
-            cle.push_str(&key(mots[tete + i].mot));
-            coupes.push(cle.len());
-        }
-        for taille in (1..=lim).rev() {
-            let Some(nommee) = snap.par_cle.get(&cle[..coupes[taille - 1]]) else {
-                continue;
-            };
-            let (debut, fin) = (mots[tete].debut, mots[tete + taille - 1].fin);
-            let refuse = (citing.european && debut < EUROPEAN_HEADER)
-                || soi.contains(nommee)
-                || impossible(
-                    &cle[..coupes[taille - 1]],
-                    nommee,
-                    &citing,
-                    banniere.as_deref(),
-                )
-                || nom_tronque(&mots, tete + taille)
-                || spans.last().is_some_and(|(_, f, _)| *f > debut);
-            if !refuse {
-                spans.push((debut, fin, nommee.clone()));
-            }
-            break;
+        let debut = mots[tete].debut;
+        let refuse = (citing.european.is_some() && debut < EUROPEAN_HEADER)
+            || soi.contains(&nommee)
+            || impossible(&cle_lue, &nommee, &citing, banniere.as_deref())
+            || nom_tronque(&mots, fin + 1)
+            || spans.last().is_some_and(|(_, f, _)| *f > debut);
+        if !refuse {
+            spans.push((debut, mots[fin].fin, nommee));
         }
     }
     spans
 }
 
+/// The longest exact key the words write from `tete`, with its last word.
+fn par_la_cle(
+    mots: &[Mot<'_>],
+    tete: usize,
+    snap: &CaseNameSnapshot,
+    cle: &mut String,
+    coupes: &mut Vec<usize>,
+) -> Option<(usize, String, CaseAddress)> {
+    let mot_tete = key(mots[tete].mot);
+    let &borne = snap.par_tete.get(&mot_tete)?;
+    let lim = borne.min(mots.len() - tete);
+    // The keys of one head are prefixes of one another: extend once up to `lim`, then read the
+    // cuts back from the longest to the shortest.
+    cle.clear();
+    coupes.clear();
+    cle.push_str(&mot_tete);
+    coupes.push(cle.len());
+    for i in 1..lim {
+        cle.push(' ');
+        cle.push_str(&key(mots[tete + i].mot));
+        coupes.push(cle.len());
+    }
+    (1..=lim).rev().find_map(|taille| {
+        let lue = &cle[..coupes[taille - 1]];
+        snap.par_cle
+            .get(lue)
+            .map(|nommee| (tete + taille - 1, lue.to_string(), nommee.clone()))
+    })
+}
+
+/// Words before a locution that make it a common noun: « cette décision Mme B
+/// soutient », « dans une affaire CAS n° 24-082023 ».
+const DETERMINANTS: [&str; 6] = ["un", "une", "ce", "cet", "cette", "ces"];
+
+const CIVILITES: [&str; 6] = ["m", "mme", "mlle", "mr", "monsieur", "madame"];
+
+/// What may join two words of one name: `Rinner-Kühn`, `U/Parlement`, `Apple & Pear`. A glued
+/// `&` opens an HTML entity (`K&uuml;hne`).
+fn joins_a_name(separator: &str) -> bool {
+    separator
+        .chars()
+        .all(|c| c.is_whitespace() || matches!(c, '-' | '\'' | '’' | '/'))
+        || (separator.trim() == "&" && separator.starts_with(char::is_whitespace))
+}
+
+/// The name the words from `tete` write, read as a query reads it: its distinctive words,
+/// up to the first that no name shares with the others, in the names of
+/// [`NAME_BEARERS_MAX`] decisions at most. « jurisprudence Tropic » cites Société Tropic
+/// Travaux Signalisation. A day written after the name keeps the bearers of that day.
+fn par_les_mots(
+    mots: &[Mot<'_>],
+    tete: usize,
+    snap: &CaseNameSnapshot,
+    soi: &[CaseAddress],
+    citing: &Citing<'_>,
+    banniere: Option<&str>,
+) -> Option<(usize, String, CaseAddress)> {
+    if !mots[tete]
+        .mot
+        .chars()
+        .next()
+        .is_some_and(char::is_uppercase)
+        || !mots[tete]
+            .avant
+            .chars()
+            .all(|c| c.is_whitespace() || matches!(c, '«' | '"' | '“'))
+    {
+        return None;
+    }
+    let mut lus: Vec<String> = Vec::new();
+    let mut fin = None;
+    for (i, m) in mots
+        .iter()
+        .enumerate()
+        .take(tete + MAX_NAME_WORDS)
+        .skip(tete)
+    {
+        if i > tete && (severed(m.avant) || !joins_a_name(m.avant)) {
+            break;
+        }
+        let mot = key(m.mot);
+        if name_words(&mot).is_empty() {
+            match i == tete {
+                true => return None,
+                false => continue,
+            }
+        }
+        if m.mot.starts_with(char::is_lowercase) && !suit_dans_une_cle(snap, &lus, &mot) {
+            break;
+        }
+        let initiale = mot.chars().count() < 2;
+        lus.push(mot);
+        let words: Vec<&str> = lus.iter().map(String::as_str).collect();
+        if snap.names.holding(&words).is_empty() {
+            lus.pop();
+            break;
+        }
+        if !initiale {
+            fin = Some(i);
+        }
+    }
+    let fin = fin?;
+    if !lus
+        .iter()
+        .any(|w| w.chars().count() >= 3 && !CIVILITES.contains(&w.as_str()))
+        || mots
+            .get(fin + 1)
+            .is_some_and(|m| m.avant.trim_start().starts_with(':'))
+    {
+        return None;
+    }
+    let words: Vec<&str> = lus.iter().map(String::as_str).collect();
+    let cle = words.join(" ");
+    let mut candidates: Vec<(Option<&CaseAddress>, u32)> = snap
+        .names
+        .bearers(&words, NAME_BEARERS_MAX)
+        .into_iter()
+        .filter(|&rank| {
+            snap.names
+                .keys(rank)
+                .iter()
+                .any(|k| writes_in_order(k, &words))
+        })
+        .map(|rank| {
+            let (address, citations) = &snap.named[rank];
+            (address.as_ref(), *citations)
+        })
+        .filter(|(address, _)| address.is_none_or(|a| !impossible(&cle, a, citing, banniere)))
+        .collect();
+    let suite: String = mots[fin + 1..]
+        .iter()
+        .take(6)
+        .map(|m| format!("{}{}", m.avant, m.mot))
+        .collect();
+    if let Some(jour) = lj_core::citation::query_day(&suite) {
+        candidates.retain(|(address, _)| {
+            address.is_some_and(|a| a.date.as_deref() == Some(jour.as_str()))
+        });
+    }
+    // « Legros et autres » under the ECHR's pen is Legros et autres c. France, not the CJUE's
+    // Léopold Legros et autres, cited twice as often.
+    let siennes = |address: &Option<&CaseAddress>| {
+        address.is_some_and(|a| a.court.is_some() && a.court.as_deref() == citing.european)
+    };
+    if candidates.iter().any(|(address, _)| siennes(address)) {
+        candidates.retain(|(address, _)| siennes(address));
+    }
+    if candidates
+        .iter()
+        .any(|(address, _)| address.is_some_and(|a| soi.contains(a)))
+    {
+        return None;
+    }
+    let nommee = choisie(&candidates)?;
+    let cour = nommee.court.as_deref().unwrap_or_default();
+    if citing.european.is_none()
+        && COURS_EUROPEENNES.contains(&cour)
+        && !names_the_court(mots, cour)
+    {
+        return None;
+    }
+    Some((fin, cle, nommee.clone()))
+}
+
+/// Whether a French body names the European court somewhere. The CELLAR titles carry given
+/// names, which a locution writes alone (« l'arrêt Isabelle »): requiring the court drops those.
+fn names_the_court(mots: &[Mot<'_>], cour: &str) -> bool {
+    let marques: &[&[&str]] = match cour {
+        "cjue" => &[
+            &["cjue"],
+            &["cjce"],
+            &["cour", "de", "justice"],
+            &["tpi"],
+            &["tpice"],
+            &["tribunal", "de", "l", "union"],
+            &[
+                "tribunal",
+                "de",
+                "premiere",
+                "instance",
+                "des",
+                "communautes",
+            ],
+        ],
+        _ => &[
+            &["cedh"],
+            &["cour", "edh"],
+            &["cour", "europeenne"],
+            &["strasbourg"],
+        ],
+    };
+    let plies: Vec<String> = mots.iter().map(|m| key(m.mot)).collect();
+    marques.iter().any(|marque| {
+        plies
+            .windows(marque.len())
+            .any(|lus| lus.iter().zip(*marque).all(|(l, m)| l == m))
+    })
+}
+
+/// Whether a key writes `mot` right after the last word read, citation words aside: a word in
+/// lower case goes on with « Van der Hulst » and « Legros et autres », not with « Canal pour
+/// soutenir », whose « pour » is in « Groupe Canal contre Office de l'Union européenne pour… ».
+fn suit_dans_une_cle(snap: &CaseNameSnapshot, lus: &[String], mot: &str) -> bool {
+    let Some(precedent) = lus.last() else {
+        return false;
+    };
+    let words: Vec<&str> = lus.iter().map(String::as_str).chain([mot]).collect();
+    snap.names.holding(&words).into_iter().any(|rank| {
+        snap.names.keys(rank).iter().any(|cle| {
+            name_words(cle)
+                .windows(2)
+                .any(|p| p[0] == precedent && p[1] == mot)
+        })
+    })
+}
+
+/// The key holds the words in the order the body writes them: « Commission/Grèce » is not
+/// « Dimos Ano Liosion (Grèce) contre Commission ».
+fn writes_in_order(key: &str, words: &[&str]) -> bool {
+    let mut suite = key.split(' ');
+    words.iter().all(|w| suite.any(|k| k == *w))
+}
+
+/// The most cited of a name's bearers, when it gathers twice the citations of the next: a
+/// European name has its judgment, its opinion and its orders, and the judgment is the one
+/// cited.
+fn choisie<'a>(candidates: &[(Option<&'a CaseAddress>, u32)]) -> Option<&'a CaseAddress> {
+    let mut tri = candidates.to_vec();
+    tri.sort_by_key(|&(_, citations)| std::cmp::Reverse(citations));
+    let (nommee, premiere) = *tri.first()?;
+    match tri.get(1) {
+        Some(&(_, seconde)) if premiere < 2 * seconde.max(1) => None,
+        _ => nommee,
+    }
+}
+
 /// Le nom reconnu n'est que la tête d'un nom plus long : « arrêt Soulier et
 /// Doke » vise la décision de la CJUE, pas l'arrêt Soulier du Conseil d'État.
 ///
-/// Three more continuations, worth 1 075 of the 24 216 production spans and
-/// false to the last one reread (31/08/2026): a capitalised word right after
+/// Three more continuations: a capitalised word right after
 /// (`arrêt Kadi II`, `López Brea et Hidalgo Palacios` read as `López`), a mark
 /// glued to the name (`Weber's Wine World`, `Marie-Claire Tatete`), a slash or
 /// an ampersand (`France Télécom/Commission`, `Benjamin & Wilson`). The mark
@@ -283,43 +527,37 @@ fn egal_plie(mot: &str, cible: &str, pluriel: bool) -> bool {
 mod tests {
     use super::*;
 
+    fn nommee(keys: &[&str], court: &str, docket: &str, date: &str) -> NamedCase {
+        NamedCase {
+            keys: keys.iter().map(|k| k.to_string()).collect(),
+            address: Some(CaseAddress::new(court, docket, date)),
+            citations: 0,
+        }
+    }
+
     fn snap() -> CaseNameSnapshot {
         CaseNameSnapshot::new([
-            (
-                "danthony".to_string(),
-                CaseAddress::new("ce", "335033", "2011-12-23"),
+            nommee(&["danthony"], "ce", "335033", "2011-12-23"),
+            nommee(&["soulier"], "ce", "223041", "2002-10-30"),
+            nommee(
+                &[
+                    "societe tropic travaux signalisation",
+                    "tropic travaux signalisation",
+                ],
+                "ce",
+                "291545",
+                "2007-07-16",
             ),
-            (
-                "soulier".to_string(),
-                CaseAddress::new("ce", "223041", "2002-10-30"),
-            ),
-            (
-                "societe tropic travaux signalisation".to_string(),
-                CaseAddress::new("ce", "291545", "2007-07-16"),
-            ),
-            (
-                "tropic".to_string(),
-                CaseAddress::new("ce", "291545", "2007-07-16"),
-            ),
-            (
-                "granata c france".to_string(),
-                CaseAddress::new("cedh", "39626/98", "2003-03-27"),
-            ),
-            (
-                "czabaj".to_string(),
-                CaseAddress::new("ce", "389011", "2016-07-13"),
-            ),
-            (
-                "sanchez".to_string(),
-                CaseAddress::new("ce", "401800", "2017-05-10"),
-            ),
+            nommee(&["granata c france"], "cedh", "39626/98", "2003-03-27"),
+            nommee(&["czabaj"], "ce", "389011", "2016-07-13"),
+            nommee(&["sanchez"], "ce", "401800", "2017-05-10"),
         ])
     }
 
     /// A French 2024 citing decision, later than every target in the snapshot.
     fn citante() -> Citing<'static> {
         Citing {
-            european: false,
+            european: None,
             date: Some("2024-01-01"),
         }
     }
@@ -356,8 +594,7 @@ mod tests {
         assert!(cles("M. Danthony demande l'annulation du décret", &[]).is_empty());
     }
 
-    /// Deux des trois extraits relus portant « Soulier » visent l'arrêt de la
-    /// CJUE, dont le nom complet est « Soulier et Doke ».
+    /// « Soulier et Doke » names a CJEU judgment, never the Conseil d'État's « Soulier ».
     #[test]
     fn le_nom_tronque_ne_cite_pas() {
         assert!(cles(
@@ -406,7 +643,8 @@ mod tests {
         );
     }
 
-    /// Three continuations the `et <Capital>` guard did not cover.
+    /// A name continued by a numeral, a hyphen, a possessive, a slash or an
+    /// ampersand names another case.
     #[test]
     fn le_nom_prolonge_ne_cite_pas() {
         for texte in [
@@ -436,7 +674,7 @@ mod tests {
     #[test]
     fn la_juridiction_europeenne_ne_nomme_pas_une_cible_francaise() {
         let europeenne = Citing {
-            european: true,
+            european: Some("cedh"),
             date: Some("2024-01-01"),
         };
         assert!(cited_case_name_spans(
@@ -454,7 +692,7 @@ mod tests {
     fn l_etat_defendeur_rouvre_la_cible_francaise() {
         let bandeau = "CINQUIÈME SECTION AFFAIRE Sanchez c. FRANCE (Requête no 45581/15) ARRÊT ";
         let europeenne = Citing {
-            european: true,
+            european: Some("cedh"),
             date: Some("2024-01-01"),
         };
         let corps = format!(
@@ -487,7 +725,7 @@ mod tests {
     #[test]
     fn le_bandeau_europeen_ne_cite_pas() {
         let europeenne = Citing {
-            european: true,
+            european: Some("cedh"),
             date: Some("2024-01-01"),
         };
         let entete = "PREMIÈRE SECTION AFFAIRE Granata c. France (no 3) (Requête no 39634/98)";
@@ -508,7 +746,7 @@ mod tests {
     #[test]
     fn une_decision_ne_cite_pas_ce_qui_la_suit() {
         let avant = Citing {
-            european: false,
+            european: None,
             date: Some("2005-06-01"),
         };
         assert!(cited_case_name_spans(
@@ -518,6 +756,207 @@ mod tests {
             avant
         )
         .is_empty());
+    }
+
+    #[test]
+    fn le_nom_se_lit_a_ses_mots() {
+        assert_eq!(
+            cles("au regard de la jurisprudence Tropic, le recours", &[]),
+            ["ce|291545"]
+        );
+        assert!(cles("la décision attaquée", &[]).is_empty());
+    }
+
+    fn porteuse(key: &str, court: &str, docket: &str, date: &str, citations: u32) -> NamedCase {
+        NamedCase {
+            citations,
+            ..nommee(&[key], court, docket, date)
+        }
+    }
+
+    fn citee(snap: &CaseNameSnapshot, text: &str) -> Vec<CaseAddress> {
+        cited_case_name_spans(text, snap, &[], citante())
+            .into_iter()
+            .map(|(_, _, a)| a)
+            .collect()
+    }
+
+    #[test]
+    fn la_plus_citee_des_porteuses_quand_elle_domine() {
+        let snap = CaseNameSnapshot::new([
+            porteuse("angelidaki e a", "cjue", "C-378/07", "2009-04-23", 40),
+            porteuse("angelidaki e a", "cjue", "C-378/07", "2008-12-04", 3),
+            porteuse("haas", "cjue", "T-3/96", "1998-09-15", 5),
+            porteuse("haas", "cjue", "C-338/95", "1997-11-20", 4),
+            porteuse(
+                "ag2r prevoyance contre beaudout pere et fils sarl",
+                "cjue",
+                "C-437/09",
+                "2011-03-03",
+                30,
+            ),
+            porteuse(
+                "union des syndicats de l immobilier et beaudout pere et fils",
+                "cjue",
+                "C-25/14",
+                "2015-12-17",
+                10,
+            ),
+        ]);
+        let arret = |docket: &str, date: &str| vec![CaseAddress::new("cjue", docket, date)];
+        assert_eq!(
+            citee(
+                &snap,
+                "la Cour de justice, dans l'arrêt Angelidaki e.a., précité"
+            ),
+            arret("C-378/07", "2009-04-23")
+        );
+        assert!(citee(&snap, "dans l'affaire Haas, la Cour de justice a jugé").is_empty());
+        assert_eq!(
+            citee(&snap, "la CJUE, dans l'arrêt Beaudout, précité"),
+            arret("C-437/09", "2011-03-03")
+        );
+        assert_eq!(
+            citee(
+                &snap,
+                "la CJUE, dans l'arrêt BEAUDOUT du 17 décembre 2015, a retenu"
+            ),
+            arret("C-25/14", "2015-12-17")
+        );
+    }
+
+    #[test]
+    fn la_cour_europeenne_se_cite_d_abord() {
+        let snap = CaseNameSnapshot::new([
+            porteuse(
+                "legros et autres c france",
+                "cedh",
+                "72173/17",
+                "2023-11-09",
+                2,
+            ),
+            porteuse(
+                "administration des douanes contre leopold legros et autres",
+                "cjue",
+                "C-163/90",
+                "1992-07-16",
+                66,
+            ),
+        ]);
+        let cedh = Citing {
+            european: Some("cedh"),
+            date: Some("2024-01-01"),
+        };
+        let corps = format!("{}selon l’arrêt Legros et autres, précité", " ".repeat(400));
+        assert_eq!(
+            cited_case_name_spans(&corps, &snap, &[], cedh)
+                .into_iter()
+                .map(|(_, _, r)| rendu(&r))
+                .collect::<Vec<_>>(),
+            ["cedh|72173/17"]
+        );
+    }
+
+    #[test]
+    fn un_corps_francais_nomme_la_cour_europeenne() {
+        let snap = CaseNameSnapshot::new([
+            porteuse(
+                "procedures penales contre jean louis aubertin isabelle diblanc",
+                "cjue",
+                "C-29/94",
+                "1995-02-16",
+                43,
+            ),
+            porteuse(
+                "isabelle gielen contre ministerraad",
+                "cjue",
+                "C-299/13",
+                "2014-02-27",
+                4,
+            ),
+            porteuse("lina rossi c italie", "cedh", "43106/98", "2000-06-22", 0),
+        ]);
+        assert!(citee(
+            &snap,
+            "selon la jurisprudence Isabelle, le recours est ouvert"
+        )
+        .is_empty());
+        assert!(citee(&snap, "l'affaire Lina, devant le conseil de prud'hommes").is_empty());
+        assert_eq!(
+            citee(&snap, "la Cour européenne, dans l'affaire Lina, a jugé").len(),
+            1
+        );
+    }
+
+    #[test]
+    fn le_nom_se_lit_dans_l_ordre_ou_le_corps_l_ecrit() {
+        let snap = CaseNameSnapshot::new([porteuse(
+            "dimos ano liosion grece et autres contre commission des communautes europeennes",
+            "cjue",
+            "T-85/05",
+            "2005-05-23",
+            0,
+        )]);
+        assert!(citee(
+            &snap,
+            "la CJUE, dans l'affaire Commission/Grèce, l'avocat général"
+        )
+        .is_empty());
+        assert_eq!(
+            citee(
+                &snap,
+                "le Tribunal de l'Union, dans l'affaire Dimos Ano Liosion/Commission"
+            )
+            .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn un_nom_commun_n_ouvre_aucun_nom() {
+        let snap = CaseNameSnapshot::new([
+            porteuse(
+                "mme b contre prefet du rhone",
+                "ce",
+                "401801",
+                "2017-05-10",
+                0,
+            ),
+            porteuse(
+                "accord entre la france et monaco",
+                "ce",
+                "401802",
+                "2017-05-10",
+                0,
+            ),
+            porteuse(
+                "ministre des affaires etrangeres c x",
+                "ce",
+                "401803",
+                "2017-05-10",
+                0,
+            ),
+            porteuse("chambre arbitrale cas", "ce", "401804", "2017-05-10", 0),
+            porteuse("canal robin et godot", "ce", "58502", "1962-10-19", 0),
+            porteuse(
+                "groupe canal contre office de l union europeenne pour la propriete intellectuelle",
+                "cjue",
+                "C-500/13",
+                "2014-01-16",
+                0,
+            ),
+        ]);
+        for texte in [
+            "Pour contester cette décision Mme B soutient qu'elle vit en France",
+            "DANS L'AFFAIRE ENTRE : Madame X",
+            "dans l'affaire ENTRE : Madame X",
+            "le Ministère des Affaires Etrangères à Paris",
+            "dans une affaire CAS n° 24-082023",
+            "pour l'arrêt (Accord, 19 juin 1997)",
+            "devant la CJUE, le requérant invoque l'arrêt Canal pour soutenir",
+        ] {
+            assert!(citee(&snap, texte).is_empty(), "texte {texte:?}");
+        }
     }
 
     #[test]

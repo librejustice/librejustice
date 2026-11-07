@@ -20,9 +20,10 @@ leptos-use = { version = "0.19.2", default-features = false, optional = true, fe
 
 # --- DTOs (noyau leger serde-pur ; present ssr ET hydrate/wasm) ---
 # Without the `jsonschema` feature: pure serde, compiles to wasm32. No lj-core,
-# whose embedded tables weigh 9 MB.
+# whose embedded tables would weigh down the wasm.
 lj-dtos = { workspace = true }
 lj-fold = { workspace = true }
+lj-textsearch = { workspace = true }
 lj-vocab = { workspace = true }
 
 # --- Client HTTP (ssr: backend rustls/tokio ; wasm: backend fetch du navigateur,
@@ -81,6 +82,7 @@ web-sys = { workspace = true, optional = true, features = [
   "DragEvent",
   "File",
   "FileList",
+  "FilePropertyBag",
   "FontFace",
   "FontFaceSet",
   "HtmlAnchorElement",
@@ -90,7 +92,9 @@ web-sys = { workspace = true, optional = true, features = [
   "HtmlInputElement",
   "ImageBitmap",
   "ImageData",
+  "MessageEvent",
   "PointerEvent",
+  "ResizeObserver",
   "Response",
   "Url",
 ] }
@@ -128,3 +132,4 @@ ssr = [
 # dans le Cargo.toml racine) : projet multi-crate bin=lj-server / lib=lj-web.
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+jiff = { workspace = true }

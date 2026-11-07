@@ -1,11 +1,8 @@
-//! Volet registre de la fiche entité : proxy mince vers les APIs
-//! publiques — recherche-entreprises.api.gouv.fr (identité SIRENE + dirigeants
-//! RNE + finances) et Opendatasoft DILA (chronologie BODACC par SIREN, annonces
-//! JOAFE par RNA, projetées par `annonces_bodacc` / `annonces_joafe` dans le
-//! `AnnonceHit` du pot). Aucun stock local : cache in-process 24 h
-//! (`AppState::registre_cache`) et dégradation propre — API indisponible →
-//! section vide, jamais d'erreur. Les PDF (JOAFE, INPI) restent des liens
-//! sortants, jamais proxifiés.
+//! The registry side of the entity page: SIRENE identity, RNE officers and
+//! finances from recherche-entreprises.api.gouv.fr, and the BODACC notices of a
+//! SIREN or the JOAFE notices of an RNA from the base, as the pot's `AnnonceHit`.
+//! Cached 24 h in process (`AppState::registre_cache`); an API down leaves its
+//! section empty, never an error. The JOAFE PDFs stay outgoing links.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -24,9 +21,9 @@ use crate::state::AppState;
 
 /// Timeout par appel amont — au-delà, la section dégrade (absente du rendu).
 pub(crate) const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(3);
-/// Seuil au-delà duquel un appel amont RÉUSSI laisse une ligne : 25× le p50
-/// mesuré (41 ms), donc rien au régime normal, et un amont qui dérive vers le
-/// budget se voit avant d'échouer.
+/// Past this, a SUCCESSFUL upstream call leaves a line: far above the usual latency,
+/// so nothing in normal operation, and an upstream drifting toward the budget shows
+/// before it fails.
 const UPSTREAM_LENT: Duration = Duration::from_millis(1000);
 /// Annonces affichées sur la fiche (le total réel est renvoyé à part).
 const ANNONCES_LIMIT: usize = 10;
@@ -61,10 +58,8 @@ pub async fn entity_registre(
             response
         }
     };
-    // Nos lignes `annonce` complètent le live DILA dans la même liste de
-    // groupes, hors du cache 24 h — celui-ci ne protège que des appels d'APIs
-    // externes, et une consultation close ou nouvelle doit se voir à la moisson
-    // suivante. Nos groupes passent en tête.
+    // The contracts join the list outside the 24 h cache: one closed or new
+    // shows at the next harvest. They come first.
     let mut groupes = crate::annonces::entity_groups(state, &key).await?;
     groupes.append(&mut response.annonces);
     response.annonces = groupes;
@@ -91,16 +86,10 @@ async fn registre_entreprise(state: &AppState, id: &str) -> (EntityRegistreRespo
     if siren.len() != 9 {
         return (empty(), true);
     }
-    let liens = vec![
-        RegistreLienDto {
-            label: "Annuaire des entreprises".to_string(),
-            url: format!("https://annuaire-entreprises.data.gouv.fr/entreprise/{siren}"),
-        },
-        RegistreLienDto {
-            label: "Documents et actes (INPI)".to_string(),
-            url: format!("https://data.inpi.fr/entreprises/{siren}#documents"),
-        },
-    ];
+    let liens = vec![RegistreLienDto {
+        label: "Annuaire des entreprises".to_string(),
+        url: format!("https://annuaire-entreprises.data.gouv.fr/entreprise/{siren}"),
+    }];
     let (entreprise, bodacc) = tokio::join!(
         fetch_recherche_entreprises(state, &siren),
         crate::annonces_bodacc::pour_entite(state, &siren, ANNONCES_LIMIT)
@@ -247,22 +236,12 @@ fn effectif_label(code: &str) -> Option<&'static str> {
     })
 }
 
-/// Payload Opendatasoft (BODACC et JOAFE partagent la même enveloppe v2.1 ;
-/// `total_count` et `results` sont toujours présents).
-#[derive(Deserialize)]
-pub(crate) struct OdsRecords<T> {
-    pub(crate) total_count: i64,
-    pub(crate) results: Vec<T>,
-}
-
 // ── Associations (`rna:`) ─────────────────────────────────────────────────────
 
 /// Annonces JOAFE d'un RNA (création, modification, dissolution, comptes),
 /// avec le PDF officiel DILA en lien direct.
 async fn registre_association(state: &AppState, id: &str) -> (EntityRegistreResponse, bool) {
-    // Frontière de validation : un RNA est `W` + chiffres (parfois un code
-    // préfectoral alphanumérique) — on ne laisse passer que l'alphanumérique,
-    // ce qui neutralise aussi toute injection dans la clause `where` ODS.
+    // An RNA is `W` and alphanumerics, upper case as the base writes it.
     let rna: String = id
         .chars()
         .filter(char::is_ascii_alphanumeric)

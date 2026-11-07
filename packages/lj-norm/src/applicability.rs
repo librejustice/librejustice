@@ -74,7 +74,14 @@ pub fn journal_code(text_uid: &str, jurisdiction: &str) -> String {
     if text_uid.starts_with("BOI-") {
         return "BOFIP".to_string();
     }
-    if jurisdiction == "UE" || text_uid.starts_with("EU/") {
+    if let Some(site) = text_uid
+        .strip_prefix("bo_")
+        .and_then(|rest| rest.split_once('_'))
+        .map(|(site, _)| site)
+    {
+        return format!("BO-{}", site.to_uppercase());
+    }
+    if jurisdiction == "EU" || text_uid.starts_with("EU/") {
         return "JOUE".to_string();
     }
     match jurisdiction {
@@ -921,7 +928,7 @@ mod tests {
     fn registry_reads_and_borrows_defaults() {
         assert_eq!(journal_code("LEGITEXT000006070721", "FR"), "JORF");
         assert_eq!(journal_code("KALICONT000005635691", "FR"), "BOCC");
-        assert_eq!(journal_code("EU/REG/2016/679", "UE"), "JOUE");
+        assert_eq!(journal_code("EU/REG/2016/679", "EU"), "JOUE");
         assert_eq!(journal_code("SN/CODE-FAMILLE", "SN"), "JORS");
         assert_eq!(journal_code("MA/CODE-FAMILLE", "MA"), "JO-MA");
         assert_eq!(Base::of("BOCC", None, None), Base::of("JORF", None, None));

@@ -20,8 +20,8 @@ use lj_dtos::{
     EntityRegistreResponse, EntitySearchResponse, JurisdictionCatalogueResponse,
     JurisdictionHubResponse, JurisdictionYearResponse, LawArticleResponse, LawCodeSummary,
     LawCompareResponse, LawSectionResponse, NormCatalogueResponse, NormFondResponse,
-    NormYearResponse, PlaceCorpusResponse, PlacesResponse, SearchContext, SearchRequest,
-    SearchResponse, SimilarDecisionsResponse, SuggestResponse,
+    NormYearResponse, OpenSourceResponse, PlaceCorpusResponse, PlacesResponse, SearchContext,
+    SearchRequest, SearchResponse, SimilarDecisionsResponse, SuggestResponse,
 };
 // Types portés uniquement par les routes client (`/me`, signets, hover cards).
 #[cfg(feature = "hydrate")]
@@ -43,11 +43,13 @@ pub struct TextesFilters<'a> {
     /// The places read from: what applies in any of them is served, the default
     /// reader's when there is none.
     pub places: &'a [String],
-    pub jurisdiction: Option<&'a str>,
-    pub nature: Option<&'a str>,
+    /// Orders or type paths (`FR.DECRET`), any of them served.
+    pub jurisdictions: &'a [String],
     pub source: Option<&'a str>,
-    /// Sur-facette « portée » : `norme` | `doctrine_administrative`.
+    /// The scope: `norme` | `doctrine_administrative` | `information_publique`.
     pub scope: Option<&'a str>,
+    pub valid_from: Option<&'a str>,
+    pub as_of: Option<&'a str>,
 }
 
 /// Erreur de la frontiere API.
@@ -214,6 +216,9 @@ pub trait Backend: Send + Sync {
     /// Catalogue des juridictions groupé par famille. Servi depuis le cache
     /// process-local 12 h.
     async fn fetch_juridictions(&self) -> ApiResult<JurisdictionCatalogueResponse>;
+
+    /// The third-party components of the published code, with their licences.
+    async fn fetch_open_source(&self) -> ApiResult<OpenSourceResponse>;
 
     /// Hub d'une juridiction : années couvertes + volume.
     async fn fetch_juridiction_hub(&self, code: &str) -> ApiResult<JurisdictionHubResponse>;
@@ -678,7 +683,7 @@ impl ApiClient {
         context: SearchContext,
     ) -> ApiResult<ArticleSearchResponse> {
         let mut path = format!(
-            "/search-textes?q={}&limit={}&offset={}&mode={}",
+            "/search-textes?query={}&limit={}&offset={}&mode={}",
             url_encode(q),
             page.limit,
             page.offset,
@@ -687,15 +692,20 @@ impl ApiClient {
         if context == SearchContext::Teaser {
             path.push_str("&context=teaser");
         }
-        for place in filters.places {
-            path.push_str(&format!("&place={}", url_encode(place)));
+        for (key, values) in [
+            ("place", filters.places),
+            ("jurisdiction", filters.jurisdictions),
+        ] {
+            for v in values {
+                path.push_str(&format!("&{key}={}", url_encode(v)));
+            }
         }
         for (key, value) in [
             ("code", filters.code),
-            ("jurisdiction", filters.jurisdiction),
-            ("nature", filters.nature),
             ("source", filters.source),
             ("scope", filters.scope),
+            ("valid_from", filters.valid_from),
+            ("as_of", filters.as_of),
         ] {
             if let Some(v) = value.filter(|v| !v.is_empty()) {
                 path.push_str(&format!("&{key}={}", url_encode(v)));
@@ -717,6 +727,12 @@ impl ApiClient {
     pub async fn fetch_juridictions(&self) -> ApiResult<JurisdictionCatalogueResponse> {
         let builder = self.request(Method::GET, "/juridictions");
         self.send_json(builder, "juridictions catalogue fetch failed", None)
+            .await
+    }
+
+    pub async fn fetch_open_source(&self) -> ApiResult<OpenSourceResponse> {
+        let builder = self.request(Method::GET, "/open-source");
+        self.send_json(builder, "open source fetch failed", None)
             .await
     }
 
@@ -905,6 +921,16 @@ impl ApiClient {
             .await
     }
 
+    pub async fn fetch_entity_documents(
+        &self,
+        ns: &str,
+        id: &str,
+    ) -> ApiResult<lj_dtos::EntityDocumentsResponse> {
+        let builder = self.request(Method::GET, &format!("/entity/{ns}/{id}/documents"));
+        self.send_json(builder, "entity documents fetch failed", None)
+            .await
+    }
+
     pub async fn fetch_decision_parties(&self, id: &str) -> ApiResult<DecisionPartiesResponse> {
         let builder = self.request(Method::GET, &format!("/decision/{id}/parties"));
         self.send_json(
@@ -1035,6 +1061,11 @@ impl ApiClient {
         self.send_unit(builder, "read report failed", None).await
     }
 
+    pub async fn report_landing(&self, report: &lj_dtos::LandingReport) -> ApiResult<()> {
+        let builder = self.request(Method::POST, "/landings").json(report);
+        self.send_unit(builder, "landing report failed", None).await
+    }
+
     pub async fn report_entity_search(
         &self,
         report: &lj_dtos::EntitySearchReport,
@@ -1057,7 +1088,7 @@ const CHALLENGE_RELOAD_COOLDOWN_MS: f64 = 60_000.0;
 
 /// A 403 here can only come from the edge: the API returns none, on any route. An
 /// edge challenge needs a **document** response to be solved, which a `fetch`
-/// cannot show, so a reload hands the browser one.
+/// cannot show, so a GET navigation to the same page hands the browser one.
 #[cfg(feature = "hydrate")]
 fn recover_from_challenge(resp: &reqwest::Response) {
     if resp.status() != StatusCode::FORBIDDEN {
@@ -1078,8 +1109,14 @@ fn recover_from_challenge(resp: &reqwest::Response) {
     if last.is_some_and(|last| now - last < CHALLENGE_RELOAD_COOLDOWN_MS) {
         return;
     }
+    let location = window.location();
+    let (Ok(path), Ok(query)) = (location.pathname(), location.search()) else {
+        return;
+    };
     let _ = storage.set_item(CHALLENGE_RELOAD, &now.to_string());
-    let _ = window.location().reload();
+    // `reload()` repeats the document's method, and a page the challenge form served
+    // is a POST the origin answers 405. A fragment would turn this into a scroll.
+    let _ = location.replace(&format!("{path}{query}"));
 }
 
 /// Transmet au suivi de l'onglet l'identite du bundle portee par la reponse. Le
@@ -1130,31 +1167,31 @@ fn page_query(page: PageParams) -> String {
     format!("?limit={}&offset={}", page.limit, page.offset)
 }
 
-/// Encode un `SearchRequest` en query string (clés camelCase, omissions
-/// conditionnelles).
+/// A `SearchRequest` as a query string, under the names of the `search_decisions`
+/// arguments, defaults left out.
 #[cfg(any(feature = "hydrate", test))]
 fn build_search_query(request: &SearchRequest) -> String {
     use lj_dtos::SortOrder;
 
     let mut params: Vec<(String, String)> = Vec::new();
-    params.push(("q".to_string(), request.query.clone()));
+    params.push(("query".to_string(), request.query.clone()));
 
-    append_multi(&mut params, "jurisdictionType", &request.jurisdiction_type);
+    append_multi(&mut params, "jurisdiction_type", &request.jurisdiction_type);
     append_multi(&mut params, "solution", &request.solution);
-    append_multi(&mut params, "procedure", &request.procedure);
-    append_multi(&mut params, "office", &request.office);
-    append_multi(&mut params, "legalDomain", &request.legal_domain);
-    append_multi_str(&mut params, "jurisdictionCode", &request.jurisdiction_code);
+    append_multi(&mut params, "legal_domain", &request.legal_domain);
+    append_multi_str(&mut params, "jurisdiction_code", &request.jurisdiction_code);
     append_multi_str(&mut params, "seat", &request.seat);
-    append_multi_str(&mut params, "legalInstrument", &request.legal_instrument);
-    append_multi_str(&mut params, "legalArticle", &request.legal_article);
+    append_multi_str(&mut params, "formation", &request.formation);
+    append_multi_str(&mut params, "legal_instrument", &request.legal_instrument);
+    append_multi_str(&mut params, "legal_article", &request.legal_article);
     append_multi_str(&mut params, "publication", &request.publication);
+    append_multi(&mut params, "search_in", &request.search_in);
 
     if let Some(date_from) = &request.date_from {
-        params.push(("dateFrom".to_string(), date_from.clone()));
+        params.push(("date_from".to_string(), date_from.clone()));
     }
     if let Some(date_to) = &request.date_to {
-        params.push(("dateTo".to_string(), date_to.clone()));
+        params.push(("date_to".to_string(), date_to.clone()));
     }
     // `mode` toujours emis : le DTO le materialise (defaut Auto). L'API resout
     // Auto cote serveur.
@@ -1167,7 +1204,7 @@ fn build_search_query(request: &SearchRequest) -> String {
         params.push(("offset".to_string(), request.offset.to_string()));
     }
     if request.ai_mode {
-        params.push(("aiMode".to_string(), "true".to_string()));
+        params.push(("ai_rerank".to_string(), "true".to_string()));
     }
 
     encode_pairs(&params)
@@ -1267,7 +1304,7 @@ fn url_encode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lj_dtos::{Domain, JurisdictionType, Office, Procedure, SearchMode, Solution, SortOrder};
+    use lj_dtos::{Domain, JurisdictionType, SearchMode, Solution, SortOrder};
 
     /// Un filtre invalide n'est pas une panne : le 422 nomme le lien, pas la
     /// disponibilité de l'API.
@@ -1294,8 +1331,7 @@ mod tests {
         assert!(panne.hint.contains("indisponible"));
     }
 
-    /// An over-length 422 sent two people looking for a filter they never set,
-    /// measured on 01/09/2026. Both counts must appear, neither may say filter.
+    /// An over-length 422 shows both counts and never speaks of a filter.
     #[test]
     fn over_length_422_names_the_length() {
         let too_long = "x".repeat(lj_dtos::QUERY_MAX_CHARS + 1);
@@ -1320,19 +1356,19 @@ mod tests {
     #[test]
     fn build_search_query_emet_chaque_filtre_du_dto() {
         let request = SearchRequest {
-            query: "observations devant la cour".to_string(),
+            query: "bail commercial".to_string(),
             jurisdiction_type: Some(vec![JurisdictionType::Cc]),
             solution: Some(vec![Solution::Rejet]),
-            procedure: Some(vec![Procedure::Qpc]),
-            office: Some(vec![Office::Jex]),
             legal_domain: Some(vec![Domain::Social]),
             jurisdiction_code: Some(vec!["cc".to_string()]),
-            seat: Some(vec!["CC.C2".to_string()]),
+            seat: Some(vec!["FR.CC.C2".to_string()]),
+            formation: Some(vec!["FR.CC.RESTREINTE".to_string()]),
             legal_instrument: Some(vec!["code-civil".to_string()]),
             legal_article: Some(vec!["code-civil|203".to_string()]),
             publication: Some(vec!["publie".to_string()]),
             date_from: Some("2020-01-01".to_string()),
             date_to: Some("2026-01-01".to_string()),
+            search_in: None,
             mode: SearchMode::Semantic,
             sort: SortOrder::DateDesc,
             limit: 20,
@@ -1347,9 +1383,21 @@ mod tests {
             .collect();
         let serialized = serde_json::to_value(&request).expect("SearchRequest sérialise");
         for field in serialized.as_object().expect("objet JSON").keys() {
-            // Seul renommage entre le DTO et la query string.
-            let key = if field == "query" { "q" } else { field };
-            assert!(emitted.contains(&key), "clé `{key}` absente de `{qs}`");
+            // The DTO is camelCase, the query string the tool's snake_case.
+            let key = match field.as_str() {
+                "aiMode" => "ai_rerank".to_string(),
+                f => f.chars().fold(String::new(), |mut k, c| {
+                    if c.is_ascii_uppercase() {
+                        k.push('_');
+                    }
+                    k.push(c.to_ascii_lowercase());
+                    k
+                }),
+            };
+            assert!(
+                emitted.contains(&key.as_str()),
+                "clé `{key}` absente de `{qs}`"
+            );
         }
     }
 }

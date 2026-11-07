@@ -152,8 +152,8 @@ fn type0_ucs2_h_extracts_searches_redacts_cjk_text() {
         "UniGB-UCS2-H bytes must decode directly to Unicode"
     );
 
-    // Confirm search finds the single target glyph and use those quads
-    // directly for redaction now that padding is removed.
+    // Search finds the single target glyph, and its quads drive the
+    // redaction directly.
     let matches = document
         .search_text(0, "中")
         .expect("search should succeed");
@@ -593,7 +593,7 @@ fn overlay_text_is_stamped_over_redacted_regions() {
         .extract_text(0)
         .expect("reopened extraction should succeed");
     assert!(!extracted.text.contains("Secret Alpha"));
-    // The overlay label is now part of the page's text layer, so text
+    // The overlay label is part of the page's text layer, so text
     // extraction should find it above the redacted region.
     assert!(
         extracted.text.contains("REDACTED"),
@@ -855,7 +855,7 @@ fn nested_form_xobject_redaction_recurses_into_inner_forms() {
 #[test]
 fn form_xobject_redaction_rewrites_the_form_content_stream() {
     // The Form XObject in this fixture carries "Form Inner Secret".
-    // Redacting that string now succeeds: the engine allocates a per-page
+    // Redacting that string succeeds: the engine allocates a per-page
     // copy of the Form, rewrites its content stream to strip the targeted
     // glyphs, and updates the page's Resources.XObject to point at the
     // copy. The page text "Page Outer" (which lives in the page's own
@@ -1083,9 +1083,8 @@ fn xref_stream_input_without_objstm_round_trips_as_xref_stream() {
 
 #[test]
 fn classic_xref_input_saves_as_classic_xref() {
-    // Round-trip a classic-xref fixture and confirm the writer keeps
-    // emitting a classic xref table (no regression introduced by the
-    // new modern-shape path).
+    // A classic-xref fixture round-trips with a classic xref table, not
+    // an xref stream.
     let document =
         PdfDocument::open(&fixture("simple-text.pdf")).expect("classic fixture should open");
     let saved = document.save().expect("save should succeed");
@@ -1239,11 +1238,9 @@ fn mac_roman_encoded_simple_font_decodes_mac_specific_bytes() {
 
 #[test]
 fn ultra_dense_rows_one_pt_apart_are_probed() {
-    // Rows sit only 1pt apart at 8pt Helvetica. Previously the line
-    // grouper's y-tolerance used `> 1.0pt` so a 1pt gap merged, the
-    // later row's trailing glyphs drifted into the earlier row once
-    // their x passed the earlier row's last-glyph watermark. The `>=`
-    // boundary keeps exactly-1pt-apart rows on their own lines.
+    // Rows sit only 1pt apart at 8pt Helvetica. The line grouper splits
+    // rows at a gap of exactly 1pt (`>=`), so the later row's trailing
+    // glyphs stay out of the earlier row.
     let document =
         PdfDocument::open(&fixture("ultra-dense-layout.pdf")).expect("fixture should open");
     let extracted = document.extract_text(0).expect("extraction should succeed");
@@ -1266,12 +1263,10 @@ fn ultra_dense_rows_one_pt_apart_are_probed() {
 
 #[test]
 fn dense_layout_rows_are_not_merged_into_one_line() {
-    // The fixture stacks four rows only 2pt apart in y at 6pt Helvetica,
-    // the kind of layout that previously tripped up `line_height × 0.3`
-    // tolerance heuristics. Extraction should yield four distinct matches
-    // for "Account" and each account number's surrounding row text should
-    // stay on its own visual line so search and quad derivation don't
-    // confuse adjacent rows.
+    // The fixture stacks four rows only 2pt apart in y at 6pt Helvetica.
+    // Extraction should yield four distinct matches for "Account" and each
+    // account number's surrounding row text should stay on its own visual
+    // line so search and quad derivation don't confuse adjacent rows.
     let document = PdfDocument::open(&fixture("dense-layout.pdf")).expect("fixture should open");
     let extracted = document.extract_text(0).expect("extraction should succeed");
     assert!(extracted.text.contains("Account A 1111"));
@@ -1312,10 +1307,8 @@ fn dense_layout_rows_are_not_merged_into_one_line() {
 
 #[test]
 fn sub_pt_dense_rows_split_into_separate_lines() {
-    // Three rows of 6pt Helvetica only 0.5pt apart in y. The previous
-    // line grouper capped y-tolerance at 1.0pt and merged all three rows
-    // into a single visual line; the proportional `height_ref * 0.10`
-    // tolerance (0.48pt at 6pt) keeps each row separate.
+    // Three rows of 6pt Helvetica only 0.5pt apart in y. The proportional
+    // `height_ref * 0.10` tolerance (0.48pt at 6pt) keeps each row separate.
     let document =
         PdfDocument::open(&fixture("sub-pt-dense-layout.pdf")).expect("fixture should open");
     let extracted = document.extract_text(0).expect("extraction should succeed");
@@ -1991,10 +1984,10 @@ fn full_cover_image_drops_to_n() {
 
 #[test]
 fn partial_image_drops_original_ref_when_unreferenced() {
-    // Regression for the leak path: after a partial mask the original
-    // image stream must not survive in the saved PDF (no other live
-    // reference points at it). Otherwise a reader could recover the
-    // unmasked pixels from the orphan indirect object.
+    // After a partial mask the original image stream must not survive in
+    // the saved PDF (no other live reference points at it). Otherwise a
+    // reader could recover the unmasked pixels from the orphan indirect
+    // object.
     let pdf = build_partial_image_flate_pdf(32, 32);
     let mut document = PdfDocument::open(&pdf).expect("fixture should open");
 
@@ -2047,12 +2040,9 @@ fn partial_image_drops_original_ref_when_unreferenced() {
 
 #[test]
 fn partial_image_two_invocations_mask_both_rects() {
-    // Regression for the repeated-name bug: when the same Image
-    // XObject is drawn twice on a page with two different partial
-    // overlap rectangles, BOTH rectangles must be masked in the
-    // saved file. Previously the second `apply_partial_mask` rewired
-    // /Im1 to a new copy that only had its own rect masked, losing
-    // the first invocation's mask.
+    // When the same Image XObject is drawn twice on a page with two
+    // different partial overlap rectangles, BOTH rectangles are masked
+    // in the one copy /Im1 names in the saved file.
 
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
@@ -2194,14 +2184,11 @@ fn partial_image_two_invocations_mask_both_rects() {
 
 #[test]
 fn form_xobject_redaction_and_partial_image_mask_compose_on_one_page() {
-    // Regression for the resource-cache stale-write path: when a
-    // single page has both a Form XObject that gets redacted (COW
+    // When a single page has both a Form XObject that gets redacted (COW
     // with content rewrite, points the page's Resources.XObject[Fm1]
     // at the new ref) AND an Image XObject that gets a partial mask
     // (COW with pixel rewrite, points Resources.XObject[Im1] at the
-    // new ref), neither override may clobber the other. Previously
-    // the image pass wrote a stale snapshot of the page resources
-    // back into the page object, undoing the form override.
+    // new ref), neither override may clobber the other.
     use flate2::Compression;
     use flate2::write::ZlibEncoder;
     use std::io::Write as _;
@@ -2378,16 +2365,11 @@ fn form_xobject_redaction_and_partial_image_mask_compose_on_one_page() {
 
 #[test]
 fn overlay_isolated_from_unbalanced_clipping_path() {
-    // Regression for the overlay-clipped-by-image bug. A page whose
-    // content stream sets a rounded clipping path before drawing an
-    // image (the typical "rounded image" pattern) and ends without a
-    // matching `Q` would propagate that clip into the redaction
-    // overlay, every overlay rectangle silently gets clipped to the
-    // image's rounded shape. Wrapping the rewritten page content in
-    // `q` / `Q` so the overlay starts from the initial graphics state
-    // is the fix; this test shows that even a deliberately-malformed
-    // page (no closing `Q`, clip still active at end) renders the
-    // overlay rectangle in full.
+    // A page whose content stream sets a clipping path before drawing an
+    // image (the typical rounded image) and ends without a matching `Q`
+    // leaves that clip active at its end. The rewritten page content is
+    // wrapped in `q` / `Q`, so the overlay starts from the initial
+    // graphics state and its rectangle paints in full.
 
     use lj_pdf::{FillColor, RedactionMode};
 
@@ -2436,10 +2418,8 @@ fn overlay_isolated_from_unbalanced_clipping_path() {
     let mut document = PdfDocument::open(&pdf).expect("fixture should open");
 
     // Redaction target far outside the [100,100,150,150] clip rect:
-    // (200, 200)..(300, 250). With the leftover clip active, the
-    // overlay rectangle would be entirely outside the clip and would
-    // not paint at all. After the fix the overlay starts from the
-    // initial graphics state and the rectangle paints fully.
+    // (200, 200)..(300, 250). Under the leftover clip the overlay
+    // rectangle would not paint at all.
     let report = document
         .apply_redactions(RedactionPlan {
             targets: vec![RedactionTarget::Rect {
@@ -2461,10 +2441,9 @@ fn overlay_isolated_from_unbalanced_clipping_path() {
     let _ = report;
 
     let saved = document.save().expect("save");
-    // Decode the saved content stream so we can inspect the post-fix
-    // shape: the rewritten page content must be wrapped in q...Q so
-    // the appended overlay paints starting from the initial graphics
-    // state, not the leftover clip.
+    // Decode the saved content stream: the rewritten page content must
+    // be wrapped in q...Q so the appended overlay paints starting from
+    // the initial graphics state, not the leftover clip.
     use lj_pdf::objects::{PdfObject, decode_stream};
     let document = parse_pdf(&saved).expect("saved PDF should reopen");
     let page = &document.pages[0];
@@ -3246,4 +3225,67 @@ fn forms_fanned_out_past_the_operation_budget_are_refused() {
         document.draw_page(0),
         Err(PdfError::Unsupported(_))
     ));
+}
+
+/// Every hit of `words` on the first page as one target, as the workbench
+/// groups a page's hits, applied; the bytes saved and the quads painted.
+fn redact_words(bytes: &[u8], words: &[&str]) -> (Vec<u8>, usize) {
+    let mut document = PdfDocument::open(bytes).expect("fixture should open");
+    let mut quads = Vec::new();
+    for word in words {
+        for hit in document
+            .search_text(0, word)
+            .expect("search should succeed")
+        {
+            quads.extend(hit.quads.iter().map(|quad| quad.points));
+        }
+    }
+    let painted = quads.len();
+    document
+        .apply_redactions(RedactionPlan {
+            targets: vec![RedactionTarget::QuadGroup {
+                page_index: 0,
+                quads,
+            }],
+            mode: None,
+            fill_color: None,
+            overlay_text: None,
+            remove_intersecting_annotations: Some(true),
+            strip_metadata: Some(false),
+            strip_attachments: Some(false),
+            sanitize_hidden_ocgs: None,
+        })
+        .expect("redaction should succeed");
+    (document.save().expect("save should succeed"), painted)
+}
+
+fn filled_shapes(items: &[lj_draw::Item]) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            lj_draw::Item::Shape { fill: Some(_), .. } => 1,
+            lj_draw::Item::Group(group) => filled_shapes(&group.items),
+            _ => 0,
+        })
+        .sum()
+}
+
+fn page_fills(bytes: &[u8]) -> usize {
+    let page = PdfDocument::open(bytes)
+        .and_then(|document| document.draw_page(0))
+        .expect("page should draw");
+    filled_shapes(&page.items)
+}
+
+/// A later pass spans "Secret" and "Gamma", and the box the first pass painted
+/// over "Alpha" lies between them: it stays.
+#[test]
+fn a_later_pass_keeps_the_boxes_lying_between_its_hits() {
+    let source = fixture("simple-text.pdf");
+    let (first, alpha) = redact_words(&source, &["Alpha"]);
+    assert!(alpha > 0);
+    assert_eq!(page_fills(&first), page_fills(&source) + alpha);
+    let (second, around) = redact_words(&first, &["Secret", "Gamma"]);
+    assert!(around > 0);
+    assert_eq!(page_fills(&second), page_fills(&first) + around);
 }

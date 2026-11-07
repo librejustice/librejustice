@@ -2,17 +2,23 @@
 // lines of a page shared out between them. The site sends no COOP/COEP, so the
 // workers share no memory, and each holds its own copy of the networks.
 window.ljHtrReady = (async () => {
-  const base = "/redactor/htr";
+  const base = new URL("/redactor/htr", import.meta.url).href;
+  // A worker starts from the page's own origin, so a view framed elsewhere starts it
+  // from a blob that imports it.
+  const script = new URL("/htr-worker.js", import.meta.url).href;
+  const worker = new URL(import.meta.url).origin === location.origin
+    ? script
+    : URL.createObjectURL(new Blob([`import ${JSON.stringify(script)};`], { type: "text/javascript" }));
   // French first: the handwriting reader reads it alone, the others tell a page it cannot read.
   const languages = ["fr", "en", "de", "es", "it", "pt", "nl"];
   const files = ["det.onnx", "rec.onnx", "dict.txt", "laia.onnx", "syms.txt", ...languages.map((l) => `lexicon-${l}.txt`)];
-  // Four workers read a page 3.7 times faster than one, measured natively.
+  // Up to four workers, which read a page several times faster than one.
   const size = Math.max(1, Math.min(4, (navigator.hardwareConcurrency || 2) - 1));
-  let pool = null;
+  let starting = null;
 
   class Slot {
     constructor(module, networks) {
-      this.worker = new Worker("/htr-worker.js", { type: "module" });
+      this.worker = new Worker(worker, { type: "module" });
       this.pending = new Map();
       this.next = 0;
       this.worker.onmessage = ({ data }) => {
@@ -50,8 +56,15 @@ window.ljHtrReady = (async () => {
 
   const reader = {
     progress: null,
+    prepare() {
+      starting ??= start((at) => reader.progress?.("loading models", at)).catch((error) => {
+        starting = null;
+        throw error;
+      });
+      return starting;
+    },
     async words(image, page) {
-      pool ??= await start((at) => reader.progress?.("loading models", at));
+      const pool = await reader.prepare();
       const { data, width, height } = image.getContext("2d").getImageData(0, 0, image.width, image.height);
       const grey = new Uint8Array(width * height);
       for (let i = 0; i < grey.length; i++) grey[i] = data[4 * i];

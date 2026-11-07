@@ -8,7 +8,7 @@ use lj_fold::fold;
 
 /// The law applicable in France, which is where a reader is read from when they
 /// have named no place.
-pub const DOMESTIC_REGIONS: [&str; 3] = ["FR", "UE", "INTL"];
+pub const DOMESTIC_REGIONS: [&str; 3] = ["FR", "EU", "INTL"];
 
 /// `code ISO` → variantes foldées (minuscules, sans accent). Convention :
 /// suffixe `*` = préfixe de token (couvre les flexions du gentilé :
@@ -127,8 +127,8 @@ pub struct QueryScope {
     /// The query with the country tokens taken out, `None` when it is searched
     /// as written. Identity resolution reads it, ranking does not: « Code civil
     /// (Belgique) » is named by « code civil », not by « code civil belge »,
-    /// where dropping the token from a search costs nDCG@10 0.91 to 0.31 on
-    /// « code civil du Sénégal », whose every formed title carries it.
+    /// where dropping the token from a search wrecks the ranking of « code civil du
+    /// Sénégal », whose every formed title carries it.
     pub stripped: Option<String>,
 }
 
@@ -242,15 +242,11 @@ pub fn strip_query_jurisdictions(query: &str) -> Option<(Vec<&'static str>, Stri
 /// which is what tells the shape carrying one from the shape it replaces: no
 /// text slug is two letters, nor `intl`.
 pub fn from_url_segment(segment: &str) -> Option<&'static str> {
-    match segment {
-        "fr" => Some("FR"),
-        "eu" => Some("UE"),
-        "intl" => Some("INTL"),
-        _ => COUNTRIES
-            .iter()
-            .map(|(code, _)| *code)
-            .find(|code| code.eq_ignore_ascii_case(segment)),
-    }
+    DOMESTIC_REGIONS
+        .iter()
+        .copied()
+        .chain(COUNTRIES.iter().map(|(code, _)| *code))
+        .find(|code| code.eq_ignore_ascii_case(segment))
 }
 
 #[cfg(test)]
@@ -382,7 +378,7 @@ mod tests {
         // The bilateral compound names no country at all, so the treaty is
         // reached on the domestic scope, INTL included.
         let compound = query_scope("convention franco-sénégalaise d'exequatur", &home());
-        assert_eq!(compound.jurisdictions, vec!["FR", "UE", "INTL"]);
+        assert_eq!(compound.jurisdictions, vec!["FR", "EU", "INTL"]);
     }
 
     #[test]
@@ -405,7 +401,7 @@ mod tests {
             assert_eq!(segment, segment.to_lowercase(), "{code}");
             assert_eq!(from_url_segment(&segment), Some(code), "{code}");
         }
-        assert_eq!(url_segment("UE"), "eu");
+        assert_eq!(url_segment("EU"), "eu");
         assert_eq!(url_segment("INTL"), "intl");
     }
 

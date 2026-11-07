@@ -20,7 +20,7 @@
 use leptos::prelude::*;
 use leptos_router::hooks::use_query_map;
 use leptos_router::params::ParamsMap;
-use lj_dtos::SearchFacets;
+use lj_dtos::{SearchFacets, UiAction};
 
 use crate::components::ui::Skeleton;
 use crate::helpers::group_thousands;
@@ -127,7 +127,10 @@ pub fn SearchRail(
             })
             .collect_view();
         view! {
-            <div class="flex flex-col gap-1.5 border-t border-[var(--color-rule)] pt-4">
+            <div
+                class="flex flex-col gap-1.5 border-t border-[var(--color-rule)] pt-4"
+                data-usage=UiAction::SearchRailYears.as_str()
+            >
                 <p class="pb-1 text-[11px] uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
                     "Années"
                 </p>
@@ -164,6 +167,7 @@ pub fn SearchRail(
             stale,
             "Articles les plus cités",
             "legalArticle",
+            UiAction::SearchRailArticles,
             rows,
             toggle,
         )
@@ -174,9 +178,17 @@ pub fn SearchRail(
             return ().into_any();
         };
         let picked = selected("seat");
-        let mut roots: Vec<_> = f.seat.into_iter().filter(|c| c.parent.is_none()).collect();
-        roots.sort_by_key(|c| std::cmp::Reverse(c.count));
-        let rows: Vec<RailRow> = roots
+        let mut types: Vec<_> = f
+            .seat
+            .into_iter()
+            .filter(|c| {
+                c.parent
+                    .as_deref()
+                    .is_some_and(|order| !order.contains('.'))
+            })
+            .collect();
+        types.sort_by_key(|c| std::cmp::Reverse(c.count));
+        let rows: Vec<RailRow> = types
             .into_iter()
             .take(ROWS)
             .map(|c| RailRow {
@@ -186,7 +198,14 @@ pub fn SearchRail(
                 value: c.value,
             })
             .collect();
-        rail_list(stale, "Juridictions", "seat", rows, toggle)
+        rail_list(
+            stale,
+            "Juridictions",
+            "seat",
+            UiAction::SearchRailSeats,
+            rows,
+            toggle,
+        )
     };
 
     let solutions = move || {
@@ -206,7 +225,14 @@ pub fn SearchRail(
                 value: c.value,
             })
             .collect();
-        rail_list(stale, "Solution", "solution", rows, toggle)
+        rail_list(
+            stale,
+            "Solution",
+            "solution",
+            UiAction::SearchRailSolutions,
+            rows,
+            toggle,
+        )
     };
 
     move || {
@@ -279,6 +305,7 @@ fn rail_list(
     stale: Signal<bool>,
     title: &'static str,
     key: &'static str,
+    usage: UiAction,
     rows: Vec<RailRow>,
     toggle: Callback<(&'static str, String)>,
 ) -> AnyView {
@@ -313,7 +340,10 @@ fn rail_list(
         })
         .collect_view();
     view! {
-        <div class="flex flex-col gap-1.5 border-t border-[var(--color-rule)] pt-4">
+        <div
+            class="flex flex-col gap-1.5 border-t border-[var(--color-rule)] pt-4"
+            data-usage=usage.as_str()
+        >
             <p class="pb-1 text-[11px] uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
                 {title}
             </p>

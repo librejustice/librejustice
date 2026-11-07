@@ -93,11 +93,10 @@ pub fn piece_key(piece_uid: &str, num_key: &str) -> String {
 /// → `l80-a`, `119bis` → `119-bis`. `None` hors de cette forme, clé déjà
 /// séparée comprise (`l80-a`, `l312-12`, `lo6213-1`).
 ///
-/// Rattrape une lecture d'article après échec de la clé exacte, le fonds
-/// portant `l80-a` là où l'appelant écrit `l80a`. La borne est étroite par
-/// nécessité : ignorer les séparateurs confondrait `l312-12` et `l312-1-2`,
-/// articles distincts, là où la frontière chiffre/lettre ne heurte que 4 des
-/// 17 216 clés à suffixe de lettres du fonds.
+/// Recovers an article read once the exact key has failed, the fonds carrying
+/// `l80-a` where the caller writes `l80a`. The bound is narrow on purpose:
+/// ignoring the separators would merge `l312-12` and `l312-1-2`, two distinct
+/// articles, where the digit/letter boundary hits almost no key of the fonds.
 pub fn letter_suffix_separated(key: &str) -> Option<String> {
     let b = key.as_bytes();
     let mut cut = b.len();
@@ -111,8 +110,8 @@ pub fn letter_suffix_separated(key: &str) -> Option<String> {
 }
 
 /// The key of a single-article text, written `unique` by the fonds and `1` by a
-/// caller. Only valid **after** the literal key has failed: 37 texts hold both
-/// `1` and `unique`, and they must answer on `1` (measured 15/09/2026).
+/// caller. Only valid **after** the literal key has failed: a text holding both
+/// `1` and `unique` must answer on `1`.
 pub fn sole_article_alias(key: &str) -> Option<&'static str> {
     (key == "1").then_some("unique")
 }
@@ -175,9 +174,8 @@ pub fn display(key: &str) -> String {
 /// s'il est écrit en capitale : « L 21 » cite, « à 21 ans » ne cite pas (`à` se
 /// plie en `a`, qui est un préfixe de partie).
 ///
-/// L'**ordinal** en fait partie : « article 7 bis » cite `7-bis`, pas `7` — deux
-/// articles distincts, et 23 195 du corpus portent un tel suffixe. Ordre
-/// d'apparition conservé, doublons retirés.
+/// The **ordinal** is part of it: « article 7 bis » cites `7-bis`, not `7`, two
+/// distinct articles. Order of appearance kept, duplicates removed.
 pub fn query_article_keys(query: &str) -> Vec<String> {
     let mut keys: Vec<String> = Vec::new();
     for (key, _, _) in key_spans(query) {
@@ -286,10 +284,7 @@ const CITATION_CONNECTORS: [&str; 5] = ["et", "article", "articles", "art", "a"]
 /// connectors and nothing else. `None` as soon as a word remains.
 fn citation_keys(text: &str, min_digits: usize) -> Option<Vec<String>> {
     let (mut keys, rest) = strip_query_article_keys(text);
-    for tok in rest
-        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
-        .filter(|t| !t.is_empty())
-    {
+    for (_, tok) in cited_tokens(&rest) {
         let folded = lj_fold::fold(tok);
         if CITATION_CONNECTORS.contains(&folded.as_str()) {
             continue;
@@ -350,11 +345,10 @@ pub fn cited_reference(query: &str) -> Option<(String, String)> {
 /// `-` et `*` de l'alphabet des clés, plus un `.` ou un `/` **encadré de
 /// chiffres**, qui reste dans le token.
 ///
-/// Le point ne peut pas être gardé sans condition : « art. 1240 » donnerait le
-/// token `art.`, et la détection de l'article annoncé, qui compare à `art`,
-/// tomberait. Encadré de chiffres, il ne peut être qu'un séparateur de numéro —
-/// 45 274 articles du corpus en portent un, surtout des conventions collectives
-/// (`8.1`) et des codes étrangers (`286.2`).
+/// The dot cannot be kept unconditionally: « art. 1240 » would give the token `art.`,
+/// and the detection of the announced article, which compares with `art`, would fail.
+/// Framed by digits, it can only separate a number, as collective agreements (`8.1`)
+/// and foreign codes (`286.2`) most often do.
 fn cited_tokens(query: &str) -> Vec<(usize, &str)> {
     let bytes = query.as_bytes();
     let kept = |c: char| c.is_alphanumeric() || c == '-' || c == '*';
@@ -397,10 +391,9 @@ fn is_ordinal(token: &str) -> bool {
 /// Forme d'une clé où l'ordinal final est **détaché** : `7-bis` → « 7 bis ».
 /// `None` si la clé n'en porte pas.
 ///
-/// Le corpus écrit l'ordinal séparé — les 23 195 numéros concernés sont stockés
-/// « 7 bis », jamais « 7-bis ». Un index qui garde le trait d'union dans le
-/// token ne rapproche donc pas les deux : chercher la clé telle quelle ne
-/// trouve rien, il faut la forme du corpus.
+/// The corpus writes the ordinal apart: those numbers are stored « 7 bis », never
+/// « 7-bis ». An index keeping the hyphen inside the token does not bring the two
+/// together: the key as it stands finds nothing, the corpus's form is needed.
 pub fn spaced_ordinal(key: &str) -> Option<String> {
     let (head, tail) = key.rsplit_once('-')?;
     is_ordinal(tail).then(|| format!("{head} {tail}"))
@@ -633,7 +626,7 @@ mod tests {
             assert_eq!(query_article_keys(q), ["l423-7"]);
         }
         assert_eq!(
-            query_article_keys("\"L. 433-3-1\" résidence habituelle définition"),
+            query_article_keys("\"L. 433-3-1\" titre de séjour pluriannuel"),
             ["l433-3-1"]
         );
         // Étoile tapée ou non, la requête tombe sur la même clé qu'en base.
@@ -654,7 +647,7 @@ mod tests {
     fn requete_le_numero_pointe_annonce_tombe_sur_la_cle() {
         // Convention collective, code étranger : le point sépare le numéro.
         assert_eq!(
-            query_article_keys("article 8.1 convention collective assainissement"),
+            query_article_keys("article 8.1 convention collective du bâtiment"),
             ["8-1"]
         );
         assert_eq!(
@@ -712,7 +705,7 @@ mod tests {
     #[test]
     fn requete_un_nombre_nu_ne_cite_que_derriere_article() {
         assert_eq!(
-            query_article_keys("article 21 loi 65-557 délai convocation 21 jours copropriété"),
+            query_article_keys("article 21 loi 65-557 avis du conseil syndical sous 21 jours"),
             ["21", "65-557"]
         );
         assert!(query_article_keys("délai de 21 jours pour convoquer").is_empty());
@@ -771,9 +764,9 @@ mod tests {
 
     #[test]
     fn requete_l_ordinal_appartient_au_numero() {
-        // Requête réelle du 11/08/2026 : « 7 » et « 7 bis » sont deux articles.
+        // « 7 » and « 7 bis » are two articles.
         assert_eq!(
-            query_article_keys("article 7 bis accord franco-algérien 1968 salarié"),
+            query_article_keys("article 7 bis accord franco-algérien 1968 certificat de résidence"),
             ["7-bis"]
         );
         assert_eq!(query_article_keys("L. 123-4 ter du code"), ["l123-4-ter"]);

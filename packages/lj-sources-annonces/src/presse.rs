@@ -138,9 +138,8 @@ fn depuis_ligne(l: Ligne) -> Option<AnnonceBrute> {
 mod tests {
     use super::depuis_ndjson;
 
-    /// Le cas mesuré du 15/08/2026 : un avis JAL absent du BOAMP, dont le lien
-    /// sortant porte la clé de la consultation Atline déjà en stock. La ligne
-    /// presse ne crée donc pas de doublon — elle se fond dans la sienne.
+    /// A JAL notice absent from the BOAMP whose outgoing link carries the key of an
+    /// Atline consultation in stock: the press row merges into it, no duplicate.
     #[test]
     fn un_avis_de_presse_porte_la_cle_de_jointure_de_sa_plateforme() {
         let dump = r#"

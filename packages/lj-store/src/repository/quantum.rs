@@ -15,9 +15,9 @@ use tokio_postgres::types::Type;
 use super::DecisionRepository;
 use crate::error::Result;
 
-/// Une ligne de la distribution. Les montants sont en centièmes entiers : une
-/// médiane et une somme sur ~730 000 lignes doivent être exactes, et le pliage
-/// depuis les euros du schéma de lecture appartient à l'appelant.
+/// One row of the distribution. Amounts are in integer hundredths: a median and
+/// a sum over the whole table must be exact, and folding from the euros of the
+/// read schema belongs to the caller.
 #[derive(Debug, Clone, Default)]
 pub struct QuantumObservationRow {
     pub victime_ord: i16,
@@ -115,7 +115,7 @@ const COPY_TYPES: &[Type] = &[
 
 impl DecisionRepository<'_> {
     /// The decisions naming a poste of the corporel, by id: the fonds the
-    /// deterministic pass reads. 75 563 on 2026-09-10, 2 s.
+    /// deterministic pass reads.
     #[tracing::instrument(name = "db.quantum_fonds_ids", skip(self), fields(db.system = "postgresql"))]
     pub async fn quantum_fonds_ids(&self) -> Result<Vec<i64>> {
         let rows = self

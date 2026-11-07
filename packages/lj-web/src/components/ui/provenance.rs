@@ -34,7 +34,7 @@ fn ProvenanceField(label: &'static str, value: String) -> impl IntoView {
             </a>
         }
         .into_any()
-    } else if label == "ECLI" {
+    } else if label == "ECLI" || label == "Identifiant" {
         view! { <span class="break-all font-mono text-sm text-[var(--color-ink)]">{value}</span> }
             .into_any()
     } else {

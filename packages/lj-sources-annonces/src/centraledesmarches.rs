@@ -20,16 +20,12 @@ const LISTE: &str = "https://lacentraledesmarches.com/marches-publics";
 
 const POLITESSE: Duration = Duration::from_secs(1);
 
-/// Hard stop behind the date window below. The whole stock was 16,749 notices
-/// on 14/09/2026 at 25 a page, so 670 pages and 48 min.
+/// Hard stop behind the date window below, past the pages the whole stock fills.
 const MAX_PAGES: u64 = 900;
 
 /// Days of publication the daily run walks: it only needs what appeared since
 /// the last one, and this window is its tolerance to a missed run. Deeper, the
-/// listing republishes BOAMP and JOUE, which we hold at the source (205 of the
-/// 208 open cards sampled past the first page on 15/09/2026 cite one of the
-/// two). Measured the same day: 471 s and 2,138 open cards, against the 48 min
-/// of the whole stock.
+/// listing republishes BOAMP and JOUE, which we hold at the source.
 pub const FENETRE_JOURS: i32 = 7;
 
 /// Failed pages in a row before dropping the engine. One lost page is a hole of
@@ -177,10 +173,8 @@ pub async fn enumerate(jours: i32) -> Result<MoteurRun> {
     }
 
     Ok(MoteurRun {
-        // The counter served atop the listing counts notices of every type: on
-        // 14/09/2026 it read 16,749 for 10,584 open consultations, the rest
-        // being 3,628 award notices and market notices already closed. Against
-        // the 90 % floor it would call the engine degraded every night.
+        // The counter served atop the listing counts award and closed notices
+        // too: against the 90 % floor it would call the engine degraded.
         annonce: None,
         echecs,
         hotes: Vec::new(),
@@ -496,8 +490,7 @@ mod tests {
 
     /// The sector sentence sits outside the notice, in the engine's own summary:
     /// it is the label of the CPV code the row already carries, not a description
-    /// of the market. It was served as one on 175 of the 621 rows this engine is
-    /// the only channel of.
+    /// of the market.
     #[test]
     fn la_phrase_de_secteur_n_est_pas_une_description() {
         let sans_objet = FICHE_PRESSE.replace("Objet du marché", "Lieu d'exécution");

@@ -33,7 +33,7 @@ pub fn ResultEmpty(#[prop(into)] query: Signal<String>) -> impl IntoView {
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
                     "Essayez de reformuler avec moins de termes, des synonymes, ou des opérateurs booléens ("
                     <code class="font-mono">"ET"</code>", "<code class="font-mono">"OU"</code>", "
-                    <code class="font-mono">"SAUF"</code>"). La recherche sémantique fonctionne mieux avec des formulations naturelles."
+                    <code class="font-mono">"SAUF"</code>"). Le mode Reformulation fonctionne mieux avec des formulations naturelles."
                 </p>
             </div>
         }

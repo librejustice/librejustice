@@ -1,5 +1,5 @@
 {
-  "_provenance": "GT des fonctions pures de construction de requête de lj-api/src/search.rs (detect_query_mode / translate_boolean / phrase_combo_parse / tokenize_body / content_chunks). Capturée à l'origine depuis un oracle Python, retiré depuis ; maintenue à la main : split + strip alignés sur les stopwords de l'index chunks_bm25 (migration 0048) et dédup des clauses S5 encodés le 2026-06-10. Asservie par query_construction_parity_oracle (search.rs). Proximité `PROCHE`/`NEAR` réécrite en phrase à slop tantivy le 2026-07-27 (forme infixe `A PROCHE5 B` → `\"A B\"~5` ; opérateur pendant droppé). Trois cas à numéro collé (`2008/115`, `19-20.312`, `22/01772`) ajoutés le 2026-08-14 avec la bascule du tokenizer.",
+  "_provenance": "Expected outputs of the pure query-construction functions of src/search/query.rs (detect_query_mode, translate_boolean, phrase_combo_clauses, tokenize_body, content_chunks), maintained by hand: split and strip follow the stopwords of the chunk BM25 index, `A PROCHE5 B` becomes the slop phrase `\"A B\"~5` and a dangling operator is dropped. Held by query_construction_parity_oracle.",
   "cases": [
     {
       "query": "expulsion locative",
@@ -363,61 +363,61 @@
       ]
     },
     {
-      "query": "directive 2008/115/CE retour",
+      "query": "directive 2004/38/CE séjour",
       "mode": "hybrid",
-      "translate_boolean": "+directive +2008/115/CE +retour",
-      "phrase_combo_parse": "directive 2008/115 ce retour \"directive 2008/115 ce retour\" \"directive 2008/115\"",
+      "translate_boolean": "+directive +2004/38/CE +séjour",
+      "phrase_combo_parse": "directive 2004/38 ce sejour \"directive 2004/38 ce sejour\" \"directive 2004/38\"",
       "tokenize_body": [
         "directive",
-        "2008/115",
+        "2004/38",
         "ce",
-        "retour"
+        "sejour"
       ],
       "content_chunks": [
         [
           "directive",
-          "2008/115"
+          "2004/38"
         ]
       ]
     },
     {
-      "query": "pourvoi 19-20.312",
+      "query": "pourvoi 18-12.345",
       "mode": "hybrid",
-      "translate_boolean": "+pourvoi +19-20.312",
-      "phrase_combo_parse": "pourvoi 19-20.312 \"pourvoi 19-20.312\"",
+      "translate_boolean": "+pourvoi +18-12.345",
+      "phrase_combo_parse": "pourvoi 18-12.345 \"pourvoi 18-12.345\"",
       "tokenize_body": [
         "pourvoi",
-        "19-20.312"
+        "18-12.345"
       ],
       "content_chunks": [
         [
           "pourvoi",
-          "19-20.312"
+          "18-12.345"
         ]
       ]
     },
     {
-      "query": "arrêt 22/01772 du 18 octobre 2024",
+      "query": "arrêt 21/01234 du 12 mars 2021",
       "mode": "hybrid",
-      "translate_boolean": "+arrêt +22/01772 +18 +octobre +2024",
-      "phrase_combo_parse": "arret 22/01772 du 18 octobre 2024 \"arret 22/01772 du 18 octobre 2024\" \"arret 22/01772\" \"18 octobre 2024\"",
+      "translate_boolean": "+arrêt +21/01234 +12 +mars +2021",
+      "phrase_combo_parse": "arret 21/01234 du 12 mars 2021 \"arret 21/01234 du 12 mars 2021\" \"arret 21/01234\" \"12 mars 2021\"",
       "tokenize_body": [
         "arret",
-        "22/01772",
+        "21/01234",
         "du",
-        "18",
-        "octobre",
-        "2024"
+        "12",
+        "mars",
+        "2021"
       ],
       "content_chunks": [
         [
           "arret",
-          "22/01772"
+          "21/01234"
         ],
         [
-          "18",
-          "octobre",
-          "2024"
+          "12",
+          "mars",
+          "2021"
         ]
       ]
     }

@@ -6,7 +6,6 @@
 use std::collections::{BTreeMap, HashSet};
 
 use anyhow::{anyhow, Result};
-use chrono::NaiveDate;
 use lj_core::address::CaseAddress;
 use lj_core::case_names::case_name_key;
 use lj_extract::eponyme::parse_renvoi;
@@ -19,7 +18,7 @@ const LOT: i64 = 2_000;
 
 pub async fn run() -> Result<()> {
     let settings = Settings::from_env()?;
-    let pool = lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
+    let pool = lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 
@@ -59,32 +58,28 @@ pub async fn run() -> Result<()> {
         ecrits += repo.replace_renvois(&ids, &rows).await?;
     }
     let resolus = repo.resolve_pending_renvois().await?;
-    let (elected, unanchored, ferraille, courts, ordinals) = case_names(&repo).await?;
+    let (elected, ferraille, courts, ordinals) = case_names(&repo).await?;
     let poses = repo.put_case_names(&elected).await?;
     let kept: Vec<i64> = elected.iter().map(|e| e.decision_id).collect();
-    let effaces = repo
-        .clear_case_names_except(&["renvoi", "canon"], &kept)
-        .await?;
+    let effaces = repo.clear_case_names_except(&["renvoi"], &kept).await?;
     let titles = recomposed_titles(&repo.case_name_title_inputs().await?);
     let retitled = repo.set_search_titles(&titles).await?;
     println!(
         "renvois : {sources} décisions commentées, {lus} renvois lus, {ecrits} cibles écrites, \
          {resolus} résolues au fonds, {} noms d'usage dont {poses} changés et {} effacés, \
          {ferraille} mots trop courants écartés, {courts} clés courtes trop courantes écartées, \
-         {ordinals} noms ordinaux appris des citations, {unanchored} du canon sans décision, \
-         {retitled} titres réécrits",
+         {ordinals} noms ordinaux appris des citations, {retitled} titres réécrits",
         elected.len(),
         effaces.len()
     );
     Ok(())
 }
 
-/// Union of the names the renvois elect and of the hand-written canon, which wins
-/// the display, passes over the rarity threshold that Benjamin (24 398 decisions)
-/// would not hold, and derives no short key.
+/// The names the renvois elect, those the corpus writes too often dropped, with
+/// their short and ordinal keys.
 async fn case_names(
     repo: &DecisionRepository<'_>,
-) -> Result<(Vec<ElectedCaseName>, usize, usize, usize, usize)> {
+) -> Result<(Vec<ElectedCaseName>, usize, usize, usize)> {
     let mut by_decision: BTreeMap<i64, ElectedCaseName> = BTreeMap::new();
     for (decision_id, name) in repo.elected_case_names().await? {
         let key = case_name_key(&name);
@@ -117,51 +112,9 @@ async fn case_names(
     let ferraille = avant - by_decision.len();
     let courts = add_short_keys(repo, &mut by_decision).await?;
 
-    let canon = lj_core::case_names::canon();
-    let (mut juridictions, mut dates, mut dockets, mut porteur) =
-        (Vec::new(), Vec::new(), Vec::new(), Vec::new());
-    for (rang, a) in canon.iter().enumerate() {
-        for num in &a.dockets {
-            juridictions.push(a.jurisdiction.as_str());
-            dates.push(a.date.parse::<NaiveDate>()?);
-            dockets.push(num.as_str());
-            porteur.push(rang);
-        }
-    }
-    let resolues = repo
-        .resolve_docket_anchors(&juridictions, &dates, &dockets)
-        .await?;
-    let mut targets: Vec<Option<i64>> = vec![None; canon.len()];
-    for (rang, cible) in porteur.iter().zip(resolues) {
-        targets[*rang] = targets[*rang].or(cible);
-    }
-
-    let mut unanchored = 0;
-    for (a, target) in canon.iter().zip(targets) {
-        let Some(decision_id) = target else {
-            tracing::warn!(nom = a.nom, "canon name without a decision in the corpus");
-            unanchored += 1;
-            continue;
-        };
-        let key = case_name_key(&a.nom);
-        let entry = by_decision
-            .entry(decision_id)
-            .or_insert_with(|| ElectedCaseName {
-                decision_id,
-                name: None,
-                keys: Vec::new(),
-                source: "canon",
-            });
-        entry.name = Some(a.nom.clone());
-        entry.source = "canon";
-        if !entry.keys.contains(&key) {
-            entry.keys.push(key);
-        }
-    }
     let ordinals = add_ordinal_keys(repo, &mut by_decision).await?;
     Ok((
         by_decision.into_values().collect(),
-        unanchored,
         ferraille,
         courts,
         ordinals,
@@ -199,14 +152,15 @@ fn recomposed_titles(inputs: &[TitleInputs]) -> Vec<(i64, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::NaiveDate;
     use lj_core::chamber::{ChamberId, Container, Seat};
     use lj_store::repository::{ExtractedFields, JurisdictionRow};
 
     /// The two composers of `search_title` must agree to the character. They do
     /// not share a code path: the extraction reads `ExtractedFields`, this pass
     /// reads the columns. A seat left on one side alone makes the difference
-    /// test fire on every named decision, and the weekly re-extraction rewrites
-    /// every named title, reindexing `decisions_title_bm25` for nothing.
+    /// test fire on every named decision, and every named title is rewritten for
+    /// nothing.
     #[test]
     fn the_two_title_composers_agree() {
         let court = "Cour d'appel de Paris";
@@ -228,6 +182,7 @@ mod tests {
                         jurisdiction_type: "CA".to_string(),
                         city: Some("Paris".to_string()),
                         label: court.to_string(),
+                        place: None,
                     }),
                     date_lecture: NaiveDate::from_ymd_opt(2026, 1, 15),
                     docket_numbers: dockets.clone(),

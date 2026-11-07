@@ -44,7 +44,7 @@ pub fn LoginPage() -> impl IntoView {
             match sent.as_deref() {
                 Some(genre) => view! { <MailEnvoye genre=genre.to_string() /> }.into_any(),
                 None if mode == "reset" => view! { <DemandeReset next error /> }.into_any(),
-                None if mode == "lien" => view! { <DemandeLien next error /> }.into_any(),
+                None if mode == "link" => view! { <DemandeLien next error /> }.into_any(),
                 None => view! { <Identifiants signup=mode == "signup" next error /> }.into_any(),
             }
         }}
@@ -68,7 +68,7 @@ fn Identifiants(signup: bool, next: String, error: Option<String>) -> impl IntoV
         }
     };
     let lien_reset = avec_next("/login?mode=reset");
-    let lien_magique = avec_next("/login?mode=lien");
+    let lien_magique = avec_next("/login?mode=link");
     let lien_bascule = if signup {
         avec_next("/login")
     } else {
@@ -157,6 +157,7 @@ fn Identifiants(signup: bool, next: String, error: Option<String>) -> impl IntoV
                     {if signup { "Créer le compte" } else { "Se connecter" }}
                 </button>
             </form>
+            <TermsNotice />
 
             <div class="text-center text-sm text-[var(--color-ink-muted)]">
                 <a href=lien_magique class="hover:text-[var(--color-ink)]">
@@ -204,6 +205,24 @@ fn Identifiants(signup: bool, next: String, error: Option<String>) -> impl IntoV
             </div>
             <SignalerDepuisEcranBloquant de="/login" />
         </div>
+    }
+}
+
+/// Every screen that can open an account, Google and Microsoft included, carries it.
+#[component]
+fn TermsNotice() -> impl IntoView {
+    view! {
+        <p class="text-center text-xs text-[var(--color-ink-subtle)]">
+            "En continuant, vous acceptez les "
+            <a href="/terms" class="underline underline-offset-2 hover:text-[var(--color-ink)]">
+                "conditions d'utilisation"
+            </a>
+            " et prenez connaissance de la "
+            <a href="/privacy" class="underline underline-offset-2 hover:text-[var(--color-ink)]">
+                "politique de confidentialité"
+            </a>
+            "."
+        </p>
     }
 }
 
@@ -268,8 +287,8 @@ fn DemandeReset(next: String, error: Option<String>) -> impl IntoView {
     }
 }
 
-/// Demande de lien de connexion (`?mode=lien`) : l'adresse seule. Le lien vaut
-/// mot de passe, donc la réponse ne dit pas si le compte existait.
+/// Sign-in link request (`?mode=link`), the address alone. The link is worth a
+/// password, so the answer never says whether the account existed.
 #[component]
 fn DemandeLien(next: String, error: Option<String>) -> impl IntoView {
     let retour = if next.is_empty() {
@@ -308,6 +327,7 @@ fn DemandeLien(next: String, error: Option<String>) -> impl IntoView {
                     })}
                 <button type="submit" class=BOUTON>"Envoyer le lien"</button>
             </form>
+            <TermsNotice />
             <div class="text-center text-sm text-[var(--color-ink-muted)]">
                 <a href=retour class="hover:text-[var(--color-ink)]">"Retour à la connexion"</a>
             </div>

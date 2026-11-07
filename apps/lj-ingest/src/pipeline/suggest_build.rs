@@ -1,6 +1,4 @@
-//! Build du vocabulaire d'autocomplétion : décisions échantillonnées
-//! (`id % 10`), full scan des articles, titres `legal_text`, comptés par
-//! `lj-suggest` ; le FST est déposé en blob dans `suggest_index`.
+//! Autocomplete FST from a tenth of the decisions and articles, plus the `legal_text` titles.
 
 use anyhow::{anyhow, Result};
 
@@ -9,8 +7,8 @@ use lj_suggest::SuggestBuilder;
 
 use crate::config::Settings;
 
-/// Échantillon décisions : une sur `SAMPLE_MODULO` (le vocabulaire ne dépend que
-/// de fréquences relatives).
+/// One decision and one article in `SAMPLE_MODULO`: the suggest ranks by relative
+/// frequency within a domain.
 const SAMPLE_MODULO: i64 = 10;
 const BATCH: i64 = 500;
 
@@ -18,7 +16,7 @@ const BATCH: i64 = 500;
 pub async fn build_suggest() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await
@@ -51,11 +49,13 @@ pub async fn build_suggest() -> Result<()> {
     }
     tracing::info!(docs, entries = builder.entries(), "decisions counted");
 
-    // 2. Articles, full scan (df côté textes).
+    // 2. Sampled articles (texts-side df).
     let mut last_id = 0i64;
     let mut arts = 0u64;
     loop {
-        let batch = repo.suggest_article_texts_batch(last_id, BATCH).await?;
+        let batch = repo
+            .suggest_article_texts_batch(last_id, SAMPLE_MODULO, BATCH)
+            .await?;
         let Some(&(max_id, _)) = batch.last() else {
             break;
         };

@@ -1,224 +1,167 @@
-//! Backend du fond `joafe` : le Journal officiel des associations, proxy live
-//! sur l'API Opendatasoft DILA.
-//!
-//! Zéro ligne stockée : l'API sert filtres, facettes et tri sur les parutions,
-//! donc on traduit l'état de filtres du pot en ODSQL et on projette le résultat
-//! dans le `AnnonceHit` commun — la recherche du pot et la chronologie d'un RNA
-//! (fiche entité) parlent au même dataset. Le PDF officiel hébergé par la DILA
-//! est le « où agir » de la ligne : un lien direct, jamais proxifié.
-//!
-//! Ce fond n'a ni échéance (une parution constate un fait déjà survenu) ni CPV.
-//! Ses axes déclarés sont le type d'avis (« Création », « Modification »,
-//! « Dissolution » — la valeur est son propre libellé) et le département.
+//! The `joafe` fond, the Journal officiel des associations searched in the base:
+//! a notice states a fact already past, so it has neither deadline nor CPV, and
+//! its axes are the action and the department. The official PDF is the line's
+//! link, never proxied.
 
 use lj_dtos::{
     annonce_acteur_role, annonce_fond_label, AnnonceFacetAxis, AnnonceHit, AnnonceSearchRequest,
     FacetChoice, FacetTag,
 };
+use lj_gazette::joafe::Action;
+use lj_gazette::Source;
+use lj_store::repository::{
+    DecisionRepository, GazetteAxis, GazetteFilter, GazetteQuery, JoafeNoticeRow,
+};
 use lj_vocab::ANNONCE_FOND_JOAFE;
-use serde::Deserialize;
 
-use crate::error::{ApiError, Result};
-use crate::registre::{get_json, OdsRecords};
+use crate::annonces_gazette::{self, Depts};
+use crate::error::Result;
 use crate::state::AppState;
 
-const RECORDS: &str =
-    "https://journal-officiel-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/jo_associations/records";
-const FACETS: &str =
-    "https://journal-officiel-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/jo_associations/facets";
-
-/// Champs projetés dans le hit commun — la même liste pour la recherche du pot
-/// et pour la chronologie d'une entité.
-const SELECT: &str = "id,dateparution,typeavis,titre,objet,departement_code,url_pdf";
-
-#[derive(Debug, Deserialize)]
+#[derive(Debug)]
 struct Record {
     id: Option<String>,
     dateparution: Option<String>,
+    action: Option<Action>,
     typeavis: Option<String>,
     titre: Option<String>,
     objet: Option<String>,
     departement_code: Option<String>,
-    url_pdf: Option<String>,
 }
 
-#[derive(Debug, Deserialize)]
-struct FacetPayload {
-    facets: Vec<FacetGroup>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FacetGroup {
-    name: String,
-    facets: Vec<FacetItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FacetItem {
-    name: String,
-    value: String,
-    count: i64,
-}
-
-/// Clause `where` ODSQL pour l'état de filtres courant. Les valeurs sont
-/// passées entre guillemets après neutralisation : c'est la frontière de
-/// validation de ce backend, une injection ODSQL n'a pas d'autre porte.
-fn where_clause(req: &AnnonceSearchRequest) -> Option<String> {
-    let mut clauses: Vec<String> = Vec::new();
-    if let Some(q) = req.q.as_deref().map(str::trim).filter(|q| !q.is_empty()) {
-        clauses.push(format!("search(*, \"{}\")", echappe(q)));
+fn filter(req: &AnnonceSearchRequest, depts: Option<Vec<i16>>) -> GazetteFilter {
+    GazetteFilter {
+        source: Source::Joafe,
+        query: annonces_gazette::query(req, Source::Joafe),
+        classes: (!req.famille.is_empty()).then(|| {
+            Action::ALL
+                .into_iter()
+                .filter(|a| req.famille.iter().any(|t| t == a.slug()))
+                .map(|a| a as i16)
+                .collect()
+        }),
+        depts,
     }
-    let ou = |champ: &str, valeurs: &[String]| {
-        let liste: Vec<String> = valeurs
-            .iter()
-            .map(|v| format!("{champ}=\"{}\"", echappe(v)))
-            .collect();
-        (!liste.is_empty()).then(|| format!("({})", liste.join(" OR ")))
-    };
-    clauses.extend(ou("departement_code", &req.zone));
-    clauses.extend(ou("typeavis", &req.famille));
-    (!clauses.is_empty()).then(|| clauses.join(" AND "))
 }
 
-/// Neutralise ce qui pourrait fermer une chaîne ODSQL. Les valeurs légitimes du
-/// fond (codes de département, types d'avis, mots d'une requête) n'en
-/// contiennent pas.
-fn echappe(value: &str) -> String {
-    value.replace(['"', '\\'], " ")
-}
-
-/// Une page du fond, plus son total. Le tri est toujours la parution
-/// décroissante : le fond n'a pas d'échéance.
+/// A page of the fond, newest first, and its total.
 pub async fn page(
     state: &AppState,
     req: &AnnonceSearchRequest,
     avec_hits: bool,
 ) -> Result<(Vec<AnnonceHit>, i64)> {
-    let limit = if avec_hits { req.limit.min(100) } else { 1 };
-    let offset = if avec_hits { req.offset } else { 0 };
-    let (limit, offset) = (limit.to_string(), offset.to_string());
-    let mut query: Vec<(&str, &str)> = vec![
-        ("order_by", "dateparution desc"),
-        ("select", SELECT),
-        ("limit", limit.as_str()),
-        ("offset", offset.as_str()),
-    ];
-    let ou = where_clause(req);
-    if let Some(w) = ou.as_deref() {
-        query.push(("where", w));
+    let conn = state.pool.get().await?;
+    let repo = DecisionRepository::new(&conn);
+    let depts = match req.zone.is_empty() {
+        true => None,
+        false => Depts::of(&repo, Source::Joafe).await?.codes(&req.zone),
+    };
+    let f = filter(req, depts);
+    let total = repo.gazette_total(&f).await?;
+    if !avec_hits {
+        return Ok((Vec::new(), total));
     }
-    let payload: OdsRecords<Record> = get_json(state, RECORDS, &query)
-        .await
-        .map_err(|()| ApiError::BadGateway("joafe".into()))?;
-    let hits = payload.results.iter().map(hit_from).collect();
-    Ok((hits, payload.total_count))
+    let rows = repo
+        .joafe_search(&f, i64::from(req.limit.min(100)), i64::from(req.offset))
+        .await?;
+    Ok((rows.iter().map(hit_from_row).collect(), total))
 }
 
-/// La chronologie JOAFE d'un RNA. L'identifiant est déjà filtré en
-/// alphanumérique par l'appelant (frontière de validation du volet registre).
+/// The JOAFE notices of an RNA for the entity page.
 pub(crate) async fn pour_entite(
     state: &AppState,
     rna: &str,
     limit: usize,
 ) -> std::result::Result<(Vec<AnnonceHit>, i64), ()> {
-    let where_clause = format!("numero_rna=\"{rna}\"");
-    let limit = limit.to_string();
-    let payload: OdsRecords<Record> = get_json(
-        state,
-        RECORDS,
-        &[
-            ("where", where_clause.as_str()),
-            ("order_by", "dateparution desc"),
-            ("select", SELECT),
-            ("limit", limit.as_str()),
-        ],
-    )
-    .await?;
-    Ok((
-        payload.results.iter().map(hit_from).collect(),
-        payload.total_count,
-    ))
+    let conn = state.pool.get().await.map_err(|e| {
+        tracing::warn!(error = %e, "joafe entity notices: no connection");
+    })?;
+    let repo = DecisionRepository::new(&conn);
+    let f = GazetteFilter {
+        source: Source::Joafe,
+        query: GazetteQuery::Rna(rna.to_string()),
+        classes: None,
+        depts: None,
+    };
+    let fetched = async {
+        let rows = repo.joafe_search(&f, limit as i64, 0).await?;
+        Ok::<_, lj_store::error::StoreError>((rows, repo.gazette_total(&f).await?))
+    };
+    let (rows, total) = fetched.await.map_err(|e| {
+        tracing::warn!(error = %e, "joafe entity notices");
+    })?;
+    Ok((rows.iter().map(hit_from_row).collect(), total))
 }
 
-/// Les axes que ce backend sait exécuter, comptés par l'API elle-même.
+fn hit_from_row(r: &JoafeNoticeRow) -> AnnonceHit {
+    let action = Action::from_code(r.action);
+    let typeavis = match action {
+        Action::Autre => r.type_label.clone(),
+        known => Some(action_label(known).to_string()),
+    };
+    hit_from(&Record {
+        id: Some(format!("{:012}", r.id)),
+        dateparution: Some(r.date.to_string()),
+        action: Some(action),
+        typeavis,
+        titre: r.titre.clone(),
+        objet: r.objet.clone(),
+        departement_code: r
+            .dept
+            .as_deref()
+            .map(|d| lj_gazette::canonical_dept(d).into_owned()),
+    })
+}
+
+/// The action and department axes, each counted without its own filter.
 pub async fn axes(state: &AppState, req: &AnnonceSearchRequest) -> Result<Vec<AnnonceFacetAxis>> {
-    // Chaque axe se compte sans son propre filtre : deux appels.
-    let sans_famille = AnnonceSearchRequest {
-        famille: Vec::new(),
-        ..req.clone()
-    };
-    let sans_zone = AnnonceSearchRequest {
-        zone: Vec::new(),
-        ..req.clone()
-    };
-    let (types, zones) = tokio::try_join!(
-        facette(state, &sans_famille, "typeavis"),
-        facette(state, &sans_zone, "departement_code"),
-    )?;
+    let conn = state.pool.get().await?;
+    let repo = DecisionRepository::new(&conn);
+    let depts = Depts::of(&repo, Source::Joafe).await?;
+    let f = filter(req, depts.codes(&req.zone));
+    let actions = repo.gazette_facet(&f, GazetteAxis::Class).await?;
+    let zones = repo.gazette_facet(&f, GazetteAxis::Dept).await?;
     Ok(vec![
         AnnonceFacetAxis {
             key: "famille".to_string(),
             label: "Type d'avis".to_string(),
-            choices: types,
+            choices: annonces_gazette::by_count(
+                actions
+                    .into_iter()
+                    .map(|(code, count)| {
+                        let action = Action::from_code(code);
+                        FacetChoice {
+                            value: action.slug().to_string(),
+                            label: action_label(action).to_string(),
+                            count,
+                            parent: None,
+                            hint: None,
+                        }
+                    })
+                    .collect(),
+            ),
         },
         AnnonceFacetAxis {
             key: "zone".to_string(),
             label: "Département".to_string(),
-            choices: zones,
+            choices: depts.choices(zones),
         },
     ])
 }
 
-/// Un axe compté par l'API — endpoint `/facets`, syntaxe
-/// `facet(name=…, limit=100)`, la clause `where` courante s'appliquant telle
-/// quelle.
-async fn facette(
-    state: &AppState,
-    req: &AnnonceSearchRequest,
-    champ: &str,
-) -> Result<Vec<FacetChoice>> {
-    let facet = format!("facet(name=\"{champ}\", limit=100)");
-    let mut query: Vec<(&str, &str)> = vec![("facet", facet.as_str())];
-    let ou = where_clause(req);
-    if let Some(w) = ou.as_deref() {
-        query.push(("where", w));
-    }
-    let payload: FacetPayload = get_json(state, FACETS, &query)
-        .await
-        .map_err(|()| ApiError::BadGateway("joafe".into()))?;
-    Ok(payload
-        .facets
-        .into_iter()
-        .find(|g| g.name == champ)
-        .map(|g| {
-            g.facets
-                .into_iter()
-                .map(|f| FacetChoice {
-                    label: libelle(champ, &f.name),
-                    value: f.value,
-                    count: f.count,
-                    parent: None,
-                    hint: None,
-                })
-                .collect()
-        })
-        .unwrap_or_default())
-}
-
-/// Le libellé d'un jeton de facette : un type d'avis est son propre libellé
-/// (« Création ») ; le département se lit par la table du référentiel, la même
-/// que les autres fonds.
-fn libelle(champ: &str, valeur: &str) -> String {
-    match champ {
-        "departement_code" => lj_norm::referential_labels::departement_label(valeur)
-            .map(|n| format!("{valeur} — {n}"))
-            .unwrap_or_else(|| valeur.to_string()),
-        _ => valeur.to_string(),
+fn action_label(action: Action) -> &'static str {
+    match action {
+        Action::Creation => "Création",
+        Action::Modification => "Modification",
+        Action::Dissolution => "Dissolution",
+        Action::Suspension => "Suspension d'activité",
+        Action::Saisine => "Saisine",
+        Action::Autre => "Autres avis",
     }
 }
 
 /// Official page, rebuilt from the parution id (`202600010183` → `20260001`,
-/// `0183`). Upstream `url_pdf` was null on the 100 latest parutions (11/09/2026).
+/// `0183`).
 fn detail_url(id: &str) -> Option<String> {
     (id.len() == 12 && id.bytes().all(|b| b.is_ascii_digit())).then(|| {
         format!(
@@ -255,9 +198,9 @@ fn hit_from(r: &Record) -> AnnonceHit {
                 key: c.clone(),
             })
             .collect(),
-        famille: r.typeavis.as_ref().map(|t| FacetTag {
-            key: t.clone(),
-            label: t.clone(),
+        famille: r.action.map(|a| FacetTag {
+            key: a.slug().to_string(),
+            label: action_label(a).to_string(),
         }),
         cpv: None,
         cpv_deduit: false,
@@ -267,11 +210,7 @@ fn hit_from(r: &Record) -> AnnonceHit {
         echeance: None,
         closed: false,
         attribue: false,
-        url_action: r
-            .url_pdf
-            .clone()
-            .or_else(|| r.id.as_deref().and_then(detail_url))
-            .unwrap_or_default(),
+        url_action: r.id.as_deref().and_then(detail_url).unwrap_or_default(),
         reference: r.id.clone(),
         procedure: r.typeavis.clone(),
         first_seen_at: None,
@@ -283,50 +222,16 @@ fn hit_from(r: &Record) -> AnnonceHit {
 mod tests {
     use super::*;
 
-    // L'égalité ODSQL est sensible à la casse ; les types d'avis circulent en
-    // casse mixte.
-    #[test]
-    fn la_clause_odsql_combine_les_axes() {
-        let req = AnnonceSearchRequest {
-            q: Some("pêche".into()),
-            zone: vec!["31".into()],
-            famille: vec!["Création".into(), "Dissolution".into()],
-            ..Default::default()
-        };
-        assert_eq!(
-            where_clause(&req).unwrap(),
-            "search(*, \"pêche\") AND (departement_code=\"31\") \
-             AND (typeavis=\"Création\" OR typeavis=\"Dissolution\")"
-        );
-    }
-
-    #[test]
-    fn une_valeur_ne_peut_pas_fermer_la_chaine() {
-        let req = AnnonceSearchRequest {
-            q: Some("a\" OR typeavis=\"Dissolution".into()),
-            ..Default::default()
-        };
-        let clause = where_clause(&req).unwrap();
-        assert_eq!(clause.matches('"').count(), 2, "{clause}");
-    }
-
-    #[test]
-    fn sans_filtre_aucune_clause() {
-        assert!(where_clause(&AnnonceSearchRequest::default()).is_none());
-    }
-
     #[test]
     fn projette_une_parution_dans_le_hit_commun() {
         let r = Record {
             id: Some("associations_1234".into()),
             dateparution: Some("2026-03-14".into()),
+            action: Some(Action::Creation),
             typeavis: Some("Création".into()),
             titre: Some("LES AMIS DU CANAL".into()),
             objet: Some("Promouvoir la navigation fluviale".into()),
             departement_code: Some("31".into()),
-            url_pdf: Some(
-                "https://www.journal-officiel.gouv.fr/document/associations_b_1234".into(),
-            ),
         };
         let hit = hit_from(&r);
         assert_eq!(hit.uid, "joafe:associations_1234");

@@ -35,34 +35,21 @@ class MethodNotFound(Exception):
 class UnknownTool(Exception):
     pass
 
-# Repeatable filters of `search_decisions`, whose query keys are camelCase.
-SEARCH_LISTS = {
-    "jurisdiction_type": "jurisdictionType",
-    "jurisdiction_code": "jurisdictionCode",
-    "legal_domain": "legalDomain",
-    "legal_instrument": "legalInstrument",
-    "legal_article": "legalArticle",
-    "solution": "solution",
-    "procedure": "procedure",
-    "office": "office",
-    "seat": "seat",
-    "publication": "publication",
-}
-SEARCH_SCALARS = {
-    "query": "q",
-    "date_from": "dateFrom",
-    "date_to": "dateTo",
-    "mode": "mode",
-    "sort": "sort",
-    "limit": "limit",
-}
-TEXTS_SCALARS = {
-    "query": "q",
-    "code": "code",
-    "jurisdiction": "jurisdiction",
-    "date": "date",
-    "limit": "limit",
-}
+# The query keys are the tool argument names; a list is sent once per value.
+SEARCH_LISTS = (
+    "jurisdiction_type",
+    "jurisdiction_code",
+    "legal_domain",
+    "legal_instrument",
+    "legal_article",
+    "solution",
+    "seat",
+    "formation",
+    "publication",
+    "search_in",
+)
+SEARCH_SCALARS = ("query", "date_from", "date_to", "mode", "sort", "limit", "ai_rerank")
+TEXTS_SCALARS = ("query", "code", "jurisdiction", "valid_from", "as_of", "limit")
 
 
 def as_text(value):
@@ -71,22 +58,15 @@ def as_text(value):
     return str(value)
 
 
-def scalars(args, mapping):
-    return [
-        (key, as_text(args[name]))
-        for name, key in mapping.items()
-        if args.get(name) not in (None, "")
-    ]
+def scalars(args, names):
+    return [(name, as_text(args[name])) for name in names if args.get(name) not in (None, "")]
 
 
 def search_decisions(args):
     params = scalars(args, SEARCH_SCALARS)
-    for name, key in SEARCH_LISTS.items():
+    for name in SEARCH_LISTS:
         for value in args.get(name) or []:
-            params.append((key, as_text(value)))
-    # The tool reranks by default, the route does not: the flag has to be sent.
-    if args.get("ai_rerank", True):
-        params.append(("aiMode", "1"))
+            params.append((name, as_text(value)))
     return "/api/search", params
 
 
@@ -100,14 +80,14 @@ def get_decision(args):
     key = tail.strip("/").rpartition("/")[2]
     if not sep or not key:
         raise ValueError(
-            f"not a decision url (expected …/decision/{{juridiction}}/{{id}}): {url or '(missing)'}"
+            f"not a decision url (expected …/decision/{{jurisdiction}}/{{id}}): {url or '(missing)'}"
         )
     return f"/api/decision/{urllib.parse.quote(key, safe='')}", []
 
 
 def get_norm(args):
-    date = [("date", args["date"])] if args.get("date") else []
-    return legal_text_path(args), date
+    as_of = [("as_of", args["as_of"])] if args.get("as_of") else []
+    return legal_text_path(args), as_of
 
 
 # Today's prefix first; the two older ones still name a text.
@@ -119,21 +99,21 @@ LEGIFRANCE_ID = re.compile(r"(LEGIARTI|JORFARTI|KALIARTI|LEGITEXT|JORFTEXT|LEGIS
 def legal_text_path(args):
     """The four doors of `get_norm`, in the order it reads them."""
     url = args.get("url") or ""
-    ident = args.get("textId") or ""
+    ident = args.get("text_id") or ""
     if LEGIFRANCE_ID.match(url) or ident:
         return f"/api/article/{urllib.parse.quote(ident or url, safe='')}"
     if url:
         tail = next((url.rpartition(p)[2] for p in LEGAL_TEXT_PREFIXES if p in url), "")
         if not tail.strip("/"):
             raise ValueError(
-                f"not a legal text url (expected …/norm/{{juridiction}}/{{code}}[/{{article}}]): {url}"
+                f"not a legal text url (expected …/norm/{{jurisdiction}}/{{code}}[/{{article}}]): {url}"
             )
         return "/api/norm/" + tail.strip("/")
     code = args.get("code")
     if not code:
         raise ValueError(
             "missing tool argument: url. Address the text by url "
-            "(/norm/{juridiction}/{code}/{article}), by the pair {code, article}, or by a "
+            "(/norm/{jurisdiction}/{code}/{article}), by the pair {code, article}, or by a "
             "Légifrance id."
         )
     path = "/api/norm/" + urllib.parse.quote(code, safe="")

@@ -66,6 +66,7 @@ mod tests {
                         jurisdiction_type: (*jurisdiction_type).to_string(),
                         city: None,
                         label: (*label).to_string(),
+                        place: None,
                     },
                 )
                 .collect(),

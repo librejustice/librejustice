@@ -227,7 +227,7 @@ fn cited_articles_line(cited: &[String], articles: &[(String, String)]) -> Optio
     }
 }
 
-/// Une décision citante : titre lié (hover card), première phrase du résumé,
+/// Une décision citante : titre lié, première phrase du résumé dépliable,
 /// articles de la division qu'elle cite, badge de portée.
 ///
 /// Ligne rendue par un **composant** : les enfants du `collect_view()` restent
@@ -237,9 +237,12 @@ fn cited_articles_line(cited: &[String], articles: &[(String, String)]) -> Optio
 /// panique en release (`failed_to_cast_text_node`).
 #[component]
 pub(crate) fn CitedDecisionRow(hit: CitingDecisionHit, cited: Option<String>) -> impl IntoView {
-    use crate::components::hover_preview::{HoverPreview, PreviewKind};
-    let kind = PreviewKind::Decision { id: hit.id.clone() };
-    let href = lj_dtos::decision_path(hit.jurisdiction_type, &hit.id);
+    use crate::components::ui::ExpandableSummary;
+    let href = lj_dtos::decision_path(
+        hit.jurisdiction_type,
+        hit.jurisdiction_code.as_deref(),
+        &hit.id,
+    );
     let badge = crate::pages::decision_page::labels::publication_badge(&hit.publication_codes)
         .map(|label| {
             view! {
@@ -249,25 +252,20 @@ pub(crate) fn CitedDecisionRow(hit: CitingDecisionHit, cited: Option<String>) ->
             }
             .into_any()
         });
-    let summary = hit.summary.as_deref().map(|s| {
-        let snippet = crate::seo::decision::first_sentence(s);
-        view! {
-            <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">{snippet}</p>
-        }
-        .into_any()
+    let summary = hit.summary.map(|full| {
+        let excerpt = crate::seo::decision::first_sentence(&full);
+        view! { <ExpandableSummary excerpt=excerpt full=full /> }.into_any()
     });
     let cited = cited.map(|line| view! { <p class=DETAIL>{line}</p> }.into_any());
     view! {
         <li class=format!("flex flex-col gap-1.5 {ROW}")>
             <h3 class="font-sans text-sm leading-snug text-[var(--color-ink)]">
-                <HoverPreview kind=kind>
-                    <A
-                        href=href
-                        attr:class="no-underline transition-colors hover:text-[var(--color-accent)]"
-                    >
-                        {hit.title}
-                    </A>
-                </HoverPreview>
+                <A
+                    href=href
+                    attr:class="no-underline transition-colors hover:text-[var(--color-accent)]"
+                >
+                    {hit.title}
+                </A>
             </h3>
             {summary}
             {cited}

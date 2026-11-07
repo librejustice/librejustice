@@ -31,11 +31,11 @@ pub(crate) fn decision(jt: &str) -> Decision {
         solution: None,
         publication_codes: vec![],
         avocat_requerant: None,
+        listed_counsel: Vec::new(),
         texte_integral_raw: String::new(),
         texte_integral_clean: String::new(),
         sections: vec![],
         metadata_header: String::new(),
-        visa_trim: String::new(),
         themes: Vec::new(),
         attacked: None,
         parse_warnings: vec![],
@@ -170,7 +170,7 @@ fn formation_axes_juge_unique_du_texte() {
     // Composition dite par le texte au bloc de composition d'en-tête (TJ).
     let mut d = decision("TJ");
     d.texte_integral_clean = "TRIBUNAL JUDICIAIRE DE NANTERRE \n\n JUGEMENT DU 3 MAI 2024 \n\n \
-        Fairouz HAMMAOUI, Vice-présidente, statuant en juge unique, \n assistée de Inès CELMA, \
+        Azelma MAGNON, Vice-présidente, statuant en juge unique, \n assistée de Inès FAMEUIL, \
         Greffier \n\n PAR CES MOTIFS : Déboute la demanderesse."
         .into();
     let axes = crate::extract::formation_axes_scanned(&d, crate::extract::scan_doc(&d).as_ref());
@@ -438,4 +438,51 @@ fn merge_meta_first_prefers_mixed_case_slice_for_same_name() {
         vec!["Odent".into()],
     );
     assert_eq!(out, vec!["LE PRADO".to_string(), "Odent".to_string()]);
+}
+
+#[test]
+fn solution_constit_label_decides() {
+    for (label, uid) in [
+        ("Conformité - réserve", "solution:CONFORMITE"),
+        (
+            "Non conformité totale - effet différé",
+            "solution:NON_CONFORMITE",
+        ),
+        ("Inéligibilité", "solution:INELIGIBILITE"),
+        ("Annulation - Inéligibilité", "solution:ANNULATION"),
+        ("Rejet - non lieu à statuer [QPC]", "solution:REJET"),
+        (
+            "Non lieu à prononcer l'inéligibilité",
+            "solution:NON_LIEU_A_STATUER",
+        ),
+        ("Réglementaire", "solution:AUTRE"),
+    ] {
+        let mut d = decision("CONSTIT");
+        d.solution = Some(label.into());
+        d.texte_integral_clean = "PAR CES MOTIFS : le jugement est réformé.".into();
+        assert_eq!(extract_solution(&d).as_deref(), Some(uid), "{label}");
+    }
+}
+
+// ───────────────────────────── listed counsel ───────────────────────────────
+
+/// Spec: a listed counsel the decision already places stays with its side, the
+/// others enter as a person or a firm.
+#[test]
+fn listed_counsel_drops_what_a_placed_value_names() {
+    let mut d = decision("CC");
+    d.listed_counsel = vec![
+        "SCP Piwnica et Molinié".into(),
+        "Capron".into(),
+        "SCP Boré, Salve de Bruneton et Mégret".into(),
+        "Le Prado".into(),
+    ];
+    let (names, firms) = crate::extract::listed_counsel_scanned(
+        &d,
+        None,
+        &["Louis Le Prado".into()],
+        &["SCP Piwnica et Molinié".into()],
+    );
+    assert_eq!(names, ["Capron"]);
+    assert_eq!(firms, ["SCP Boré, Salve de Bruneton et Mégret"]);
 }

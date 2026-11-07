@@ -21,7 +21,7 @@ Install it for your user:
 ## Tools
 
 - `search_decisions`: case law, hybrid meaning + keyword matching, with structured filters (jurisdiction, dates, cited articles, codes) and facet counts to refine. Quoted phrases and the `ET` / `OU` / `SAUF` / `PROCHE<n>` operators switch to exact-wording matching, the only way to target which way a court ruled since semantic matching ignores negations.
-- `get_decision`: full text of one decision, with inline links to the articles and decisions it cites. Also reports whether the decision still stands (`appellateFate`: reversed or upheld on review) and the linked prior and subsequent decisions of the same case. Read that before citing it as authority.
+- `get_decision`: full text of one decision, with inline links to the articles and decisions it cites. Also lists the prior and subsequent decisions of the same case with their solution (`case_chronology`), which says whether it was reversed or upheld on review. Read that before citing it as authority.
 - `search_norms`: finds legal articles from their subject or wording when the article number is unknown; ranked snippets, facets by code.
 - `get_norm`: one article as it stood on a given date (or today), with its status, validity dates and the timeline of every version. Say which version you quote.
 
@@ -39,7 +39,8 @@ The same corpus for a program rather than an assistant. The key is free, created
 
 - Spec: https://librejustice.fr/openapi.json (OpenAPI 3.1). Guide and key: https://librejustice.fr/api-guide
 - Auth: `Authorization: Bearer <key>`, or the `x-lj-api-key` header.
-- Seven routes: `/api/search`, `/api/search-textes`, `/api/decision/{id}`, `/api/texte/{jurisdiction}/{code}`, `/api/texte/{jurisdiction}/{code}/{article}` (with `?date=` for the version in force that day), `/api/texte/{jurisdiction}/{code}/section/{cid}`, `/api/article/{uid}`.
+- Seven routes: `/api/search`, `/api/search-textes`, `/api/decision/{id}`, `/api/norm/{jurisdiction}/{code}`, `/api/norm/{jurisdiction}/{code}/{article}` (with `?as_of=` for the version in force that day), `/api/norm/{jurisdiction}/{code}/section/{cid}`, `/api/article/{uid}`.
+- Parameters and fields carry the MCP tools' names, in snake_case (`query`, `date_from`, `ai_rerank`, `as_of`). The API is in beta: those names may still change.
 - One identity, one budget: API calls, MCP calls and site searches share a counter. Over it, a `429` with a `Retry-After`.
 
 It answers a question, it does not export a corpus: paging stops at offset 99 on both search routes. Narrow the filters instead.
@@ -49,3 +50,4 @@ It answers a question, it does not export a corpus: paging stops at offset 99 on
 - Sources and update schedule: https://librejustice.fr/sources
 - Code: https://github.com/librejustice/librejustice (Apache-2.0)
 - Crawler policy, including AI training: https://librejustice.fr/robots.txt
+- Terms of use, including attribution when a service serves these results to its own users: https://librejustice.fr/terms

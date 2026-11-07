@@ -27,12 +27,27 @@ struct AliasEntry {
     /// Forme développée à OR-er dans la requête (texte naturel ; le tokenizer
     /// ParadeDB fait l'ascii_folding).
     expansion: String,
-    /// Ancre catalogue : slug du texte visé (jambe texte nommé).
+    /// A slug several jurisdictions share (`code-civil`), read in the one
+    /// searched.
     #[serde(default)]
     canonical_slug: Option<String>,
-    /// Ancre catalogue : uid du texte visé, quand le slug manque.
+    /// The uid of the one text the alias names, which a slug remint leaves alone.
     #[serde(default)]
     canonical_text_uid: Option<String>,
+    /// The spelling that names the text, for an alias that is an ordinary word
+    /// otherwise: « TUE », where « tue » is a verb. Beside an article number, any.
+    #[serde(default)]
+    cased: Option<String>,
+    /// An alias that names the text beside an article number alone: « cc » is a
+    /// collective agreement or a court as often as it is the Code civil.
+    #[serde(default)]
+    cited_only: bool,
+}
+
+impl AliasEntry {
+    fn written_in(&self, query: &str) -> bool {
+        !self.cited_only && self.cased.as_ref().is_none_or(|c| contains_word(query, c))
+    }
 }
 
 /// Alias chargés : `(alias foldé, entrée)`, dans l'ordre du dataset.
@@ -45,21 +60,17 @@ static ALIASES: LazyLock<Vec<(String, AliasEntry)>> = LazyLock::new(|| {
 /// Nombre maximal d'expansions retournées (borne anti-bloat de requête).
 const MAX_EXPANSIONS: usize = 4;
 
-/// Expansions d'alias présents dans `query`. Un alias matche s'il apparaît
-/// **borné par mot** dans la requête foldée (« css » ne matche pas dans
-/// « accès »). Renvoie les formes développées, dédupliquées, dans l'ordre du
-/// dataset, plafonnées à [`MAX_EXPANSIONS`]. Pur, sans I/O.
+/// Expansions of the aliases `query` holds as whole words, its punctuation aside
+/// (« C. civ. » holds « c civ », « accès » does not hold « css »): the expanded
+/// forms, deduplicated, in dataset order, at most [`MAX_EXPANSIONS`].
 pub fn expand_query(query: &str) -> Vec<String> {
-    let folded = fold(query);
-    if folded.is_empty() {
-        return Vec::new();
-    }
+    let (_, folded) = words(query);
     let mut out: Vec<String> = Vec::new();
     for (alias, entry) in ALIASES.iter() {
         if out.len() >= MAX_EXPANSIONS {
             break;
         }
-        if contains_word(&folded, alias) && !out.contains(&entry.expansion) {
+        if holds(&folded, alias) && entry.written_in(query) && !out.contains(&entry.expansion) {
             out.push(entry.expansion.clone());
         }
     }
@@ -77,17 +88,16 @@ pub fn whole_query_expansions(query: &str) -> Vec<String> {
     }
     let mut out: Vec<String> = Vec::new();
     for (alias, entry) in ALIASES.iter() {
-        if *alias == folded && !out.contains(&entry.expansion) {
+        if *alias == folded && entry.written_in(query) && !out.contains(&entry.expansion) {
             out.push(entry.expansion.clone());
         }
     }
     out
 }
 
-/// Slug catalogue d'un alias tapé **seul** — l'acronyme d'usage (« cgi »,
-/// « ceseda », « cpc ») ou le nom usuel d'une loi (« loi du 6 juillet 1989 ») là
-/// où l'alphabet public attend le slug. `None` si l'alias est inconnu ou n'est
-/// ancré que par uid. Pur, sans I/O.
+/// The catalogue slug of an alias typed **alone** that several jurisdictions
+/// share (« cpc », « code civil »), where the public alphabet expects the slug.
+/// `None` if the alias is unknown or anchored by uid ([`canonical_text_uid`]).
 ///
 /// Le rapprochement se fait à la clé (séparateurs retirés) : un appelant MCP
 /// passe le nom déjà slugifié (`loi-du-6-juillet-1989`), le dataset l'écrit en
@@ -105,6 +115,20 @@ pub fn canonical_slug(name: &str) -> Option<&'static str> {
         .iter()
         .find(|(alias, _)| crate::instrument_match::match_key(alias) == key)
         .and_then(|(_, e)| e.canonical_slug.as_deref())
+}
+
+/// The uid of the text an alias typed **alone** names (« cgi », « loi du 6
+/// juillet 1989 »), matched like [`canonical_slug`]. `None` if the alias is
+/// unknown or anchored by a shared slug.
+pub fn canonical_text_uid(name: &str) -> Option<&'static str> {
+    let key = crate::instrument_match::match_key(name);
+    if key.is_empty() {
+        return None;
+    }
+    ALIASES
+        .iter()
+        .find(|(alias, _)| crate::instrument_match::match_key(alias) == key)
+        .and_then(|(_, e)| e.canonical_text_uid.as_deref())
 }
 
 /// Tous les slugs catalogue que le dataset d'alias désigne. Le fichier est écrit
@@ -175,7 +199,7 @@ pub enum NamedTextTarget {
 const INSTRUMENT_NATURES: &[&str] = &["loi", "ordonnance", "decret"];
 
 /// Mois français (forme slug/foldée) pour la forme « du 6 juillet 1989 ».
-const FR_MONTHS: &[&str] = &[
+pub(crate) const FR_MONTHS: &[&str] = &[
     "janvier",
     "fevrier",
     "mars",
@@ -219,7 +243,7 @@ pub fn strip_query_named_text(
     let folded: Vec<String> = orig.iter().map(|t| fold(t)).collect();
     let (target, span) = match_code_title(&folded, codes)
         .or_else(|| match_instrument(&folded))
-        .or_else(|| match_alias(&folded))?;
+        .or_else(|| match_alias(&orig, &folded))?;
     strip_span(&orig, &folded, span).map(|rest| (target, rest))
 }
 
@@ -353,31 +377,94 @@ fn match_instrument(folded: &[String]) -> Option<(NamedTextTarget, (usize, usize
 
 /// Détecteur 3 : alias du dataset ancré au catalogue (slug ou uid), tokens
 /// contigus dans la requête. L'alias le plus long (en tokens) gagne.
-fn match_alias(folded: &[String]) -> Option<(NamedTextTarget, (usize, usize))> {
+fn match_alias(orig: &[&str], folded: &[String]) -> Option<(NamedTextTarget, (usize, usize))> {
+    let (start, end, entry) = longest_alias(orig, folded, false)?;
+    Some((anchor(entry), (start, end)))
+}
+
+/// The anchored alias `query` names, the whole query included, and the folded
+/// tokens around it.
+pub fn anchored_alias(query: &str) -> Option<(NamedTextTarget, Vec<String>)> {
+    let (orig, folded) = words(query);
+    let (start, end, entry) = longest_alias(&orig, &folded, true)?;
+    let rest = folded[..start]
+        .iter()
+        .chain(&folded[end..])
+        .cloned()
+        .collect();
+    Some((anchor(entry), rest))
+}
+
+/// The anchored alias that names the text of an article citation, when `query`
+/// is nothing but the two: « constitution article 34 ».
+pub fn cited_alias(query: &str) -> Option<NamedTextTarget> {
+    let (orig, folded) = words(query);
+    let (start, end, entry) = longest_alias(&orig, &folded, false)?;
+    cites_only(&orig[..start], &orig[end..]).then(|| anchor(entry))
+}
+
+fn words(query: &str) -> (Vec<&str>, Vec<String>) {
+    let orig: Vec<&str> = query
+        .split(|c: char| !(c.is_alphanumeric() || c == '-'))
+        .filter(|t| !t.is_empty())
+        .collect();
+    let folded = orig.iter().map(|t| fold(t)).collect();
+    (orig, folded)
+}
+
+fn holds(folded: &[String], alias: &str) -> bool {
+    let toks: Vec<&str> = alias.split_whitespace().collect();
+    !toks.is_empty() && folded.windows(toks.len()).any(|w| w.iter().eq(&toks))
+}
+
+/// The words around an alias are an article citation and nothing else,
+/// connectors aside.
+fn cites_only(before: &[&str], after: &[&str]) -> bool {
+    let citation: Vec<&str> = before
+        .iter()
+        .chain(after)
+        .copied()
+        .filter(|t| !is_connector(&fold(t)))
+        .collect();
+    crate::article_key::designated_articles(&citation.join(" ")).is_some()
+}
+
+/// The longest anchored alias whose tokens stand contiguous in `folded`, written
+/// as its entry requires unless the rest cites an article, as its span and entry;
+/// `whole` lets it cover every token.
+fn longest_alias(
+    orig: &[&str],
+    folded: &[String],
+    whole: bool,
+) -> Option<(usize, usize, &'static AliasEntry)> {
     let mut best: Option<(usize, usize, usize, &AliasEntry)> = None;
     for (alias, entry) in ALIASES.iter() {
         if entry.canonical_slug.is_none() && entry.canonical_text_uid.is_none() {
             continue;
         }
         let toks: Vec<&str> = alias.split_whitespace().collect();
-        if toks.is_empty() || toks.len() >= folded.len() {
+        if toks.is_empty() || toks.len() > folded.len() || (!whole && toks.len() == folded.len()) {
             continue;
         }
         for start in 0..=(folded.len() - toks.len()) {
             if (0..toks.len()).all(|j| folded[start + j] == toks[j])
+                && (entry.written_in(&orig[start..start + toks.len()].join(" "))
+                    || cites_only(&orig[..start], &orig[start + toks.len()..]))
                 && best.is_none_or(|(n, ..)| toks.len() > n)
             {
                 best = Some((toks.len(), start, start + toks.len(), entry));
             }
         }
     }
-    let (_, start, end, entry) = best?;
-    let target = match (&entry.canonical_slug, &entry.canonical_text_uid) {
+    best.map(|(_, start, end, entry)| (start, end, entry))
+}
+
+fn anchor(entry: &AliasEntry) -> NamedTextTarget {
+    match (&entry.canonical_slug, &entry.canonical_text_uid) {
         (Some(slug), _) => NamedTextTarget::Slug(slug.clone()),
         (None, Some(uid)) => NamedTextTarget::Uid(uid.clone()),
         (None, None) => unreachable!("filtré plus haut"),
-    };
-    Some((target, (start, end)))
+    }
 }
 
 /// Forme d'une requête pour un match **conjonctif** sur le titre formé
@@ -392,7 +479,7 @@ fn match_alias(folded: &[String]) -> Option<(NamedTextTarget, (usize, usize))> {
 /// - les stopwords FR restent, le tokenizer les élimine des deux côtés.
 ///
 /// The split is the index's, [`lj_textsearch::body_tok::tokens_raw`], not a
-/// home-made one: 45 274 articles carry a `num` with a separator.
+/// home-made one: many articles carry a `num` with a separator.
 ///
 /// `None` si rien ne subsiste — l'appelant n'émet alors pas de conjonction.
 pub fn conj_title_query(query: &str) -> Option<String> {
@@ -549,22 +636,25 @@ mod tests {
     }
 
     #[test]
-    fn acronym_resolves_to_catalog_slug() {
-        use super::canonical_slug;
-        assert_eq!(canonical_slug("cgi"), Some("code-general-des-impots"));
-        assert_eq!(
-            canonical_slug("ceseda"),
-            Some("code-de-l-entree-et-du-sejour-des-etrangers-et-du-droit-d-asile")
-        );
+    fn an_alias_typed_alone_resolves_to_its_anchor() {
+        use super::{canonical_slug, canonical_text_uid};
+        assert_eq!(canonical_text_uid("cgi"), Some("LEGITEXT000006069577"));
+        assert_eq!(canonical_text_uid("ceseda"), Some("LEGITEXT000006070158"));
         assert_eq!(canonical_slug("CPC"), Some("code-de-procedure-civile"));
-        // Nom d'usage déjà slugifié par l'appelant : c'est la même entrée que
-        // le nom écrit en clair, sans quoi un client MCP ne l'atteint jamais.
+        assert_eq!(canonical_text_uid("CPC"), None);
+        // A usual name the caller already slugified is the same entry as the
+        // name written out, or an MCP client never reaches it.
         assert_eq!(
-            canonical_slug("loi-du-6-juillet-1989"),
-            canonical_slug("loi du 6 juillet 1989")
+            canonical_text_uid("loi-du-6-juillet-1989"),
+            Some("JORFTEXT000000509310")
+        );
+        assert_eq!(
+            canonical_text_uid("loi du 6 juillet 1989"),
+            Some("JORFTEXT000000509310")
         );
         assert_eq!(canonical_slug("code-civil"), Some("code-civil"));
         assert_eq!(canonical_slug("pas-un-alias"), None);
+        assert_eq!(canonical_text_uid("pas-un-alias"), None);
         assert_eq!(canonical_slug(""), None);
     }
 
@@ -659,17 +749,50 @@ mod tests {
                 "article 145".to_string()
             ))
         );
-        let Some((NamedTextTarget::Slug(slug), rest)) =
-            strip_query_named_text("indemnisation accident loi badinter", &[])
-        else {
-            panic!("alias loi badinter attendu");
-        };
         assert_eq!(
-            slug,
-            "loi-n-85-677-du-5-juillet-1985-tendant-a-l-amelioration-de-la-situation-des"
+            strip_query_named_text("indemnisation accident loi badinter", &[]),
+            Some((
+                uid("JORFTEXT000000693454"),
+                "indemnisation accident".to_string()
+            ))
         );
-        assert_eq!(rest, "indemnisation accident");
         assert_eq!(strip_query_named_text("cpc", &[]), None);
+    }
+
+    #[test]
+    fn a_code_abbreviation_names_its_code_with_or_without_dots() {
+        use super::strip_query_named_text;
+        let civil = || uid("LEGITEXT000006070721");
+        assert_eq!(
+            strip_query_named_text("c. civ. 1240", &[]),
+            Some((civil(), "1240".to_string()))
+        );
+        assert_eq!(
+            strip_query_named_text("art. 1240 C.civ.", &[]),
+            Some((civil(), "art 1240".to_string()))
+        );
+        assert_eq!(
+            strip_query_named_text("C. pr. civ. exéc., art. L. 111-3", &[]),
+            Some((uid("LEGITEXT000025024948"), "art L 111-3".to_string()))
+        );
+        assert!(expand_query("C. civ. responsabilité du fait des choses")
+            .contains(&"code civil".to_string()));
+    }
+
+    #[test]
+    fn cc_names_the_code_civil_beside_an_article_number_alone() {
+        use super::strip_query_named_text;
+        let civil = || uid("LEGITEXT000006070721");
+        assert_eq!(
+            strip_query_named_text("Cc 1240", &[]),
+            Some((civil(), "1240".to_string()))
+        );
+        assert_eq!(
+            strip_query_named_text("article 1240 cc", &[]),
+            Some((civil(), "article 1240".to_string()))
+        );
+        assert_eq!(strip_query_named_text("cc responsabilité", &[]), None);
+        assert!(expand_query("CC Syntec").iter().all(|e| e != "code civil"));
     }
 
     #[test]

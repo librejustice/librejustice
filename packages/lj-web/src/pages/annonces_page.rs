@@ -565,8 +565,6 @@ fn redirection_permanente(_cible: &str) {}
 
 #[component]
 fn MarcheLoaded(fiche: AnnonceDetailResponse) -> impl IntoView {
-    #[cfg(feature = "hydrate")]
-    Effect::new(|_| crate::reads::report(lj_dtos::ReadKind::Annonce));
     let hit = fiche.annonce;
     let acheteur = acteur(&hit);
     let attribue = hit.attribue;
@@ -595,6 +593,11 @@ fn MarcheLoaded(fiche: AnnonceDetailResponse) -> impl IntoView {
         ),
     };
     let url = format!("{BASE}/notice/fr/{}", hit.uid);
+    #[cfg(feature = "hydrate")]
+    {
+        let document = url.clone();
+        Effect::new(move |_| crate::reads::report(lj_dtos::ReadKind::Annonce, &document));
+    }
     let liens = liens_utiles(&hit, &fiche.liens);
     let releve = releve(&fiche.canaux_detail);
     let dep_href = departement.map(|z| format!("/notice-index/fr/{}", z.key));
@@ -771,14 +774,22 @@ fn MarcheLoaded(fiche: AnnonceDetailResponse) -> impl IntoView {
                                     .entites
                                     .into_iter()
                                     .map(|e| {
+                                        let label = match e.href {
+                                            Some(href) => Either::Left(
+                                                view! {
+                                                    <A
+                                                        href=href
+                                                        attr:class="text-[var(--color-accent)] hover:underline"
+                                                    >
+                                                        {e.label}
+                                                    </A>
+                                                },
+                                            ),
+                                            None => Either::Right(view! { <span>{e.label}</span> }),
+                                        };
                                         view! {
                                             <li class="text-sm">
-                                                <A
-                                                    href=e.href
-                                                    attr:class="text-[var(--color-accent)] hover:underline"
-                                                >
-                                                    {e.label}
-                                                </A>
+                                                {label}
                                                 <span class="text-[var(--color-ink-subtle)]">
                                                     {format!(" — {}", e.role)}
                                                 </span>

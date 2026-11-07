@@ -12,7 +12,7 @@ use serde_json::Value;
 /// on. A repair replays an old bulk stock, where differing bytes mean "mine are
 /// older", never "mine are better": DILA re-delivers a version's own file with
 /// its `ETAT` and `DATE_FIN` updated, so a stale payload relabels a superseded
-/// version as in force. Measured on 40 texts: 500 versions wrongly relabelled.
+/// version as in force.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fraicheur {
     Autoritaire,
@@ -24,6 +24,23 @@ pub enum UpsertStatus {
     Created,
     Updated,
     Skipped,
+    /// Not written: [`Identity::Copy`], the id being the decision it copies.
+    Copy,
+    /// Not written: [`Identity::Hold`].
+    Held,
+}
+
+/// Where a provenance the base does not know yet goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Identity {
+    Attach(i64),
+    Create,
+    /// Another record, from the same publisher, of a decision that already
+    /// holds one.
+    Copy(i64),
+    /// Too close to that decision's record to be another decision, too far
+    /// to be its copy: read by hand.
+    Hold(i64),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -37,7 +54,6 @@ pub struct ExistingDecisionState {
     pub id: i64,
     pub source_uid: String,
     pub content_checksum: String,
-    pub has_embeddings: bool,
     pub public_id: Option<String>,
 }
 
@@ -58,6 +74,22 @@ pub struct CollageRow {
     pub decision_id: i64,
     pub full_text: String,
     pub commentary: String,
+    /// A Conseil d'Etat analysis, its titrages still in, rather than a sommaire.
+    pub analysis: bool,
+}
+
+/// What the decision page reads to cut a decision into sections: its lead text
+/// and the `source_fields` of its top-ranked provenance.
+#[derive(Debug, Clone)]
+pub struct DisplayInput {
+    pub id: i64,
+    pub public_id: String,
+    pub jurisdiction_type: Option<String>,
+    pub jurisdiction_code: Option<String>,
+    pub full_text: Option<String>,
+    pub source: Option<String>,
+    pub source_uid: Option<String>,
+    pub source_fields: Option<Value>,
 }
 
 /// Corps + métadonnées grain décision d'une décision poolée pour le GT.
@@ -206,6 +238,31 @@ pub struct LegalLinkRow {
     pub target_nor: Option<String>,
 }
 
+/// A text whose declared `legal_link` edge cites an article.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CitingText {
+    pub nature: String,
+    pub title: String,
+    pub slug: String,
+    pub jurisdiction: String,
+    pub last_modified: Option<NaiveDate>,
+}
+
+/// The articles under a section at one date, in reading order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionArticles {
+    pub text_uid: String,
+    pub articles: Vec<SectionArticle>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionArticle {
+    /// The version's `LEGIARTI`.
+    pub uid: String,
+    pub num: String,
+    pub num_key: String,
+}
+
 /// Une arête `legal_link` lue pour affichage, cible résolue au read-time :
 /// `target_text_slug`/`target_text_title` = le texte porteur de la cible s'il est
 /// en base ; `resolved_slug`/`resolved_num_key` = la version d'article cible
@@ -300,6 +357,7 @@ pub struct TocReadingRow {
     pub etat: String,
     pub texte: Option<String>,
     pub nota: Option<String>,
+    pub date_debut: NaiveDate,
 }
 
 /// Une décision citant un article de référentiel (backlink `legal_citation`).
@@ -310,6 +368,7 @@ pub struct CitingDecisionRow {
     pub public_id: String,
     pub jurisdiction_type: String,
     pub jurisdiction_name: Option<String>,
+    pub jurisdiction_code: Option<String>,
     pub date_lecture: Option<String>,
     pub docket_numbers: Option<Vec<String>>,
     /// Codes de publication source (`b`, `A`…), dont `lj-api` tire le libellé.
@@ -330,6 +389,17 @@ pub struct CoCitedArticleRow {
     pub count: i64,
     pub text_slug: Option<String>,
     pub text_title: String,
+    pub text_jurisdiction: String,
+}
+
+/// Un texte citant des articles d'une division : `article_count` articles visés
+/// distincts ; `text_slug` `None` = texte sans page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SectionCitingTextRow {
+    pub label: String,
+    pub text_slug: Option<String>,
+    pub text_jurisdiction: String,
+    pub article_count: i64,
 }
 
 /// Un hit de recherche plein-texte d'article (`/recherche-textes`).
@@ -349,6 +419,10 @@ pub struct ArticleSearchRow {
     /// Début de la version servie — la date du « JO du … » quand
     /// `source = 'jorf'`. `None` sur les membres texte/conteneur.
     pub date_debut: Option<NaiveDate>,
+    pub date_fin: Option<NaiveDate>,
+    /// The text's own date, which stands for a version start the source left
+    /// unknown, and dates a text member.
+    pub text_date: Option<NaiveDate>,
     pub texte: Option<String>,
     pub score: f32,
 }
@@ -363,11 +437,26 @@ pub struct ArticleBrowseFilters<'a> {
     pub text_uid: Option<&'a str>,
     /// The corpora stated, searched in place of those the query designates.
     pub jurisdictions: &'a [&'a str],
-    pub nature: Option<&'a str>,
     pub source: Option<&'a str>,
     /// `(liste, true)` = nature dans la liste, `(liste, false)` = hors liste.
     pub nature_set: Option<(&'a [String], bool)>,
     pub at: Option<NaiveDate>,
+    /// The earliest entry into force of a version served, `at` being the latest.
+    pub valid_from: Option<NaiveDate>,
+}
+
+/// A text of a listing, the most recently changed first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextListRow {
+    pub text_uid: String,
+    pub slug: String,
+    pub title: String,
+    pub jurisdiction: String,
+    /// Its latest change inside the bounds: an article version's entry into
+    /// force, or its own date.
+    pub valid_from: NaiveDate,
+    /// `lower(nature)`, as the search's text members carry it.
+    pub source: String,
 }
 
 impl Default for ArticleBrowseFilters<'_> {
@@ -378,10 +467,10 @@ impl Default for ArticleBrowseFilters<'_> {
             home: &lj_norm::jurisdictions::DOMESTIC_REGIONS,
             text_uid: None,
             jurisdictions: &[],
-            nature: None,
             source: None,
             nature_set: None,
             at: None,
+            valid_from: None,
         }
     }
 }
@@ -523,8 +612,8 @@ pub struct ArticleRrf {
 }
 
 /// The text a query names, and what is left of the query once that name is cut.
-/// Resolved once and handed to every leg: the two lookups behind it cost 720 ms
-/// and 320 ms, and each leg used to run them for itself.
+/// Resolved once and handed to every leg, rather than each leg running the two
+/// lookups behind it.
 #[derive(Debug, Clone)]
 pub struct NamedText {
     pub text_uid: String,
@@ -555,8 +644,8 @@ pub struct FacetCount {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ArticleFacetMember {
     pub total: i64,
-    /// `code` (slug), `jurisdiction`, `nature`, `source`, in that order.
-    pub axes: [std::collections::BTreeMap<String, i64>; 4],
+    /// `code` (slug), `jurisdiction`, `nature`, `source`, `path`, in that order.
+    pub axes: [std::collections::BTreeMap<String, i64>; 5],
 }
 
 /// Total + facettes d'une recherche d'articles, calculés en UNE requête
@@ -572,6 +661,8 @@ pub struct ArticleSearchStats {
     pub jurisdiction: Vec<FacetCount>,
     pub nature: Vec<FacetCount>,
     pub source: Vec<FacetCount>,
+    /// Every jurisdiction path the counted rows sit on (`FR`, `FR.LOI`).
+    pub path: Vec<FacetCount>,
 }
 
 /// Volet banc des renvois du référentiel : accord des spans du corps
@@ -726,16 +817,24 @@ pub struct LawCodeSummaryRow {
     pub date_texte: Option<String>,
 }
 
-/// Un chunk prêt à insérer dans `decision_chunks`. `embedding` peut être `None`
-/// (la colonne `rabitq8(1024)` accepte NULL).
+/// A passage ready to insert into `decision_chunks`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ChunkWrite {
     pub chunk_index: i32,
     pub char_start: i32,
     pub char_end: i32,
-    pub body: String,
-    pub embedding: Option<Vec<f32>>,
+    pub embedding: Vec<f32>,
+    /// What the passage holds, the tags of `lj_vocab::passage_zones`.
+    pub zones: Vec<&'static str>,
 }
+
+/// The summary a decision's passages are embedded behind: its
+/// `(summary_engine, summary_prompt_version)`, both `None` without one.
+pub type SummaryStamp = (Option<i16>, Option<i16>);
+
+/// What a decision's passages were cut from: its provenance's `source_fields`
+/// and text.
+pub type PassageInputs = (Value, String);
 
 /// Une occurrence de citation prête à écrire dans `legal_citation` : span token
 /// en codepoints sur `decisions.full_text` + cible catalogue inline (`None` =
@@ -757,6 +856,9 @@ pub struct CitationOccurrenceRow {
 /// `(title_key, slug, num)`. `num` = numéro d'acte en tête de titre (`Décret n°
 /// 2000-1093 …` → `2000-1093`, `None` si non numéroté).
 pub type LegalTextMeta = (String, Option<String>, Option<String>);
+
+/// A decision of the sitemaps: `(public_id, jurisdiction_type, jurisdiction_code, lastmod)`.
+pub type SitemapDecision = (String, String, Option<String>, Option<chrono::NaiveDate>);
 
 /// Crawl hubs for the sitemaps: per (jurisdiction type, code) or
 /// (jurisdiction, fond), the buckets `(year, listing page count)`.
@@ -815,15 +917,13 @@ pub struct ExtractedFields {
     pub decision_links: Option<Vec<DecisionLinkRow>>,
     /// Citations de jurisprudence, `None` si non extraites.
     pub case_citations: Option<Vec<CaseCitationRow>>,
-    /// Acteurs au grain `decision_party` — la relation canonique dont les 7
-    /// cellules NER plates ci-dessus sont la projection. `None` si non extraits.
+    /// The decision's actors, written as its `decision_actors` document; the
+    /// seven cells above are what they are read from. `None` if not extracted.
     pub parties: Option<Vec<DecisionPartyRow>>,
 }
 
-/// Ligne `decision_party` prête à écrire : un acteur de la décision — qualité ×
-/// côté × valeur, clé de résolution pliée, nature (`None` = moteur muet) et
-/// spans-évidences en tableaux parallèles (codepoints sur `full_text` ; vides =
-/// provenance métadonnée sans occurrence corps). Miroir store de
+/// An actor of the decision ready to write: quality, side and value, folded
+/// resolution key, nature (`None` when the engine is silent). Store mirror of
 /// `lj_extract::parties::ActorRow`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionPartyRow {
@@ -848,8 +948,9 @@ pub struct DecisionPartyRow {
     pub party_ord: Option<i32>,
     /// `ord` de la ligne conseil substituée, posée sur le `substituant`.
     pub sub_ord: Option<i32>,
-    pub char_starts: Vec<i32>,
-    pub char_ends: Vec<i32>,
+    /// `[start, end, …]` codepoints of `full_text`, the mentions the extractor
+    /// read this actor from.
+    pub mentions: Vec<i32>,
 }
 
 /// A `case_citation` row ready to write: span (codepoint offsets, identifying
@@ -957,6 +1058,19 @@ pub struct JurisdictionRow {
     pub jurisdiction_type: String,
     pub city: Option<String>,
     pub label: String,
+    /// Written at a court's creation only: an upsert never moves it.
+    pub place: Option<String>,
+}
+
+/// A court the referential holds by its own name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeededJurisdiction {
+    pub code: String,
+    pub jurisdiction_type: String,
+    pub city: String,
+    pub label: String,
+    pub closed_on: Option<chrono::NaiveDate>,
+    pub successor_code: Option<String>,
 }
 
 /// Ligne du référentiel `facet_value` : uid namespacé (`solution:REJET`…),
@@ -1046,7 +1160,7 @@ pub struct EntityDirectoryRow {
     pub decision_count: i64,
 }
 
-/// Une ligne `decision_party` lue pour l'encart « Parties » d'une décision.
+/// An actor read for a decision's « Parties » panel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DecisionPartyReadRow {
     pub quality: String,
@@ -1070,15 +1184,18 @@ pub struct BulkDecisionWrite {
     /// `canonical_ref` calculé à l'ingest (`lj_extract_rows`), passé à l'upsert.
     pub canonical_ref: Option<String>,
     pub write_mode: String,
-    pub chunks: Vec<ChunkWrite>,
+    /// The text written replaces the one the decision's passages were cut
+    /// from: they go when this provenance leads.
+    pub drop_passages: bool,
     /// `xml` (opendata) | `json` (judilibre) — le payload brut n'est pas stocké ;
     /// seul le format est persisté (`set_payload_format`).
     pub payload_format: String,
     pub extracted: Option<ExtractedFields>,
     /// Payload source moins le texte, offsets rebasés sur `full_text`.
     pub source_fields: Value,
-    /// Version chunk+embed des chunks écrits (`None` = écrits sans embeddings).
-    pub embed_version: Option<i16>,
+    /// Created without looking at its address: a reading found it distinct
+    /// from every decision there.
+    pub distinct: bool,
 }
 
 #[cfg(test)]
@@ -1112,8 +1229,8 @@ mod tests {
         // the Caledonian code and an Alsatian law; Polynesia rules out the
         // labour code, New Caledonia the tax code too. A statute is ruled out
         // by neither: it reaches them on mention, and names them nowhere.
-        let metropole = place(&[("FR", &["code-yt", "code-nc"]), ("UE", &[])]);
-        let mayotte = place(&[("FR", &["code-nc", "loi-als"]), ("UE", &[])]);
+        let metropole = place(&[("FR", &["code-yt", "code-nc"]), ("EU", &[])]);
+        let mayotte = place(&[("FR", &["code-nc", "loi-als"]), ("EU", &[])]);
         let polynesie = place(&[("FR", &["code-travail"]), ("PF", &[])]);
         let caledonie = place(&[("FR", &["code-travail", "cgi"]), ("NC", &[])]);
 

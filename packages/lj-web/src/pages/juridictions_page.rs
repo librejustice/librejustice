@@ -27,12 +27,13 @@ fn not_found() -> PageError {
     }
 }
 
-/// Keeps a response only when its court belongs to the jurisdiction the URL names.
-fn in_jurisdiction(jurisdiction_type: &str, juris: &str) -> bool {
-    JurisdictionType::from_code(jurisdiction_type).is_some_and(|t| t.url_segment() == juris)
+/// Keeps a court only when it belongs to the jurisdiction the URL names.
+fn in_jurisdiction(jurisdiction_type: &str, code: &str, juris: &str) -> bool {
+    JurisdictionType::from_code(jurisdiction_type)
+        .is_some_and(|t| t.url_segment(Some(code)) == juris)
 }
 
-const DEEP_LINK: &str =
+pub(crate) const DEEP_LINK: &str =
     "w-fit text-sm text-[var(--color-accent)] underline-offset-4 hover:underline";
 
 /// Nombre avec séparateur de milliers FR (espace fine insécable).
@@ -179,9 +180,13 @@ pub fn JuridictionsPage() -> impl IntoView {
                     .fetch_juridictions()
                     .await
                     .map_err(PageError::from)?;
-                catalogue
-                    .groups
-                    .retain(|g| in_jurisdiction(&g.jurisdiction_type, &juris));
+                for group in &mut catalogue.groups {
+                    let kind = group.jurisdiction_type.clone();
+                    group
+                        .jurisdictions
+                        .retain(|j| in_jurisdiction(&kind, &j.code, &juris));
+                }
+                catalogue.groups.retain(|g| !g.jurisdictions.is_empty());
                 if catalogue.groups.is_empty() {
                     return Err(not_found());
                 }
@@ -236,6 +241,7 @@ fn JuridictionsLoaded(juris: String, response: JurisdictionCatalogueResponse) ->
                     "Parcourez les décisions du corpus par juridiction, puis par année. "
                     "Chaque juridiction ouvre la liste complète de ses décisions."
                 </p>
+                <A href="/decision-search" attr:class=DEEP_LINK>"Rechercher dans ces décisions"</A>
             </header>
 
             {response
@@ -340,7 +346,7 @@ fn JuridictionHubLoaded(hub: JurisdictionHubResponse) -> impl IntoView {
         "/decision-index/{}",
         JurisdictionType::from_code(&hub.jurisdiction_type)
             .expect("a stored jurisdiction_type is a known variant")
-            .url_segment()
+            .url_segment(Some(&hub.code))
     );
     let hub_href = format!("{index}/{}", hub.code);
     let url = format!("https://librejustice.fr{hub_href}");
@@ -492,7 +498,10 @@ fn JuridictionYearLoaded(page: JurisdictionYearResponse) -> impl IntoView {
         page.year,
         page.label,
     );
-    let index = format!("/decision-index/{}", jurisdiction_type.url_segment());
+    let index = format!(
+        "/decision-index/{}",
+        jurisdiction_type.url_segment(Some(&page.code))
+    );
     let hub_href = format!("{index}/{}", page.code);
     let year_href = format!("{hub_href}/{}", page.year);
     let base_url = format!("https://librejustice.fr{year_href}");
@@ -549,7 +558,11 @@ fn JuridictionYearLoaded(page: JurisdictionYearResponse) -> impl IntoView {
                     .decisions
                     .into_iter()
                     .map(|d| {
-                        let href = lj_dtos::decision_path(jurisdiction_type, &d.public_id);
+                        let href = lj_dtos::decision_path(
+                            jurisdiction_type,
+                            Some(&page.code),
+                            &d.public_id,
+                        );
                         view! {
                             <li class="py-2.5">
                                 <A

@@ -4,7 +4,7 @@
 /// Version of the extraction pipeline, stamped as `extract_version` on
 /// `decisions` and compared to gate the re-extraction. Written by `lj-extract`,
 /// read by `lj-store` in its SQL. Bump it when the extraction logic changes.
-pub const EXTRACT_VERSION: i16 = 85;
+pub const EXTRACT_VERSION: i16 = 89;
 
 /// Version of the bodily-injury quantum extraction, an axis apart from
 /// `EXTRACT_VERSION` until their cadences converge, the quantum iterating with

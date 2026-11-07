@@ -39,7 +39,7 @@ struct BodyCounts {
 pub async fn backfill_treaty_bodies() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -142,8 +142,8 @@ async fn backfill_jorf(
                 }
                 match lj_extract::jorf::parse_jorf_struct(&raw) {
                     Ok(s) => {
-                        h.orders
-                            .insert(s.jorftext, s.articles.into_iter().map(|a| a.id).collect());
+                        let ids = s.articles().map(|(id, _)| id.to_string()).collect();
+                        h.orders.insert(s.jorftext, ids);
                     }
                     Err(e) => {
                         tracing::error!(member = %name, error = %e, "jorf struct: parse failed");
@@ -200,7 +200,7 @@ async fn backfill_jorf(
 
 /// Concatène les blocs dans l'ordre du `struct` ; les blocs hors struct suivent,
 /// par id croissant (stable).
-fn assemble_ordered(order: Option<&[String]>, blocks: &[(String, String)]) -> String {
+pub(super) fn assemble_ordered(order: Option<&[String]>, blocks: &[(String, String)]) -> String {
     let by_id: HashMap<&str, &str> = blocks
         .iter()
         .map(|(id, t)| (id.as_str(), t.as_str()))

@@ -1410,7 +1410,7 @@ fn after_civility(chars: &[char], words: &[Word], at: usize) -> Option<(usize, V
 
 /// The surname inside a full name: its words in capitals, or else all but the
 /// first name.
-fn surname_of(name: &str) -> Option<String> {
+pub fn surname_of(name: &str) -> Option<String> {
     let parts: Vec<&str> = name.split_whitespace().collect();
     if parts
         .first()
@@ -1581,7 +1581,7 @@ fn place_name(chars: &[char], words: &[Word], at: usize) -> Option<usize> {
 
 /// Under four letters, or made only of roman numerals, a run names a section
 /// rather than a person. The search folds and matches inside words, so `ATI`
-/// would light up `systématiquement` 864 times in a 64-page report.
+/// would light up every `systématiquement` of a report.
 fn nameable(text: &str) -> bool {
     let letters: Vec<char> = text.chars().filter(|c| c.is_alphabetic()).collect();
     letters.len() >= 4
@@ -2593,7 +2593,7 @@ mod tests {
 
     #[test]
     fn an_identity_card_read_by_eye_gives_its_names_and_not_its_labels() {
-        let card = "CARTE NATIONALE D'IDENTITÉ / IDENTITY CARD\n\nNOM / Sumame\n\nAUS EC \\ DUVAL-MARTIN\n\n, Î4Y | ga: Prénoms / Given names\n\nA Ée LE 4 Léa, Marguerite, Anaïs\n\nSEXE /Sex NATIONALITÉ / Nationality\n\nLIEU DE NAISSANCE / Place ofbirh\n\nLYON 3E ARRONDISSEMENT\n\nIDFRAXBF4BRM725<<<<<<<<";
+        let card = "CARTE NATIONALE D'IDENTITÉ / IDENTITY CARD\n\nNOM / Sumame\n\nAUS EC \\ DUVAL-MARTIN\n\n, Î4Y | ga: Prénoms / Given names\n\nA Ée LE 4 Léa, Marguerite, Anaïs\n\nSEXE /Sex NATIONALITÉ / Nationality\n\nLIEU DE NAISSANCE / Place ofbirh\n\nLYON 3E ARRONDISSEMENT\n\nIDFRAXQZ8KVN316<<<<<<<<";
         let found: Vec<String> = of(Kind::Person, card).into_iter().map(|s| s.text).collect();
         for name in ["DUVAL-MARTIN", "Léa", "Marguerite", "Anaïs"] {
             assert!(
@@ -2606,7 +2606,7 @@ mod tests {
             "SEXE",
             "LIEU DE NAISSANCE",
             "ARRONDISSEMENT",
-            "IDFRAXBF",
+            "IDFRAXQZ",
             "AUS EC",
         ] {
             assert!(
@@ -2618,7 +2618,7 @@ mod tests {
 
     #[test]
     fn an_invoice_gives_its_addressee_and_not_its_product_words() {
-        let invoice = "Léa Duval Martin\n\n12 rue des Lilas\n\n75011 PARIS\n\nRubrique divers DEDICATED-OPTION\n\n2x 450Gb SSD NVMe Soft RAID rental for 1 month\n\nIBAN : FR76 3000 6000 0112 3456 7890 189";
+        let invoice = "Léa Duval Martin\n\n12 rue des Lilas\n\n75011 PARIS\n\nRubrique divers DEDICATED-OPTION\n\n2x 500Gb SSD NVMe Soft RAID rental for 1 month\n\nIBAN : FR76 3000 6000 0112 3456 7890 189";
         let found = texts(Kind::Person, invoice);
         assert_eq!(found, vec!["Léa Duval Martin"]);
     }
@@ -2635,19 +2635,19 @@ mod tests {
 
     #[test]
     fn a_form_filled_by_hand_gives_the_values_of_its_name_fields() {
-        let form = "Nom de naissance : NGUYEN\nPrénom(s) : Thi Lan\nNé(e) le : 22/09/1991 à: Nantes\nNom et prénom : Paul Girard\nNom du service : accueil";
+        let form = "Nom de naissance : TRAN\nPrénom(s) : Kim Anh\nNé(e) le : 14/05/1988 à: Rennes\nNom et prénom : Marc Simon\nNom du service : accueil";
         assert_eq!(
             texts(Kind::Person, form),
-            vec!["NGUYEN", "Thi", "Lan", "Paul Girard"]
+            vec!["TRAN", "Kim", "Anh", "Marc Simon"]
         );
-        assert_eq!(texts(Kind::BirthDate, form), vec!["22/09/1991"]);
-        assert!(texts(Kind::BirthPlace, form).iter().all(|p| p != "NGUYEN"));
+        assert_eq!(texts(Kind::BirthDate, form), vec!["14/05/1988"]);
+        assert!(texts(Kind::BirthPlace, form).iter().all(|p| p != "TRAN"));
     }
 
     #[test]
     fn a_fine_notice_gives_its_addressee_and_not_its_headings() {
-        let notice = "Date de l'avis de contravention\n\n10/09/2026\n\nPERRIN ELOI\n\n41 RUE DE LA GLACIERE\n\n75013 PARIS\n\nDESCRIPTION DE L'INFRACTION\n\nEXCES DE VITESSE D'AU MOINS 5 KM/H PAR CONDUCTEUR DE VEHICULE A MOTEUR - VITESSE MAXIMALE AUTORISEE INFERIEURE OU EGALE A 50 KM/H\n\nNOTICE DE PAIEMENT\n\n* Sexe (M/F) *Date de naissance *à\n\n*Adresse";
-        assert_eq!(texts(Kind::Person, notice), vec!["PERRIN ELOI"]);
+        let notice = "Date de l'avis de contravention\n\n15/03/2024\n\nMOREL BASILE\n\n18 RUE DES ACACIAS\n\n75017 PARIS\n\nDESCRIPTION DE L'INFRACTION\n\nEXCES DE VITESSE D'AU MOINS 5 KM/H PAR CONDUCTEUR DE VEHICULE A MOTEUR - VITESSE MAXIMALE AUTORISEE INFERIEURE OU EGALE A 50 KM/H\n\nNOTICE DE PAIEMENT\n\n* Sexe (M/F) *Date de naissance *à\n\n*Adresse";
+        assert_eq!(texts(Kind::Person, notice), vec!["MOREL BASILE"]);
         assert!(texts(Kind::BirthPlace, notice).is_empty());
     }
 

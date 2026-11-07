@@ -45,6 +45,7 @@ pub fn init_telemetry(settings: &Settings) -> Result<TelemetryGuard> {
             .with_target(crate::usage::LOG_TARGET, LevelFilter::INFO)
             .with_target(crate::ratelimit::LOG_TARGET, LevelFilter::INFO)
             .with_target(crate::mail::LOG_TARGET, LevelFilter::INFO)
+            .with_target(crate::disposable::LOG_TARGET, LevelFilter::INFO)
             .with_target(lj_llm::backend::LOG_TARGET, LevelFilter::INFO),
         otlp,
     })

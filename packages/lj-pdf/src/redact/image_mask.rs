@@ -292,8 +292,8 @@ fn rewrite(
         }
     }
     let fax = (samples.bits == 1 && samples.components == 1).then(|| group4(&samples));
-    // Group 4 under an eighth of the raw rows was smaller than Flate on each of
-    // 528 one bit images measured; above, a dithered page can favour Flate.
+    // Group 4 under an eighth of the raw rows beats Flate on one bit images;
+    // above, a dithered page can favour Flate.
     let (filter, data) = match fax {
         Some((parms, fax)) if fax.len() <= samples.data.len() / 8 => {
             (("CCITTFaxDecode", parms), fax)
@@ -469,9 +469,8 @@ fn insert(file: &mut PdfFile, dict: PdfDictionary, data: Vec<u8>) -> ObjectRef {
     object_ref
 }
 
-/// The rows under the PNG Up filter, deflated at the fastest level. Measured in
-/// wasm32 on a 1381 x 1886 RGB scan: 75 ms a pass against 530 unfiltered at
-/// the default level, for 2 % more bytes, and 3 % fewer on a grey page.
+/// The rows under the PNG Up filter, deflated at the fastest level: several times
+/// faster than unfiltered rows at the default level, for about the same size.
 fn deflate_rows_up(pixels: &[u8], stride: usize) -> Vec<u8> {
     let mut encoder = ZlibEncoder::new(Vec::with_capacity(pixels.len() / 4), Compression::fast());
     let mut line = vec![0u8; stride + 1];

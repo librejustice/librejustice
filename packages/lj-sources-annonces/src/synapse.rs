@@ -41,9 +41,8 @@ fn parse_page(html: &str) -> Vec<(String, Option<AnnonceBrute>)> {
             .collect();
         let cellule = |i: usize| cellules.get(i).filter(|c| !c.is_empty()).cloned();
         let uid = format!("synapse:{pid}");
-        // A branded listing serves the whole EU-Supply pool, not its own buyer:
-        // 87 of the 150 rows read on 15/09/2026 were Danish, Norwegian,
-        // Ukrainian, Myanmar or Sierra Leonean. The country column sorts them.
+        // A branded listing serves the whole EU-Supply pool, foreign buyers
+        // included: the country column sorts them.
         if cellule(7).as_deref() != Some(PAYS) {
             out.push((uid, None));
             continue;

@@ -105,10 +105,9 @@ mod tests {
         assert_eq!(sans_form_action(csp), csp);
     }
 
-    /// La CSP de production, telle que la sert le rendu : aucune trace de
-    /// `form-action` ne doit survivre, sous aucune graphie.
+    /// The served CSP keeps no `form-action`, whatever its spelling.
     #[test]
-    fn la_csp_du_consentement_ne_contraint_plus_aucun_saut() {
+    fn la_csp_du_consentement_ne_contraint_aucun_saut() {
         let csp =
             "script-src 'self' 'wasm-unsafe-eval' 'nonce-x'; style-src 'self' 'unsafe-inline'; \
                    connect-src 'self'; object-src 'none'; base-uri 'self'; \

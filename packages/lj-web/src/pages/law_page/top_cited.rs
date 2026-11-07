@@ -6,7 +6,7 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use lj_dtos::TopCitedArticle;
 
-use crate::helpers::{format_article_num, group_thousands};
+use crate::helpers::{decision_count, format_article_num};
 
 /// Bloc du palmarès. Aucun article cité ⇒ pas de bloc.
 pub(crate) fn top_cited_block(top: Vec<TopCitedArticle>) -> AnyView {
@@ -32,7 +32,7 @@ pub(crate) fn top_cited_block(top: Vec<TopCitedArticle>) -> AnyView {
 fn TopCitedRow(article: TopCitedArticle) -> impl IntoView {
     use crate::components::hover_preview::{preview_kind, HoverPreview};
     let label = format!("Article {}", format_article_num(&article.label));
-    let count = format!("{} déc.", group_thousands(article.count));
+    let count = decision_count(article.count);
     let link = match article.href {
         Some(href) => {
             let kind = preview_kind(&href, None);

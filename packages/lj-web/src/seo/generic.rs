@@ -68,9 +68,13 @@ pub fn not_found_meta() -> PageMeta {
 }
 
 /// URL canonique d'une page decision.
-pub fn canonical_url(jurisdiction_type: lj_dtos::JurisdictionType, id: &str) -> String {
+pub fn canonical_url(
+    jurisdiction_type: lj_dtos::JurisdictionType,
+    jurisdiction_code: Option<&str>,
+    id: &str,
+) -> String {
     format!(
         "{CANONICAL_BASE}{}",
-        lj_dtos::decision_path(jurisdiction_type, id)
+        lj_dtos::decision_path(jurisdiction_type, jurisdiction_code, id)
     )
 }

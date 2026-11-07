@@ -98,6 +98,9 @@ fn set_cache_control(_status: u16) {}
 
 #[component]
 fn CodeError(err: PageError) -> impl IntoView {
+    if err.status == 404 {
+        crate::pages::not_found::signaler_lien_mort();
+    }
     let eyebrow = if err.status == 404 {
         "Introuvable"
     } else {
@@ -136,8 +139,6 @@ fn CodeSkeleton() -> impl IntoView {
 
 #[component]
 fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl IntoView {
-    #[cfg(feature = "hydrate")]
-    Effect::new(|_| crate::reads::report(lj_dtos::ReadKind::Text));
     let title = summary.titre.clone();
     let code = summary.code.clone();
     let text = lj_vocab::norm_path(&summary.jurisdiction, &summary.code);
@@ -147,6 +148,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
     // Corps monolithique : un texte peut porter un corps, des articles, ou les deux
     // (préambule BOFiP).
     let body = summary.body.clone().filter(|b| !b.trim().is_empty());
+    let publication = summary.publication.clone().unwrap_or_default();
     let noindex = summary.titre.contains(lj_vocab::PROTECTED_ACCESS_MARKER)
         || (!has_articles && body.is_none());
     let description = if has_articles {
@@ -164,6 +166,11 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
         format!("{} — {excerpt}", summary.titre)
     };
     let url = code_canonical_url(&summary.jurisdiction, &summary.code);
+    #[cfg(feature = "hydrate")]
+    {
+        let document = url.clone();
+        Effect::new(move |_| crate::reads::report(lj_dtos::ReadKind::Text, &document));
+    }
     let page_title = format!("{title} - LibreJustice");
 
     let json = serde_json::json!({
@@ -223,6 +230,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
         .date_texte
         .as_deref()
         .map(|d| format_iso_date(Some(d)));
+    let published_in = publication.issue.clone();
     let nor = summary.nor.clone();
     let legitext_uid = is_legi.then(|| summary.legitext.clone());
     // Texte publié au JO (uid JORFTEXT) : lien composé vers sa page Légifrance
@@ -243,6 +251,20 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
         let signed = signature_date
             .clone()
             .map(|d| view! { <span>{format!("Date de signature : {d}")}</span> });
+        let published = published_in.clone().map(|i| match i.href {
+            Some(href) => view! {
+                <a
+                    href=href
+                    rel="external noopener"
+                    target="_blank"
+                    class="self-start underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
+                >
+                    {format!("Publié au {}", i.label)}
+                </a>
+            }
+            .into_any(),
+            None => view! { <span>{format!("Publié au {}", i.label)}</span> }.into_any(),
+        });
         let nor = nor
             .clone()
             .map(|n| view! { <span class="font-mono text-xs">{format!("NOR : {n}")}</span> });
@@ -265,6 +287,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
             <p class="flex flex-col gap-1 text-sm text-[var(--color-ink-subtle)]">
                 {count}
                 {signed}
+                {published}
                 {modified}
                 <A
                     href=source_href
@@ -367,8 +390,13 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
                         </div>
                         {upcoming}
                         {abroge}
+                        {publication_note(publication.corrigendum.clone())}
+                        {publication_note(publication.repeal.clone())}
                     </header>
 
+                    {publication_block("Notice", publication.notice.clone())}
+                    {publication_block("Résumé", publication.summary.clone())}
+                    {publication_block("Visas", publication.visas.clone())}
                     {body_section}
                     {has_articles.then(|| view! {
                         <CodeTocSection
@@ -378,6 +406,8 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
                             juris=juris.clone()
                         />
                     })}
+                    {publication_block("Signataires", publication.signatories.clone())}
+                    {publication_block("Travaux préparatoires", publication.preparatory_work.clone())}
                     <crate::components::decision::DecisionCommentaires commentaires=commentaires />
                 </div>
             }
@@ -394,6 +424,37 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
                 .into_any()
         />
     }
+}
+
+/// A block the JO printed around a text's articles, under its heading.
+fn publication_block(heading: &'static str, text: Option<String>) -> Option<AnyView> {
+    let text = text.filter(|t| !t.trim().is_empty())?;
+    Some(
+        view! {
+            <section class="flex min-w-0 flex-col gap-3">
+                <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
+                    {heading}
+                </h2>
+                <div class="whitespace-pre-line text-base leading-relaxed text-[var(--color-ink)]">
+                    {text}
+                </div>
+            </section>
+        }
+        .into_any(),
+    )
+}
+
+/// A one-line note the JO attached to a text: a corrigendum, a repeal.
+fn publication_note(text: Option<String>) -> Option<AnyView> {
+    let text = text.filter(|t| !t.trim().is_empty())?;
+    Some(
+        view! {
+            <p class="mt-1 w-fit rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)]/60 px-3 py-1.5 text-sm text-[var(--color-ink-muted)]">
+                {text}
+            </p>
+        }
+        .into_any(),
+    )
 }
 
 /// Recherche bornée à ce code : formulaire GET nu vers `/norm-search?q=…&code={slug}` ,

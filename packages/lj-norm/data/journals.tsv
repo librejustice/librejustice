@@ -2,6 +2,16 @@ code	label	publisher	languages	defaults_from
 JORF	Journal officiel de la République française	Direction de l'information légale et administrative	fr	
 BOCC	Bulletin officiel des conventions collectives	Direction de l'information légale et administrative	fr	JORF
 BOFIP	Bulletin officiel des finances publiques	Direction générale des finances publiques	fr	JORF
+BO-MTE	Bulletin officiel du ministère de la Transition écologique	Ministère de la Transition écologique	fr	JORF
+BO-JUSTICE	Bulletin officiel du ministère de la Justice	Ministère de la Justice	fr	JORF
+BO-ARMEES	Bulletin officiel des armées	Ministère des Armées	fr	JORF
+BO-AGRI	Bulletin officiel du ministère de l'Agriculture	Ministère de l'Agriculture	fr	JORF
+BO-SOCIAL	Bulletins officiels des ministères sociaux	Ministères chargés de la santé et du travail	fr	JORF
+BO-DGAFP	Circulaires de la fonction publique	Direction générale de l'administration et de la fonction publique	fr	JORF
+BO-CULTURE	Bulletin officiel du ministère de la Culture	Ministère de la Culture	fr	JORF
+BO-EDUCATION	Bulletin officiel de l'éducation nationale	Ministère de l'Éducation nationale	fr	JORF
+BO-INTERIEUR	Bulletin officiel du ministère de l'Intérieur	Ministère de l'Intérieur	fr	JORF
+BO-ECONOMIE	Bulletin officiel de l'administration centrale des ministères économiques et financiers	Ministère de l'Économie et des Finances	fr	JORF
 JOUE	Journal officiel de l'Union européenne	Office des publications de l'Union européenne	bg,cs,da,de,el,en,es,et,fi,fr,ga,hr,hu,it,lt,lv,mt,nl,pl,pt,ro,sk,sl,sv	
 JONC	Journal officiel de la Nouvelle-Calédonie	Gouvernement de la Nouvelle-Calédonie	fr	
 JOPF	Journal officiel de la Polynésie française	Gouvernement de la Polynésie française	fr	

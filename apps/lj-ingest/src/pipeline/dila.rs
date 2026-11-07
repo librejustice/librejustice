@@ -1,20 +1,17 @@
 //! DILA bulk (JADE / CONSTIT / CNIL) : ingest tarball streamé + sync.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
 
-use lj_llm::backend::AnyEmbedder;
 use lj_parse::{build_source_fields_dila, parse_dila_doc, DilaDoc, DilaFond};
-use lj_store::db::Connection;
-use lj_store::repository::DecisionRepository;
+use lj_pg::db::Connection;
+use lj_store::repository::{DecisionRepository, Identity};
 
 use crate::config::Settings;
 
 use super::batch::drain_batch;
-use super::embed::build_embedder_opt;
-use super::files::collect_tar_gz;
 use super::{
     content_checksum, generate_public_id, Candidate, IngestCounts, IngestMode, BATCH_SIZE,
 };
@@ -29,6 +26,12 @@ pub enum Fond {
     Constit,
     /// Délibérations/décisions de la CNIL.
     Cnil,
+    /// Judgments of the Cour de cassation printed in the Bulletin.
+    Cass,
+    /// Unpublished judgments of the Cour de cassation.
+    Inca,
+    /// A selection of courts of appeal and first-degree courts.
+    Capp,
 }
 
 impl Fond {
@@ -36,11 +39,14 @@ impl Fond {
     /// `parse_dila_xml` forme `source_uid = "{member_path}/{ID}"` → on lui passe ce
     /// préfixe comme `member_path` pour obtenir `dila-<fond>/<ID DILA>` (clé pivot
     /// stable, mappée par `source_from_source_uid`).
-    fn source_prefix(self) -> &'static str {
+    pub(super) fn source_prefix(self) -> &'static str {
         match self {
             Fond::Jade => "dila-jade",
             Fond::Constit => "dila-constit",
             Fond::Cnil => "dila-cnil",
+            Fond::Cass => "dila-cass",
+            Fond::Inca => "dila-inca",
+            Fond::Capp => "dila-capp",
         }
     }
 
@@ -50,6 +56,9 @@ impl Fond {
             Fond::Jade => DilaFond::Jade,
             Fond::Constit => DilaFond::Constit,
             Fond::Cnil => DilaFond::Cnil,
+            Fond::Cass => DilaFond::Cass,
+            Fond::Inca => DilaFond::Inca,
+            Fond::Capp => DilaFond::Capp,
         }
     }
 
@@ -59,7 +68,14 @@ impl Fond {
             Fond::Jade => lj_sources::dila::DilaFond::Jade,
             Fond::Constit => lj_sources::dila::DilaFond::Constit,
             Fond::Cnil => lj_sources::dila::DilaFond::Cnil,
+            Fond::Cass => lj_sources::dila::DilaFond::Cass,
+            Fond::Inca => lj_sources::dila::DilaFond::Inca,
+            Fond::Capp => lj_sources::dila::DilaFond::Capp,
         }
+    }
+
+    fn is_judicial(self) -> bool {
+        matches!(self, Fond::Cass | Fond::Inca | Fond::Capp)
     }
 }
 
@@ -105,54 +121,54 @@ pub(super) enum ClassifiedDila {
     Analysis(Candidate),
 }
 
-/// Parse + classe un membre XML bulk DILA réparé (miroir de [`classify_xml`]).
+/// Parses and classifies a repaired DILA bulk XML member (mirror of [`classify_xml`]).
 ///
-/// `raw_repaired` = octets déjà passés par `repair_dila` (bord lj-sources) ;
-/// `content_checksum` est calculé sur `raw_brut` (pré-repair). `None` ⇒ skip
-/// non fatal : juridiction JADE non routée. `Some(Full)` = texte intégral ;
-/// `Some(Analysis)` = analyse-seule (CONTENU absent, SOMMAIRE ANA/SCT comme
-/// contenu).
+/// `raw_repaired` holds the bytes `repair_dila` already fixed at the lj-sources
+/// edge; `content_checksum` is computed on `raw_brut`, before the repair. Empty
+/// is a non-fatal skip: a member without a body, or a JADE court not routed.
+/// `Full` carries the full text, `Analysis` the analysis alone (no `CONTENU`,
+/// `SOMMAIRE` ANA/SCT as content). A judicial record cut in sections gives one
+/// candidate per section.
 ///
 /// [`classify_xml`]: super::prepare::classify_xml
 pub(super) fn classify_dila(
     raw_repaired: Vec<u8>,
     raw_brut: &[u8],
     fond: Fond,
-) -> Result<Option<ClassifiedDila>> {
-    let doc = parse_dila_doc(&raw_repaired, fond.source_prefix(), fond.core())
+) -> Result<Vec<ClassifiedDila>> {
+    let docs = parse_dila_doc(&raw_repaired, fond.source_prefix(), fond.core())
         .map_err(|e| anyhow!("parse_dila_doc ({}): {e}", fond.source_prefix()))?;
-
-    // Membre sans corps (ni CONTENU ni SOMMAIRE) → skip non fatal : nominal pour
-    // CNIL (fiches de registre sans texte), pas une erreur de parsing.
-    let (decision, is_analysis) = match doc {
-        Some(DilaDoc::Full(d)) => (d, false),
-        Some(DilaDoc::Analysis(d)) => (d, true),
-        None => return Ok(None),
-    };
-
-    if decision.jurisdiction_type.is_none() {
-        tracing::warn!(uid = %decision.source_uid, "DILA UID not routed, skip");
-        return Ok(None);
+    let checksum = content_checksum(raw_brut);
+    let mut out = Vec::with_capacity(docs.len());
+    for doc in docs {
+        let (decision, is_analysis) = match doc {
+            DilaDoc::Full(d) => (d, false),
+            DilaDoc::Analysis(d) => (d, true),
+        };
+        if decision.jurisdiction_type.is_none() {
+            tracing::warn!(uid = %decision.source_uid, "DILA UID not routed, skip");
+            continue;
+        }
+        let cand = Candidate {
+            decision_id: None,
+            public_id: generate_public_id(),
+            decision,
+            content_checksum: checksum.clone(),
+            raw_payload: raw_repaired.clone(),
+            payload_format: "dila-xml".to_string(),
+            write_mode: super::WriteMode::Full,
+            passages: true,
+            distinct: false,
+            prebuilt_source_fields: None,
+            prebuilt_extracted: None,
+        };
+        out.push(if is_analysis {
+            ClassifiedDila::Analysis(cand)
+        } else {
+            ClassifiedDila::Full(cand)
+        });
     }
-
-    let cand = Candidate {
-        decision_id: None,
-        public_id: generate_public_id(),
-        decision,
-        content_checksum: content_checksum(raw_brut),
-        raw_payload: raw_repaired,
-        payload_format: "dila-xml".to_string(),
-        write_mode: super::WriteMode::Full,
-        dila_fond: Some(fond.core()),
-        passages: true,
-        prebuilt_source_fields: None,
-        prebuilt_extracted: None,
-    };
-    Ok(Some(if is_analysis {
-        ClassifiedDila::Analysis(cand)
-    } else {
-        ClassifiedDila::Full(cand)
-    }))
+    Ok(out)
 }
 
 /// Rattache les enregistrements DILA **analyse-seule**. Chemin séparé du drain
@@ -170,8 +186,6 @@ pub(super) fn classify_dila(
 ///   (même `canonical_ref`) est promu autorité par le merge cross-source.
 async fn apply_dila_analyses(
     conn: &Connection,
-    embedder: Option<&AnyEmbedder>,
-    require_embeddings: bool,
     fond: Fond,
     analysis: Vec<Candidate>,
     counts: &mut IngestCounts,
@@ -189,58 +203,82 @@ async fn apply_dila_analyses(
     counts.dedup_in_batch += total - by_uid.len();
 
     let repo = DecisionRepository::new(conn);
+    let ctx = super::extract_ctx(conn).await?;
     let mut orphans: Vec<Candidate> = Vec::new();
+    let mut attached: Vec<i64> = Vec::new();
     let (mut enriched, mut skipped) = (0usize, 0usize);
-    for (uid, cand) in by_uid {
+    for (uid, mut cand) in by_uid {
         match repo.find_provenance(&uid).await? {
             Some((_, checksum, active)) if active && checksum == cand.content_checksum => {
                 counts.skipped += 1;
                 skipped += 1;
             }
             Some((id, _, _)) => {
-                let sf = build_source_fields_dila(&cand.raw_payload, fond.core());
+                let sf = build_source_fields_dila(&cand.raw_payload);
                 repo.upsert_decision_source(id, &uid, &cand.content_checksum, "dila-xml", &sf)
                     .await?;
                 counts.updated += 1;
                 enriched += 1;
             }
-            None => match repo
-                .resolve_identity(
-                    &cand.decision,
-                    lj_extract_rows::canonical_ref(&cand.decision).as_deref(),
-                )
-                .await?
-            {
-                Some(existing_id) => {
-                    let sf = build_source_fields_dila(&cand.raw_payload, fond.core());
-                    repo.upsert_decision_source(
-                        existing_id,
-                        &uid,
-                        &cand.content_checksum,
-                        "dila-xml",
-                        &sf,
-                    )
-                    .await?;
-                    counts.updated += 1;
-                    enriched += 1;
+            None => {
+                let sf = build_source_fields_dila(&cand.raw_payload);
+                let reading = match fond.is_judicial() {
+                    true => super::dila_judi::reading(&repo, &uid).await?,
+                    false => super::dila_judi::Reading::Unread,
+                };
+                let identity = match reading {
+                    super::dila_judi::Reading::Copy => {
+                        counts.copies += 1;
+                        continue;
+                    }
+                    super::dila_judi::Reading::Hold => {
+                        tracing::warn!(%uid, "analysis held by the reading");
+                        counts.held += 1;
+                        continue;
+                    }
+                    super::dila_judi::Reading::Create => {
+                        cand.distinct = true;
+                        Identity::Create
+                    }
+                    super::dila_judi::Reading::Attach(id) => Identity::Attach(id),
+                    super::dila_judi::Reading::Unread => {
+                        let extracted =
+                            lj_extract_rows::extracted_fields(&cand.decision, &ctx.snapshots())
+                                .map_err(|e| anyhow!("extract {uid}: {e}"))?;
+                        repo.identity_of(&cand.decision, Some(&extracted), &sf)
+                            .await?
+                    }
+                };
+                match identity {
+                    Identity::Attach(existing_id) => {
+                        repo.upsert_decision_source(
+                            existing_id,
+                            &uid,
+                            &cand.content_checksum,
+                            "dila-xml",
+                            &sf,
+                        )
+                        .await?;
+                        attached.push(existing_id);
+                        counts.updated += 1;
+                        enriched += 1;
+                    }
+                    Identity::Create => orphans.push(cand),
+                    Identity::Copy(_) => counts.copies += 1,
+                    Identity::Hold(id) => {
+                        tracing::warn!(%uid, decision_id = id, "analysis held: neither the copy of that decision nor another one");
+                        counts.held += 1;
+                    }
                 }
-                None => orphans.push(cand),
-            },
+            }
         }
     }
 
+    super::reextract::fuse_written(&repo, &attached).await?;
     let orphaned = orphans.len();
     if !orphans.is_empty() {
         // Création neuve (aucune décision existante à écraser) → chunk + embed sûrs.
-        drain_batch(
-            conn,
-            embedder,
-            orphans,
-            require_embeddings,
-            IngestMode::MissingHash,
-            counts,
-        )
-        .await?;
+        drain_batch(conn, orphans, IngestMode::MissingHash, counts).await?;
     }
     tracing::info!(
         fond = ?fond,
@@ -269,29 +307,21 @@ async fn apply_dila_analyses(
 pub async fn ingest_dila(fond: Fond) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
         .map_err(|e| anyhow!("migrations: {e}"))?;
 
-    let tarballs_dir = lj_sources::dila::tarballs_dir(&settings.cache_dir(), fond.source());
-    let mut tarballs = collect_tar_gz(&tarballs_dir)?;
-    tarballs.sort();
+    conn.batch_execute("SET statement_timeout = 0").await?;
+
+    let tarballs = lj_sources::dila::cached_dila_tarballs(&settings.cache_dir(), fond.source())?;
     if tarballs.is_empty() {
-        tracing::info!(dir = %tarballs_dir.display(), fond = ?fond, "no DILA tar.gz found");
+        tracing::info!(fond = ?fond, "no DILA tar.gz found");
         return Ok(());
     }
 
-    let (embedder, require_embeddings) = build_embedder_opt(&settings).await?;
-    ingest_dila_paths(
-        &conn,
-        fond,
-        &tarballs,
-        embedder.as_ref(),
-        require_embeddings,
-    )
-    .await
+    ingest_dila_paths(&conn, fond, &tarballs).await
 }
 
 /// Ingère une liste d'archives DILA (stock et/ou incréments) dans l'ordre
@@ -302,19 +332,65 @@ async fn ingest_dila_paths(
     conn: &Connection,
     fond: Fond,
     paths: &[std::path::PathBuf],
-    embedder: Option<&AnyEmbedder>,
-    require_embeddings: bool,
 ) -> Result<()> {
+    let last = {
+        let paths = paths.to_vec();
+        std::sync::Arc::new(
+            tokio::task::spawn_blocking(move || last_word(&paths))
+                .await
+                .map_err(|e| anyhow!("DILA replay pre-pass: {e}"))??,
+        )
+    };
+    tracing::info!(fond = ?fond, records = last.len(), archives = paths.len(), "DILA replay: last word per record");
     let mut total = IngestCounts::default();
     let mut deleted_total: u64 = 0;
-    for path in paths {
-        let (counts, deleted) =
-            ingest_dila_tarball(conn, fond, path, embedder, require_embeddings).await?;
+    for (rank, path) in paths.iter().enumerate() {
+        let replay = Some((last.clone(), rank));
+        let (counts, deleted) = ingest_dila_tarball(conn, fond, path, replay).await?;
         deleted_total += deleted;
         total.merge(&counts);
     }
     log_dila_total(fond, paths.len(), &total, deleted_total);
     Ok(())
+}
+
+/// Over a replay, the archive holding the last word on each record: its last
+/// delivery or its deletion. An earlier version is never written.
+fn last_word(paths: &[std::path::PathBuf]) -> Result<HashMap<String, usize>> {
+    let mut last = HashMap::new();
+    for (rank, path) in paths.iter().enumerate() {
+        let mut deleted: Vec<String> = Vec::new();
+        lj_sources::tar_reader::for_each_member_filtered(
+            path,
+            |name| {
+                let lower = name.to_lowercase();
+                if lower.ends_with(".xml") {
+                    if let Some(id) = dila_member_id(name) {
+                        last.insert(id.to_string(), rank);
+                    }
+                }
+                lower.ends_with(".dat")
+            },
+            |_, raw| {
+                deleted.extend(dat_ids(&raw));
+                Ok(())
+            },
+        )?;
+        for id in deleted {
+            last.insert(id, rank);
+        }
+    }
+    Ok(last)
+}
+
+/// IDs of a `.dat` deletion list: one tar path or bare DILA id per line.
+fn dat_ids(raw: &[u8]) -> Vec<String> {
+    String::from_utf8_lossy(raw)
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(|l| l.rsplit('/').next().unwrap_or(l).to_string())
+        .collect()
 }
 
 /// Total d'une passe d'ingestion DILA, quelle que soit la boucle qui l'a menée.
@@ -326,7 +402,9 @@ fn log_dila_total(fond: Fond, tarballs: usize, total: &IngestCounts, deleted: u6
         updated = total.updated,
         skipped = total.skipped,
         errors = total.errors,
-        chunks = total.chunks_created,
+        dropped = total.passages_dropped,
+        copies = total.copies,
+        held = total.held,
         deleted,
         "ingest_dila_total"
     );
@@ -343,8 +421,7 @@ async fn ingest_dila_tarball(
     conn: &Connection,
     fond: Fond,
     path: &Path,
-    embedder: Option<&AnyEmbedder>,
-    require_embeddings: bool,
+    replay: Option<(std::sync::Arc<HashMap<String, usize>>, usize)>,
 ) -> Result<(IngestCounts, u64)> {
     // Messages remontés par le thread lecteur (membres parsés). `Candidate` boxé
     // (gros : `Decision` + payload). `Delete` = IDs DILA d'un `.dat` de
@@ -357,6 +434,8 @@ async fn ingest_dila_tarball(
         Skip,
         /// Doublon publie/inedit écarté (winner = publie).
         DupSkip,
+        /// A later archive of the replay has the last word on this record.
+        Superseded,
         Empty,
         ParseErr,
         Delete(Vec<String>),
@@ -383,14 +462,22 @@ async fn ingest_dila_tarball(
                     .blocking_send(DilaMsg::DupSkip)
                     .map_err(|_| anyhow!("canal DILA fermé (consumer arrêté)"));
             }
+            let superseded = |id: &str| {
+                replay
+                    .as_ref()
+                    .is_some_and(|(last, rank)| last.get(id).is_some_and(|l| l > rank))
+            };
+            if lower.ends_with(".xml") && dila_member_id(&name).is_some_and(superseded) {
+                return tx
+                    .blocking_send(DilaMsg::Superseded)
+                    .map_err(|_| anyhow!("canal DILA fermé (consumer arrêté)"));
+            }
             // Suppressions : `.dat` (lignes = chemin tar ou ID DILA nu) ; on retient le
             // dernier segment (= ID `CETATEXT…`/`CONSTEXT…`/`JURITEXT…`).
             if lower.ends_with(".dat") {
-                let ids: Vec<String> = String::from_utf8_lossy(&raw)
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty())
-                    .map(|l| l.rsplit('/').next().unwrap_or(l).to_string())
+                let ids: Vec<String> = dat_ids(&raw)
+                    .into_iter()
+                    .filter(|id| !superseded(id))
                     .collect();
                 if !ids.is_empty() {
                     tx.blocking_send(DilaMsg::Delete(ids))
@@ -402,23 +489,31 @@ async fn ingest_dila_tarball(
             if !lower.ends_with(".xml") {
                 return Ok(());
             }
-            let msg = if raw.is_empty() {
-                DilaMsg::Empty
+            let msgs = if raw.is_empty() {
+                vec![DilaMsg::Empty]
             } else {
                 let repaired = lj_sources::dila::repair_dila(&raw, fond.source());
                 match classify_dila(repaired, &raw, fond) {
-                    Ok(Some(ClassifiedDila::Full(cand))) => DilaMsg::Candidate(Box::new(cand)),
-                    Ok(Some(ClassifiedDila::Analysis(cand))) => DilaMsg::Analysis(Box::new(cand)),
                     // JADE non routé : skip non fatal.
-                    Ok(None) => DilaMsg::Skip,
+                    Ok(classified) if classified.is_empty() => vec![DilaMsg::Skip],
+                    Ok(classified) => classified
+                        .into_iter()
+                        .map(|c| match c {
+                            ClassifiedDila::Full(cand) => DilaMsg::Candidate(Box::new(cand)),
+                            ClassifiedDila::Analysis(cand) => DilaMsg::Analysis(Box::new(cand)),
+                        })
+                        .collect(),
                     Err(e) => {
                         tracing::error!(member = %name, error = %e, "DILA parse failed");
-                        DilaMsg::ParseErr
+                        vec![DilaMsg::ParseErr]
                     }
                 }
             };
-            tx.blocking_send(msg)
-                .map_err(|_| anyhow!("canal DILA fermé (consumer arrêté)"))
+            for msg in msgs {
+                tx.blocking_send(msg)
+                    .map_err(|_| anyhow!("canal DILA fermé (consumer arrêté)"))?;
+            }
+            Ok(())
         })
     });
 
@@ -427,6 +522,7 @@ async fn ingest_dila_tarball(
     let mut counts = IngestCounts::default();
     let mut dat_ids: Vec<String> = Vec::new();
     let mut dup_skipped = 0usize;
+    let mut superseded = 0usize;
 
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -436,18 +532,11 @@ async fn ingest_dila_tarball(
             DilaMsg::Candidate(cand) => {
                 candidates.push(*cand);
                 if candidates.len() >= BATCH_SIZE {
-                    let batch = std::mem::take(&mut candidates);
-                    // Embeddings selon `with_embeddings` (None = ingest rapide sans vecteurs ;
-                    // backfill via re-run --with-embeddings). Mode MissingHash.
-                    drain_batch(
-                        conn,
-                        embedder,
-                        batch,
-                        require_embeddings,
-                        IngestMode::MissingHash,
-                        &mut counts,
-                    )
-                    .await?;
+                    let mut batch = std::mem::take(&mut candidates);
+                    if fond.is_judicial() {
+                        batch = super::dila_judi::route(conn, fond, batch, &mut counts).await?;
+                    }
+                    drain_batch(conn, batch, IngestMode::MissingHash, &mut counts).await?;
                 }
             }
             DilaMsg::Skip => {
@@ -456,6 +545,10 @@ async fn ingest_dila_tarball(
             DilaMsg::DupSkip => {
                 counts.skipped += 1;
                 dup_skipped += 1;
+            }
+            DilaMsg::Superseded => {
+                counts.skipped += 1;
+                superseded += 1;
             }
             DilaMsg::Empty => {
                 counts.skipped += 1;
@@ -470,29 +563,16 @@ async fn ingest_dila_tarball(
         .await
         .map_err(|e| anyhow!("tâche lecture DILA {}: {e}", path.display()))??;
 
+    if fond.is_judicial() {
+        candidates = super::dila_judi::route(conn, fond, candidates, &mut counts).await?;
+    }
     if !candidates.is_empty() {
-        drain_batch(
-            conn,
-            embedder,
-            candidates,
-            require_embeddings,
-            IngestMode::MissingHash,
-            &mut counts,
-        )
-        .await?;
+        drain_batch(conn, candidates, IngestMode::MissingHash, &mut counts).await?;
     }
 
     // Analyses-seules : APRÈS les textes intégraux du lot (rattachement à une
     // décision existante ou création orpheline), AVANT les suppressions.
-    apply_dila_analyses(
-        conn,
-        embedder,
-        require_embeddings,
-        fond,
-        analysis,
-        &mut counts,
-    )
-    .await?;
+    apply_dila_analyses(conn, fond, analysis, &mut counts).await?;
 
     // Suppressions appliquées APRÈS les upserts (un incrément ajoute ET retire)
     // via `delete` provenance-aware sur le `source_uid` reconstruit
@@ -500,13 +580,19 @@ async fn ingest_dila_tarball(
     let repo = DecisionRepository::new(conn);
     let mut deleted_total: u64 = 0;
     for dila_id in dat_ids {
-        let source_uid = format!("{}/{dila_id}", fond.source_prefix());
-        if repo
-            .delete(&source_uid)
-            .await
-            .map_err(|e| anyhow!("delete {source_uid}: {e}"))?
-        {
-            deleted_total += 1;
+        let uids = if fond.is_judicial() {
+            lj_parse::judicial_record_uids(fond.source_prefix(), &dila_id)
+        } else {
+            vec![format!("{}/{dila_id}", fond.source_prefix())]
+        };
+        for source_uid in uids {
+            if repo
+                .delete(&source_uid)
+                .await
+                .map_err(|e| anyhow!("delete {source_uid}: {e}"))?
+            {
+                deleted_total += 1;
+            }
         }
     }
 
@@ -516,8 +602,11 @@ async fn ingest_dila_tarball(
         updated = counts.updated,
         skipped = counts.skipped,
         errors = counts.errors,
-        chunks = counts.chunks_created,
+        dropped = counts.passages_dropped,
+        copies = counts.copies,
+        held = counts.held,
         dup_skipped,
+        superseded,
         "ingest_dila"
     );
     Ok((counts, deleted_total))
@@ -548,25 +637,17 @@ pub async fn sync_dila(fond: Fond) -> Result<()> {
     }
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
         .map_err(|e| anyhow!("migrations: {e}"))?;
 
     tracing::info!(fond = ?fond, downloaded = batch.archives.len(), "sync_dila: ingesting the fresh archives");
-    let (embedder, require_embeddings) = build_embedder_opt(&settings).await?;
     let mut total = IngestCounts::default();
     let mut deleted_total: u64 = 0;
     for archive in batch.archives.clone() {
-        let (counts, deleted) = ingest_dila_tarball(
-            &conn,
-            fond,
-            &archive.path,
-            embedder.as_ref(),
-            require_embeddings,
-        )
-        .await?;
+        let (counts, deleted) = ingest_dila_tarball(&conn, fond, &archive.path, None).await?;
         deleted_total += deleted;
         total.merge(&counts);
         batch

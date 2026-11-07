@@ -66,6 +66,7 @@ pub const OFFICE_LABELS: &[(&str, &str)] = &[
     ("office:PREMIER_PRESIDENT", "Premier président"),
     ("office:MAGISTRAT_DESIGNE", "Magistrat désigné"),
     ("office:JUGE_EXPROPRIATION", "Juge de l'expropriation"),
+    ("office:MISE_EN_ETAT", "Juge de la mise en état"),
 ];
 
 /// Labels des types de juridiction — miroir du seed `facet_value` ; repli du
@@ -79,11 +80,15 @@ pub const JURISDICTION_TYPE_LABELS: &[(&str, &str)] = &[
     ("CA", "Cour d'appel"),
     ("TJ", "Tribunal judiciaire"),
     ("TCOM", "Tribunal de commerce"),
+    ("CPH", "Conseil de prud'hommes"),
     ("CNDA", "Cour nationale du droit d'asile"),
     ("CONSTIT", "Conseil constitutionnel"),
     ("TC", "Tribunal des conflits"),
     ("CEDH", "Cour européenne des droits de l'homme"),
     ("CJUE", "Cour de justice de l'Union européenne"),
+    ("DDD", "Défenseur des droits"),
+    ("ADLC", "Autorité de la concurrence"),
+    ("COMEU", "Commission européenne"),
 ];
 
 pub fn jurisdiction_type_label(code: &str) -> Option<&'static str> {
@@ -140,9 +145,9 @@ fn formation_redundant(base: &str, formation: &str) -> bool {
 
 /// Chamber, then formation, then office, joined by a middle dot; a missing axis
 /// leaves no hole. Folding drops what would be said twice, and « Juge unique »
-/// beside an office is the corpus rather than an edge case: 411,807 of the
-/// 413,947 decisions carrying both axes have it, so uniformity without that
-/// filter reads « juge unique · magistrat désigné » (08/09/2026).
+/// beside an office is the corpus rather than an edge case: nearly every decision
+/// carrying both axes has it, so without that filter the seat reads « juge unique
+/// · magistrat désigné ».
 pub fn seat_display(
     jurisdiction: &str,
     chamber_label: Option<&str>,
@@ -194,9 +199,9 @@ pub fn seat_display(
 
 /// The number the title names the decision by, which is the head one: it is
 /// under that number that a decision is cited. The others are what reaches it,
-/// not what names it, and no title holds them anyway, a Cour de cassation
-/// judgment of 24/04/2013 carrying 1 244 pourvois. The number a search bit on is
-/// said by the result, next to the title, never inside it.
+/// not what names it, and no title could hold them all, a mass Cour de cassation
+/// judgment carrying pourvois by the hundred. The number a search bit on is said by
+/// the result, next to the title, never inside it.
 pub fn docket_display(numbers: &[String]) -> Option<String> {
     numbers
         .iter()
@@ -319,7 +324,7 @@ mod tests {
     }
 
     /// « Juge unique » does not survive an office, which already says the
-    /// magistrate sits alone. Dominant case of the corpus, chamber or not.
+    /// magistrate sits alone, chamber or not.
     #[test]
     fn juge_unique_tombe_devant_un_office() {
         assert_eq!(
@@ -344,8 +349,7 @@ mod tests {
         );
     }
 
-    /// The three axes hold the line when none repeats another: 1,792 decisions,
-    /// against 411,807 for the « juge unique » case above.
+    /// The three axes hold the line when none repeats another.
     #[test]
     fn les_trois_axes_se_suivent_dans_l_ordre() {
         assert_eq!(

@@ -78,9 +78,9 @@ pub fn publication_codes_of(key: &str) -> &'static [&'static str] {
         .unwrap_or(&[])
 }
 
-/// Clés `publication:*` d'une décision. Appartenance **multiple** : 4 148
-/// décisions portent plus d'un code, et un rang le plus fort les cacherait.
-/// Aucun code source rend une liste vide, sans valeur de repli.
+/// `publication:*` keys of a decision. Membership is **multiple**: a decision can
+/// carry several codes, which keeping only the strongest rank would hide. No
+/// source code gives an empty list, with no fallback value.
 pub fn publication_keys(codes: &[String]) -> Vec<&'static str> {
     publication_groups()
         .iter()

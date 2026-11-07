@@ -5,8 +5,8 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use lj_dtos::SimilarDecisionHit;
 
-use crate::components::decision_bar::{use_decision_bar, use_result_nav, ResultNavSeed};
-use crate::components::ui::{Badge, BadgeTone, Skeleton};
+use crate::components::decision_bar::{carry_seed, use_decision_bar, FromSearch, ResultNavSeed};
+use crate::components::ui::{Badge, BadgeTone, ExpandableSummary, Skeleton};
 use crate::helpers::{format_decision_jurisdiction, format_iso_date};
 use crate::pages::decision_page::labels::publication_badge;
 use crate::seo::decision::first_sentence;
@@ -88,19 +88,29 @@ pub fn DecisionSimilar(
             {loading_view}
             {error_view}
             {empty_view}
-            <SimilarSection title="Décisions de principe similaires" hits=principe />
-            <SimilarSection title="Décisions d'espèce similaires" hits=espece />
+            <SimilarSection title="Décisions de principe similaires" hits=principe fold=Fold::Rule />
+            <SimilarSection title="Décisions d'espèce similaires" hits=espece fold=Fold::Head />
         </aside>
     }
 }
 
+/// How a card folds its summary.
+#[derive(Clone, Copy)]
+enum Fold {
+    /// To its first sentence.
+    Head,
+    /// To what follows the first sentence, where a principle's rule sits, the first one setting
+    /// out the facts.
+    Rule,
+}
+
 /// Un volet : titre + cartes. Rien si le volet est vide.
 #[component]
-fn SimilarSection(title: &'static str, hits: Vec<SimilarDecisionHit>) -> impl IntoView {
+fn SimilarSection(title: &'static str, hits: Vec<SimilarDecisionHit>, fold: Fold) -> impl IntoView {
     (!hits.is_empty()).then(|| {
         let cards = hits
             .into_iter()
-            .map(|hit| view! { <SimilarCard hit=hit /> })
+            .map(|hit| view! { <SimilarCard hit=hit fold=fold /> })
             .collect_view();
         view! {
             <section class="flex flex-col gap-3">
@@ -112,7 +122,7 @@ fn SimilarSection(title: &'static str, hits: Vec<SimilarDecisionHit>) -> impl In
 }
 
 #[component]
-fn SimilarCard(hit: SimilarDecisionHit) -> impl IntoView {
+fn SimilarCard(hit: SimilarDecisionHit, fold: Fold) -> impl IntoView {
     let mut title_parts: Vec<String> = vec![format_decision_jurisdiction(
         hit.jurisdiction_type,
         hit.jurisdiction_name.as_deref(),
@@ -124,24 +134,44 @@ fn SimilarCard(hit: SimilarDecisionHit) -> impl IntoView {
         title_parts.push(docket.clone());
     }
     let title = title_parts.join(", ");
-    let href = lj_dtos::decision_path(hit.jurisdiction_type, &hit.id);
+    let href = lj_dtos::decision_path(
+        hit.jurisdiction_type,
+        hit.jurisdiction_code.as_deref(),
+        &hit.id,
+    );
 
-    // Saut vers une voisine : conserve l'origine recherche, abandonne la nav
-    // inter-résultats.
+    // A jump to a neighbour keeps the search origin and drops prev/next and the
+    // highlight: the query did not find the neighbour.
     let bar = use_decision_bar();
-    let seed = use_result_nav();
-    let on_navigate = move |_| {
-        let from_search = bar.get_untracked().and_then(|b| b.from_search);
-        seed.set(Some(ResultNavSeed {
-            nav: None,
-            from_search,
-        }));
+    let on_navigate = move |ev: leptos::ev::MouseEvent| {
+        let from_search = bar
+            .get_untracked()
+            .and_then(|b| b.from_search)
+            .map(|f| FromSearch {
+                highlight: None,
+                ..f
+            });
+        carry_seed(
+            &ev,
+            &ResultNavSeed {
+                nav: None,
+                from_search,
+            },
+        );
     };
 
-    let summary_view = hit.summary.as_deref().map(|s| {
-        let snippet = first_sentence(s);
+    let summary_view = hit.summary.clone().map(|summary| {
+        let first = first_sentence(&summary);
+        let rest = summary[first.len()..].trim_start();
+        let (lead, excerpt, full) = match fold {
+            Fold::Rule if rest.chars().any(char::is_alphanumeric) => {
+                (Some(first), rest.to_string(), rest.to_string())
+            }
+            Fold::Rule => (None, summary.clone(), summary),
+            Fold::Head => (None, first, summary),
+        };
         view! {
-            <p class="line-clamp-3 text-sm leading-snug text-[var(--color-ink-muted)]">{snippet}</p>
+            <ExpandableSummary lead=lead excerpt=excerpt full=full clamp="line-clamp-3" />
         }
         .into_any()
     });
@@ -167,25 +197,17 @@ fn SimilarCard(hit: SimilarDecisionHit) -> impl IntoView {
 
 #[component]
 fn SimilarMeta(hit: SimilarDecisionHit) -> impl IntoView {
-    // Badges depuis les tags référentiels servis. `procedure` absente =
-    // procédure ordinaire, pas de badge.
+    // Badges depuis les tags référentiels servis.
     let solution = hit.solution.clone();
-    let procedure = hit.procedure.clone();
     let pub_badge = publication_badge(&hit.publication_codes);
 
-    if solution.is_none() && procedure.is_none() && pub_badge.is_none() {
+    if solution.is_none() && pub_badge.is_none() {
         return ().into_any();
     }
 
     let solution_badge = solution.map(|t| {
         view! {
             <Badge tone=BadgeTone::Outline>{t.label}</Badge>
-        }
-        .into_any()
-    });
-    let procedure_badge = procedure.map(|t| {
-        view! {
-            <Badge tone=BadgeTone::Accent>{t.label}</Badge>
         }
         .into_any()
     });
@@ -199,7 +221,6 @@ fn SimilarMeta(hit: SimilarDecisionHit) -> impl IntoView {
     view! {
         <div class="flex flex-wrap gap-1.5">
             {solution_badge}
-            {procedure_badge}
             {publication_badge_view}
         </div>
     }

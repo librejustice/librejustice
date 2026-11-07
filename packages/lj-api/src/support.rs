@@ -76,7 +76,7 @@ impl PlafondJournalier {
     }
 
     /// Faux quand la journée est consommée.
-    fn preleve(&self, maintenant: i64) -> bool {
+    pub(crate) fn preleve(&self, maintenant: i64) -> bool {
         let jour = maintenant.div_euclid(86_400);
         let mut etat = self.etat.lock().expect("plafond journalier empoisonné");
         if etat.0 != jour {
@@ -90,7 +90,7 @@ impl PlafondJournalier {
     }
 }
 
-/// Alignée sur le `<select>` de `/feedback` ; `Form` refuse toute autre valeur.
+/// The subjects `/feedback` offers; `Form` refuses any other value.
 #[derive(Debug, Clone, Copy, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 enum Sujet {

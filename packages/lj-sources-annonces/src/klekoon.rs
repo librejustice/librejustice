@@ -175,7 +175,7 @@ fn parse_page(html: &str) -> Vec<AnnonceBrute> {
 #[derive(Debug, Default, PartialEq, Eq)]
 struct Fiche {
     reference: Option<String>,
-    /// Objet complet : la liste tronque à ~90 caractères.
+    /// Full object, which the list truncates.
     objet: Option<String>,
     nature: Option<NatureMarche>,
     /// Division CPV seule : le moteur publie « Classe 45 : Travaux de
@@ -296,9 +296,9 @@ async fn completer_par_fiche(client: &wreq::Client, mut row: AnnonceBrute) -> An
     row
 }
 
-/// Ré-énumère le stock ouvert, puis complète chaque ligne par sa fiche.
-/// Tout se fait en série, à `POLITESSE` d'intervalle : ~5 pages + une fiche par
-/// consultation ouverte, en parallèle des autres moteurs.
+/// Re-enumerates the open stock, then completes each row from its notice page. All
+/// in series, `POLITESSE` apart: the listing pages, then one page per open
+/// consultation, in parallel with the other engines.
 pub async fn enumerate() -> Result<MoteurRun> {
     let client = client();
     let maintenant = Timestamp::now();

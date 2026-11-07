@@ -21,12 +21,12 @@ const CHATGPT_DIRECTORY_URL: &str =
 /// Prompts d'exemple a copier dans un client IA. Nommer LibreJustice dans la
 /// question est ce qui declenche l'appel du connecteur.
 const TEST_PROMPTS: [&str; 6] = [
-    "En t'appuyant sur LibreJustice, est-ce que tu peux me donner sous quelles conditions le Conseil d'État admet la responsabilité sans faute de l'État ?",
-    "En t'appuyant sur LibreJustice, peux-tu me donner les conditions dans lesquelles le juge statuant en référé-liberté fait droit à la requête lorsque le préfet n'a pas exécuté l'injonction prononcée par une ordonnance de référé suspension rendue au préalable",
-    "Peux-tu chercher sur LibreJustice quelle valeur du point de déficit fonctionnel permanent les cours d'appel retiennent pour une victime de trente ans avec un taux de 10 %, et dans quelle fourchette ?",
-    "En t'appuyant sur LibreJustice, à quelles conditions la responsabilité d'un établissement de santé est-elle engagée pour une infection nosocomiale ? Cite les décisions sur lesquelles tu t'appuies.",
-    "En t'appuyant sur LibreJustice, ouvre les arrêts de cour d'appel sur l'aliénation parentale et dis-moi comment ils l'articulent avec l'intérêt de l'enfant.",
-    "En t'appuyant sur LibreJustice, dis-moi si un mécanicien licencié en 2015 avec dix mois d'ancienneté avait droit à l'indemnité de licenciement de la convention collective de l'automobile, et si la réponse serait la même aujourd'hui.",
+    "En vous appuyant sur LibreJustice, est-ce que vous pouvez me donner sous quelles conditions le Conseil d'État admet la responsabilité sans faute de l'État ?",
+    "En vous appuyant sur LibreJustice, pouvez-vous me donner les conditions dans lesquelles le juge statuant en référé-liberté fait droit à la requête lorsque le préfet n'a pas exécuté l'injonction prononcée par une ordonnance de référé suspension rendue au préalable",
+    "Pouvez-vous chercher sur LibreJustice quelle valeur du point de déficit fonctionnel permanent les cours d'appel retiennent pour une victime de trente ans avec un taux de 10 %, et dans quelle fourchette ?",
+    "En vous appuyant sur LibreJustice, à quelles conditions la responsabilité d'un établissement de santé est-elle engagée pour une infection nosocomiale ? Citez les décisions sur lesquelles vous vous appuyez.",
+    "En vous appuyant sur LibreJustice, ouvrez les arrêts de cour d'appel sur l'aliénation parentale et dites-moi comment ils l'articulent avec l'intérêt de l'enfant.",
+    "En vous appuyant sur LibreJustice, dites-moi si un mécanicien licencié en 2015 avec dix mois d'ancienneté avait droit à l'indemnité de licenciement de la convention collective de l'automobile, et si la réponse serait la même aujourd'hui.",
 ];
 
 #[component]
@@ -58,7 +58,7 @@ pub fn McpGuide() -> impl IntoView {
                     </em>
                 </h1>
                 <p class="text-lg leading-relaxed text-[var(--color-ink-muted)]">
-                    "Connectez Claude, ChatGPT ou votre propre agent au droit français (jurisprudence et textes) via le protocole MCP. La recherche sémantique et lexicale, directement dans le contexte de votre IA."
+                    "Connectez Claude, ChatGPT ou votre propre agent au droit français (jurisprudence et textes) via le protocole MCP. La recherche par mots-clés et par reformulation, directement dans le contexte de votre IA."
                 </p>
                 <div class="flex flex-wrap items-center gap-3">
                     <a
@@ -107,7 +107,19 @@ pub fn McpGuide() -> impl IntoView {
                     <CopyEndpoint url=mcp_url />
                 </div>
 
-                <ClientHowto title="Le Chat (Mistral)">
+                <ClientHowto title="Claude">
+                    <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
+                        "Claude demande votre accord à chaque appel d'un outil LibreJustice tant que vous ne l'avez pas autorisé. Pour ne plus avoir à valider : "
+                        <strong>"Personnalisation → Connecteurs → LibreJustice"</strong>
+                        ", puis réglez "
+                        <strong>"Outils en lecture seule"</strong>
+                        " sur "
+                        <strong>"Toujours autoriser"</strong>
+                        "."
+                    </p>
+                </ClientHowto>
+
+                <ClientHowto title="Vibe (Mistral)">
                     <Step n=1>
                         "Connectez-vous sur "
                         <a
@@ -126,15 +138,15 @@ pub fn McpGuide() -> impl IntoView {
                         "."
                     </Step>
                     <Step n=3>
-                        <strong>"+ Ajouter un connecteur → Connecteur MCP personnalisé"</strong>
+                        <strong>"Ajouter un connecteur → Ajouter un connecteur personnalisé"</strong>
                         ". Nommez (ex. "
                         <em>"LibreJustice"</em>
-                        "), collez l'adresse, méthode "
-                        <strong>"OAuth"</strong>
-                        "."
+                        ") et collez l'adresse dans "
+                        <strong>"Serveur"</strong>
+                        " : l'authentification OAuth est détectée d'elle-même."
                     </Step>
                     <Step n=4>
-                        <strong>"Créer"</strong>
+                        <strong>"Ajouter un connecteur"</strong>
                         ", puis validez la connexion sur la page LibreJustice qui s'ouvre."
                     </Step>
                 </ClientHowto>

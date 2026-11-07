@@ -1,3 +1,6 @@
+# Optional profile overrides.
+include = [{ path = "../.config/cargo.toml", optional = true }]
+
 # Leptos views compile type-erased, lj-web in a third of the time. Both sides
 # must agree: an erased server writes markers a typed client cannot hydrate.
 [build]

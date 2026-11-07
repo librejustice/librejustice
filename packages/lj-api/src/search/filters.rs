@@ -1,14 +1,15 @@
-//! Filtres SQL (pre-filter facettes scalaires + filtres tableau tantivy/SQL).
+//! SQL filters: the scalar facets as a pre-filter, the arrays in tantivy or SQL.
 //!
-//! Les filtres référentiels (solution, voie, office, domaine, instance,
-//! publication, juridiction fine) ciblent les colonnes `_uid`/`jurisdiction_code`
-//! de `decisions`. Côté jambe ANN (`decision_chunks`, qui ne porte pas ces
-//! colonnes), ils passent par un `EXISTS` sur `decisions`.
+//! The referential filters (solution, domain, court, publication, seat and
+//! formation paths) target the columns of `decisions`. On the ANN leg
+//! (`decision_chunks`, which does not carry them), they pass through an `EXISTS`
+//! on `decisions`.
 
 use serde_json::Value;
 use tokio_postgres::types::ToSql;
 
-use lj_dtos::{Domain, JurisdictionType, SearchRequest};
+use lj_dtos::{DecisionPart, Domain, JurisdictionType, SearchRequest};
+use lj_vocab::passage_zones;
 
 /// Param dynamique : on accumule `Box<dyn ToSql>` et on génère les `$n`.
 /// `Send` requis pour que les futures de handler axum restent `Send`.
@@ -43,10 +44,26 @@ pub(crate) fn jt_to_str(t: JurisdictionType) -> &'static str {
         JurisdictionType::Ca => "CA",
         JurisdictionType::Tj => "TJ",
         JurisdictionType::Tcom => "TCOM",
+        JurisdictionType::Cph => "CPH",
         JurisdictionType::Cedh => "CEDH",
         JurisdictionType::Cjue => "CJUE",
         JurisdictionType::Cnda => "CNDA",
         JurisdictionType::Cnil => "CNIL",
+        JurisdictionType::Ddd => "DDD",
+        JurisdictionType::Adlc => "ADLC",
+        JurisdictionType::Comeu => "COMEU",
+        JurisdictionType::CourSupreme => "COUR_SUPREME",
+        JurisdictionType::CourCassation => "COUR_CASSATION",
+        JurisdictionType::CourConstitutionnelle => "COUR_CONSTITUTIONNELLE",
+        JurisdictionType::CourAppel => "COUR_APPEL",
+        JurisdictionType::CourAdministrative => "COUR_ADMINISTRATIVE",
+        JurisdictionType::TribunalAdministratif => "TRIBUNAL_ADMINISTRATIF",
+        JurisdictionType::TribunalPremiereInstance => "TRIBUNAL_PREMIERE_INSTANCE",
+        JurisdictionType::TribunalCommerce => "TRIBUNAL_COMMERCE",
+        JurisdictionType::CourCriminelle => "COUR_CRIMINELLE",
+        JurisdictionType::CourJustice => "COUR_JUSTICE",
+        JurisdictionType::Ccja => "CCJA",
+        JurisdictionType::CourDroitsHomme => "COUR_DROITS_HOMME",
     }
 }
 
@@ -185,24 +202,6 @@ pub(crate) fn build_facet_filter(
             Box::new(enum_uids("solution", v)),
         );
     }
-    if let Some(v) = present(&req.procedure) {
-        add_clause(
-            &mut ref_clauses,
-            params,
-            next_idx,
-            &format!("{ref_alias}.procedure_uid = ANY($?)"),
-            Box::new(enum_uids("procedure", v)),
-        );
-    }
-    if let Some(v) = present(&req.office) {
-        add_clause(
-            &mut ref_clauses,
-            params,
-            next_idx,
-            &format!("{ref_alias}.office_uid = ANY($?)"),
-            Box::new(enum_uids("office", v)),
-        );
-    }
     if let Some(v) = present(&req.legal_domain) {
         add_clause(
             &mut ref_clauses,
@@ -225,13 +224,29 @@ pub(crate) fn build_facet_filter(
     // pass it as a `term_set` inside the `@@@`, where the multi-valued fast
     // field answers without touching the table.
     if arrays == ArrayFilters::AsSql {
-        if let Some(v) = nonempty(&req.seat) {
+        for (column, values) in [
+            ("seat_paths", &req.seat),
+            ("formation_paths", &req.formation),
+        ] {
+            if let Some(v) = nonempty(values) {
+                add_clause(
+                    &mut ref_clauses,
+                    params,
+                    next_idx,
+                    &format!("{ref_alias}.{column} && $?::text[]"),
+                    Box::new(v),
+                );
+            }
+        }
+    }
+    if table == FilterTable::Chunks {
+        if let Some(tags) = passage_tags(req) {
             add_clause(
-                &mut ref_clauses,
+                &mut clauses,
                 params,
                 next_idx,
-                &format!("{ref_alias}.seat_paths && $?::text[]"),
-                Box::new(v),
+                "c.zones && $?::text[]",
+                Box::new(tags),
             );
         }
     }
@@ -351,6 +366,9 @@ pub(crate) fn build_array_filter_queries(
     if let Some(v) = nonempty(&req.seat) {
         out.push(term_any("seat_paths", &v, next_idx, params));
     }
+    if let Some(v) = nonempty(&req.formation) {
+        out.push(term_any("formation_paths", &v, next_idx, params));
+    }
     if let Some(v) = &req.publication {
         if let Some(expr) = publication_tantivy(v) {
             out.push(expr);
@@ -380,6 +398,71 @@ pub(crate) fn term_any(
     } else {
         format!("paradedb.term_set(terms => ARRAY[{}])", terms.join(", "))
     }
+}
+
+/// The parts a search runs in, every part when it names none.
+fn parts(req: &SearchRequest) -> &[DecisionPart] {
+    match req.search_in.as_deref() {
+        Some(parts) if !parts.is_empty() => parts,
+        _ => &DecisionPart::ALL,
+    }
+}
+
+/// Whether the search runs in every part of a decision.
+pub(crate) fn every_part(req: &SearchRequest) -> bool {
+    DecisionPart::ALL.iter().all(|p| parts(req).contains(p))
+}
+
+/// The lexical question over the parts asked, `q` the placeholder of the parsed
+/// query. The judgment alone is `full_text` where no annexes start and
+/// `text_before_annexes` where they do; with the annexes it is `full_text` whole.
+pub(crate) fn parts_query(req: &SearchRequest, q: &str) -> String {
+    let parts = parts(req);
+    let field = |name: &str| format!("paradedb.parse_with_field('{name}', {q})");
+    let mut should = Vec::new();
+    match (
+        parts.contains(&DecisionPart::Judgment),
+        parts.contains(&DecisionPart::Annexes),
+    ) {
+        (true, true) => should.push(field("full_text")),
+        (true, false) => {
+            should.push(format!(
+                "paradedb.boolean(must => ARRAY[{}], must_not => ARRAY[paradedb.exists('annex_start')])",
+                field("full_text")
+            ));
+            should.push(field("text_before_annexes"));
+        }
+        (false, true) => should.push(field("annexes")),
+        (false, false) => {}
+    }
+    if parts.contains(&DecisionPart::Headnote) {
+        should.push(field("official_summary"));
+    }
+    match should.as_slice() {
+        [one] => one.clone(),
+        _ => format!("paradedb.boolean(should => ARRAY[{}])", should.join(", ")),
+    }
+}
+
+/// The passage tags a semantic leg keeps when the search leaves a part out:
+/// `text` for the judgment, `annexes`, and `headnote`, which the base keeps on
+/// the passages of a decision carrying one.
+pub(crate) fn passage_tags(req: &SearchRequest) -> Option<Vec<String>> {
+    let parts = parts(req);
+    if parts.contains(&DecisionPart::Judgment) && parts.contains(&DecisionPart::Annexes) {
+        return None;
+    }
+    Some(
+        parts
+            .iter()
+            .map(|part| match part {
+                DecisionPart::Headnote => passage_zones::HEADNOTE,
+                DecisionPart::Judgment => passage_zones::TEXT,
+                DecisionPart::Annexes => passage_zones::ANNEXES,
+            })
+            .map(str::to_string)
+            .collect(),
+    )
 }
 
 /// Compose l'expression `@@@` d'une jambe BM25 : la requête primaire seule,
@@ -434,8 +517,7 @@ mod tests {
             "query": "x",
             "jurisdictionType": [],
             "solution": [],
-            "procedure": [],
-            "office": [],
+            "formation": [],
             "legalDomain": [],
             "publication": [],
             "jurisdictionCode": [],
@@ -583,5 +665,88 @@ mod tests {
         );
         assert!(!frag.contains("EXISTS"));
         assert!(frag.contains("d.solution_uid = ANY($1)"));
+    }
+
+    fn in_parts(parts: serde_json::Value) -> SearchRequest {
+        serde_json::from_value(serde_json::json!({ "query": "x", "searchIn": parts })).unwrap()
+    }
+
+    /// Each part is its own field: the judgment alone keeps the texts without
+    /// annexes whole and cuts the others at their boundary, the headnote is the
+    /// court's words.
+    #[test]
+    fn each_part_is_searched_in_its_own_field() {
+        let f = |name: &str| format!("paradedb.parse_with_field('{name}', $1)");
+        let judgment = format!(
+            "paradedb.boolean(must => ARRAY[{}], must_not => ARRAY[paradedb.exists('annex_start')]), {}",
+            f("full_text"),
+            f("text_before_annexes")
+        );
+        let any =
+            |fields: &[&str]| format!("paradedb.boolean(should => ARRAY[{}])", fields.join(", "));
+        let every = any(&[&f("full_text"), &f("official_summary")]);
+        for (parts, expected) in [
+            (serde_json::Value::Null, every.clone()),
+            (serde_json::json!([]), every.clone()),
+            (
+                serde_json::json!(["annexes", "headnote", "judgment"]),
+                every,
+            ),
+            (serde_json::json!(["headnote"]), f("official_summary")),
+            (serde_json::json!(["judgment"]), any(&[&judgment])),
+            (serde_json::json!(["annexes"]), f("annexes")),
+            (serde_json::json!(["judgment", "annexes"]), f("full_text")),
+            (
+                serde_json::json!(["headnote", "judgment"]),
+                any(&[&judgment, &f("official_summary")]),
+            ),
+            (
+                serde_json::json!(["headnote", "annexes"]),
+                any(&[&f("annexes"), &f("official_summary")]),
+            ),
+        ] {
+            assert_eq!(
+                parts_query(&in_parts(parts.clone()), "$1"),
+                expected,
+                "{parts}"
+            );
+        }
+    }
+
+    /// A passage holds a part by its tag: asking both the judgment and the
+    /// annexes keeps them all.
+    #[test]
+    fn the_passages_kept_hold_a_part_asked() {
+        for (parts, expected) in [
+            (serde_json::Value::Null, None),
+            (serde_json::json!(["judgment", "annexes"]), None),
+            (serde_json::json!(["headnote"]), Some(vec!["headnote"])),
+            (serde_json::json!(["judgment"]), Some(vec!["text"])),
+            (
+                serde_json::json!(["headnote", "judgment"]),
+                Some(vec!["headnote", "text"]),
+            ),
+            (serde_json::json!(["annexes"]), Some(vec!["annexes"])),
+            (
+                serde_json::json!(["annexes", "headnote"]),
+                Some(vec!["annexes", "headnote"]),
+            ),
+        ] {
+            assert_eq!(
+                passage_tags(&in_parts(parts.clone())),
+                expected.map(|tags| tags.into_iter().map(str::to_string).collect()),
+                "{parts}"
+            );
+        }
+        let mut params: Params = Vec::new();
+        let frag = build_facet_filter(
+            &in_parts(serde_json::json!(["annexes"])),
+            &mut 1,
+            &mut params,
+            ArrayFilters::AsSql,
+            FilterTable::Chunks,
+        );
+        assert_eq!(frag, " AND c.zones && $1::text[]");
+        assert_eq!(params.len(), 1);
     }
 }

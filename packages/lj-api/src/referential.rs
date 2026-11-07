@@ -56,10 +56,12 @@ pub struct Referential {
     /// Court label under its seat path, derived by the same rule the extraction
     /// uses, so a node of the tree and an indexed path can never disagree.
     court_paths: HashMap<String, String>,
-    /// Every case name the fonds carries. A content query offers a median of 52
-    /// candidate keys and 96.4 % of them name nothing: asked in Postgres, that
-    /// answer costs 133 ms of the search (measured 31/08/2026).
+    /// Every case name the fonds carries. A content query offers many candidate
+    /// keys and most name nothing, too many to ask Postgres on every search.
     case_names: std::collections::HashSet<String>,
+    /// The keys of every named decision, and the decisions under each word of them.
+    names: lj_core::case_names::NameIndex,
+    name_ids: Vec<i64>,
     seat_words: std::collections::HashSet<String>,
 }
 
@@ -73,6 +75,8 @@ impl Referential {
         seats.sort_unstable();
         Self {
             case_names: Default::default(),
+            names: Default::default(),
+            name_ids: Default::default(),
             seat_words: jurisdictions
                 .iter()
                 .flat_map(|j| {
@@ -190,6 +194,22 @@ impl Referential {
         self
     }
 
+    pub fn with_named_decisions(mut self, named: Vec<(i64, Vec<String>)>) -> Self {
+        let (ids, keys): (Vec<i64>, Vec<Vec<String>>) = named.into_iter().unzip();
+        self.names = lj_core::case_names::NameIndex::new(keys);
+        self.name_ids = ids;
+        self
+    }
+
+    /// The named decisions a name's words designate, as [`lj_core::case_names::NameIndex::bearers`].
+    pub fn name_bearers(&self, words: &[&str], max: usize) -> Vec<i64> {
+        self.names
+            .bearers(words, max)
+            .into_iter()
+            .map(|rank| self.name_ids[rank])
+            .collect()
+    }
+
     /// Whether these candidate keys can name a case. An unloaded sieve answers
     /// yes and leaves the question to Postgres: emptied, it would report every
     /// query as naming nothing, which silently kills the name leg.
@@ -240,6 +260,14 @@ impl Referential {
             [(_, code)] => Some(code.clone()),
             _ => None,
         }
+    }
+
+    /// Whether `words` write the city of the court of type `kind` they name: « paris »
+    /// after « caa », never « béziers » after « conseil d'État ».
+    pub fn seats_court(&self, kind: &str, words: &[&str]) -> bool {
+        self.court_code(kind, words)
+            .and_then(|code| self.jurisdictions.get(&code))
+            .is_some_and(|e| e.city.is_some())
     }
 
     /// Court label under any writing of its unit: code (`tj_le_havre`), source
@@ -340,8 +368,8 @@ pub fn unknown_jurisdiction_code_msg(code: &str, refs: &Referential) -> String {
     format!("unknown jurisdiction_code '{code}'{hint}")
 }
 
-/// Correctif d'un chemin de siège inconnu : le fonds n'en porte aucun nœud, ou
-/// la graphie est fautive. On nomme les nœuds voisins sous le même parent.
+/// The correction for an unknown seat path, which the fund carries no node of
+/// or which is misspelt: the neighbouring nodes under the same parent.
 pub fn unknown_seat_msg(path: &str, nodes: &[String]) -> String {
     let parent = path.rsplit_once('.').map(|(p, _)| p).unwrap_or("");
     let voisins: Vec<&str> = nodes
@@ -361,9 +389,29 @@ pub fn unknown_seat_msg(path: &str, nodes: &[String]) -> String {
     )
 }
 
+/// The refusal of a path outside the « Formation » tree.
+pub fn unknown_formation_msg(path: &str) -> String {
+    format!(
+        "Chemin de formation inconnu : « {path} ». Les chemins servis sont dans \
+         facets.formation, par exemple « FR.TJ.JEX » ou « FR.CC.RESTREINTE »."
+    )
+}
+
+/// The node a path written without its legal order names, when a single order
+/// holds it: `CA.PARIS` for `FR.CA.PARIS`. Links and bookmarks written before
+/// the order led the path still carry the short form.
+pub fn seat_under_its_order<'a>(path: &str, nodes: &'a [String]) -> Option<&'a str> {
+    let mut rooted = nodes
+        .iter()
+        .filter(|n| n.split_once('.').is_some_and(|(_, rest)| rest == path));
+    match (rooted.next(), rooted.next()) {
+        (Some(node), None) => Some(node),
+        _ => None,
+    }
+}
+
 /// Folds the two spellings callers write into the one the fund carries: none of
-/// its 2 288 nodes holds a hyphen, and a comma means a list joined into one
-/// string. Half of the paths refused over 02 to 07/09/2026 were one of the two.
+/// its nodes holds a hyphen, and a comma means a list joined into one string.
 /// The seat whose last segment the caller abbreviated, `CA.AIX` for
 /// `CA.AIX_EN_PROVENCE`: unique target or nothing, `TJ.SAINT` prefixing several.
 /// The bound is the underscore, a dot being the hierarchy a prefix already covers.
@@ -463,8 +511,11 @@ async fn load(state: &AppState) -> Result<Arc<Referential>> {
     let jurisdictions = repo.load_jurisdictions().await.map_err(ApiError::Store)?;
     let seats = repo.load_seat_paths().await.map_err(ApiError::Store)?;
     let case_names = repo.case_name_key_set().await.map_err(ApiError::Store)?;
+    let named = repo.named_decisions().await.map_err(ApiError::Store)?;
     Ok(Arc::new(
-        Referential::new(values, jurisdictions, seats).with_case_names(case_names),
+        Referential::new(values, jurisdictions, seats)
+            .with_case_names(case_names)
+            .with_named_decisions(named),
     ))
 }
 
@@ -489,6 +540,7 @@ mod tests {
             jurisdiction_type: jurisdiction_type.to_string(),
             city: None,
             label: label.to_string(),
+            place: None,
         }
     }
 
@@ -583,6 +635,7 @@ mod tests {
                 jurisdiction_type: "TJ".to_string(),
                 city: Some("Le Havre".to_string()),
                 label: "Tribunal judiciaire du Havre".to_string(),
+                place: None,
             }],
             Vec::new(),
         );
@@ -600,50 +653,55 @@ mod tests {
         );
     }
 
-    /// Un chemin hors du fonds rendait 200 et zéro résultat : le correctif
-    /// nomme les nœuds voisins sous le même parent.
+    /// An unknown seat path names its siblings under the same parent.
     #[test]
     fn unknown_seat_nomme_les_voisins_du_parent() {
         let noeuds = vec![
-            "CA".to_string(),
-            "CA.PARIS".to_string(),
-            "CA.PARIS.C3".to_string(),
-            "CA.PARIS.P6".to_string(),
+            "FR".to_string(),
+            "FR.CA".to_string(),
+            "FR.CA.PARIS".to_string(),
+            "FR.CA.PARIS.C3".to_string(),
+            "FR.CA.PARIS.P6".to_string(),
         ];
 
-        let inconnu = unknown_seat_msg("CA.PARIS.C9", &noeuds);
-        assert!(inconnu.contains("CA.PARIS.C3"), "{inconnu}");
-        assert!(inconnu.contains("CA.PARIS.P6"), "{inconnu}");
+        let inconnu = unknown_seat_msg("FR.CA.PARIS.C9", &noeuds);
+        assert!(inconnu.contains("FR.CA.PARIS.C3"), "{inconnu}");
+        assert!(inconnu.contains("FR.CA.PARIS.P6"), "{inconnu}");
 
-        let orphelin = unknown_seat_msg("CA.PARSI.C3", &noeuds);
+        let orphelin = unknown_seat_msg("FR.CA.PARSI.C3", &noeuds);
         assert!(orphelin.contains("facets.seat"), "{orphelin}");
+
+        assert_eq!(
+            seat_under_its_order("CA.PARIS", &noeuds),
+            Some("FR.CA.PARIS")
+        );
+        assert_eq!(seat_under_its_order("FR.CA.PARIS", &noeuds), None);
     }
 
-    /// `CA.AIX` was passed for `CA.AIX_EN_PROVENCE` on 13/09/2026. The completion
-    /// holds only when it designates one seat, and never across the dot.
+    /// `CA.AIX` for `CA.AIX_EN_PROVENCE`: the completion holds only when it
+    /// designates one seat, and never across the dot.
     #[test]
     fn le_segment_abrege_se_complete_s_il_designe_un_seul_siege() {
         let noeuds = vec![
-            "CA".to_string(),
-            "CA.AIX_EN_PROVENCE".to_string(),
-            "CA.PARIS".to_string(),
-            "CA.PARIS.C3".to_string(),
-            "TJ.SAINT_DENIS".to_string(),
-            "TJ.SAINT_ETIENNE".to_string(),
+            "FR.CA".to_string(),
+            "FR.CA.AIX_EN_PROVENCE".to_string(),
+            "FR.CA.PARIS".to_string(),
+            "FR.CA.PARIS.C3".to_string(),
+            "FR.TJ.SAINT_DENIS".to_string(),
+            "FR.TJ.SAINT_ETIENNE".to_string(),
         ];
         assert_eq!(
-            seat_completion("CA.AIX", &noeuds),
-            Some("CA.AIX_EN_PROVENCE")
+            seat_completion("FR.CA.AIX", &noeuds),
+            Some("FR.CA.AIX_EN_PROVENCE")
         );
         // Two targets: the question stands.
-        assert_eq!(seat_completion("TJ.SAINT", &noeuds), None);
+        assert_eq!(seat_completion("FR.TJ.SAINT", &noeuds), None);
         // The dot is the hierarchy, which a prefix already covers.
-        assert_eq!(seat_completion("CA.PARIS", &noeuds), None);
-        assert_eq!(seat_completion("CA.NULLE", &noeuds), None);
+        assert_eq!(seat_completion("FR.CA.PARIS", &noeuds), None);
+        assert_eq!(seat_completion("FR.CA.NULLE", &noeuds), None);
     }
 
-    /// The two forms callers wrote instead of the fund's spelling: the city
-    /// hyphenated as French writes it, and two paths joined into one string.
+    /// A hyphenated city and two paths joined in one string fold to the fund's spelling.
     #[test]
     fn les_graphies_d_appelant_se_replient_sur_celle_du_fonds() {
         let mut un = vec!["CA.AIX-EN-PROVENCE".to_string()];
@@ -669,6 +727,7 @@ mod tests {
                 jurisdiction_type: "CE".to_string(),
                 city: None,
                 label: "Conseil d'État".to_string(),
+                place: None,
             }],
             Vec::new(),
         );

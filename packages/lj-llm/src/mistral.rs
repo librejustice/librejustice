@@ -16,8 +16,8 @@ use serde_json::json;
 
 use crate::ratelimit::{now_unix, Ledger, Quota};
 
-// Since 2026-09-03 chat/completions serves mistral-small and mistral-medium at zero
-// requests per minute on the free tier; conversations serves them at the announced rate.
+// chat/completions serves mistral-small and mistral-medium no request on the free
+// tier; conversations serves them at the announced rate.
 const MISTRAL_URL: &str = "https://api.mistral.ai/v1/conversations";
 const OCR_URL: &str = "https://api.mistral.ai/v1/ocr";
 const MAX_RETRIES: u32 = 5;
@@ -25,15 +25,13 @@ const MAX_RETRIES: u32 = 5;
 const RETRY_BASE_S: f64 = 2.0;
 const RETRYABLE_STATUSES: &[u16] = &[429, 500, 502, 503, 504];
 
-/// Pas de retry interne — l'appelant décide (OCR : [`ocr_with_retry`]).
+/// No retry inside: the caller decides (OCR: [`ocr_layout_with_retry`]).
 pub struct MistralClient {
     http: ClientWithMiddleware,
     keys: Vec<String>,
     /// Même index que `keys`.
     fingerprints: Vec<String>,
     model: String,
-    /// `reasoning_effort`, left out when `None`.
-    effort: Option<String>,
     idx: std::sync::atomic::AtomicUsize,
     /// Indices des clés refusées (401, 402), sautées par le round-robin.
     dead: std::sync::Mutex<std::collections::HashSet<usize>>,
@@ -46,26 +44,12 @@ pub struct MistralClient {
 impl MistralClient {
     /// `keys` non vide.
     pub fn new(keys: Vec<String>, model: String) -> Result<Self> {
-        Self::build(keys, model, None)
-    }
-
-    /// `mistral-medium` at `high` reasons for up to 16 000 tokens, measured 23/09/2026,
-    /// hence the longer timeout.
-    pub fn with_effort(keys: Vec<String>, model: String, effort: Option<String>) -> Result<Self> {
-        Self::build(keys, model, effort)
-    }
-
-    fn build(keys: Vec<String>, model: String, effort: Option<String>) -> Result<Self> {
         if keys.is_empty() {
             anyhow::bail!("MistralClient: keys must be non-empty");
         }
         let http = ClientBuilder::new(
             reqwest::Client::builder()
-                .timeout(std::time::Duration::from_secs(if effort.is_some() {
-                    600
-                } else {
-                    60
-                }))
+                .timeout(std::time::Duration::from_secs(60))
                 .build()
                 .context("mistral: client HTTP")?,
         )
@@ -83,7 +67,6 @@ impl MistralClient {
             fingerprints: keys.iter().map(|k| key_fingerprint(k)).collect(),
             keys,
             model,
-            effort,
             dead: std::sync::Mutex::new(std::collections::HashSet::new()),
             unreported: std::sync::Mutex::new(Vec::new()),
             ledger,
@@ -201,11 +184,6 @@ impl MistralClient {
         if let Some(max_tokens) = max_tokens {
             payload["completion_args"]["max_tokens"] = json!(max_tokens);
         }
-        if let Some(effort) = &self.effort {
-            payload["completion_args"]["reasoning_effort"] = json!(effort);
-            // Greedy decoding under reasoning answers 400 unless top_p is 1.
-            payload["completion_args"]["top_p"] = json!(1);
-        }
         payload
     }
 
@@ -221,9 +199,11 @@ impl MistralClient {
         Ok(message_text(&body))
     }
 
-    /// PDF → markdown, pages concaténées. Non-déterministe : à cacher en amont
-    /// (clé = checksum du PDF).
-    pub async fn ocr(&self, pdf_bytes: &[u8]) -> Result<String, MistralError> {
+    /// The pages of the PDF as the OCR returns them, each with its blocks and their boxes.
+    pub async fn ocr_layout(
+        &self,
+        pdf_bytes: &[u8],
+    ) -> Result<Vec<serde_json::Value>, MistralError> {
         let b64 = base64::engine::general_purpose::STANDARD.encode(pdf_bytes);
         let payload = json!({
             "model": self.model,
@@ -239,17 +219,7 @@ impl MistralClient {
         // Coût nul : l'OCR se facture à la page, la taille du base64 ne prédit
         // rien. Seul le compteur de requêtes gate ; l'en-tête corrige ensuite.
         let body = self.post_raw(OCR_URL, payload, 0, true).await?;
-        let markdown = body["pages"]
-            .as_array()
-            .map(|pages| {
-                pages
-                    .iter()
-                    .map(|p| p["markdown"].as_str().unwrap_or(""))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            })
-            .unwrap_or_default();
-        Ok(markdown)
+        Ok(body["pages"].as_array().cloned().unwrap_or_default())
     }
 
     /// `prompt_chars` = taille du texte facturable, pour l'estimation de coût.
@@ -292,8 +262,8 @@ impl MistralClient {
                 reservation.settle(quota, None, now_unix());
             }
             // 401 : clé refusée, sautée ensuite.
-            // A 402 organisation never spends its budget, so the ledger picks it
-            // first once the live keys saturate: one absorbed 85 % of the batches.
+            // A 402 organisation never spends its budget, so the ledger would pick it
+            // first once the live keys saturate.
             if status == 401 || status == 402 {
                 self.mark_dead(key_idx, status);
             } else if status == 429 {
@@ -388,19 +358,30 @@ pub fn rand01() -> f64 {
         / 1_000_000_000.0
 }
 
-/// Trois régimes d'échec : **401** retente aussitôt sur la clé suivante,
-/// **429** retente aussitôt car l'admission fera l'attente,
-/// **5xx / transport** attend un back-off. Tout autre 4xx remonte.
-pub async fn ocr_with_retry(
+pub async fn ocr_layout_with_retry(
     client: &MistralClient,
     pdf_bytes: &[u8],
     label: &str,
-) -> Result<String, MistralError> {
+) -> Result<Vec<serde_json::Value>, MistralError> {
+    with_retry(client, label, || client.ocr_layout(pdf_bytes)).await
+}
+
+/// A 401 moves on to the next key at once, a 429 retries at once since admission
+/// does the waiting, a 5xx or a transport error backs off. Any other 4xx returns.
+async fn with_retry<T, F, Fut>(
+    client: &MistralClient,
+    label: &str,
+    op: F,
+) -> Result<T, MistralError>
+where
+    F: Fn() -> Fut,
+    Fut: std::future::Future<Output = Result<T, MistralError>>,
+{
     let mut dead_keys = 0usize;
     let mut throttled = 0u32;
     let mut transient = 0u32;
     loop {
-        match client.ocr(pdf_bytes).await {
+        match op().await {
             Ok(out) => return Ok(out),
             Err(MistralError::Status(401)) => {
                 dead_keys += 1;

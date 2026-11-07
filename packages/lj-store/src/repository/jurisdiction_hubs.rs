@@ -1,9 +1,9 @@
-//! Hubs juridiction : catalogue agrégé, années couvertes par une juridiction,
-//! page de décisions d'une année.
+//! Jurisdiction hubs: the aggregated catalogue, the years a jurisdiction
+//! covers, the page of a year's decisions.
 //!
-//! The three aggregate reads live on `jurisdiction_year_counts` (2,491 rows),
-//! never on `decisions` (3.73 M rows), which the crawl asks for over 38,743
-//! pages. The listing itself stays on `decisions`.
+//! The three aggregate reads live on `jurisdiction_year_counts`, never on
+//! `decisions`, which the crawl asks for over every hub page. The listing
+//! itself stays on `decisions`.
 
 use super::types::{HubDecisionRow, JurisdictionHubPages, JurisdictionHubRow};
 use super::DecisionRepository;
@@ -19,11 +19,13 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT c.jurisdiction_code, j.jurisdiction_type, j.label, c.n \
-                 FROM (SELECT jurisdiction_code, sum(decision_count)::bigint n \
-                       FROM jurisdiction_year_counts \
+                "SELECT c.code, j.jurisdiction_type, j.label, c.n \
+                 FROM (SELECT coalesce(o.successor_code, o.code) code, \
+                              sum(y.decision_count)::bigint n \
+                       FROM jurisdiction_year_counts y \
+                       JOIN jurisdiction o ON o.code = y.jurisdiction_code \
                        GROUP BY 1) c \
-                 JOIN jurisdiction j ON j.code = c.jurisdiction_code \
+                 JOIN jurisdiction j ON j.code = c.code \
                  ORDER BY j.jurisdiction_type, j.label",
                 &[],
             )
@@ -46,10 +48,13 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT year, decision_count \
+                "SELECT year, sum(decision_count)::bigint \
                  FROM jurisdiction_year_counts \
-                 WHERE jurisdiction_code = $1 AND year IS NOT NULL \
-                 ORDER BY year DESC",
+                 WHERE jurisdiction_code IN (SELECT code FROM jurisdiction \
+                                             WHERE (code = $1 AND successor_code IS NULL) \
+                                                OR successor_code = $1) \
+                   AND year IS NOT NULL \
+                 GROUP BY year ORDER BY year DESC",
                 &[&code],
             )
             .await?;
@@ -63,8 +68,12 @@ impl DecisionRepository<'_> {
         let row = self
             .conn
             .query_opt(
-                "SELECT decision_count FROM jurisdiction_year_counts \
-                 WHERE jurisdiction_code = $1 AND year = $2",
+                "SELECT sum(decision_count)::bigint FROM jurisdiction_year_counts \
+                 WHERE jurisdiction_code IN (SELECT code FROM jurisdiction \
+                                             WHERE (code = $1 AND successor_code IS NULL) \
+                                                OR successor_code = $1) \
+                   AND year = $2 \
+                 HAVING count(*) > 0",
                 &[&code, &year],
             )
             .await?;
@@ -85,11 +94,15 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT j.jurisdiction_type, c.jurisdiction_code, c.year, \
-                        ceil(c.decision_count::float8 / $1::bigint::float8)::bigint \
-                 FROM jurisdiction_year_counts c \
-                 JOIN jurisdiction j ON j.code = c.jurisdiction_code \
-                 WHERE c.year IS NOT NULL \
+                "SELECT j.jurisdiction_type, c.code, c.year, \
+                        ceil(c.n::float8 / $1::bigint::float8)::bigint \
+                 FROM (SELECT coalesce(o.successor_code, o.code) code, y.year, \
+                              sum(y.decision_count) n \
+                       FROM jurisdiction_year_counts y \
+                       JOIN jurisdiction o ON o.code = y.jurisdiction_code \
+                       WHERE y.year IS NOT NULL \
+                       GROUP BY 1, 2) c \
+                 JOIN jurisdiction j ON j.code = c.code \
                  ORDER BY 2, 3 DESC",
                 &[&page_size],
             )
@@ -154,24 +167,59 @@ impl DecisionRepository<'_> {
         limit: i64,
         offset: i64,
     ) -> Result<Vec<HubDecisionRow>> {
-        // L'alias `date_iso` est ce qui laisse `ORDER BY date_lecture` désigner
-        // la colonne de la TABLE : sans lui il se lie à la colonne de sortie,
-        // donc au texte, et l'index ne fournit plus l'ordre (Bitmap Heap Scan et
-        // tri parallèle sur 294 000 buffers, contre un Index Scan seul).
-        let rows = self
+        // The `date_iso` alias is what lets `ORDER BY date_lecture` name the
+        // TABLE column: without it the name binds to the output column, the text,
+        // and the index no longer gives the order (a Bitmap Heap Scan and a
+        // parallel sort instead of a lone Index Scan).
+        // A court and the closed ones it succeeded rarely share a year: the
+        // year that has one code keeps the index order.
+        let codes: Vec<String> = self
             .conn
             .query(
-                "SELECT public_id, search_title, date_lecture::text AS date_iso \
-                 FROM decisions \
-                 WHERE jurisdiction_code = $1 \
-                   AND date_lecture >= make_date($2, 1, 1) \
-                   AND date_lecture < make_date($2 + 1, 1, 1) \
-                   AND deleted_at IS NULL \
-                 ORDER BY date_lecture DESC, id \
-                 LIMIT $3 OFFSET $4",
-                &[&code, &year, &limit, &offset],
+                "SELECT jurisdiction_code FROM jurisdiction_year_counts \
+                 WHERE jurisdiction_code IN (SELECT code FROM jurisdiction \
+                                             WHERE (code = $1 AND successor_code IS NULL) \
+                                                OR successor_code = $1) \
+                   AND year = $2",
+                &[&code, &year],
             )
-            .await?;
+            .await?
+            .iter()
+            .map(|r| r.get(0))
+            .collect();
+        let rows = match codes.as_slice() {
+            [] => Vec::new(),
+            [one] => {
+                self.conn
+                    .query(
+                        "SELECT public_id, search_title, date_lecture::text AS date_iso \
+                         FROM decisions \
+                         WHERE jurisdiction_code = $1 \
+                           AND date_lecture >= make_date($2, 1, 1) \
+                           AND date_lecture < make_date($2 + 1, 1, 1) \
+                           AND deleted_at IS NULL \
+                         ORDER BY date_lecture DESC, id \
+                         LIMIT $3 OFFSET $4",
+                        &[one, &year, &limit, &offset],
+                    )
+                    .await?
+            }
+            several => {
+                self.conn
+                    .query(
+                        "SELECT public_id, search_title, date_lecture::text AS date_iso \
+                         FROM decisions \
+                         WHERE jurisdiction_code = ANY($1) \
+                           AND date_lecture >= make_date($2, 1, 1) \
+                           AND date_lecture < make_date($2 + 1, 1, 1) \
+                           AND deleted_at IS NULL \
+                         ORDER BY date_lecture DESC, id \
+                         LIMIT $3 OFFSET $4",
+                        &[&several, &year, &limit, &offset],
+                    )
+                    .await?
+            }
+        };
         Ok(rows
             .iter()
             .map(|r| HubDecisionRow {

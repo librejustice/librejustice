@@ -1388,10 +1388,8 @@ mod tests {
         let (dict_v4, _) = build_v4_handler_inputs(b"", b"ownerpw", id_first, None);
         let mut dict = dict_v4;
         let mut std_cf = PdfDictionary::default();
-        // `AESV4` is not defined in any PDF version, it should be
-        // rejected as unsupported. We previously tested /AESV3 here, but
-        // V=5 has since landed, so /AESV3 is now a legal method name (it
-        // just happens to be spec-invalid under V=4).
+        // `AESV4` is defined in no PDF version, so it is rejected as
+        // unsupported.
         std_cf.insert("CFM".to_string(), PdfValue::Name("AESV4".to_string()));
         std_cf.insert("Length".to_string(), PdfValue::Integer(32));
         let mut cf = PdfDictionary::default();

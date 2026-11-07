@@ -23,6 +23,15 @@ const REGISTRY_FIELDS_SQL: &str = "\
 const AUTHORITY_ORDER_SQL: &str =
     "ds.source_rank DESC, (ds.lang = 'fra') IS TRUE DESC, (ds.lang = 'eng') IS TRUE DESC, ds.source_uid ASC";
 
+/// A decision read on a given day: its title and the opening of its text.
+#[derive(Debug, Clone)]
+pub struct DayHead {
+    pub decision_id: i64,
+    pub jurisdiction: String,
+    pub date: NaiveDate,
+    pub head: String,
+}
+
 /// One row of the seat vocabulary: a seat as written, the registry keys it came
 /// with, and the months the corpus spans under them.
 #[derive(Debug, Clone)]
@@ -31,6 +40,16 @@ pub struct SeatSample {
     pub chamber: Option<String>,
     pub formation: Option<String>,
     pub span: Option<(i32, i32)>,
+}
+
+/// A named decision as the body-citation detector reads it.
+#[derive(Debug, Clone)]
+pub struct NamedCaseRow {
+    pub keys: Vec<String>,
+    pub jurisdiction_code: Option<String>,
+    pub docket_numbers: Vec<String>,
+    pub date_lecture: Option<String>,
+    pub citations: i64,
 }
 
 impl DecisionRepository<'_> {
@@ -61,6 +80,150 @@ impl DecisionRepository<'_> {
             )
             .await?;
         Ok(rows.iter().map(|r| r.get(1)).collect())
+    }
+
+    /// Each decision's public id, title and first 4,000 characters of text.
+    pub async fn decision_heads(&self, ids: &[i64]) -> Result<Vec<(i64, String, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT d.id, coalesce(d.public_id, ''),
+                        coalesce(d.search_title, '') || ' ' || coalesce(
+                            (SELECT left(t.full_text, 4000) FROM decision_text t
+                             WHERE t.decision_id = d.id ORDER BY t.id LIMIT 1), '')
+                 FROM decisions d WHERE d.id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect())
+    }
+
+    /// The HAL deposits already read, whatever they gave.
+    pub async fn doctrine_visited(&self) -> Result<Vec<String>> {
+        let rows = self
+            .conn
+            .query("SELECT hal_id FROM doctrine_deposits", &[])
+            .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Records a deposit read, `None` when its file could not be read.
+    pub async fn put_doctrine_deposit(
+        &self,
+        hal_id: &str,
+        citations: Option<&serde_json::Value>,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO doctrine_deposits (hal_id, citations) VALUES ($1, $2)
+                 ON CONFLICT (hal_id) DO UPDATE
+                 SET visited_at = now(), citations = EXCLUDED.citations",
+                &[&hal_id, &citations],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Every deposit that gave a name, with what it gave.
+    pub async fn doctrine_citations(&self) -> Result<Vec<(String, serde_json::Value)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT hal_id, citations FROM doctrine_deposits
+                 WHERE jsonb_array_length(citations) > 0",
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// The name each decision carries, and its writer.
+    pub async fn current_case_names(
+        &self,
+        ids: &[i64],
+    ) -> Result<Vec<(i64, Option<String>, Option<String>)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT id, case_name, case_name_source FROM decisions WHERE id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect())
+    }
+
+    /// The live decisions under these ECLIs, as `(ecli, decision)`.
+    pub async fn resolve_eclis(&self, eclis: &[String]) -> Result<Vec<(String, i64)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT ecli, id FROM decisions WHERE ecli = ANY($1) AND deleted_at IS NULL",
+                &[&eclis],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// The decisions each court read on each day, with their title and the first
+    /// 4,000 characters of their text.
+    pub async fn day_heads(
+        &self,
+        jurisdictions: &[&str],
+        dates: &[NaiveDate],
+    ) -> Result<Vec<DayHead>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT d.id, d.jurisdiction_code, d.date_lecture,
+                        coalesce(d.search_title, '') || ' ' || coalesce(
+                            (SELECT left(t.full_text, 4000) FROM decision_text t
+                             WHERE t.decision_id = d.id ORDER BY t.id LIMIT 1), '')
+                 FROM unnest($1::text[], $2::date[]) AS k(jur, lue)
+                 JOIN decisions d ON d.jurisdiction_code = k.jur AND d.date_lecture = k.lue
+                 WHERE d.deleted_at IS NULL",
+                &[&jurisdictions, &dates],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| DayHead {
+                decision_id: r.get(0),
+                jurisdiction: r.get(1),
+                date: r.get(2),
+                head: r.get(3),
+            })
+            .collect())
+    }
+
+    /// Poses each decision's Wikidata item and clears it from the decisions left
+    /// out. Returns how many rows changed.
+    pub async fn put_wikidata_ids(&self, items: &[(i64, String)]) -> Result<u64> {
+        let ids: Vec<i64> = items.iter().map(|(id, _)| *id).collect();
+        let qids: Vec<&str> = items.iter().map(|(_, q)| q.as_str()).collect();
+        let set = self
+            .conn
+            .execute(
+                "UPDATE decisions d SET wikidata_id = t.q
+                 FROM unnest($1::int8[], $2::text[]) AS t(id, q)
+                 WHERE d.id = t.id AND d.wikidata_id IS DISTINCT FROM t.q",
+                &[&ids, &qids],
+            )
+            .await?;
+        let cleared = self
+            .conn
+            .execute(
+                "UPDATE decisions SET wikidata_id = NULL
+                 WHERE wikidata_id IS NOT NULL AND NOT (id = ANY($1))",
+                &[&ids],
+            )
+            .await?;
+        Ok(set + cleared)
     }
 
     /// Pose des noms d'usage sans rien effacer : la forme affichée ne bouge que
@@ -110,9 +273,53 @@ impl DecisionRepository<'_> {
         Ok(poses)
     }
 
-    /// Every case name key, deduplicated: 23 807 for 30 190 named decisions,
-    /// 0.26 s. Exactly the domain of [`Self::case_name_match`], deletion filter
-    /// included, so a query touching none of them names nothing.
+    /// The words of `words` too common to name a case alone: an index stopword, or a word
+    /// written in `rarity` texts or more (« tacite », « paris », « martin »).
+    pub async fn common_name_words(&self, words: &[&str], rarity: i64) -> Result<Vec<String>> {
+        let (stop, rest): (Vec<&str>, Vec<&str>) = words
+            .iter()
+            .partition(|w| lj_textsearch::body_tok::is_stopword(w));
+        let mut common: Vec<String> = stop.into_iter().map(str::to_string).collect();
+        common.extend(self.frequent_names(&rest, rarity).await?);
+        Ok(common)
+    }
+
+    /// Takes each `(decision, key)` pair out of the decision's keys, and its
+    /// name with them when `source` wrote it and no key is left.
+    pub async fn drop_case_name_keys(&self, source: &str, pairs: &[(i64, String)]) -> Result<u64> {
+        let ids: Vec<i64> = pairs.iter().map(|(id, _)| *id).collect();
+        let keys: Vec<&str> = pairs.iter().map(|(_, k)| k.as_str()).collect();
+        let dropped = self
+            .conn
+            .execute(
+                "WITH p AS (
+                     SELECT id, array_agg(cle) AS cles
+                     FROM unnest($1::int8[], $2::text[]) AS t(id, cle)
+                     GROUP BY id
+                 ), reste AS (
+                     SELECT d.id,
+                            nullif(array(SELECT k FROM unnest(d.case_name_keys) k
+                                         WHERE k <> ALL(p.cles) ORDER BY k), '{}') AS cles
+                     FROM decisions d JOIN p ON d.id = p.id
+                     WHERE d.case_name_keys && p.cles
+                 )
+                 UPDATE decisions d SET
+                     case_name_keys = r.cles,
+                     case_name = CASE WHEN r.cles IS NULL AND d.case_name_source = $3
+                                      THEN NULL ELSE d.case_name END,
+                     case_name_source = CASE WHEN r.cles IS NULL AND d.case_name_source = $3
+                                             THEN NULL ELSE d.case_name_source END
+                 FROM reste r
+                 WHERE d.id = r.id",
+                &[&ids, &keys, &source],
+            )
+            .await?;
+        Ok(dropped)
+    }
+
+    /// Every case name key, deduplicated. Exactly the domain of
+    /// [`Self::case_name_match`], deletion filter included, so a query touching
+    /// none of them names nothing.
     pub async fn case_name_key_set(&self) -> Result<Vec<String>> {
         let rows = self
             .conn
@@ -126,19 +333,30 @@ impl DecisionRepository<'_> {
         Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 
-    /// Parmi ces clés, celles qu'au moins `seuil` décisions emploient. Ce que le
-    /// fonds répète n'est pas un nom : « Société » sort dans 1 617 388 décisions
-    /// et « Ville de Paris » au-delà de 10 000, quand « Czabaj » en fait 331 et
-    /// « Société Tropic Travaux Signalisation » 18. Une clé de plusieurs mots
-    /// devient une phrase à slop 2, les mots-outils occupant une position dans
-    /// l'index : `cour d appel` sans slop rend 209 décisions au lieu de 1 324 508.
-    /// `case_name_key` ne laisse passer qu'alphanumériques et espaces, donc la
-    /// guillemeter ne peut rien injecter.
+    /// Every named decision with its keys, read on their partial index.
+    pub async fn named_decisions(&self) -> Result<Vec<(i64, Vec<String>)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT id, case_name_keys FROM decisions
+                 WHERE case_name_keys IS NOT NULL AND deleted_at IS NULL",
+                &[],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// Among these keys, those at least `seuil` decisions use. What the fonds
+    /// repeats is not a name: « Société » and « Ville de Paris » come out in far
+    /// more decisions than « Czabaj » or « Société Tropic Travaux Signalisation ».
+    /// A key of several words becomes a phrase with slop 2, the stop words
+    /// holding a position in the index: `cour d appel` without slop misses most
+    /// of its decisions. `case_name_key` lets through only alphanumerics and
+    /// spaces, so quoting it cannot inject anything.
     ///
-    /// Le `LIMIT` fait la question binaire, et c'est lui qui la rend tenable :
-    /// compter les 1,6 million de « Société » prend 1,06 s, s'arrêter au seuil
-    /// 0,16 s. Par lots de 60, soit 11 s, le `statement_timeout` du pool étant
-    /// à 30 s et les 1 169 mots d'une passe valant 3,6 min en tout.
+    /// The `LIMIT` makes the question binary, and that is what keeps it
+    /// tractable: stopping at the threshold is far cheaper than counting. In
+    /// batches of 60, under the pool's `statement_timeout`.
     pub async fn frequent_names(&self, cles: &[&str], seuil: i64) -> Result<Vec<String>> {
         let mut courants = Vec::new();
         for lot in cles.chunks(60) {
@@ -162,8 +380,7 @@ impl DecisionRepository<'_> {
     }
 
     /// The texts writing a case name key followed by a roman numeral I to V,
-    /// one phrase query per numeral on the BM25 index: 26 ms and 36 texts for
-    /// « beziers », a name a mall shares.
+    /// one phrase query per numeral on the BM25 index.
     pub async fn ordinal_citation_texts(&self, key: &str, romans: &[&str]) -> Result<Vec<String>> {
         let phrases: Vec<Vec<String>> = romans
             .iter()
@@ -212,31 +429,31 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// Les noms qu'un corps peut citer : clé de nom, puis identité de la
-    /// décision nommée, dont l'appelant tire la clé pendante. Une clé portée par
-    /// plusieurs décisions n'en sort pas, le corps ne disant pas laquelle :
-    /// 10 059 lignes sur 30 270, dont « GISTI » et « Commune de Béziers ».
-    pub async fn unambiguous_case_names(
-        &self,
-    ) -> Result<Vec<(String, Option<String>, Vec<String>, Option<String>)>> {
+    /// The named decisions, their keys and the identity the caller draws the pending key
+    /// from, with the citations aiming at each: spans of `case_citation` and renvois, the
+    /// count the search card ranks a name's bearers by.
+    pub async fn named_cases(&self) -> Result<Vec<NamedCaseRow>> {
         let rows = self
             .conn
             .query(
-                "SELECT cle, jurisdiction_code, docket_numbers,
-                        to_char(date_lecture, 'YYYY-MM-DD')
-                 FROM (SELECT k.cle, d.jurisdiction_code,
-                              d.docket_numbers, d.date_lecture,
-                              count(*) OVER (PARTITION BY k.cle) AS porteurs
-                       FROM decisions d, unnest(d.case_name_keys) AS k(cle)
-                       WHERE d.case_name_keys IS NOT NULL
-                         AND d.deleted_at IS NULL) s
-                 WHERE porteurs = 1",
+                "SELECT d.case_name_keys, d.jurisdiction_code, d.docket_numbers,
+                        to_char(d.date_lecture, 'YYYY-MM-DD'),
+                        (SELECT count(*) FROM case_citation cc WHERE cc.target_decision_id = d.id)
+                        + (SELECT count(*) FROM decision_renvoi r WHERE r.target_decision_id = d.id)
+                 FROM decisions d
+                 WHERE d.case_name_keys IS NOT NULL AND d.deleted_at IS NULL",
                 &[],
             )
             .await?;
         Ok(rows
             .iter()
-            .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
+            .map(|r| NamedCaseRow {
+                keys: r.get(0),
+                jurisdiction_code: r.get(1),
+                docket_numbers: r.get(2),
+                date_lecture: r.get(3),
+                citations: r.get(4),
+            })
             .collect())
     }
 
@@ -246,10 +463,10 @@ impl DecisionRepository<'_> {
     /// three sources speaks once; with it the first and last month the corpus
     /// wrote that row, as `year * 12 + month`.
     ///
-    /// A full pass over decisions joined to their sources, 55 s measured on
-    /// 04/09/2026, past the pool's 30 s: the timeout is lifted for the
-    /// transaction. ParadeDB's aggregate custom scan returns silently wrong
-    /// counts on a BM25 table, so it is cut for the same transaction.
+    /// A full pass over decisions joined to their sources, past the pool's
+    /// `statement_timeout`: the timeout is lifted for the transaction. ParadeDB's aggregate
+    /// custom scan returns silently wrong counts on a BM25 table, so it is cut for the same
+    /// transaction.
     pub async fn seat_vocabulary(&self) -> Result<Vec<SeatSample>> {
         self.conn.batch_execute("BEGIN").await?;
         let result: Result<Vec<tokio_postgres::Row>> = async {
@@ -349,6 +566,58 @@ impl DecisionRepository<'_> {
                  FROM unnest($1::int8[], $2::text[]) AS v(id, paths)
                  WHERE d.id = v.id
                    AND d.seat_paths IS DISTINCT FROM string_to_array(v.paths, ',')",
+                &[&ids, &paths],
+            )
+            .await?)
+    }
+
+    /// `(id, seat paths, formation, office, procedure, stored formation paths)`,
+    /// the inputs of the « Formation » filter beside what it holds.
+    #[allow(clippy::type_complexity)]
+    pub async fn formation_rows_after(
+        &self,
+        after: i64,
+        limit: i64,
+    ) -> Result<
+        Vec<(
+            i64,
+            Vec<String>,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            Vec<String>,
+        )>,
+    > {
+        let rows = self
+            .conn
+            .query(
+                "SELECT id, coalesce(seat_paths, '{}'), formation_uid, office_uid, procedure_uid,
+                        coalesce(formation_paths, '{}')
+                 FROM decisions
+                 WHERE id > $1 AND deleted_at IS NULL
+                 ORDER BY id LIMIT $2",
+                &[&after, &limit],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3), r.get(4), r.get(5)))
+            .collect())
+    }
+
+    /// `updated_at` stays, as for [`Self::put_seat_paths`].
+    pub async fn put_formation_paths(&self, items: &[(i64, Vec<String>)]) -> Result<u64> {
+        let ids: Vec<i64> = items.iter().map(|(id, _)| *id).collect();
+        let paths: Vec<String> = items.iter().map(|(_, p)| p.join(",")).collect();
+        Ok(self
+            .conn
+            .execute(
+                "UPDATE decisions d
+                 SET formation_paths = string_to_array(nullif(v.paths, ''), ',')
+                 FROM unnest($1::int8[], $2::text[]) AS v(id, paths)
+                 WHERE d.id = v.id
+                   AND coalesce(d.formation_paths, '{}')
+                       IS DISTINCT FROM coalesce(string_to_array(nullif(v.paths, ''), ','), '{}')",
                 &[&ids, &paths],
             )
             .await?)

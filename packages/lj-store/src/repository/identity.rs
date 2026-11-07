@@ -2,13 +2,67 @@
 //! backfills, fusion de clusters doublons, retrait par provenance (tombstone) +
 //! reconcile.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use super::support::{now, source_from_source_uid};
-use super::types::ExistingDecisionState;
+use chrono::NaiveDate;
+
+use lj_core::identity::{
+    choose, text_containment, text_identity, Choice, Traits, TIED_TEXT_IDENTITY,
+};
+
+use super::decisions::canonical_jurisdiction_code;
+use super::support::source_from_source_uid;
+use super::types::{ExistingDecisionState, ExtractedFields, Identity, JurisdictionRow};
 use super::DecisionRepository;
 use crate::error::Result;
 use serde_json::Value;
+
+const DILA_COPY_CONTAINMENT: f64 = 0.8;
+const DILA_DISTINCT_CONTAINMENT: f64 = 0.7;
+
+fn is_dila_judicial(source: &str) -> bool {
+    matches!(source, "dila-cass" | "dila-inca" | "dila-capp")
+}
+
+pub struct ProvenanceToResolve {
+    pub decision_id: i64,
+    pub source_uid: String,
+    pub source_fields: Value,
+    pub read_text: String,
+    /// Another active provenance sits on the same decision.
+    pub shared: bool,
+}
+
+pub struct JoinderPair {
+    pub copy: i64,
+    pub dockets: Vec<String>,
+    pub copy_text: String,
+    pub keeper: i64,
+    pub keeper_text: String,
+}
+
+/// One row of [`DecisionRepository::judilibre_provenances`].
+pub struct JudilibreProvenance {
+    pub source_uid: String,
+    pub tombstoned: bool,
+    pub jurisdiction: Option<String>,
+    pub decision_date: Option<String>,
+}
+
+pub struct WebNoteHead {
+    pub decision_id: i64,
+    pub publisher: Option<String>,
+    pub title: Option<String>,
+}
+
+/// The three judicial funds are one publisher: a decision holds one of their
+/// records, the others are copies.
+fn same_publisher(held: &str, incoming: &str) -> bool {
+    held == incoming || (is_dila_judicial(held) && is_dila_judicial(incoming))
+}
+
+/// The languages held for a CELEX, each with the bytes of its text, and one's source fields.
+pub type CjueHeld = (Vec<(String, i32)>, Value);
 
 impl DecisionRepository<'_> {
     /// Sonde d'idempotence intra-source sur le pivot `decision_sources.source_uid`
@@ -32,33 +86,6 @@ impl DecisionRepository<'_> {
                 r.get::<_, bool>(2),
             )
         }))
-    }
-
-    /// Cible de fusion par `canonical_ref`, sous l'invariant *≤1 provenance active
-    /// par source et par décision* : `min(id)` parmi les décisions actives portant
-    /// cette clé qui ne portent pas déjà une provenance active de `incoming_source`.
-    /// `None` → aucune cible compatible, l'appelant crée une nouvelle décision. On ne
-    /// fusionne donc jamais deux provenances same-source par `canonical_ref` ; le merge
-    /// cross-source reste autorisé.
-    #[tracing::instrument(name = "db.find_canonical_ref_merge_target", skip(self), fields(db.system = "postgresql"))]
-    pub async fn find_canonical_ref_merge_target(
-        &self,
-        canonical_ref: &str,
-        incoming_source: &str,
-    ) -> Result<Option<i64>> {
-        let row = self
-            .conn
-            .query_one(
-                "SELECT min(d.id) FROM decisions d \
-                 WHERE d.canonical_ref = $1 AND d.deleted_at IS NULL \
-                   AND NOT EXISTS ( \
-                     SELECT 1 FROM decision_sources s \
-                     WHERE s.decision_id = d.id AND s.source = $2 \
-                       AND s.deleted_at IS NULL)",
-                &[&canonical_ref, &incoming_source],
-            )
-            .await?;
-        Ok(row.get::<_, Option<i64>>(0))
     }
 
     /// `source_uid` of the authority provenance, tombstoned included: highest
@@ -85,11 +112,14 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT s.source_uid, (SELECT dt.full_text FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead), s.source_fields \
+                &format!(
+                    "SELECT s.source_uid, {text}, s.source_fields \
                  FROM decision_sources s JOIN decisions d ON d.id = s.decision_id \
                  WHERE s.source_uid LIKE 'cnda/%' \
                    AND s.deleted_at IS NULL \
                    AND EXISTS (SELECT 1 FROM decision_text dt WHERE dt.decision_id = d.id)",
+                    text = super::pick::text("p.full_text", "d")
+                ),
                 &[],
             )
             .await?;
@@ -141,12 +171,12 @@ impl DecisionRepository<'_> {
         Ok((posees, retirees))
     }
 
-    /// Poses `case-law_joins_case_court` on the CJUE provenances, `values`
-    /// carrying the JSON the CDM predicate takes in `source_fields`, what the
-    /// ingest writes today, over the corpus that predates it.
-    #[tracing::instrument(name = "db.set_source_fields_joined_cases", skip(self, source_uids, values), fields(db.system = "postgresql", n = source_uids.len()))]
-    pub async fn set_source_fields_joined_cases(
+    /// Poses one `source_fields` key on these provenances, `values` carrying its
+    /// JSON as the ingest writes it, over the corpus that predates it.
+    #[tracing::instrument(name = "db.set_source_field", skip(self, source_uids, values), fields(db.system = "postgresql", n = source_uids.len()))]
+    pub async fn set_source_field(
         &self,
+        field: &str,
         source_uids: &[String],
         values: &[String],
     ) -> Result<u64> {
@@ -157,15 +187,12 @@ impl DecisionRepository<'_> {
             .conn
             .execute(
                 "UPDATE decision_sources s \
-                 SET source_fields = jsonb_set(s.source_fields, \
-                                               ARRAY['case-law_joins_case_court'], \
-                                               v.joined::jsonb) \
-                 FROM UNNEST($1::text[], $2::text[]) AS v(source_uid, joined) \
+                 SET source_fields = jsonb_set(s.source_fields, ARRAY[$3::text], v.value::jsonb) \
+                 FROM UNNEST($1::text[], $2::text[]) AS v(source_uid, value) \
                  WHERE s.source_uid = v.source_uid \
                    AND s.deleted_at IS NULL \
-                   AND s.source_fields->'case-law_joins_case_court' \
-                       IS DISTINCT FROM v.joined::jsonb",
-                &[&source_uids, &values],
+                   AND s.source_fields->$3::text IS DISTINCT FROM v.value::jsonb",
+                &[&source_uids, &values, &field],
             )
             .await?)
     }
@@ -190,8 +217,9 @@ impl DecisionRepository<'_> {
                 "
                 INSERT INTO decision_sources
                   (decision_id, source, source_uid, content_checksum,
-                   payload_format, source_fields, lang)
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                   payload_format, source_fields, lang, deleted_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7,
+                        CASE WHEN lj_decision_withdrawn($1) THEN NOW() END)
                 ON CONFLICT (source_uid) DO UPDATE SET
                   decision_id = EXCLUDED.decision_id,
                   source = EXCLUDED.source,
@@ -199,7 +227,7 @@ impl DecisionRepository<'_> {
                   payload_format = EXCLUDED.payload_format,
                   source_fields = EXCLUDED.source_fields,
                   lang = EXCLUDED.lang,
-                  deleted_at = NULL,
+                  deleted_at = EXCLUDED.deleted_at,
                   ingested_at = NOW()
                 ",
                 &[
@@ -365,13 +393,6 @@ impl DecisionRepository<'_> {
                   ds.source_uid,
                   ds.decision_id,
                   ds.content_checksum,
-                  (
-                    EXISTS (SELECT 1 FROM decision_chunks ch WHERE ch.decision_id = ds.decision_id)
-                    AND NOT EXISTS (
-                      SELECT 1 FROM decision_chunks ch
-                      WHERE ch.decision_id = ds.decision_id AND ch.embedding IS NULL
-                    )
-                  ),
                   d.public_id
                 FROM decision_sources ds
                 JOIN decisions d ON d.id = ds.decision_id
@@ -389,21 +410,17 @@ impl DecisionRepository<'_> {
                     id: row.get(1),
                     source_uid,
                     content_checksum: row.get(2),
-                    has_embeddings: row.get(3),
-                    public_id: row.get(4),
+                    public_id: row.get(3),
                 },
             );
         }
         Ok(out)
     }
 
-    /// The languages the base holds for each CELEX, tombstoned included, with the
-    /// source fields of one of them.
+    /// The languages the base holds for each CELEX, tombstoned included, each with the
+    /// size in bytes of the text it wrote, and the source fields of one of them.
     #[tracing::instrument(name = "db.cjue_languages", skip(self, celexes), fields(db.system = "postgresql"))]
-    pub async fn cjue_languages(
-        &self,
-        celexes: &[String],
-    ) -> Result<HashMap<String, (Vec<String>, Value)>> {
+    pub async fn cjue_languages(&self, celexes: &[String]) -> Result<HashMap<String, CjueHeld>> {
         let uids: Vec<String> = celexes
             .iter()
             .flat_map(|c| {
@@ -415,18 +432,20 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT split_part(source_uid, '/', 2), split_part(source_uid, '/', 3), \
-                        CASE WHEN row_number() OVER (PARTITION BY split_part(source_uid, '/', 2) \
-                                                     ORDER BY (lang = 'fra') IS TRUE DESC, source_uid) = 1 \
-                             THEN source_fields END \
-                 FROM decision_sources WHERE source_uid = ANY($1)",
+                "SELECT split_part(s.source_uid, '/', 2), split_part(s.source_uid, '/', 3), \
+                        CASE WHEN row_number() OVER (PARTITION BY split_part(s.source_uid, '/', 2) \
+                                                     ORDER BY (s.lang = 'fra') IS TRUE DESC, s.source_uid) = 1 \
+                             THEN s.source_fields END, \
+                        coalesce((SELECT octet_length(t.full_text) FROM decision_text t \
+                                  WHERE t.decision_id = s.decision_id AND t.source_uid = s.source_uid), 0) \
+                 FROM decision_sources s WHERE s.source_uid = ANY($1)",
                 &[&uids],
             )
             .await?;
-        let mut out: HashMap<String, (Vec<String>, Value)> = HashMap::new();
+        let mut out: HashMap<String, CjueHeld> = HashMap::new();
         for r in rows {
             let entry = out.entry(r.get(0)).or_insert((Vec::new(), Value::Null));
-            entry.0.push(r.get(1));
+            entry.0.push((r.get(1), r.get(3)));
             if let Some(fields) = r.get::<_, Option<Value>>(2) {
                 entry.1 = fields;
             }
@@ -479,6 +498,25 @@ impl DecisionRepository<'_> {
                 _ => None,
             });
         }
+        if let Some((reference, _)) = decision
+            .source_uid
+            .strip_prefix("comeu/")
+            .and_then(|rest| rest.rsplit_once('/'))
+        {
+            let uids: Vec<String> = lj_vocab::languages::EU_OFFICIAL_LANGUAGES
+                .iter()
+                .map(|l| format!("comeu/{reference}/{l}"))
+                .filter(|u| *u != decision.source_uid)
+                .collect();
+            let row = self
+                .conn
+                .query_one(
+                    "SELECT min(decision_id) FROM decision_sources WHERE source_uid = ANY($1)",
+                    &[&uids],
+                )
+                .await?;
+            return Ok(row.get(0));
+        }
         let (true, Some(ecli)) = (decision.source_uid.starts_with("cedh/"), &decision.ecli) else {
             return Ok(None);
         };
@@ -486,10 +524,11 @@ impl DecisionRepository<'_> {
             .conn
             .query(
                 "SELECT d.id, EXISTS (SELECT 1 FROM decision_sources s \
-                   WHERE s.decision_id = d.id AND s.lang IS NOT DISTINCT FROM $2 AND s.deleted_at IS NULL) \
+                   WHERE s.decision_id = d.id AND s.lang IS NOT DISTINCT FROM $2 AND s.deleted_at IS NULL \
+                     AND s.source_uid <> $3) \
                  FROM decisions d \
                  WHERE d.ecli = $1 AND d.jurisdiction_type = 'CEDH' AND d.deleted_at IS NULL LIMIT 2",
-                &[ecli, &lang],
+                &[ecli, &lang, &decision.source_uid],
             )
             .await?;
         Ok(match rows.as_slice() {
@@ -498,24 +537,380 @@ impl DecisionRepository<'_> {
         })
     }
 
-    /// Résout une décision canonique EXISTANTE par identité : `canonical_ref`, seul
-    /// axe de rattachement. `None` si aucune identité connue → création.
-    pub async fn resolve_identity(
+    /// Where a provenance the base does not know goes: another language of the
+    /// same judgment, then the decision at its address.
+    pub async fn identity_of(
         &self,
         decision: &lj_core::decision::Decision,
-        canonical_ref: Option<&str>,
-    ) -> Result<Option<i64>> {
-        if let Some(key) = canonical_ref {
-            // Invariant ≤1 provenance/source : on ne rattache par `canonical_ref` qu'à une
-            // décision ne portant **pas déjà** la source entrante — jamais de fusion
-            // intra-source (clé non unique → perte de texte irréversible si faux merge).
-            // Le merge cross-source reste permis.
-            let source = source_from_source_uid(&decision.source_uid);
-            if let Some(id) = self.find_canonical_ref_merge_target(key, source).await? {
-                return Ok(Some(id));
+        extracted: Option<&ExtractedFields>,
+        source_fields: &Value,
+    ) -> Result<Identity> {
+        let lang = source_fields.get("lang").and_then(Value::as_str);
+        match self.find_language_sibling(decision, lang).await? {
+            Some(id) => Ok(Identity::Attach(id)),
+            None => self.resolve_identity(decision, extracted).await,
+        }
+    }
+
+    /// The decisions at the address of a record (same court, same date, a
+    /// docket in common), told apart by
+    /// [`lj_core::identity::choose`]. A decision already holding a provenance of
+    /// the incoming source is never a target.
+    #[tracing::instrument(name = "db.resolve_identity", skip_all, fields(db.system = "postgresql", uid = %decision.source_uid))]
+    async fn resolve_identity(
+        &self,
+        decision: &lj_core::decision::Decision,
+        extracted: Option<&ExtractedFields>,
+    ) -> Result<Identity> {
+        let Some(e) = extracted else {
+            return Ok(Identity::Create);
+        };
+        let (Some(court), Some(date)) = (e.jurisdiction.as_ref(), e.date_lecture) else {
+            return Ok(Identity::Create);
+        };
+        if e.docket_numbers.is_empty() {
+            return Ok(Identity::Create);
+        }
+        let court = self.court_code(court).await?;
+        let rows = self
+            .conn
+            .query(
+                "SELECT d.id, d.ecli, d.publication_codes, d.seat_paths, d.solution_uid, \
+                   ARRAY(SELECT l.target_date::text FROM decision_links l \
+                         WHERE l.decision_id = d.id AND l.target_date IS NOT NULL \
+                           AND l.link_type IN ('POURVOI_CONTRE', 'APPEL_DE')), \
+                   ARRAY(SELECT s.source FROM decision_sources s \
+                         WHERE s.decision_id = d.id AND s.deleted_at IS NULL AND s.source_uid <> $4) \
+                 FROM decisions d \
+                 WHERE d.deleted_at IS NULL AND d.jurisdiction_code = $1 AND d.date_lecture = $2 \
+                   AND lj_docket_keys(d.docket_numbers) && lj_docket_keys($3) \
+                 ORDER BY d.id",
+                &[&court, &date, &e.docket_numbers, &decision.source_uid],
+            )
+            .await?;
+        let source = source_from_source_uid(&decision.source_uid);
+        let (mut ids, mut traits, mut held_by_source) = (Vec::new(), Vec::new(), Vec::new());
+        for r in rows {
+            let sources: Vec<String> = r.get(6);
+            if sources.is_empty() {
+                continue;
+            }
+            let id: i64 = r.get(0);
+            if sources.iter().any(|s| same_publisher(s, source)) {
+                held_by_source.push(id);
+                continue;
+            }
+            ids.push(id);
+            traits.push(Traits {
+                ecli: r.get(1),
+                publication_codes: r.get(2),
+                seat_paths: r.get(3),
+                solution_uid: r.get(4),
+                attacked_dates: r.get(5),
+            });
+        }
+        let incoming = Traits {
+            ecli: decision.ecli.clone(),
+            publication_codes: e.publication_codes.clone(),
+            seat_paths: e.seat_paths.clone(),
+            solution_uid: e.solution_uid.clone(),
+            attacked_dates: e
+                .decision_links
+                .iter()
+                .flatten()
+                .filter(|l| matches!(l.link_type.as_str(), "POURVOI_CONTRE" | "APPEL_DE"))
+                .filter_map(|l| l.address.date.clone())
+                .collect(),
+        };
+        match choose(&incoming, &traits) {
+            Choice::One(i) => return Ok(Identity::Attach(ids[i])),
+            Choice::Tied(tied) => {
+                let tied: Vec<i64> = tied.into_iter().map(|i| ids[i]).collect();
+                let mut best: Option<(f64, i64)> = None;
+                for (id, text) in self.read_texts(&tied).await? {
+                    let identity = text_identity(&decision.texte_integral_clean, &text);
+                    if best.is_none_or(|(b, _)| identity > b) {
+                        best = Some((identity, id));
+                    }
+                }
+                if let Some((identity, id)) = best {
+                    if identity >= TIED_TEXT_IDENTITY {
+                        return Ok(Identity::Attach(id));
+                    }
+                }
+            }
+            Choice::Neither => {}
+        }
+        if !is_dila_judicial(source) || held_by_source.is_empty() {
+            return Ok(Identity::Create);
+        }
+        let mut best: Option<(f64, i64)> = None;
+        for (id, text) in self.read_texts(&held_by_source).await? {
+            let c = text_containment(&decision.texte_integral_clean, &text);
+            if best.is_none_or(|(b, _)| c > b) {
+                best = Some((c, id));
             }
         }
-        Ok(None)
+        Ok(match best {
+            Some((c, id)) if c >= DILA_COPY_CONTAINMENT => Identity::Copy(id),
+            Some((c, id)) if c > DILA_DISTINCT_CONTAINMENT => Identity::Hold(id),
+            _ => Identity::Create,
+        })
+    }
+
+    /// Those of `ids` whose fields come from several provenances.
+    #[tracing::instrument(name = "db.decisions_with_several_provenances", skip_all, fields(db.system = "postgresql", n = ids.len()))]
+    pub async fn decisions_with_several_provenances(&self, ids: &[i64]) -> Result<Vec<i64>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT decision_id FROM decision_sources \
+                 WHERE decision_id = ANY($1) AND deleted_at IS NULL AND source_rank > 0 \
+                   AND source_fields IS NOT NULL \
+                 GROUP BY decision_id HAVING count(*) > 1",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Every decision whose fields come from several provenances, by id.
+    #[tracing::instrument(name = "db.all_decisions_with_several_provenances", skip(self), fields(db.system = "postgresql"))]
+    pub async fn all_decisions_with_several_provenances(&self) -> Result<Vec<i64>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT decision_id FROM decision_sources \
+                 WHERE deleted_at IS NULL AND source_rank > 0 AND source_fields IS NOT NULL \
+                 GROUP BY decision_id HAVING count(*) > 1 ORDER BY decision_id",
+                &[],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    /// The `source_uid`s the base holds among these, tombstoned included.
+    #[tracing::instrument(name = "db.known_source_uids", skip_all, fields(db.system = "postgresql", n = uids.len()))]
+    pub async fn known_source_uids(&self, uids: &[String]) -> Result<HashSet<String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid FROM decision_sources WHERE source_uid = ANY($1)",
+                &[&uids],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Every Judilibre provenance: `source_uid`, whether it is tombstoned, and
+    /// the `jurisdiction` and `decision_date` of its source fields.
+    #[tracing::instrument(name = "db.judilibre_provenances", skip(self), fields(db.system = "postgresql"))]
+    pub async fn judilibre_provenances(&self) -> Result<Vec<JudilibreProvenance>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid, deleted_at IS NOT NULL, source_fields->>'jurisdiction', \
+                        source_fields->>'decision_date' \
+                   FROM decision_sources WHERE source = 'judilibre'",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| JudilibreProvenance {
+                source_uid: r.get(0),
+                tombstoned: r.get(1),
+                jurisdiction: r.get(2),
+                decision_date: r.get(3),
+            })
+            .collect())
+    }
+
+    /// The active `source_uid`s the base holds among these.
+    #[tracing::instrument(name = "db.active_source_uids", skip_all, fields(db.system = "postgresql", n = uids.len()))]
+    pub async fn active_source_uids(&self, uids: &[String]) -> Result<Vec<String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid FROM decision_sources WHERE source_uid = ANY($1) AND deleted_at IS NULL",
+                &[&uids],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    #[tracing::instrument(name = "db.decision_id_by_public_id", skip(self), fields(db.system = "postgresql"))]
+    pub async fn decision_id_by_public_id(&self, public_id: &str) -> Result<Option<i64>> {
+        let row = self
+            .conn
+            .query_opt(
+                "SELECT id FROM decisions WHERE public_id = $1 AND deleted_at IS NULL",
+                &[&public_id],
+            )
+            .await?;
+        Ok(row.map(|r| r.get(0)))
+    }
+
+    /// Rank of the decision's highest active provenance.
+    #[tracing::instrument(name = "db.top_source_rank", skip(self), fields(db.system = "postgresql"))]
+    pub async fn top_source_rank(&self, decision_id: i64) -> Result<Option<i16>> {
+        let row = self
+            .conn
+            .query_one(
+                "SELECT max(source_rank) FROM decision_sources \
+                 WHERE decision_id = $1 AND deleted_at IS NULL",
+                &[&decision_id],
+            )
+            .await?;
+        Ok(row.get(0))
+    }
+
+    /// Active provenances (re)ingested in the last `days` days, of `sources` or
+    /// of all sources when empty.
+    #[tracing::instrument(name = "db.recent_provenance_uids", skip(self), fields(db.system = "postgresql"))]
+    pub async fn recent_provenance_uids(
+        &self,
+        days: i32,
+        sources: &[String],
+    ) -> Result<Vec<String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid FROM decision_sources \
+                 WHERE deleted_at IS NULL AND ingested_at > now() - make_interval(days => $1) \
+                   AND (cardinality($2::text[]) = 0 OR source = ANY($2)) \
+                 ORDER BY source_uid",
+                &[&days, &sources],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Moves one provenance onto `target`, and drops the decision it leaves when
+    /// it held no other.
+    #[tracing::instrument(name = "db.move_provenance", skip(self), fields(db.system = "postgresql"))]
+    pub async fn move_provenance(&self, source_uid: &str, target: i64) -> Result<i64> {
+        self.conn.batch_execute("BEGIN").await?;
+        let res = async {
+            let from: i64 = self
+                .conn
+                .query_one(
+                    "SELECT decision_id FROM decision_sources WHERE source_uid = $1",
+                    &[&source_uid],
+                )
+                .await?
+                .get(0);
+            self.conn
+                .execute(
+                    "UPDATE decision_sources SET decision_id = $2 WHERE source_uid = $1",
+                    &[&source_uid, &target],
+                )
+                .await?;
+            self.reconcile(target).await?;
+            self.reconcile(from).await?;
+            Ok(from)
+        }
+        .await;
+        match res {
+            Ok(from) => {
+                self.conn.batch_execute("COMMIT").await?;
+                Ok(from)
+            }
+            Err(e) => {
+                let _ = self.conn.batch_execute("ROLLBACK").await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Deletes a provenance outright, and its decision when it held no other.
+    #[tracing::instrument(name = "db.delete_provenance", skip(self), fields(db.system = "postgresql"))]
+    pub async fn delete_provenance(&self, source_uid: &str) -> Result<()> {
+        self.conn.batch_execute("BEGIN").await?;
+        let res = async {
+            let row = self
+                .conn
+                .query_one(
+                    "DELETE FROM decision_sources WHERE source_uid = $1 RETURNING decision_id",
+                    &[&source_uid],
+                )
+                .await?;
+            self.reconcile(row.get(0)).await
+        }
+        .await;
+        match res {
+            Ok(()) => {
+                self.conn.batch_execute("COMMIT").await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.batch_execute("ROLLBACK").await;
+                Err(e)
+            }
+        }
+    }
+
+    /// What resolving these provenances again needs.
+    #[tracing::instrument(name = "db.provenances_to_resolve", skip_all, fields(db.system = "postgresql", n = uids.len()))]
+    pub async fn provenances_to_resolve(
+        &self,
+        uids: &[String],
+    ) -> Result<Vec<ProvenanceToResolve>> {
+        let rows = self
+            .conn
+            .query(
+                &format!("SELECT s.decision_id, s.source_uid, coalesce(s.source_fields, 'null'::jsonb), \
+                   coalesce({text}, ''), \
+                   EXISTS (SELECT 1 FROM decision_sources o \
+                           WHERE o.decision_id = s.decision_id AND o.deleted_at IS NULL \
+                             AND o.source_uid <> s.source_uid) \
+                 FROM decision_sources s JOIN decisions d ON d.id = s.decision_id \
+                 WHERE s.source_uid = ANY($1) AND d.deleted_at IS NULL", text = super::pick::text("p.full_text", "d")),
+                &[&uids],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| ProvenanceToResolve {
+                decision_id: r.get(0),
+                source_uid: r.get(1),
+                source_fields: r.get(2),
+                read_text: r.get(3),
+                shared: r.get(4),
+            })
+            .collect())
+    }
+
+    /// The code `ensure_jurisdictions` gives this row, read without writing it.
+    pub(super) async fn court_code(&self, j: &JurisdictionRow) -> Result<String> {
+        let row = self
+            .conn
+            .query_opt(
+                "SELECT code FROM jurisdiction WHERE source_code = $1",
+                &[&j.source_code],
+            )
+            .await?;
+        Ok(match row {
+            Some(r) => r.get(0),
+            None => {
+                canonical_jurisdiction_code(&j.jurisdiction_type, j.city.as_deref(), &j.source_code)
+            }
+        })
+    }
+
+    async fn read_texts(&self, ids: &[i64]) -> Result<Vec<(i64, String)>> {
+        let rows = self
+            .conn
+            .query(
+                &format!(
+                    "SELECT t.decision_id, t.full_text FROM decision_text t \
+                     WHERE t.decision_id = ANY($1) AND {read} ORDER BY t.decision_id",
+                    read = super::pick::read("t")
+                ),
+                &[&ids],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
     /// Retrait d'une provenance, **toujours par `source_uid`** et jamais par
@@ -693,44 +1088,6 @@ impl DecisionRepository<'_> {
         Ok(self.conn.execute(&sql, &[]).await?)
     }
 
-    /// Détache un groupe de provenances faussement fusionnées du canonique vers une
-    /// **nouvelle** décision — l'inverse d'une fusion. Sous la transaction de
-    /// l'appelant : INSERT d'une ligne `decisions` squelette (identité posée via
-    /// `canonical_ref`, contenu rempli ensuite par la ré-ingestion), puis re-pointage
-    /// des `decision_sources` du groupe. **Idempotent** : un groupe déjà scindé ne
-    /// touche 0 ligne.
-    pub async fn create_split_decision(
-        &self,
-        canonical_id: i64,
-        group_source_uids: &[String],
-        jurisdiction_type: &str,
-        public_id: &str,
-        canonical_ref: &str,
-    ) -> Result<i64> {
-        // 1. Squelette : identité posée, contenu (full_text/chunks/embeddings) laissé
-        //    vide — rempli par la ré-ingestion du re-fetch (update_existing).
-        let new_id: i64 = self
-            .conn
-            .query_one(
-                "INSERT INTO decisions (jurisdiction_type, public_id, updated_at, \
-                   canonical_ref) \
-                 VALUES ($1, $2, $3, $4) RETURNING id",
-                &[&jurisdiction_type, &public_id, &now(), &canonical_ref],
-            )
-            .await?
-            .get(0);
-        // 2. Re-pointe le groupe : SEULEMENT les provenances encore sur le canonique
-        //    (idempotence : un groupe déjà déplacé ne rebouge pas).
-        self.conn
-            .execute(
-                "UPDATE decision_sources SET decision_id = $1 \
-                 WHERE source_uid = ANY($2) AND decision_id = $3",
-                &[&new_id, &group_source_uids, &canonical_id],
-            )
-            .await?;
-        Ok(new_id)
-    }
-
     /// Clusters de décisions actives à **fusionner** (faux splits cross-source) :
     /// même `canonical_ref`, ≥2 décisions actives, **sources disjointes**. La
     /// disjonction garantit qu'aucune fusion ne recolle deux provenances same-source ;
@@ -786,44 +1143,12 @@ impl DecisionRepository<'_> {
         Ok(groups)
     }
 
-    /// `source_uid` opendata des décisions dont l'autorité est opendata mais dont le
-    /// `full_text` reste figé sur l'autre provenance (rang 50). Cible du re-ingest
-    /// opendata ciblé : elles seules doivent re-parser leur payload pour que
-    /// `full_text`/chunks/embeddings repassent sur le texte opendata. Exclut les
-    /// décisions portant une provenance judilibre, qui reste autorité.
-    #[tracing::instrument(name = "db.opendata_source_uids_stale_authority", skip(self), fields(db.system = "postgresql"))]
-    pub async fn opendata_source_uids_stale_authority(&self) -> Result<Vec<String>> {
-        let rows = self
-            .conn
-            .query(
-                "
-                SELECT od.source_uid
-                FROM decision_sources od
-                WHERE od.source = 'opendata' AND od.deleted_at IS NULL
-                  AND EXISTS (
-                      SELECT 1 FROM decision_sources o
-                      WHERE o.decision_id = od.decision_id
-                        AND o.source <> 'opendata' AND o.source_rank = 50
-                        AND o.deleted_at IS NULL)
-                  AND NOT EXISTS (
-                      SELECT 1 FROM decision_sources j
-                      WHERE j.decision_id = od.decision_id
-                        AND j.source = 'judilibre' AND j.deleted_at IS NULL)
-                ",
-                &[],
-            )
-            .await?;
-        Ok(rows.into_iter().map(|r| r.get::<_, String>(0)).collect())
-    }
-
-    /// Fusionne `loser_id` dans `keeper_id` — l'inverse de
-    /// [`create_split_decision`](Self::create_split_decision). Re-pointe toutes les
-    /// provenances du perdant (actives + tombstonées) vers le gardien, puis `reconcile`
-    /// les deux : le perdant, sans provenance, est hard-delete. Transactionnel, sous
-    /// verrous ordonnés (anti-deadlock). **Sûr uniquement si les sources sont
-    /// disjointes**, ce que garantit
-    /// [`fetch_cross_source_merge_groups`](Self::fetch_cross_source_merge_groups). Le
-    /// contenu du gardien est conservé ; aucun re-embed. No-op si
+    /// Merges `loser_id` into `keeper_id`: repoints every provenance of the loser,
+    /// active and tombstoned, to the keeper, then `reconcile`s both, which hard-deletes
+    /// the loser left without provenance. Transactional, under ordered locks against
+    /// deadlocks. Safe only when the sources are disjoint, which
+    /// [`fetch_cross_source_merge_groups`](Self::fetch_cross_source_merge_groups)
+    /// guarantees. The keeper's content is kept, nothing is re-embedded. No-op when
     /// `keeper_id == loser_id`.
     #[tracing::instrument(name = "db.merge_into", skip(self), fields(db.system = "postgresql"))]
     pub async fn merge_into(&self, keeper_id: i64, loser_id: i64) -> Result<()> {
@@ -870,83 +1195,106 @@ impl DecisionRepository<'_> {
         Ok(())
     }
 
-    /// Provenances judilibre **perdantes** d'un faux merge intra-source : pour
-    /// chaque décision portant ≥2 provenances judilibre actives, celles de rang
-    /// non-autoritaire (`row_number > 1` sur `source_rank DESC, source_uid ASC`).
-    /// Renvoie `(decision_id, source_uid, source_fields)` triées par `decision_id`. Le
-    /// `source_fields` porte `jurisdiction` + `decision_date`, de quoi localiser le
-    /// payload dans le cache local. Tombstonées exclues : on ne re-matérialise jamais
-    /// ce que judilibre a supprimé.
-    pub async fn fetch_same_source_judilibre_losers(&self) -> Result<Vec<(i64, String, Value)>> {
-        let rows = self
-            .conn
-            .query(
-                "WITH ranked AS ( \
-                   SELECT s.decision_id, s.source_uid, s.source_fields, \
-                          row_number() OVER (PARTITION BY s.decision_id \
-                                             ORDER BY s.source_rank DESC, s.source_uid ASC) AS rn \
-                   FROM decision_sources s \
-                   WHERE s.deleted_at IS NULL AND s.source = 'judilibre' \
-                     AND s.decision_id IN ( \
-                       SELECT decision_id FROM decision_sources \
-                       WHERE deleted_at IS NULL AND source = 'judilibre' \
-                       GROUP BY decision_id HAVING count(*) >= 2) \
-                 ) \
-                 SELECT decision_id, source_uid, source_fields FROM ranked \
-                 WHERE rn > 1 ORDER BY decision_id",
-                &[],
-            )
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                (
-                    r.get::<_, i64>(0),
-                    r.get::<_, String>(1),
-                    r.get::<_, Value>(2),
-                )
-            })
-            .collect())
+    /// Absorbs `copy` into `keeper`, the decision it was published from under another
+    /// number: what pointed at the copy follows its provenances.
+    #[tracing::instrument(name = "db.absorb_into", skip(self), fields(db.system = "postgresql"))]
+    pub async fn absorb_into(&self, copy: i64, keeper: i64) -> Result<()> {
+        self.conn.batch_execute("BEGIN").await?;
+        let res = self.absorb_into_locked(copy, keeper).await;
+        match res {
+            Ok(()) => {
+                self.conn.batch_execute("COMMIT").await?;
+                Ok(())
+            }
+            Err(e) => {
+                let _ = self.conn.batch_execute("ROLLBACK").await;
+                Err(e)
+            }
+        }
     }
 
-    /// Provenances **perdantes** d'un faux merge intra-source `dila-jade`, analogue
-    /// de [`Self::fetch_same_source_judilibre_losers`]. La re-matérialisation DILA
-    /// passe par un streaming des tarballs, non indexés par décision : pas besoin du
-    /// `source_fields`, on renvoie `canonical_ref` et `jurisdiction_type` de la
-    /// décision pour amorcer le squelette de `create_split_decision`. Tombstonées
-    /// exclues.
-    pub async fn fetch_same_source_dila_jade_losers(
-        &self,
-    ) -> Result<Vec<(i64, String, Option<String>, Option<String>)>> {
+    async fn absorb_into_locked(&self, copy: i64, keeper: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "WITH links AS (
+                     UPDATE decision_links SET target_decision_id = $1 WHERE target_decision_id = $2),
+                 cites AS (
+                     UPDATE case_citation SET target_decision_id = $1 WHERE target_decision_id = $2),
+                 text_cites AS (
+                     UPDATE text_case_citation SET target_decision_id = $1 WHERE target_decision_id = $2),
+                 renvois AS (
+                     UPDATE decision_renvoi SET target_decision_id = $1 WHERE target_decision_id = $2)
+                 UPDATE user_bookmarks b SET decision_id = $1
+                 WHERE b.decision_id = $2
+                   AND NOT EXISTS (SELECT 1 FROM user_bookmarks k
+                                   WHERE k.user_sub = b.user_sub AND k.decision_id = $1)",
+                &[&keeper, &copy],
+            )
+            .await?;
+        self.merge_into_locked(keeper, copy).await
+    }
+
+    /// Each Judilibre record without an operative part, beside a decision of its court, day
+    /// and chamber that has one and speaks of a joinder, on a day fed in the last `days`.
+    #[tracing::instrument(name = "db.joinder_copy_pairs", skip(self), fields(db.system = "postgresql"))]
+    pub async fn joinder_copy_pairs(&self, days: i32) -> Result<Vec<JoinderPair>> {
+        // OFFSET 0 keeps one index lookup per copy: the planner overestimates the copies
+        // and would hash every Judilibre record instead.
         let rows = self
             .conn
             .query(
-                "WITH ranked AS ( \
-                   SELECT s.decision_id, s.source_uid, \
-                          row_number() OVER (PARTITION BY s.decision_id \
-                                             ORDER BY s.source_rank DESC, s.source_uid ASC) AS rn \
-                   FROM decision_sources s \
-                   WHERE s.deleted_at IS NULL AND s.source = 'dila-jade' \
-                     AND s.decision_id IN ( \
-                       SELECT decision_id FROM decision_sources \
-                       WHERE deleted_at IS NULL AND source = 'dila-jade' \
-                       GROUP BY decision_id HAVING count(*) >= 2) \
-                 ) \
-                 SELECT r.decision_id, r.source_uid, d.canonical_ref, d.jurisdiction_type \
-                 FROM ranked r JOIN decisions d ON d.id = r.decision_id \
-                 WHERE r.rn > 1 ORDER BY r.decision_id",
-                &[],
+                &format!(
+                    r#"WITH copy AS MATERIALIZED (
+                         SELECT ds.decision_id, ds.source_fields->>'chamber' AS chamber,
+                                d.jurisdiction_code, d.date_lecture, d.docket_numbers
+                         FROM decision_sources ds
+                         JOIN decisions d ON d.id = ds.decision_id AND d.deleted_at IS NULL
+                         WHERE ds.source = 'judilibre' AND ds.deleted_at IS NULL
+                           AND NOT ds.source_fields->'sections' @> '[{{"kind":"dispositif"}}]'
+                           AND NOT EXISTS (SELECT 1 FROM decision_sources o
+                                           WHERE o.decision_id = ds.decision_id AND o.deleted_at IS NULL
+                                             AND o.source_fields->'sections' @> '[{{"kind":"dispositif"}}]')),
+                     fresh AS MATERIALIZED (
+                         SELECT d.jurisdiction_code, d.date_lecture
+                         FROM decision_sources s JOIN decisions d ON d.id = s.decision_id
+                         WHERE s.source = 'judilibre' AND s.ingested_at > now() - make_interval(days => $1)),
+                     pair AS MATERIALIZED (
+                         SELECT c.decision_id AS copy, c.docket_numbers, k.id AS keeper
+                         FROM copy c
+                         CROSS JOIN LATERAL (
+                             SELECT k.id
+                             FROM decisions k
+                             JOIN decision_sources ks ON ks.decision_id = k.id AND ks.source = 'judilibre'
+                                                     AND ks.deleted_at IS NULL
+                                                     AND ks.source_fields->'sections' @> '[{{"kind":"dispositif"}}]'
+                                                     AND ks.source_fields->>'chamber' IS NOT DISTINCT FROM c.chamber
+                             WHERE k.jurisdiction_code = c.jurisdiction_code AND k.date_lecture = c.date_lecture
+                               AND k.deleted_at IS NULL AND k.id <> c.decision_id
+                             OFFSET 0) k
+                         WHERE EXISTS (SELECT 1 FROM fresh f
+                                       WHERE f.jurisdiction_code = c.jurisdiction_code
+                                         AND f.date_lecture = c.date_lecture))
+                     SELECT * FROM (
+                         SELECT pr.copy, pr.docket_numbers, {copy_text} AS copy_text,
+                                pr.keeper, {keeper_text} AS keeper_text
+                         FROM pair pr
+                         JOIN decisions cd ON cd.id = pr.copy
+                         JOIN decisions kd ON kd.id = pr.keeper) t
+                     WHERE t.copy_text IS NOT NULL AND t.keeper_text ~* 'jonction|\mjoint'"#,
+                    copy_text = super::pick::text("p.full_text", "cd"),
+                    keeper_text = super::pick::text("p.full_text", "kd"),
+                ),
+                &[&days],
             )
             .await?;
         Ok(rows
             .into_iter()
-            .map(|r| {
-                (
-                    r.get::<_, i64>(0),
-                    r.get::<_, String>(1),
-                    r.get::<_, Option<String>>(2),
-                    r.get::<_, Option<String>>(3),
-                )
+            .map(|r| JoinderPair {
+                copy: r.get(0),
+                dockets: r.get::<_, Option<Vec<String>>>(1).unwrap_or_default(),
+                copy_text: r.get(2),
+                keeper: r.get(3),
+                keeper_text: r.get(4),
             })
             .collect())
     }
@@ -969,33 +1317,6 @@ impl DecisionRepository<'_> {
         Ok(rows
             .into_iter()
             .map(|r| (r.get::<_, i32>(0), r.get::<_, i64>(1)))
-            .collect())
-    }
-
-    /// Index de rattachement ArianeWeb : une entrée par (n° de dossier, date de
-    /// lecture ISO) des décisions CE actives — `docket_numbers` dénesté. Chargé une
-    /// fois par run `sync-ariane`, la jointure se fait en mémoire.
-    #[tracing::instrument(name = "db.ce_docket_date_index", skip(self), fields(db.system = "postgresql"))]
-    pub async fn ce_docket_date_index(&self) -> Result<Vec<(String, String, i64)>> {
-        let rows = self
-            .conn
-            .query(
-                "SELECT unnest(docket_numbers), date_lecture::text, id \
-                 FROM decisions \
-                 WHERE jurisdiction_type = 'CE' AND deleted_at IS NULL \
-                   AND date_lecture IS NOT NULL",
-                &[],
-            )
-            .await?;
-        Ok(rows
-            .into_iter()
-            .map(|r| {
-                (
-                    r.get::<_, String>(0),
-                    r.get::<_, String>(1),
-                    r.get::<_, i64>(2),
-                )
-            })
             .collect())
     }
 
@@ -1128,8 +1449,8 @@ impl DecisionRepository<'_> {
     }
 
     /// Slug of the law bearing each of these numbers (`2014-873`), through the
-    /// slug that prefixes them. 366 of the 420 numbers cited in a HAL deposit's
-    /// title resolve there: the rest predates the corpus or is misspelt.
+    /// slug that prefixes them. Most numbers cited in a HAL deposit's title
+    /// resolve there: the rest predates the corpus or is misspelt.
     #[tracing::instrument(name = "db.law_slugs_by_numbers", skip(self, numbers), fields(db.system = "postgresql"))]
     pub async fn law_slugs_by_numbers(&self, numbers: &[String]) -> Result<Vec<(String, String)>> {
         let rows = self
@@ -1192,20 +1513,20 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// Cassation decisions carrying one of these docket numbers, with the
-    /// number that matched.
+    /// Cassation decisions carrying one of these docket numbers, with their
+    /// date.
     ///
-    /// The number alone is not unique: 11 989 of the 598 148 borne by the
-    /// fonds are shared by several decisions, which all get the link.
+    /// The number alone is not unique: a number shared by several decisions of the
+    /// fonds gives the link to all of them.
     #[tracing::instrument(name = "db.cassation_decisions_by_dockets", skip(self, dockets), fields(db.system = "postgresql"))]
     pub async fn cassation_decisions_by_dockets(
         &self,
         dockets: &[String],
-    ) -> Result<Vec<(i64, String, String)>> {
+    ) -> Result<Vec<(i64, String, Option<NaiveDate>)>> {
         let rows = self
             .conn
             .query(
-                "SELECT d.id, d.public_id, x.dk \
+                "SELECT d.id, d.public_id, d.date_lecture \
                  FROM decisions d, unnest(d.docket_numbers) x(dk) \
                  WHERE lj_docket_keys(d.docket_numbers) && lj_docket_keys($1) \
                    AND x.dk = ANY($1) \
@@ -1219,8 +1540,32 @@ impl DecisionRepository<'_> {
                 (
                     r.get::<_, i64>(0),
                     r.get::<_, String>(1),
-                    r.get::<_, String>(2),
+                    r.get::<_, Option<NaiveDate>>(2),
                 )
+            })
+            .collect())
+    }
+
+    /// Publisher and title of every note a `source` links, by decision.
+    #[tracing::instrument(name = "db.web_note_heads", skip(self), fields(db.system = "postgresql"))]
+    pub async fn web_note_heads(&self, source: &str) -> Result<Vec<WebNoteHead>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT ds.decision_id, c->>'publisher', c->>'title' \
+                 FROM decision_sources ds \
+                 CROSS JOIN LATERAL jsonb_array_elements(ds.source_fields->'commentaires') c \
+                 WHERE ds.source = $1 AND ds.deleted_at IS NULL \
+                   AND jsonb_typeof(ds.source_fields->'commentaires') = 'array'",
+                &[&source],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| WebNoteHead {
+                decision_id: r.get(0),
+                publisher: r.get(1),
+                title: r.get(2),
             })
             .collect())
     }
@@ -1241,5 +1586,24 @@ impl DecisionRepository<'_> {
             .into_iter()
             .map(|r| (r.get::<_, String>(0), r.get::<_, String>(1)))
             .collect())
+    }
+
+    /// Tombstones a `source`'s web commentary bundles absent from `keep`. Such a
+    /// bundle never carries its decision's text, so no `reconcile` follows.
+    #[tracing::instrument(name = "db.tombstone_absent_web_commentaries", skip(self, keep), fields(db.system = "postgresql"))]
+    pub async fn tombstone_absent_web_commentaries(
+        &self,
+        source: &str,
+        keep: &[String],
+    ) -> Result<u64> {
+        Ok(self
+            .conn
+            .execute(
+                "UPDATE decision_sources SET deleted_at = NOW() \
+                 WHERE source = $1 AND deleted_at IS NULL \
+                   AND NOT (source_uid = ANY($2))",
+                &[&source, &keep],
+            )
+            .await?)
     }
 }

@@ -28,10 +28,13 @@ pub struct HalDeposit {
     /// `file` when full text is deposited, `notice` otherwise.
     pub submit_type: String,
     pub domains: Vec<String>,
+    /// The publisher's pages of the published version, verbatim from `publisherLink_s`.
+    pub publisher_links: Vec<String>,
 }
 
 impl HalDeposit {
-    fn haystack(&self) -> String {
+    /// The fields a deposit names its commented decision in.
+    pub fn haystack(&self) -> String {
         let mut parts = vec![self.title.clone()];
         parts.extend(self.subtitle.clone());
         parts.extend(self.abstract_text.clone());
@@ -39,31 +42,57 @@ impl HalDeposit {
         parts.join(" \n ")
     }
 
-    /// Of 145 accepted matches, 143 were classified `1.shs.droit` and the 2
-    /// others were the campaign's only false positives.
+    /// The accepted matches outside `1.shs.droit` were false positives.
     pub fn is_law(&self) -> bool {
         self.domains.iter().any(|d| d == "1.shs.droit")
     }
+
+    /// HAL when the text is deposited there, else the publisher's page of the
+    /// article; a notice with neither is not linked.
+    pub fn link(&self) -> Option<String> {
+        if self.submit_type == "file" {
+            return (!self.uri.is_empty()).then(|| self.uri.clone());
+        }
+        self.publisher_links
+            .iter()
+            .map(|l| l.trim())
+            .find(|l| is_article_page(l))
+            .map(str::to_string)
+    }
 }
 
-/// The cassation docket shape, `NN-NN.NNN`, as deposits write it. The leading
+/// A `publisherLink_s` may be a bare homepage, lack a scheme, or be a university
+/// proxy's rewrite of the host (`www-editeur-fr.ezproxy.univ.fr`), closed to the public.
+fn is_article_page(link: &str) -> bool {
+    let Some(rest) = link
+        .strip_prefix("https://")
+        .or_else(|| link.strip_prefix("http://"))
+    else {
+        return false;
+    };
+    let (host, path) = rest.split_once('/').unwrap_or((rest, ""));
+    host.trim_end_matches('.').contains('.')
+        && !host.starts_with("www-")
+        && !path.trim_matches('/').is_empty()
+}
+
+/// The cassation docket shape, `NN-NN.NNN`, as notes write it. The leading
 /// hyphen is required and `/` is excluded: a court of appeal roll number
-/// carries the same digits (`21/16169` against `21-16.169`) and matched 5
-/// deposits wrongly over the measurement campaign.
+/// carries the same digits (`21/16169` against `21-16.169`) and matched
+/// deposits wrongly.
 static DOCKET: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(\d{2})\s?[-\u{2011}]\s?(\d{2})\s?[.\-\u{00a0}\s]?\s?(\d{3})")
         .expect("docket regex")
 });
 
-/// Docket numbers cited by a deposit, normalised to `NN-NN.NNN`, in order of
+/// Docket numbers cited by a text, normalised to `NN-NN.NNN`, in order of
 /// appearance and deduplicated.
 ///
 /// The `regex` crate has no look-around, so the digit boundaries the pattern
 /// cannot express are checked on each match.
-pub fn extract_dockets(deposit: &HalDeposit) -> Vec<String> {
-    let hay = deposit.haystack();
+pub fn extract_dockets(hay: &str) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
-    for c in DOCKET.captures_iter(&hay) {
+    for c in DOCKET.captures_iter(hay) {
         let m = c.get(0).expect("group 0");
         let before = hay[..m.start()].chars().next_back();
         let after = hay[m.end()..].chars().next();
@@ -80,9 +109,8 @@ pub fn extract_dockets(deposit: &HalDeposit) -> Vec<String> {
 
 /// Law numbers cited in the deposit's title, `AAAA-NNN` or `AA-NNN`.
 ///
-/// Title and subtitle only: 2 175 deposits name a law somewhere, 728 name it
-/// in their title, and only those are about the law rather than merely citing
-/// it. Same precision guard as the docket anchor.
+/// Title and subtitle only: a deposit naming a law there is about the law, one
+/// naming it elsewhere merely cites it. Same precision guard as the docket anchor.
 pub fn extract_law_numbers(deposit: &HalDeposit) -> Vec<String> {
     let mut hay = deposit.title.clone();
     if let Some(sub) = &deposit.subtitle {
@@ -113,7 +141,11 @@ fn tidy(field: &Option<String>) -> Option<String> {
 }
 
 /// Assembles the outbound link of one deposit; no body is stored.
+///
+/// # Panics
+/// On a deposit [`HalDeposit::link`] does not link.
 pub fn build_hal_source_fields(deposit: &HalDeposit) -> Value {
+    let url = deposit.link().expect("a linked deposit");
     json!({
         "commentaires": [{
             "kind": "note",
@@ -124,8 +156,7 @@ pub fn build_hal_source_fields(deposit: &HalDeposit) -> Value {
             "issue": tidy(&deposit.issue),
             "pages": tidy(&deposit.pages),
             "date": deposit.year.map(|y| y.to_string()),
-            "url": deposit.uri,
-            "access": if deposit.submit_type == "file" { "libre" } else { "abonnes" },
+            "url": url,
         }]
     })
 }
@@ -134,12 +165,15 @@ pub fn build_hal_source_fields(deposit: &HalDeposit) -> Value {
 mod tests {
     use super::*;
 
+    const ARTICLE: &str = "https://www.editeur.fr/documentation/Document?id=CHRON/2016/0033";
+
     fn deposit(field: &str, value: &str) -> HalDeposit {
         let mut d = HalDeposit {
             hal_id: "hal-1".into(),
             uri: "https://hal.science/hal-1".into(),
             submit_type: "notice".into(),
             domains: vec!["1.shs.droit".into()],
+            publisher_links: vec![ARTICLE.into()],
             ..Default::default()
         };
         match field {
@@ -155,7 +189,7 @@ mod tests {
     fn separators_normalise_to_one_form() {
         for form in ["17-17.319", "17-17319", "17 - 17.319", "17-17 319"] {
             assert_eq!(
-                extract_dockets(&deposit("title", &format!("Note sous {form}"))),
+                extract_dockets(&deposit("title", &format!("Note sous {form}")).haystack()),
                 vec!["17-17.319".to_string()],
                 "{form} should normalise"
             );
@@ -164,20 +198,20 @@ mod tests {
 
     #[test]
     fn court_of_appeal_roll_number_is_not_a_docket() {
-        assert!(extract_dockets(&deposit("title", "CA Paris, 21/16169")).is_empty());
+        assert!(extract_dockets(&deposit("title", "CA Paris, 21/16169").haystack()).is_empty());
     }
 
     #[test]
     fn a_longer_number_is_not_sliced_into_a_docket() {
-        assert!(extract_dockets(&deposit("title", "n° 17-17.3190")).is_empty());
-        assert!(extract_dockets(&deposit("title", "n° 917-17.319")).is_empty());
+        assert!(extract_dockets("n° 17-17.3190").is_empty());
+        assert!(extract_dockets("n° 917-17.319").is_empty());
     }
 
     #[test]
     fn all_four_fields_are_read() {
         for field in ["title", "subtitle", "abstract", "keywords"] {
             assert_eq!(
-                extract_dockets(&deposit(field, "pourvoi numéro 12-27.299")),
+                extract_dockets(&deposit(field, "pourvoi numéro 12-27.299").haystack()),
                 vec!["12-27.299".to_string()],
                 "{field} should be read"
             );
@@ -188,12 +222,15 @@ mod tests {
     fn several_dockets_come_back_deduplicated() {
         let mut d = deposit("title", "Cass. com., n° 20-15.488 et n° 20-10.147");
         d.abstract_text = Some("retour sur 20-15.488".into());
-        assert_eq!(extract_dockets(&d), vec!["20-15.488", "20-10.147"]);
+        assert_eq!(
+            extract_dockets(&d.haystack()),
+            vec!["20-15.488", "20-10.147"]
+        );
     }
 
     #[test]
     fn a_deposit_naming_nothing_yields_nothing() {
-        assert!(extract_dockets(&deposit("title", "Le droit des contrats en 2026")).is_empty());
+        assert!(extract_dockets("Le droit des contrats en 2026").is_empty());
     }
 
     #[test]
@@ -205,17 +242,29 @@ mod tests {
         open.year = Some(2018);
         let v = build_hal_source_fields(&open);
         let c = &v["commentaires"][0];
-        assert_eq!(c["access"], "libre");
         assert_eq!(c["publisher"], "RTDCiv");
         assert_eq!(c["author"], "P. Jourdain");
         assert_eq!(c["date"], "2018");
         assert_eq!(c["kind"], "note");
+    }
 
-        let notice = deposit("title", "Obs.");
-        assert_eq!(
-            build_hal_source_fields(&notice)["commentaires"][0]["access"],
-            "abonnes"
-        );
+    #[test]
+    fn a_notice_links_to_its_article_at_the_publisher_or_not_at_all() {
+        let mut open = deposit("title", "Note");
+        open.submit_type = "file".into();
+        assert_eq!(open.link().as_deref(), Some("https://hal.science/hal-1"));
+
+        let mut notice = deposit("title", "Note");
+        notice.publisher_links = vec![
+            "https://www.editeur.fr/".into(),
+            "Editeur".into(),
+            "https://www-editeur-fr.ezproxy.univ.fr/documentation/x".into(),
+            format!(" {ARTICLE} "),
+        ];
+        assert_eq!(notice.link().as_deref(), Some(ARTICLE));
+
+        notice.publisher_links.pop();
+        assert_eq!(notice.link(), None);
     }
 
     #[test]

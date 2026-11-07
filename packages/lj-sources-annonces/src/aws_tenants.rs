@@ -251,8 +251,8 @@ pub async fn enumerate() -> Result<MoteurRun> {
             .collect()
             .await;
     let mut run = MoteurRun {
-        // The header counts notices where the list renders consultations: 100
-        // against 59 on the Haute-Garonne on 15/09/2026, under the 90 % floor.
+        // The header counts notices where the list renders consultations, which
+        // would fall under the 90 % floor.
         annonce: None,
         echecs: 0,
         hotes: Vec::new(),

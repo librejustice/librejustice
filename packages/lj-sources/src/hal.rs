@@ -11,8 +11,7 @@ pub const BASE_URL: &str = "https://api.archives-ouvertes.fr/search/";
 pub const USER_AGENT: &str = "LibreJusticeBot/0.1 (+https://librejustice.fr)";
 pub const THROTTLE: Duration = Duration::from_millis(1100);
 
-/// Law deposits per page. The whole fonds is 238 368 notices (21/09/2026), so
-/// a full scan is ~240 requests.
+/// Law deposits per page.
 pub const PAGE: usize = 1_000;
 
 /// Opening value of `cursorMark`, Solr's deep-paging token.
@@ -20,7 +19,7 @@ pub const CURSOR_START: &str = "*";
 
 const FIELDS: &str = "halId_s,title_s,subTitle_s,abstract_s,keyword_s,authFullName_s,\
                       journalTitle_s,volume_s,issue_s,page_s,producedDateY_i,uri_s,\
-                      submitType_s,domain_s";
+                      submitType_s,domain_s,publisherLink_s";
 
 pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
@@ -29,6 +28,107 @@ pub fn http_client() -> reqwest::Client {
         .timeout(Duration::from_secs(120))
         .build()
         .expect("reqwest client build")
+}
+
+/// The client of a job whose every request, files included, leaves through `proxy`.
+pub fn http_client_via(proxy: &str) -> Result<reqwest::Client> {
+    Ok(reqwest::Client::builder()
+        .user_agent(USER_AGENT)
+        .proxy(reqwest::Proxy::all(proxy)?)
+        .connect_timeout(Duration::from_secs(15))
+        .timeout(Duration::from_secs(240))
+        .build()?)
+}
+
+/// A file above this size is a scanned book or a corpus annex.
+pub const MAX_FILE_BYTES: usize = 80_000_000;
+
+/// A French law deposit with a file, and where HAL serves it.
+#[derive(Debug, Clone)]
+pub struct HalFile {
+    pub hal_id: String,
+    pub url: String,
+}
+
+pub struct HalFilePage {
+    pub files: Vec<HalFile>,
+    pub next_cursor: String,
+    pub total: usize,
+}
+
+/// The French law deposits with a file, sound and pictures out; `None` takes the whole fonds.
+pub async fn scan_files(
+    client: &reqwest::Client,
+    window_days: Option<u32>,
+    cursor: &str,
+) -> Result<HalFilePage> {
+    let mut query = "domain_s:1.shs.droit AND submitType_s:file AND language_s:fr \
+                     AND -docType_s:(VIDEO OR SON OR IMG OR MAP OR SOFTWARE OR POSTER)"
+        .to_string();
+    if let Some(d) = window_days {
+        query.push_str(&format!(" AND submittedDate_tdate:[NOW-{d}DAYS TO NOW]"));
+    }
+    let rows = PAGE.to_string();
+    let url = url::Url::parse_with_params(
+        BASE_URL,
+        &[
+            ("q", query.as_str()),
+            ("wt", "json"),
+            ("rows", rows.as_str()),
+            ("sort", "docid asc"),
+            ("cursorMark", cursor),
+            ("fl", "halId_s,fileMain_s"),
+        ],
+    )
+    .map_err(|e| SourceError::Invalid(format!("hal url: {e}")))?;
+    let resp = client.get(url).send().await?;
+    if resp.status().as_u16() != 200 {
+        return Err(SourceError::Invalid(format!(
+            "hal: status {}",
+            resp.status()
+        )));
+    }
+    let body: serde_json::Value = sonic_rs::from_str(&resp.text().await?)?;
+    let docs = body["response"]["docs"]
+        .as_array()
+        .ok_or_else(|| SourceError::Invalid("hal: answer without docs".to_string()))?;
+    Ok(HalFilePage {
+        files: docs
+            .iter()
+            .filter_map(|d| {
+                Some(HalFile {
+                    hal_id: first_str(&d["halId_s"])?,
+                    url: first_str(&d["fileMain_s"])?,
+                })
+            })
+            .collect(),
+        next_cursor: body["nextCursorMark"]
+            .as_str()
+            .ok_or_else(|| SourceError::Invalid("hal: answer without nextCursorMark".to_string()))?
+            .to_string(),
+        total: body["response"]["numFound"].as_u64().unwrap_or(0) as usize,
+    })
+}
+
+/// A deposit's main file, `None` when HAL serves no PDF under [`MAX_FILE_BYTES`], a refusal
+/// a retry would meet again; an error is the network's or the server's.
+pub async fn fetch_file(client: &reqwest::Client, url: &str) -> Result<Option<Vec<u8>>> {
+    let mut resp = client.get(url).send().await?;
+    let status = resp.status();
+    if status.as_u16() == 429 || status.is_server_error() {
+        return Err(SourceError::Invalid(format!("hal file: status {status}")));
+    }
+    if !status.is_success() {
+        return Ok(None);
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = resp.chunk().await? {
+        bytes.extend_from_slice(&chunk);
+        if bytes.len() > MAX_FILE_BYTES {
+            return Ok(None);
+        }
+    }
+    Ok(bytes.starts_with(b"%PDF-").then_some(bytes))
 }
 
 /// One page of law deposits and the token that opens the next one.
@@ -42,7 +142,7 @@ pub struct HalPage {
 /// submission date; `None` takes the whole fonds.
 ///
 /// `submittedDate_tdate` and not `modifiedDate_tdate`: HAL re-touches its
-/// notices constantly, 4 219 a week against 412 submitted.
+/// notices constantly, far more often than it receives new ones.
 pub async fn scan_page(
     client: &reqwest::Client,
     window_days: Option<u32>,
@@ -128,6 +228,7 @@ fn deposit_from_doc(d: &serde_json::Value) -> HalDeposit {
         uri: first_str(&d["uri_s"]).unwrap_or_default(),
         submit_type: first_str(&d["submitType_s"]).unwrap_or_default(),
         domains: all_str(&d["domain_s"]),
+        publisher_links: all_str(&d["publisherLink_s"]),
     }
 }
 

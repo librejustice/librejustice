@@ -1,12 +1,11 @@
 //! BOAMP Opendatasoft — la colonne structurée du fond marchés.
 //!
-//! `boamp-datadila.opendatasoft.com`, dataset `boamp`, API Explore v2.1. Stock
-//! actif = `datefindiffusion >= now()`. L'offset ODS est plafonné à 10 000 et le
-//! stock actif le dépasse — des avis SAD restent diffusés des années : on fenêtre
-//! par `dateparution` en coupant récursivement toute fenêtre trop pleine. Le blob
-//! `donnees` (eForms/UBL, FNSimple ou legacy, 10-50 Ko) donne le SIRET acheteur et
-//! les liens profonds vers les profils d'acheteurs — parsé puis **jeté** : seuls
-//! les champs normalisés survivent.
+//! `boamp-datadila.opendatasoft.com`, dataset `boamp`, API Explore v2.1. The live
+//! stock is `datefindiffusion >= now()`. It passes the ODS offset cap, SAD notices
+//! staying on air for years, so it is windowed by `dateparution`, any window too
+//! full cut in two recursively. The `donnees` blob (eForms/UBL, FNSimple or legacy)
+//! gives the buyer's SIRET and the deep links to the buyer profiles: parsed, then
+//! **dropped**, only the normalised fields surviving.
 
 use std::collections::HashSet;
 use std::sync::LazyLock;
@@ -38,7 +37,7 @@ const EXPORTS: &str =
     "https://boamp-datadila.opendatasoft.com/api/explore/v2.1/catalog/datasets/boamp/exports/jsonl";
 const SELECT: &str = "idweb,nomacheteur,objet,dateparution,datelimitereponse,type_marche,\
      code_departement,url_avis,etat,annonce_lie,descripteur_libelle,donnees";
-/// Marge sous le plafond d'offset ODS (10 000).
+/// Margin under the ODS offset cap.
 const FENETRE_MAX: u64 = 9_000;
 const PAGE: u64 = 100;
 /// Politesse : l'upstream `*-datadila` sert aussi le proxy live des fiches

@@ -88,7 +88,6 @@ pub fn sync_opendata(data_dir: &Path, force: bool) -> Result<Manifest> {
                 fetched_at: None,
                 status: default_status(),
                 fully_ingested: false,
-                embeddings_complete: false,
             });
 
             // Fraîcheur pilotée par le registry : un ZIP déjà `ok` n'est re-téléchargé
@@ -232,7 +231,6 @@ fn download_one(
     entry.fetched_at = Some(Manifest::now_iso_seconds());
     entry.status = "ok".to_string();
     entry.fully_ingested = false;
-    entry.embeddings_complete = false;
     Ok(())
 }
 
@@ -267,7 +265,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn build_opendata_url_matches_python() {
+    fn build_opendata_url_paths_by_court_and_month() {
         assert_eq!(
             build_opendata_url("TA", "202603"),
             "https://opendata.justice-administrative.fr/DTA/2026/03/TA_202603.zip"

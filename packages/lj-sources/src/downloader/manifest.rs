@@ -10,7 +10,7 @@ use crate::error::{Result, SourceError};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
@@ -43,8 +43,6 @@ pub struct Entry {
     pub status: String,
     #[serde(default)]
     pub fully_ingested: bool,
-    #[serde(default)]
-    pub embeddings_complete: bool,
 }
 
 pub(super) fn default_status() -> String {
@@ -70,8 +68,6 @@ pub struct MonthState {
     pub last_fetched_at: Option<String>,
     #[serde(default)]
     pub fully_ingested: bool,
-    #[serde(default)]
-    pub embeddings_complete: bool,
     #[serde(default)]
     pub ingested_size: Option<u64>,
     #[serde(default)]
@@ -115,6 +111,11 @@ pub struct Manifest {
     pub history_watermark: Option<String>,
     /// `from_id` opaque (source de vérité du flux transactionnel).
     pub history_cursor: Option<String>,
+    /// Ids whose `/decision` failed after the cursor moved past them, asked
+    /// again at the next pass.
+    pub history_failed: BTreeSet<String>,
+    /// Ids the reconciliation fetched, never fetched by it again.
+    pub reconciled: BTreeSet<String>,
 }
 
 #[derive(Serialize)]
@@ -134,6 +135,8 @@ struct JudilibreManifestOut<'a> {
     updated_at: String,
     history_watermark: &'a Option<String>,
     history_cursor: &'a Option<String>,
+    history_failed: &'a BTreeSet<String>,
+    reconciled: &'a BTreeSet<String>,
     jurisdictions: &'a BTreeMap<String, JurState>,
 }
 
@@ -175,6 +178,8 @@ impl Manifest {
                 .get("history_cursor")
                 .and_then(|v| v.as_str())
                 .map(str::to_string);
+            manifest.history_failed = id_set(obj, "history_failed");
+            manifest.reconciled = id_set(obj, "reconciled");
             Ok(manifest)
         } else {
             let parsed: OpendataManifestIn = serde_json::from_value(value)
@@ -203,6 +208,8 @@ impl Manifest {
                 updated_at: Self::now_iso_seconds(),
                 history_watermark: &self.history_watermark,
                 history_cursor: &self.history_cursor,
+                history_failed: &self.history_failed,
+                reconciled: &self.reconciled,
                 jurisdictions: &self.jurisdictions,
             })
         } else {
@@ -221,6 +228,19 @@ impl Manifest {
         fs::rename(&tmp, path)?;
         Ok(())
     }
+}
+
+/// The string array under `key`, empty when absent.
+fn id_set(obj: &serde_json::Map<String, Value>, key: &str) -> BTreeSet<String> {
+    obj.get(key)
+        .and_then(Value::as_array)
+        .map(|ids| {
+            ids.iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Parse une entrée `jurisdictions[jur]`, en migrant l'ancien format au passage
@@ -287,7 +307,6 @@ mod tests {
                 fetched_at: None,
                 status: "ok".to_string(),
                 fully_ingested: true,
-                embeddings_complete: false,
             },
         );
         m.save(&path).unwrap();

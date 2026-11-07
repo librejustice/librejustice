@@ -293,8 +293,8 @@ pub fn parse_dite_loi(texte: &str) -> Vec<DiteLoiCandidat> {
     out
 }
 
-/// Numéro et date ISO d'une loi du catalogue, lus dans son titre : `date_texte`
-/// manque pour 3 568 des 13 323 lois, le titre les porte toutes.
+/// Number and ISO date of a catalogue law, read in its title: `date_texte` is often
+/// missing, the title always carries both.
 pub fn parse_titre_loi(titre: &str) -> Option<(String, String)> {
     let numero = TITRE_LOI.captures(titre)?;
     let apres = &titre[numero.get(0)?.end()..];

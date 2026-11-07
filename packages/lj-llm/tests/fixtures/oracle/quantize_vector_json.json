@@ -1,5 +1,5 @@
 {
-  "_provenance": "généré depuis l'oracle Python (librejustice_core.embedding.quantize.to_vector_json). NE PAS éditer à la main. Asservi par lj-embedding::quantize::tests.",
+  "_provenance": "Expected output of to_vector_json, case by case. Held by lj-llm quantize::tests.",
   "cases": [
     {
       "name": "simple_halves",

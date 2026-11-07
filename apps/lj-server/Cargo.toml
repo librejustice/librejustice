@@ -19,7 +19,7 @@ lj-norm = { workspace = true }
 lj-crawlers = { workspace = true }
 lj-vocab = { workspace = true }
 lj-web = { workspace = true, features = ["ssr"] }
-lj-store = { workspace = true }
+lj-pg = { workspace = true }
 
 leptos = { workspace = true, features = ["ssr"] }
 leptos_axum = { workspace = true, features = ["default"] }

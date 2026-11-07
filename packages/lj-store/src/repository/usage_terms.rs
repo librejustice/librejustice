@@ -115,7 +115,7 @@ impl DecisionRepository<'_> {
                   CROSS JOIN LATERAL (
                     SELECT s.decision_id, el.el
                     -- Each indexed decision holds a matching span, so its 300 first carry
-                    -- the 300 first contexts: 13.5 s to 1.6 s on CPC 700 (1.1 M decisions).
+                    -- the 300 first contexts.
                     FROM (SELECT lc.decision_id FROM legal_citation lc
                           WHERE public.lj_cit_terms(lc.spans) @> ARRAY[p.uid || '|' || p.num]
                           ORDER BY hashtext(lc.decision_id::text)
@@ -127,7 +127,7 @@ impl DecisionRepository<'_> {
                     ORDER BY hashtext(s.decision_id::text), el.ord
                     LIMIT 300) c
                   JOIN decisions d ON d.id = c.decision_id
-                  JOIN decision_text dt ON dt.decision_id = d.id AND dt.lead
+                  CROSS JOIN LATERAL {text} dt
                   WHERE EXISTS (SELECT 1 FROM decision_text dt WHERE dt.decision_id = d.id)
                 ),
                 nctx AS (SELECT uid, num, count(*) AS n FROM ctx GROUP BY 1, 2),
@@ -163,7 +163,8 @@ impl DecisionRepository<'_> {
                 WHERE EXISTS (SELECT 1 FROM legal_article a
                               WHERE a.text_uid = b.uid AND a.num_key = b.num
                                 AND {valid_a} AND {norm_a})
-                "#
+                "#,
+                    text = super::pick::text("p.full_text", "d")
                 ),
                 &[&uids, &nums],
             )

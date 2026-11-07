@@ -14,12 +14,15 @@ HEAD {{base}}/redactor/htr/lj_htr.js
 HTTP 200
 
 # ── licences of the third-party files served ─────────────────────────────────
-# One file per group of /third-party-licenses.txt.
+# One file per licence folder the /open-source page links to.
 
-HEAD {{base}}/third-party-licenses.txt
+HEAD {{base}}/open-source
 HTTP 200
 
 HEAD {{base}}/fonts/geist-OFL.txt
+HTTP 200
+
+HEAD {{base}}/licenses/MIT.txt
 HTTP 200
 
 HEAD {{base}}/redactor/NOTICE.txt

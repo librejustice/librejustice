@@ -6,11 +6,10 @@
 #   GET /internal/entities/search
 #   GET /internal/entities/directory
 #   GET /internal/entities/stats
-# All public (auth=none). {{base}} = host root. Real prod anchors (registres
-# chargés) : entité `siren:444608442` = ENEDIS (2237 décisions
-# citantes) ; décision `qlSPCVKPKFgt` a des parties résolues ; barreau `paris`
-# porte le plus d'avocats avec contentieux. Assertions STRUCTURELLES uniquement
-# (présence / type / enum / ordre), jamais des valeurs live.
+# All public (auth=none). {{base}} = host root. Anchors from the public
+# registers: entity `siren:444608442` (ENEDIS); decision `qlSPCVKPKFgt` has
+# resolved parties. STRUCTURAL assertions only (presence / type / enum / order),
+# never live values.
 # ============================================================================
 
 # ---------------------------------------------------------------------------

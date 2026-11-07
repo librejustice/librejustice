@@ -1,0 +1,258 @@
+# code	jurisdiction_type	city	label	closed_on	successor_code
+adlc	ADLC	Paris	Autorité de la concurrence		
+ccas	CAA	Paris	Commission centrale d'aide sociale	2019-01-01	caa_paris
+cnds	DDD	Paris	Commission nationale de déontologie de la sécurité	2011-05-01	ddd
+conseil_concurrence	ADLC	Paris	Conseil de la concurrence	2009-03-02	adlc
+cph_agen	CPH	Agen	Conseil de prud'hommes d'Agen		
+cph_ajaccio	CPH	Ajaccio	Conseil de prud'hommes d'Ajaccio		
+cph_amiens	CPH	Amiens	Conseil de prud'hommes d'Amiens		
+cph_annonay	CPH	Annonay	Conseil de prud'hommes d'Annonay		
+cph_auxerre	CPH	Auxerre	Conseil de prud'hommes d'Auxerre		
+cph_avesnes_sur_helpe	CPH	Avesnes-sur-Helpe	Conseil de prud'hommes d'Avesnes-sur-Helpe		
+cph_bar_le_duc	CPH	Bar-le-Duc	Conseil de prud'hommes de Bar-le-Duc		
+cph_basse_terre	CPH	Basse-Terre	Conseil de prud'hommes de Basse-Terre		
+cph_beauvais	CPH	Beauvais	Conseil de prud'hommes de Beauvais		
+cph_bordeaux	CPH	Bordeaux	Conseil de prud'hommes de Bordeaux		
+cph_boulogne_billancourt	CPH	Boulogne-Billancourt	Conseil de prud'hommes de Boulogne-Billancourt		
+cph_brest	CPH	Brest	Conseil de prud'hommes de Brest		
+cph_calais	CPH	Calais	Conseil de prud'hommes de Calais		
+cph_carcassonne	CPH	Carcassonne	Conseil de prud'hommes de Carcassonne		
+cph_castres	CPH	Castres	Conseil de prud'hommes de Castres		
+cph_chalon_sur_saone	CPH	Chalon-sur-Saône	Conseil de prud'hommes de Chalon-sur-Saône		
+cph_chalons_en_champagne	CPH	Châlons-en-Champagne	Conseil de prud'hommes de Châlons-en-Champagne		
+cph_chartres	CPH	Chartres	Conseil de prud'hommes de Chartres		
+cph_chaumont	CPH	Chaumont	Conseil de prud'hommes de Chaumont		
+cph_dax	CPH	Dax	Conseil de prud'hommes de Dax		
+cph_dieppe	CPH	Dieppe	Conseil de prud'hommes de Dieppe		
+cph_dijon	CPH	Dijon	Conseil de prud'hommes de Dijon		
+cph_epinal	CPH	Épinal	Conseil de prud'hommes d'Épinal		
+cph_evry	CPH	Evry	Conseil de prud'hommes d'Evry		
+cph_firminy	CPH	Firminy	Conseil de prud'hommes de Firminy	2008-12-03	cph_saint_etienne
+cph_forbach	CPH	Forbach	Conseil de prud'hommes de Forbach		
+cph_fort_de_france	CPH	Fort-de-France	Conseil de prud'hommes de Fort-de-France		
+cph_fourmies	CPH	Fourmies	Conseil de prud'hommes de Fourmies	2008-12-03	cph_avesnes_sur_helpe
+cph_grasse	CPH	Grasse	Conseil de prud'hommes de Grasse		
+cph_grenoble	CPH	Grenoble	Conseil de prud'hommes de Grenoble		
+cph_gueret	CPH	Guéret	Conseil de prud'hommes de Guéret		
+cph_la_roche_sur_yon	CPH	La Roche-sur-Yon	Conseil de prud'hommes de La Roche-sur-Yon		
+cph_laval	CPH	Laval	Conseil de prud'hommes de Laval		
+cph_le_havre	CPH	Le Havre	Conseil de prud'hommes du Havre		
+cph_le_mans	CPH	Le Mans	Conseil de prud'hommes du Mans		
+cph_lille	CPH	Lille	Conseil de prud'hommes de Lille		
+cph_limoges	CPH	Limoges	Conseil de prud'hommes de Limoges		
+cph_longjumeau	CPH	Longjumeau	Conseil de prud'hommes de Longjumeau		
+cph_lorient	CPH	Lorient	Conseil de prud'hommes de Lorient		
+cph_louviers	CPH	Louviers	Conseil de prud'hommes de Louviers		
+cph_luneville	CPH	Lunéville	Conseil de prud'hommes de Lunéville	2008-12-03	cph_nancy
+cph_lyon	CPH	Lyon	Conseil de prud'hommes de Lyon		
+cph_marseille	CPH	Marseille	Conseil de prud'hommes de Marseille		
+cph_martigues	CPH	Martigues	Conseil de prud'hommes de Martigues		
+cph_mazamet	CPH	Mazamet	Conseil de prud'hommes de Mazamet	2008-12-03	cph_castres
+cph_molsheim	CPH	Molsheim	Conseil de prud'hommes de Molsheim	2008-12-03	cph_saverne
+cph_montargis	CPH	Montargis	Conseil de prud'hommes de Montargis		
+cph_moulins	CPH	Moulins	Conseil de prud'hommes de Moulins		
+cph_mulhouse	CPH	Mulhouse	Conseil de prud'hommes de Mulhouse		
+cph_nancy	CPH	Nancy	Conseil de prud'hommes de Nancy		
+cph_nevers	CPH	Nevers	Conseil de prud'hommes de Nevers		
+cph_nice	CPH	Nice	Conseil de prud'hommes de Nice		
+cph_orleans	CPH	Orléans	Conseil de prud'hommes d'Orléans		
+cph_paris	CPH	Paris	Conseil de prud'hommes de Paris		
+cph_perpignan	CPH	Perpignan	Conseil de prud'hommes de Perpignan		
+cph_pointe_a_pitre	CPH	Pointe-à-Pitre	Conseil de prud'hommes de Pointe-à-Pitre		
+cph_poitiers	CPH	Poitiers	Conseil de prud'hommes de Poitiers		
+cph_reims	CPH	Reims	Conseil de prud'hommes de Reims		
+cph_remiremont	CPH	Remiremont	Conseil de prud'hommes de Remiremont	2008-12-03	cph_epinal
+cph_rennes	CPH	Rennes	Conseil de prud'hommes de Rennes		
+cph_roanne	CPH	Roanne	Conseil de prud'hommes de Roanne		
+cph_saint_etienne	CPH	Saint-Étienne	Conseil de prud'hommes de Saint-Étienne		
+cph_saint_omer	CPH	Saint-Omer	Conseil de prud'hommes de Saint-Omer		
+cph_saint_quentin	CPH	Saint-Quentin	Conseil de prud'hommes de Saint-Quentin		
+cph_saverne	CPH	Saverne	Conseil de prud'hommes de Saverne		
+cph_schiltigheim	CPH	Schiltigheim	Conseil de prud'hommes de Schiltigheim		
+cph_toulon	CPH	Toulon	Conseil de prud'hommes de Toulon		
+cph_toulouse	CPH	Toulouse	Conseil de prud'hommes de Toulouse		
+cph_tulle	CPH	Tulle	Conseil de prud'hommes de Tulle		
+cph_vannes	CPH	Vannes	Conseil de prud'hommes de Vannes		
+cph_vesoul	CPH	Vesoul	Conseil de prud'hommes de Vesoul		
+cph_vienne	CPH	Vienne	Conseil de prud'hommes de Vienne		
+ddd	DDD	Paris	Défenseur des droits		
+defenseur_enfants	DDD	Paris	Défenseur des enfants	2011-05-01	ddd
+halde	DDD	Paris	Haute autorité de lutte contre les discriminations et pour l'égalité	2011-05-01	ddd
+mediateur_republique	DDD	Paris	Médiateur de la République	2011-03-31	ddd
+prox_aix_en_provence	TJ	Aix-en-Provence	Juridiction de proximité d'Aix-en-Provence	2017-07-01	tj_aix_en_provence
+prox_amiens	TJ	Amiens	Juridiction de proximité d'Amiens	2017-07-01	tj_amiens
+prox_angers	TJ	Angers	Juridiction de proximité d'Angers	2017-07-01	tj_angers
+prox_arbois	TJ	Arbois	Juridiction de proximité d'Arbois	2010-01-01	tj_lons_le_saunier
+prox_auch	TJ	Auch	Juridiction de proximité d'Auch	2017-07-01	tj_auch
+prox_aulnay_sous_bois	TJ	Aulnay-sous-Bois	Juridiction de proximité d'Aulnay-sous-Bois	2017-07-01	tj_bobigny
+prox_boissy_saint_leger	TJ	Boissy-Saint-Léger	Juridiction de proximité de Boissy-Saint-Léger	2017-07-01	tj_creteil
+prox_bourg_en_bresse	TJ	Bourg-en-Bresse	Juridiction de proximité de Bourg-en-Bresse	2017-07-01	tj_bourg_en_bresse
+prox_chartres	TJ	Chartres	Juridiction de proximité de Chartres	2017-07-01	tj_chartres
+prox_clermont_ferrand	TJ	Clermont-Ferrand	Juridiction de proximité de Clermont-Ferrand	2017-07-01	tj_clermont_ferrand
+prox_clichy	TJ	Clichy	Juridiction de proximité de Clichy	2010-01-01	tj_nanterre
+prox_douai	TJ	Douai	Juridiction de proximité de Douai	2017-07-01	tj_douai
+prox_ecouen	TJ	Écouen	Juridiction de proximité d'Écouen	2010-01-01	tj_pontoise
+prox_epinal	TJ	Epinal	Juridiction de proximité d'Epinal	2017-07-01	tj_epinal
+prox_gonesse	TJ	Gonesse	Juridiction de proximité de Gonesse	2017-07-01	tj_pontoise
+prox_guebwiller	TJ	Guebwiller	Juridiction de proximité de Guebwiller	2017-07-01	tj_colmar
+prox_la_chatre	TJ	La Châtre	Juridiction de proximité de La Châtre	2010-01-01	tj_chateauroux
+prox_le_mans	TJ	Le Mans	Juridiction de proximité du Mans	2017-07-01	tj_le_mans
+prox_le_raincy	TJ	Le Raincy	Juridiction de proximité du Raincy	2017-07-01	tj_bobigny
+prox_lille	TJ	Lille	Juridiction de proximité de Lille	2017-07-01	tj_lille
+prox_limoges	TJ	Limoges	Juridiction de proximité de Limoges	2017-07-01	tj_limoges
+prox_louviers	TJ	Louviers	Juridiction de proximité de Louviers	2010-01-01	tj_evreux
+prox_lyon	TJ	Lyon	Juridiction de proximité de Lyon	2017-07-01	tj_lyon
+prox_marseille	TJ	Marseille	Juridiction de proximité de Marseille	2017-07-01	tj_marseille
+prox_metz	TJ	Metz	Juridiction de proximité de Metz	2017-07-01	tj_metz
+prox_mulhouse	TJ	Mulhouse	Juridiction de proximité de Mulhouse	2017-07-01	tj_mulhouse
+prox_neuilly_sur_seine	TJ	Neuilly-sur-Seine	Juridiction de proximité de Neuilly-sur-Seine	2010-01-01	tj_nanterre
+prox_niort	TJ	Niort	Juridiction de proximité de Niort	2017-07-01	tj_niort
+prox_paris_15e_arrondissement	TJ	Paris 15e arrondissement	Juridiction de proximité de Paris 15e arrondissement	2017-07-01	tj_paris
+prox_paris_1er_arrondissement	TJ	Paris 1er arrondissement	Juridiction de proximité de Paris 1er arrondissement	2017-07-01	tj_paris
+prox_paris_2e_arrondissement	TJ	Paris 2e arrondissement	Juridiction de proximité de Paris 2e arrondissement	2017-07-01	tj_paris
+prox_perpignan	TJ	Perpignan	Juridiction de proximité de Perpignan	2017-07-01	tj_perpignan
+prox_remiremont	TJ	Remiremont	Juridiction de proximité de Remiremont	2010-01-01	tj_epinal
+prox_rennes	TJ	Rennes	Juridiction de proximité de Rennes	2017-07-01	tj_rennes
+prox_saint_lo	TJ	Saint-Lô	Juridiction de proximité de Saint-Lô	2010-01-01	tj_coutances
+prox_sannois	TJ	Sannois	Juridiction de proximité de Sannois	2017-07-01	tj_pontoise
+prox_sete	TJ	Sète	Juridiction de proximité de Sète	2017-07-01	tj_montpellier
+prox_strasbourg	TJ	Strasbourg	Juridiction de proximité de Strasbourg	2017-07-01	tj_strasbourg
+prox_tarascon	TJ	Tarascon	Juridiction de proximité de Tarascon	2017-07-01	tj_tarascon
+prox_tours	TJ	Tours	Juridiction de proximité de Tours	2017-07-01	tj_tours
+prox_tulle	TJ	Tulle	Juridiction de proximité de Tulle	2017-07-01	tj_tulle
+prox_vanves	TJ	Vanves	Juridiction de proximité de Vanves	2017-07-01	tj_nanterre
+prox_villejuif	TJ	Villejuif	Juridiction de proximité de Villejuif	2017-07-01	tj_creteil
+tass_auch	TJ	Auch	Tribunal des affaires de sécurité sociale d'Auch	2019-01-01	tj_auch
+tass_boulogne_sur_mer	TJ	Boulogne-sur-Mer	Tribunal des affaires de sécurité sociale de Boulogne-sur-Mer	2019-01-01	tj_boulogne_sur_mer
+tass_bourg_en_bresse	TJ	Bourg-en-Bresse	Tribunal des affaires de sécurité sociale de Bourg-en-Bresse	2019-01-01	tj_bourg_en_bresse
+tass_bourges	TJ	Bourges	Tribunal des affaires de sécurité sociale de Bourges	2019-01-01	tj_bourges
+tass_charleville_mezieres	TJ	Charleville-Mézières	Tribunal des affaires de sécurité sociale de Charleville-Mézières	2019-01-01	tj_charleville_mezieres
+tass_chateauroux	TJ	Châteauroux	Tribunal des affaires de sécurité sociale de Châteauroux	2019-01-01	tj_chateauroux
+tass_chaumont	TJ	Chaumont	Tribunal des affaires de sécurité sociale de Chaumont	2019-01-01	tj_chaumont
+tass_grenoble	TJ	Grenoble	Tribunal des affaires de sécurité sociale de Grenoble	2019-01-01	tj_grenoble
+tass_le_puy_en_velay	TJ	Le Puy-en-Velay	Tribunal des affaires de sécurité sociale du Puy-en-Velay	2019-01-01	tj_le_puy_en_velay
+tass_mamoudzou	TJ	Mamoudzou	Tribunal des affaires de sécurité sociale de Mamoudzou	2019-01-01	tj_mamoudzou
+tass_moulins	TJ	Moulins	Tribunal des affaires de sécurité sociale de Moulins	2019-01-01	tj_moulins
+tass_pau	TJ	Pau	Tribunal des affaires de sécurité sociale de Pau	2019-01-01	tj_pau
+tass_poitiers	TJ	Poitiers	Tribunal des affaires de sécurité sociale de Poitiers	2019-01-01	tj_poitiers
+tass_saint_denis	TJ	Saint-Denis	Tribunal des affaires de sécurité sociale de Saint-Denis	2019-01-01	tj_saint_denis_de_la_reunion
+tass_strasbourg	TJ	Strasbourg	Tribunal des affaires de sécurité sociale de Strasbourg	2019-01-01	tj_strasbourg
+tass_toulouse	TJ	Toulouse	Tribunal des affaires de sécurité sociale de Toulouse	2019-01-01	tj_toulouse
+tass_vesoul	TJ	Vesoul	Tribunal des affaires de sécurité sociale de Vesoul	2019-01-01	tj_vesoul
+tgi_agen	TJ	Agen	Tribunal de grande instance d'Agen	2020-01-01	tj_agen
+tgi_albertville	TJ	Albertville	Tribunal de grande instance d'Albertville	2020-01-01	tj_albertville
+tgi_albi	TJ	Albi	Tribunal de grande instance d'Albi	2020-01-01	tj_albi
+tgi_amiens	TJ	Amiens	Tribunal de grande instance d'Amiens	2020-01-01	tj_amiens
+tgi_angers	TJ	Angers	Tribunal de grande instance d'Angers	2020-01-01	tj_angers
+tgi_angouleme	TJ	Angoulême	Tribunal de grande instance d'Angoulême	2020-01-01	tj_angouleme
+tgi_auch	TJ	Auch	Tribunal de grande instance d'Auch	2020-01-01	tj_auch
+tgi_aurillac	TJ	Aurillac	Tribunal de grande instance d'Aurillac	2020-01-01	tj_aurillac
+tgi_bergerac	TJ	Bergerac	Tribunal de grande instance de Bergerac	2020-01-01	tj_bergerac
+tgi_bobigny	TJ	Bobigny	Tribunal de grande instance de Bobigny	2020-01-01	tj_bobigny
+tgi_bordeaux	TJ	Bordeaux	Tribunal de grande instance de Bordeaux	2020-01-01	tj_bordeaux
+tgi_bourg_en_bresse	TJ	Bourg-en-Bresse	Tribunal de grande instance de Bourg-en-Bresse	2020-01-01	tj_bourg_en_bresse
+tgi_brest	TJ	Brest	Tribunal de grande instance de Brest	2020-01-01	tj_brest
+tgi_cahors	TJ	Cahors	Tribunal de grande instance de Cahors	2020-01-01	tj_cahors
+tgi_castres	TJ	Castres	Tribunal de grande instance de Castres	2020-01-01	tj_castres
+tgi_chambery	TJ	Chambéry	Tribunal de grande instance de Chambéry	2020-01-01	tj_chambery
+tgi_creteil	TJ	Créteil	Tribunal de grande instance de Créteil	2020-01-01	tj_creteil
+tgi_dinan	TJ	Dinan	Tribunal de grande instance de Dinan	2011-01-01	tj_saint_malo
+tgi_epinal	TJ	Epinal	Tribunal de grande instance d'Epinal	2020-01-01	tj_epinal
+tgi_evry	TJ	Evry	Tribunal de grande instance d'Evry	2020-01-01	tj_evry
+tgi_foix	TJ	Foix	Tribunal de grande instance de Foix	2020-01-01	tj_foix
+tgi_hazebrouck	TJ	Hazebrouck	Tribunal de grande instance d'Hazebrouck	2011-01-01	tj_dunkerque
+tgi_le_mans	TJ	Le Mans	Tribunal de grande instance du Mans	2020-01-01	tj_le_mans
+tgi_les_sables_d_olonne	TJ	Les Sables-d'Olonne	Tribunal de grande instance des Sables-d'Olonne	2020-01-01	tj_les_sables_d_olonne
+tgi_libourne	TJ	Libourne	Tribunal de grande instance de Libourne	2020-01-01	tj_libourne
+tgi_lille	TJ	Lille	Tribunal de grande instance de Lille	2020-01-01	tj_lille
+tgi_limoges	TJ	Limoges	Tribunal de grande instance de Limoges	2020-01-01	tj_limoges
+tgi_lure	TJ	Lure	Tribunal de grande instance de Lure	2011-01-01	tj_vesoul
+tgi_lyon	TJ	Lyon	Tribunal de grande instance de Lyon	2020-01-01	tj_lyon
+tgi_mamoudzou	TJ	Mamoudzou	Tribunal de grande instance de Mamoudzou	2020-01-01	tj_mamoudzou
+tgi_marseille	TJ	Marseille	Tribunal de grande instance de Marseille	2020-01-01	tj_marseille
+tgi_meaux	TJ	Meaux	Tribunal de grande instance de Meaux	2020-01-01	tj_meaux
+tgi_montpellier	TJ	Montpellier	Tribunal de grande instance de Montpellier	2020-01-01	tj_montpellier
+tgi_nancy	TJ	Nancy	Tribunal de grande instance de Nancy	2020-01-01	tj_nancy
+tgi_narbonne	TJ	Narbonne	Tribunal de grande instance de Narbonne	2020-01-01	tj_narbonne
+tgi_nice	TJ	Nice	Tribunal de grande instance de Nice	2020-01-01	tj_nice
+tgi_nimes	TJ	Nîmes	Tribunal de grande instance de Nîmes	2020-01-01	tj_nimes
+tgi_orleans	TJ	Orléans	Tribunal de grande instance d'Orléans	2020-01-01	tj_orleans
+tgi_paris	TJ	Paris	Tribunal de grande instance de Paris	2020-01-01	tj_paris
+tgi_perigueux	TJ	Périgueux	Tribunal de grande instance de Périgueux	2020-01-01	tj_perigueux
+tgi_peronne	TJ	Péronne	Tribunal de grande instance de Péronne	2011-01-01	tj_amiens
+tgi_perpignan	TJ	Perpignan	Tribunal de grande instance de Perpignan	2020-01-01	tj_perpignan
+tgi_poitiers	TJ	Poitiers	Tribunal de grande instance de Poitiers	2020-01-01	tj_poitiers
+tgi_pontoise	TJ	Pontoise	Tribunal de grande instance de Pontoise	2020-01-01	tj_pontoise
+tgi_privas	TJ	Privas	Tribunal de grande instance de Privas	2020-01-01	tj_privas
+tgi_rennes	TJ	Rennes	Tribunal de grande instance de Rennes	2020-01-01	tj_rennes
+tgi_rochefort	TJ	Rochefort	Tribunal de grande instance de Rochefort	2011-01-01	tj_la_rochelle
+tgi_rouen	TJ	Rouen	Tribunal de grande instance de Rouen	2020-01-01	tj_rouen
+tgi_saint_denis	TJ	Saint-Denis	Tribunal de grande instance de Saint-Denis	2020-01-01	tj_saint_denis_de_la_reunion
+tgi_saint_etienne	TJ	Saint-Etienne	Tribunal de grande instance de Saint-Etienne	2020-01-01	tj_saint_etienne
+tgi_saint_gaudens	TJ	Saint-Gaudens	Tribunal de grande instance de Saint-Gaudens	2020-01-01	tj_saint_gaudens
+tgi_senlis	TJ	Senlis	Tribunal de grande instance de Senlis	2020-01-01	tj_senlis
+tgi_soissons	TJ	Soissons	Tribunal de grande instance de Soissons	2020-01-01	tj_soissons
+tgi_toulon	TJ	Toulon	Tribunal de grande instance de Toulon	2020-01-01	tj_toulon
+tgi_toulouse	TJ	Toulouse	Tribunal de grande instance de Toulouse	2020-01-01	tj_toulouse
+tgi_troyes	TJ	Troyes	Tribunal de grande instance de Troyes	2020-01-01	tj_troyes
+tgi_tulle	TJ	Tulle	Tribunal de grande instance de Tulle	2020-01-01	tj_tulle
+tgi_vannes	TJ	Vannes	Tribunal de grande instance de Vannes	2020-01-01	tj_vannes
+tgi_versailles	TJ	Versailles	Tribunal de grande instance de Versailles	2020-01-01	tj_versailles
+tgi_villefranche_sur_saone	TJ	Villefranche-sur-Saône	Tribunal de grande instance de Villefranche-sur-Saône	2020-01-01	tj_villefranche_sur_saone
+ti_angers	TJ	Angers	Tribunal d'instance d'Angers	2020-01-01	tj_angers
+ti_antibes	TJ	Antibes	Tribunal d'instance d'Antibes	2020-01-01	tj_grasse
+ti_auch	TJ	Auch	Tribunal d'instance d'Auch	2020-01-01	tj_auch
+ti_avignon	TJ	Avignon	Tribunal d'instance d'Avignon	2020-01-01	tj_avignon
+ti_bauge	TJ	Baugé	Tribunal d'instance de Baugé	2010-01-01	tj_saumur
+ti_bobigny	TJ	Bobigny	Tribunal d'instance de Bobigny	2020-01-01	tj_bobigny
+ti_brumath	TJ	Brumath	Tribunal d'instance de Brumath	2010-01-01	tj_strasbourg
+ti_cahors	TJ	Cahors	Tribunal d'instance de Cahors	2020-01-01	tj_cahors
+ti_charenton_le_pont	TJ	Charenton-le-Pont	Tribunal d'instance de Charenton-le-Pont	2020-01-01	tj_creteil
+ti_chartres	TJ	Chartres	Tribunal d'instance de Chartres	2020-01-01	tj_chartres
+ti_cholet	TJ	Cholet	Tribunal d'instance de Cholet	2020-01-01	tj_angers
+ti_colmar	TJ	Colmar	Tribunal d'instance de Colmar	2020-01-01	tj_colmar
+ti_compiegne	TJ	Compiègne	Tribunal d'instance de Compiègne	2020-01-01	tj_compiegne
+ti_condom	TJ	Condom	Tribunal d'instance de Condom	2020-01-01	tj_auch
+ti_courbevoie	TJ	Courbevoie	Tribunal d'instance de Courbevoie	2020-01-01	tj_nanterre
+ti_elbeuf	TJ	Elbeuf	Tribunal d'instance d'Elbeuf	2010-01-01	tj_rouen
+ti_epinal	TJ	Epinal	Tribunal d'instance d'Epinal	2020-01-01	tj_epinal
+ti_gonesse	TJ	Gonesse	Tribunal d'instance de Gonesse	2020-01-01	tj_pontoise
+ti_guebwiller	TJ	Guebwiller	Tribunal d'instance de Guebwiller	2020-01-01	tj_colmar
+ti_ivry_sur_seine	TJ	Ivry-sur-Seine	Tribunal d'instance d'Ivry-sur-Seine	2020-01-01	tj_creteil
+ti_lagny_sur_marne	TJ	Lagny-sur-Marne	Tribunal d'instance de Lagny-sur-Marne	2020-01-01	tj_meaux
+ti_laon	TJ	Laon	Tribunal d'instance de Laon	2020-01-01	tj_laon
+ti_le_raincy	TJ	Le Raincy	Tribunal d'instance du Raincy	2020-01-01	tj_bobigny
+ti_lens	TJ	Lens	Tribunal d'instance de Lens	2020-01-01	tj_bethune
+ti_limoges	TJ	Limoges	Tribunal d'instance de Limoges	2020-01-01	tj_limoges
+ti_lyon	TJ	Lyon	Tribunal d'instance de Lyon	2020-01-01	tj_lyon
+ti_marseille	TJ	Marseille	Tribunal d'instance de Marseille	2020-01-01	tj_marseille
+ti_mayenne	TJ	Mayenne	Tribunal d'instance de Mayenne	2010-01-01	tj_laval
+ti_molsheim	TJ	Molsheim	Tribunal d'instance de Molsheim	2020-01-01	tj_saverne
+ti_montargis	TJ	Montargis	Tribunal d'instance de Montargis	2020-01-01	tj_montargis
+ti_montreuil	TJ	Montreuil	Tribunal d'instance de Montreuil	2020-01-01	tj_bobigny
+ti_mortagne_au_perche	TJ	Mortagne-au-Perche	Tribunal d'instance de Mortagne-au-Perche	2010-01-01	tj_alencon
+ti_mulhouse	TJ	Mulhouse	Tribunal d'instance de Mulhouse	2020-01-01	tj_mulhouse
+ti_nice	TJ	Nice	Tribunal d'instance de Nice	2020-01-01	tj_nice
+ti_orleans	TJ	Orléans	Tribunal d'instance d'Orléans	2020-01-01	tj_orleans
+ti_perpignan	TJ	Perpignan	Tribunal d'instance de Perpignan	2020-01-01	tj_perpignan
+ti_puteaux	TJ	Puteaux	Tribunal d'instance de Puteaux	2020-01-01	tj_nanterre
+ti_ribeauville	TJ	Ribeauvillé	Tribunal d'instance de Ribeauvillé	2010-01-01	tj_colmar
+ti_saint_brieuc	TJ	Saint-Brieuc	Tribunal d'instance de Saint-Brieuc	2020-01-01	tj_saint_brieuc
+ti_saint_marcellin	TJ	Saint-Marcellin	Tribunal d'instance de Saint-Marcellin	2010-01-01	tj_grenoble
+ti_sarrebourg	TJ	Sarrebourg	Tribunal d'instance de Sarrebourg	2020-01-01	tj_metz
+ti_saumur	TJ	Saumur	Tribunal d'instance de Saumur	2020-01-01	tj_saumur
+ti_strasbourg	TJ	Strasbourg	Tribunal d'instance de Strasbourg	2020-01-01	tj_strasbourg
+ti_tarbes	TJ	Tarbes	Tribunal d'instance de Tarbes	2020-01-01	tj_tarbes
+ti_tours	TJ	Tours	Tribunal d'instance de Tours	2020-01-01	tj_tours
+ti_villeurbanne	TJ	Villeurbanne	Tribunal d'instance de Villeurbanne	2020-01-01	tj_lyon
+tj_agen	TJ	Agen	Tribunal judiciaire d'Agen		
+tj_auch	TJ	Auch	Tribunal judiciaire d'Auch		
+tj_chaumont	TJ	Chaumont	Tribunal judiciaire de Chaumont		
+tj_douai	TJ	Douai	Tribunal judiciaire de Douai		
+tj_le_puy_en_velay	TJ	Le Puy-en-Velay	Tribunal judiciaire du Puy-en-Velay		
+tj_mamoudzou	TJ	Mamoudzou	Tribunal judiciaire de Mamoudzou		
+tj_pau	TJ	Pau	Tribunal judiciaire de Pau		
+tj_senlis	TJ	Senlis	Tribunal judiciaire de Senlis		
+tpbr_ales	TJ	Alès	Tribunal paritaire des baux ruraux d'Alès		tj_ales
+tsa_mamoudzou	CA	Mamoudzou	Tribunal supérieur d'appel de Mamoudzou	2011-04-01	ca_saint_denis_de_la_reunion
+tsa_saint_pierre_et_miquelon	CA	Saint-Pierre-et-Miquelon	Tribunal supérieur d'appel de Saint-Pierre-et-Miquelon		

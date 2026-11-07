@@ -18,9 +18,8 @@ use crate::config::Settings;
 /// font couramment 150-250 chars, l'URL n'a pas à porter tout l'intitulé.
 const MAX_SLUG_LEN: usize = 80;
 
-/// The cut tried when the first is taken. The whole title instead gave slugs
-/// of up to 1 382 chars; this cut keeps them under 150 for 21 k more ordinals
-/// out of 1.35 M texts.
+/// The cut tried when the first is taken, where the whole title would give slugs
+/// of over a thousand chars.
 const WIDE_SLUG_LEN: usize = 120;
 
 /// Cuts an already formed slug at `max`, on a dash boundary.
@@ -174,7 +173,7 @@ fn cascade(src: &SlugSourceRow, slugify: impl Fn(&str) -> String) -> Result<(Vec
         bail!("texte {} sans titre : aucun slug dérivable", src.text_uid);
     }
     let mut full_raw = slugify(&src.title);
-    if !matches!(src.jurisdiction.as_str(), "FR" | "UE" | "INTL") {
+    if !matches!(src.jurisdiction.as_str(), "FR" | "EU" | "INTL") {
         let (_, tokens) = country(&src.jurisdiction)?;
         full_raw = strip_country_tokens(&full_raw, tokens, &src.jurisdiction);
         if full_raw.is_empty() {
@@ -241,7 +240,7 @@ pub async fn assign_text_slugs(repo: &DecisionRepository<'_>) -> Result<u64> {
 pub async fn drop_country_suffix() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
     let mut taken: HashSet<(String, String)> = repo
@@ -322,7 +321,7 @@ fn named_from(slug: &str, src: &SlugSourceRow) -> bool {
 pub async fn remint_text_slugs(applique: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
     let texts = repo
@@ -404,7 +403,7 @@ pub async fn remint_text_slugs(applique: bool) -> Result<()> {
 pub async fn assign_slugs() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -553,8 +552,8 @@ mod tests {
         );
     }
 
-    /// Le même nom sous deux juridictions ne se départage plus : la paire porte
-    /// l'identité, et 27 pays ont un code civil.
+    /// The same name lives under two jurisdictions: the pair carries the
+    /// identity, and many countries have a civil code.
     #[test]
     fn le_meme_nom_vit_sous_deux_juridictions() {
         let mut taken = HashSet::new();

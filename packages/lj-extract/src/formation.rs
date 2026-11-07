@@ -791,9 +791,9 @@ const CC_CHAMBERS: &[CcChamber] = &[
     },
     CcChamber {
         code: "comm",
-        folded_label: "chambre commerciale, financiere et economique",
+        folded_label: "chambre commerciale financiere et economique",
         chamber_number: None,
-        matiere_uid: Some("matiere:COMMERCIALE"),
+        matiere_uid: Some("matiere:COMMERCIALE_FINANCIERE_ECONOMIQUE"),
         solemn: None,
         office_uid: None,
     },
@@ -862,6 +862,24 @@ const CC_CHAMBERS: &[CcChamber] = &[
         office_uid: None,
     },
 ];
+
+/// Arrêts print the full name from spring 1989: none in January, all from July.
+const COMMERCIAL_RENAMED_ON: &str = "1989-03-01";
+
+/// The code `comm` names the commercial chamber at every date.
+pub fn name_on_date(axes: &mut FormationAxes, date_lecture: Option<&str>) {
+    const NAMES: [&str; 2] = [
+        "matiere:COMMERCIALE",
+        "matiere:COMMERCIALE_FINANCIERE_ECONOMIQUE",
+    ];
+    let specialty = &mut axes.chamber.specialty;
+    let Some(date) = date_lecture else {
+        return;
+    };
+    if !specialty.is_empty() && specialty.iter().all(|u| NAMES.contains(u)) {
+        *specialty = vec![NAMES[usize::from(date >= COMMERCIAL_RENAMED_ON)]];
+    }
+}
 
 fn cc_by_code(code: &str) -> Option<&'static CcChamber> {
     let lower = code.to_lowercase();
@@ -1298,6 +1316,20 @@ mod tests {
     }
 
     #[test]
+    fn the_commercial_chamber_is_named_for_the_date_of_the_arret() {
+        let named = |date| {
+            let mut axes = parse_formation(Some("CC"), Some("comm"), None, None, None);
+            name_on_date(&mut axes, Some(date));
+            axes.chamber_label()
+        };
+        assert_eq!(named("1989-01-03").as_deref(), Some("Chambre commerciale"));
+        assert_eq!(
+            named("1989-03-07").as_deref(),
+            Some("Chambre commerciale, financière et économique")
+        );
+    }
+
+    #[test]
     fn juge_des_referes_implique_juge_unique() {
         let axes = parse_formation(Some("CAA"), None, None, None, Some("Juge des référés"));
         assert_eq!(axes.office_uid, None);
@@ -1476,7 +1508,7 @@ mod tests {
     }
 
     #[test]
-    fn correctifs_gate_finaux() {
+    fn ju_marker_glued_section_letter_and_abbreviated_matters() {
         let axes = composed("TA", "10ème chambre (JU)");
         assert_eq!(axes.chamber_label().as_deref(), Some("10e chambre"));
         assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
@@ -1507,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn correctifs_gate_v27() {
+    fn zero_chambers_lettered_sections_and_trailing_matters() {
         let axes = composed("TJ", "Chambre 0 referes");
         assert_eq!(axes.chamber_label(), None);
         assert_eq!(axes.formation_uid, Some("formation:JUGE_UNIQUE"));
@@ -2062,8 +2094,7 @@ mod tests {
         );
     }
 
-    /// The registry of TA Rennes and the banner of Saint-Denis, read on
-    /// 04/09/2026 as chambers A and D.
+    /// The registry of TA Rennes and the banner of Saint-Denis: `à` and `D'` are no chamber letter.
     #[test]
     fn a_preposition_and_an_elision_name_no_letter() {
         for key in [

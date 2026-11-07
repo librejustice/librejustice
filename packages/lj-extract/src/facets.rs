@@ -67,7 +67,43 @@ pub fn jurisdiction_ref(
             "cedh".to_string(),
             Some("Cour européenne des droits de l'homme".to_string()),
         ),
-        "TJ" | "CA" | "TCOM" => {
+        "DDD" => {
+            let (code, label) = match jurisdiction_name.map(|n| lj_fold::slug(n, '_')) {
+                Some(n) if n.starts_with("haute_autorite_de_lutte_contre_les_discriminations") => (
+                    "halde",
+                    "Haute autorité de lutte contre les discriminations et pour l'égalité",
+                ),
+                Some(n) if n == "commission_nationale_de_deontologie_de_la_securite" => {
+                    ("cnds", "Commission nationale de déontologie de la sécurité")
+                }
+                Some(n) if n == "defenseur_des_enfants" => {
+                    ("defenseur_enfants", "Défenseur des enfants")
+                }
+                Some(n) if n == "mediateur_de_la_republique" => {
+                    ("mediateur_republique", "Médiateur de la République")
+                }
+                _ => ("ddd", "Défenseur des droits"),
+            };
+            (code.to_string(), Some(label.to_string()))
+        }
+        "ADLC" => match jurisdiction_name {
+            Some("Conseil de la concurrence") => (
+                "conseil_concurrence".to_string(),
+                Some("Conseil de la concurrence".to_string()),
+            ),
+            _ => (
+                "adlc".to_string(),
+                Some("Autorité de la concurrence".to_string()),
+            ),
+        },
+        "COMEU" => {
+            let name = jurisdiction_name?;
+            (
+                lj_parse::comeu_court_code(name)?.to_string(),
+                Some(name.to_string()),
+            )
+        }
+        "TJ" | "CA" | "TCOM" | "CPH" => {
             let loc = normalize_location(location?);
             // Les codes TCOM Judilibre sont des numéros nus → préfixe type.
             let code = if loc.chars().all(|c| c.is_ascii_digit()) {
@@ -76,6 +112,15 @@ pub fn jurisdiction_ref(
                 loc
             };
             (code, None)
+        }
+        "CAA"
+            if jurisdiction_name
+                .is_some_and(|n| lj_fold::slug(n, '_') == "commission_centrale_d_aide_sociale") =>
+        {
+            (
+                "ccas".to_string(),
+                Some("Commission centrale d'aide sociale".to_string()),
+            )
         }
         "TA" | "CAA" => {
             let city = jurisdiction_name.and_then(city_from_name)?;
@@ -272,6 +317,7 @@ fn type_label(jurisdiction_type: &str) -> Option<&'static str> {
         "TJ" => "Tribunal judiciaire",
         "CA" => "Cour d'appel",
         "TCOM" => "Tribunal de commerce",
+        "CPH" => "Conseil de prud'hommes",
         "TA" => "Tribunal administratif",
         "CAA" => "Cour administrative d'appel",
         _ => return None,
@@ -347,6 +393,35 @@ mod tests {
         let j = jurisdiction_ref("CEDH", None, None).unwrap();
         assert_eq!(j.code, "cedh");
         assert_eq!(j.label, "Cour européenne des droits de l'homme");
+    }
+
+    #[test]
+    fn the_central_social_aid_commission_is_placed_by_its_name() {
+        let j = jurisdiction_ref("CAA", None, Some("Commission centrale d’aide sociale")).unwrap();
+        assert_eq!(j.code, "ccas");
+        assert_eq!(j.label, "Commission centrale d'aide sociale");
+    }
+
+    #[test]
+    fn each_authority_the_defenseur_des_droits_succeeded_keeps_its_code() {
+        let code = |name| jurisdiction_ref("DDD", None, name).unwrap().code;
+        assert_eq!(code(Some("Défenseur des droits")), "ddd");
+        assert_eq!(code(None), "ddd");
+        assert_eq!(
+            code(Some(
+                "Haute autorité de lutte contre les discriminations et pour l'égalité"
+            )),
+            "halde"
+        );
+        assert_eq!(
+            code(Some("Commission nationale de déontologie de la sécurité")),
+            "cnds"
+        );
+        assert_eq!(code(Some("Défenseur des enfants")), "defenseur_enfants");
+        assert_eq!(
+            code(Some("Médiateur de la République")),
+            "mediateur_republique"
+        );
     }
 
     /// Un nom de greffe corrompu ne fabrique pas de code fantôme.
@@ -429,9 +504,7 @@ mod tests {
         assert_eq!(j.city.as_deref(), Some("Paris"));
     }
 
-    /// Outre-mer : sans ces formes au vocabulaire, le type n'est pas reconnu et
-    /// le label retombe sur le type nu — Papeete devenait « Tribunal
-    /// judiciaire », une juridiction qui n'existe pas là-bas.
+    /// Overseas forms are recognised: the label keeps the court's own name and city.
     #[test]
     fn overseas_forms_keep_their_city() {
         let j = jurisdiction_ref(
@@ -561,6 +634,11 @@ mod tests {
             "CASSATION",
             "CASSATION_PARTIELLE",
             "DESISTEMENT",
+            "CONFORMITE",
+            "NON_CONFORMITE",
+            "INELIGIBILITE",
+            "ANNULATION",
+            "REFORMATION",
             "AUTRE",
         ] {
             emitted.push(format!("solution:{s}"));

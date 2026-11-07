@@ -3,13 +3,57 @@
 //! (re-extract, summary), génération et service des sitemaps.
 
 use super::support::now;
-use super::types::{CollageRow, GtDoc, MissingSummaryRow, SitemapRow};
+use super::types::{
+    CollageRow, DisplayInput, GtDoc, MissingSummaryRow, SitemapDecision, SitemapRow, SummaryStamp,
+};
 use super::DecisionRepository;
 use crate::error::Result;
 use chrono::{DateTime, NaiveDate, Utc};
 use lj_versions::{CERTIFIER_VERSION, EXTRACT_VERSION};
 use serde_json::Value;
+use std::collections::HashMap;
+use std::ops::Range;
 use tokio_postgres::types::Json;
+
+/// A summary as stored, its body and the court's words located in codepoints.
+#[derive(Debug, Clone)]
+pub struct StoredSummary {
+    pub decision_id: i64,
+    pub summary: String,
+    pub body: Option<Range<usize>>,
+    pub quote: Option<Range<usize>>,
+}
+
+/// What a summary is written from besides the decision's text: the name the decision
+/// is known by, and the classification fields of each of its provenances.
+#[derive(Debug, Clone)]
+pub struct SummaryContext {
+    pub decision_id: i64,
+    pub case_name: Option<String>,
+    pub provenances: Vec<(String, Value)>,
+}
+
+/// What rebuilds a decision's passages: its read text, the summary it carries
+/// and the provenance that wrote it, and the other texts its passages read.
+#[derive(Debug, Clone)]
+pub struct EmbedInput {
+    pub full_text: String,
+    pub source_fields: Value,
+    pub source_uid: String,
+    pub lang: String,
+    pub summary: Option<String>,
+    pub stamp: SummaryStamp,
+    pub others: Vec<EmbedText>,
+}
+
+/// A text of a decision and the provenance that wrote it.
+#[derive(Debug, Clone)]
+pub struct EmbedText {
+    pub full_text: String,
+    pub source_fields: Value,
+    pub source_uid: String,
+    pub lang: String,
+}
 
 /// Sort d'une écriture de révision manuelle par [`DecisionRepository::upsert_fields_at_version`].
 ///
@@ -142,8 +186,11 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT decision_id, COALESCE(search_title, ''), summary FROM decision_text \
-                 WHERE decision_id = ANY($1) AND lead AND summary IS NOT NULL AND summary <> ''",
+                &format!(
+                    "SELECT decision_id, COALESCE(search_title, ''), summary FROM decision_text \
+                 WHERE decision_id = ANY($1) AND {read} AND summary IS NOT NULL AND summary <> ''",
+                    read = super::pick::read("decision_text")
+                ),
                 &[&ids],
             )
             .await?;
@@ -166,9 +213,12 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT d.id, d.public_id, COALESCE(d.search_title, ''), dt.full_text \
-                 FROM decisions d JOIN decision_text dt ON dt.decision_id = d.id AND dt.lead \
+                &format!(
+                    "SELECT d.id, d.public_id, COALESCE(d.search_title, ''), dt.full_text \
+                 FROM decisions d JOIN decision_text dt ON dt.decision_id = d.id AND {read} \
                  WHERE d.id = ANY($1) AND d.public_id IS NOT NULL",
+                    read = super::pick::read("dt")
+                ),
                 &[&ids],
             )
             .await?;
@@ -191,8 +241,11 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT decision_id, full_text FROM decision_text \
-                 WHERE decision_id = ANY($1) AND lead",
+                &format!(
+                    "SELECT decision_id, full_text FROM decision_text \
+                 WHERE decision_id = ANY($1) AND {read}",
+                    read = super::pick::read("decision_text")
+                ),
                 &[&ids],
             )
             .await?;
@@ -208,12 +261,15 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT d.id, d.public_id, COALESCE(j.label, ''), \
+                &format!(
+                    "SELECT d.id, d.public_id, COALESCE(j.label, ''), \
                  COALESCE(d.jurisdiction_type, ''), COALESCE(d.date_lecture::text, ''), \
                  COALESCE(d.search_title, ''), dt.full_text FROM decisions d \
-                 JOIN decision_text dt ON dt.decision_id = d.id AND dt.lead \
+                 JOIN decision_text dt ON dt.decision_id = d.id AND {read} \
                  LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code \
                  WHERE d.id = ANY($1) AND d.public_id IS NOT NULL",
+                    read = super::pick::read("dt")
+                ),
                 &[&ids],
             )
             .await?;
@@ -292,11 +348,10 @@ impl DecisionRepository<'_> {
         Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 
-    /// Charge de ré-extraction d'une décision : sa provenance la plus
-    /// autoritaire. Le rang 0 dit qu'une ligne ne porte AUCUNE décision (bundle
-    /// de commentaires ArianeWeb, analyse ADDE) : elle ne peut pas être lue
-    /// comme une charge, et une source de charge oubliée au barème laisse la
-    /// décision non ré-extraite, jamais mal extraite.
+    /// A decision's re-extraction load: its most authoritative provenance. Rank 0
+    /// marks a row that carries no decision (an ArianeWeb commentary bundle, a
+    /// doctrine note): it cannot be read as a load, and a load source missing
+    /// from the scale leaves the decision unextracted, never misextracted.
     pub async fn fetch_reextract_inputs(
         &self,
         decision_id: i64,
@@ -304,8 +359,8 @@ impl DecisionRepository<'_> {
         let row = self
             .conn
             .query_opt(
-                "
-                SELECT (SELECT dt.full_text FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead), ds.source_fields, ds.source_uid
+                &format!("
+                SELECT {text}, ds.source_fields, ds.source_uid
                 FROM decisions d
                 JOIN LATERAL (
                     SELECT source_fields, source_uid
@@ -315,7 +370,7 @@ impl DecisionRepository<'_> {
                     LIMIT 1
                 ) ds ON true
                 WHERE d.id = $1
-                ",
+                ", text = super::pick::text("p.full_text", "d")),
                 &[&decision_id],
             )
             .await?;
@@ -329,30 +384,29 @@ impl DecisionRepository<'_> {
         }
     }
 
-    /// Même projection que [`Self::fetch_reextract_inputs`] pour un lot d'ids en une
-    /// requête, plus l'`id` en tête pour ré-apparier. Les ids incomplets sont omis ;
-    /// l'ordre n'est pas garanti.
+    /// For a batch of ids: `(id, read text, every active provenance that carries
+    /// a decision as `(source_uid, source_fields)` in authority order,
+    /// case_name)`. Incomplete ids are left out; the order is not guaranteed.
     pub async fn fetch_reextract_inputs_batch(
         &self,
         ids: &[i64],
-    ) -> Result<Vec<(i64, String, Value, String, Option<String>)>> {
+    ) -> Result<Vec<(i64, String, Vec<(String, Value)>, Option<String>)>> {
         let rows = self
             .conn
             .query(
-                "
-                SELECT d.id, (SELECT dt.full_text FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead), ds.source_fields, ds.source_uid, d.case_name
+                &format!("
+                SELECT d.id, {text}, d.case_name,
+                       ARRAY(SELECT ds.source_uid FROM decision_sources ds
+                             WHERE ds.decision_id = d.id AND ds.deleted_at IS NULL AND ds.source_rank > 0
+                               AND ds.source_fields IS NOT NULL
+                             ORDER BY ds.source_rank DESC, (ds.lang = 'fra') IS TRUE DESC, (ds.lang = 'eng') IS TRUE DESC, ds.source_uid ASC),
+                       ARRAY(SELECT ds.source_fields FROM decision_sources ds
+                             WHERE ds.decision_id = d.id AND ds.deleted_at IS NULL AND ds.source_rank > 0
+                               AND ds.source_fields IS NOT NULL
+                             ORDER BY ds.source_rank DESC, (ds.lang = 'fra') IS TRUE DESC, (ds.lang = 'eng') IS TRUE DESC, ds.source_uid ASC)
                 FROM decisions d
-                JOIN LATERAL (
-                    SELECT source_fields, source_uid
-                    FROM decision_sources
-                    WHERE decision_id = d.id AND deleted_at IS NULL AND source_rank > 0
-                    ORDER BY source_rank DESC, (lang = 'fra') IS TRUE DESC, (lang = 'eng') IS TRUE DESC, source_uid ASC
-                    LIMIT 1
-                ) ds ON true
                 WHERE d.id = ANY($1)
-                  AND EXISTS (SELECT 1 FROM decision_text dt WHERE dt.decision_id = d.id)
-                  AND ds.source_fields IS NOT NULL
-                ",
+                ", text = super::pick::text("p.full_text", "d")),
                 &[&ids],
             )
             .await?;
@@ -360,15 +414,13 @@ impl DecisionRepository<'_> {
             .iter()
             .filter_map(|r| {
                 let full_text: Option<String> = r.get(1);
-                let source_fields: Option<Value> = r.get(2);
-                match (full_text, source_fields) {
-                    (Some(ft), Some(sf)) => Some((
-                        r.get::<_, i64>(0),
-                        ft,
-                        sf,
-                        r.get::<_, String>(3),
-                        r.get::<_, Option<String>>(4),
-                    )),
+                let uids: Vec<String> = r.get(3);
+                let fields: Vec<Value> = r.get(4);
+                let provenances: Vec<(String, Value)> = uids.into_iter().zip(fields).collect();
+                match full_text {
+                    Some(ft) if !provenances.is_empty() => {
+                        Some((r.get::<_, i64>(0), ft, provenances, r.get(2)))
+                    }
                     _ => None,
                 }
             })
@@ -386,8 +438,9 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "
-                SELECT ds.source_uid, (SELECT dt.full_text FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead), ds.source_fields
+                &format!(
+                    "
+                SELECT ds.source_uid, {text}, ds.source_fields
                 FROM decision_sources ds
                 JOIN decisions d ON d.id = ds.decision_id
                 WHERE ds.source_uid = ANY($1)
@@ -396,6 +449,8 @@ impl DecisionRepository<'_> {
                   AND EXISTS (SELECT 1 FROM decision_text dt WHERE dt.decision_id = d.id)
                   AND ds.source_fields IS NOT NULL
                 ",
+                    text = super::pick::text("p.full_text", "d")
+                ),
                 &[&source_uids],
             )
             .await?;
@@ -457,74 +512,134 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// Keyset des décisions ayant au moins un chunk sans embedding, avec les
-    /// entrées de reconstruction plus le `public_id` et le `content_checksum`
-    /// existants — de quoi rebâtir un `Candidate` fidèle qui re-traverse le pipeline
-    /// sans changer l'identité ni le checksum.
-    ///
-    /// Chaque `decision_id` candidat est toujours renvoyé (l'appelant avance
-    /// `last_id` au max du lot), champs de reconstruction en `Option` : `None` quand
-    /// la décision n'a pas de provenance active ou pas de `full_text`. Renvoie
-    /// `(id, Option<(public_id, payload_format, full_text, source_fields,
-    /// source_uid, content_checksum)>)`.
-    #[allow(clippy::type_complexity)]
-    pub async fn fetch_missing_embedding_batch(
+    /// The decisions whose passages `embed-missing` rebuilds, by id, among those
+    /// with `id % shard.1 == shard.0`. By default: a text without passages and
+    /// not visited at `embed_version`, a passage lacking its embedding, or
+    /// passages embedded at `embed_version` without the summary their text now
+    /// carries. With `stock`, also every decision visited below `embed_version`
+    /// and every passage embedded behind another summary than its text's.
+    pub async fn embed_queue(
         &self,
-        last_id: i64,
-        limit: i64,
-    ) -> Result<Vec<(i64, Option<(String, String, String, Value, String, String)>)>> {
+        embed_version: i16,
+        stock: bool,
+        shard: (i64, i64),
+    ) -> Result<Vec<i64>> {
+        let mut sql = format!(
+            "SELECT d.id FROM decisions d
+             WHERE d.id % $3 = $2 AND d.embed_version IS DISTINCT FROM $1
+               AND EXISTS (SELECT 1 FROM decision_text t WHERE t.decision_id = d.id)
+               AND NOT EXISTS (SELECT 1 FROM decision_chunks c WHERE c.decision_id = d.id)
+             UNION
+             SELECT decision_id FROM decision_chunks WHERE embedding IS NULL AND decision_id % $3 = $2
+             UNION
+             SELECT d.id FROM decision_text t JOIN decisions d ON d.id = t.decision_id
+             WHERE t.summary IS NOT NULL AND {read} AND d.id % $3 = $2
+               AND d.embed_version = $1 AND d.embed_summary_engine IS NULL
+               AND EXISTS (SELECT 1 FROM decision_chunks c WHERE c.decision_id = d.id)",
+            read = super::pick::read("t")
+        );
+        if stock {
+            sql.push_str(&format!(
+                "
+             UNION
+             SELECT d.id FROM decisions d
+             WHERE d.id % $3 = $2 AND d.embed_version IS DISTINCT FROM $1
+             UNION
+             SELECT d.id FROM decisions d
+             CROSS JOIN LATERAL (SELECT p.summary_engine, p.summary_prompt_version
+                                 FROM decision_text p WHERE p.decision_id = d.id
+                                 ORDER BY {order} LIMIT 1) t
+             WHERE d.id % $3 = $2
+               AND (d.embed_summary_engine, d.embed_summary_prompt_version)
+                   IS DISTINCT FROM (t.summary_engine, t.summary_prompt_version)
+               AND EXISTS (SELECT 1 FROM decision_chunks c WHERE c.decision_id = d.id)",
+                order = super::pick::order("p", "d")
+            ));
+        }
+        sql.push_str(" ORDER BY 1");
+        let rows = self
+            .conn
+            .query(sql.as_str(), &[&embed_version, &shard.0, &shard.1])
+            .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// What rebuilds the passages of each of `ids`, in order: `None` without a
+    /// read text or without the active provenance that wrote it. Its other texts
+    /// come with it when their provenance is active.
+    pub async fn embed_inputs(&self, ids: &[i64]) -> Result<Vec<(i64, Option<EmbedInput>)>> {
         let rows = self
             .conn
             .query(
-                "
-                WITH ids AS (
-                    SELECT DISTINCT c.decision_id AS id
-                    FROM decision_chunks c
-                    WHERE c.embedding IS NULL AND c.decision_id > $1
-                    ORDER BY c.decision_id
-                    LIMIT $2
-                )
-                SELECT ids.id, d.public_id, (SELECT dt.full_text FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead),
-                       ds.payload_format, ds.source_fields, ds.source_uid, ds.content_checksum
-                FROM ids
+                &format!(
+                    "
+                SELECT ids.id, t.full_text, ds.source_fields, t.source_uid, t.summary,
+                       t.summary_engine, t.summary_prompt_version, t.lang
+                FROM unnest($1::bigint[]) AS ids(id)
                 LEFT JOIN decisions d ON d.id = ids.id
                 LEFT JOIN LATERAL (
-                    SELECT payload_format, source_fields, source_uid, content_checksum
-                    FROM decision_sources
-                    WHERE decision_id = ids.id AND deleted_at IS NULL
-                    ORDER BY source_rank DESC, (lang = 'fra') IS TRUE DESC, (lang = 'eng') IS TRUE DESC, source_uid ASC
-                    LIMIT 1
-                ) ds ON true
+                    SELECT p.full_text, p.source_uid, p.summary, p.summary_engine,
+                           p.summary_prompt_version, p.lang
+                    FROM decision_text p WHERE p.decision_id = d.id
+                    ORDER BY {order} LIMIT 1
+                ) t ON true
+                LEFT JOIN decision_sources ds
+                       ON ds.source_uid = t.source_uid AND ds.deleted_at IS NULL
                 ORDER BY ids.id
                 ",
-                &[&last_id, &limit],
+                    order = super::pick::order("p", "d")
+                ),
+                &[&ids],
             )
             .await?;
-        let mut out = Vec::with_capacity(rows.len());
-        for r in &rows {
-            let id: i64 = r.get(0);
-            let public_id: Option<String> = r.get(1);
-            let full_text: Option<String> = r.get(2);
-            let payload_format: Option<String> = r.get(3);
-            let source_fields: Option<Value> = r.get(4);
-            let source_uid: Option<String> = r.get(5);
-            let content_checksum: Option<String> = r.get(6);
-            let complete = match (
-                public_id,
-                full_text,
-                payload_format,
-                source_fields,
-                source_uid,
-                content_checksum,
-            ) {
-                (Some(pid), Some(ft), Some(fmt), Some(sf), Some(uid), Some(ck)) => {
-                    Some((pid, fmt, ft, sf, uid, ck))
-                }
-                _ => None,
-            };
-            out.push((id, complete));
+        let read: Vec<String> = rows
+            .iter()
+            .filter_map(|r| r.get::<_, Option<String>>(3))
+            .collect();
+        let mut others: HashMap<i64, Vec<EmbedText>> = HashMap::new();
+        for r in self
+            .conn
+            .query(
+                &format!(
+                    "SELECT t.decision_id, t.full_text, ds.source_fields, t.source_uid, t.lang
+                     FROM decision_text t
+                     JOIN decision_sources ds ON ds.source_uid = t.source_uid AND ds.deleted_at IS NULL
+                     WHERE t.decision_id = ANY($1) AND t.source_uid <> ALL($2) AND {passages}
+                     ORDER BY t.decision_id, t.lang",
+                    passages = super::pick::passages("t")
+                ),
+                &[&ids, &read],
+            )
+            .await?
+        {
+            others.entry(r.get(0)).or_default().push(EmbedText {
+                full_text: r.get(1),
+                source_fields: r.get(2),
+                source_uid: r.get(3),
+                lang: r.get(4),
+            });
         }
-        Ok(out)
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let id: i64 = r.get(0);
+                let input = match (r.get(1), r.get(2), r.get(3), r.get(7)) {
+                    (Some(full_text), Some(source_fields), Some(source_uid), Some(lang)) => {
+                        Some(EmbedInput {
+                            full_text,
+                            source_fields,
+                            source_uid,
+                            lang,
+                            summary: r.get(4),
+                            stamp: (r.get(5), r.get(6)),
+                            others: others.remove(&id).unwrap_or_default(),
+                        })
+                    }
+                    _ => None,
+                };
+                (id, input)
+            })
+            .collect())
     }
 
     /// Keyset des décisions à re-parser : `full_text` présent, ``extract_version``
@@ -810,67 +925,280 @@ impl DecisionRepository<'_> {
         Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 
-    /// `(id, summary)` of the rows that carry one, over a range of the primary key.
+    /// The rows that carry a summary, over a range of the primary key.
     #[tracing::instrument(name = "db.summaries_in_range", skip(self), fields(db.system = "postgresql"))]
-    pub async fn summaries_in_range(&self, from_id: i64, to_id: i64) -> Result<Vec<(i64, String)>> {
+    pub async fn summaries_in_range(&self, from_id: i64, to_id: i64) -> Result<Vec<StoredSummary>> {
         let rows = self
             .conn
             .query(
-                "SELECT decision_id, summary FROM decision_text \
-                 WHERE decision_id >= $1 AND decision_id < $2 AND lead \
+                &format!(
+                    "SELECT decision_id, summary, summary_body_start, summary_body_end, \
+                        summary_quote_start, summary_quote_end \
+                 FROM decision_text \
+                 WHERE decision_id >= $1 AND decision_id < $2 AND {read} \
                    AND summary IS NOT NULL AND deleted_at IS NULL",
+                    read = super::pick::read("decision_text")
+                ),
                 &[&from_id, &to_id],
             )
             .await?;
-        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+        Ok(rows
+            .iter()
+            .map(|r| StoredSummary {
+                decision_id: r.get(0),
+                summary: r.get(1),
+                body: codepoints(r.get(2), r.get(3)),
+                quote: codepoints(r.get(4), r.get(5)),
+            })
+            .collect())
+    }
+
+    /// The [`SummaryContext`] of decisions named by id, each provenance of `sources`
+    /// cut to the `keys` it carries.
+    #[tracing::instrument(name = "db.summary_contexts", skip(self, ids, sources, keys), fields(db.system = "postgresql", n = ids.len()))]
+    pub async fn summary_contexts(
+        &self,
+        ids: &[i64],
+        sources: &[&str],
+        keys: &[&str],
+    ) -> Result<Vec<SummaryContext>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT d.id, d.case_name, \
+                        ARRAY(SELECT jsonb_build_array(ds.source, \
+                                  (SELECT coalesce(jsonb_object_agg(k, ds.source_fields->k), '{}') \
+                                   FROM unnest($3::text[]) k WHERE ds.source_fields ? k)) \
+                              FROM decision_sources ds \
+                              WHERE ds.decision_id = d.id AND ds.deleted_at IS NULL \
+                                AND ds.source = ANY($2) AND ds.source_fields IS NOT NULL \
+                              ORDER BY ds.source_rank, ds.source_uid) \
+                 FROM decisions d WHERE d.id = ANY($1)",
+                &[&ids, &sources, &keys],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let provenances: Vec<Value> = r.get(2);
+                SummaryContext {
+                    decision_id: r.get(0),
+                    case_name: r.get(1),
+                    provenances: provenances
+                        .into_iter()
+                        .filter_map(|pair| match pair {
+                            Value::Array(mut pair) if pair.len() == 2 => {
+                                let fields = pair.pop()?;
+                                Some((pair.pop()?.as_str()?.to_string(), fields))
+                            }
+                            _ => None,
+                        })
+                        .collect(),
+                }
+            })
+            .collect())
+    }
+
+    /// `(id, commentary, analysis)` of the collages written by `collage_codes` over a
+    /// range of the primary key, the commentary picked as [`Self::fetch_collage_rows`] does.
+    #[tracing::instrument(name = "db.collage_commentaries_in_range", skip(self), fields(db.system = "postgresql"))]
+    pub async fn collage_commentaries_in_range(
+        &self,
+        from_id: i64,
+        to_id: i64,
+        collage_codes: &[i16],
+        prose_min: i32,
+    ) -> Result<Vec<(i64, String, bool)>> {
+        let rows = self
+            .conn
+            .query(
+                &format!(
+                    "
+                SELECT t.decision_id, c.commentary, c.analysis
+                FROM decision_text t
+                JOIN LATERAL (
+                    SELECT ds.source_fields->>'summary' AS commentary, false AS analysis
+                    FROM decision_sources ds
+                    WHERE ds.decision_id = t.decision_id AND ds.deleted_at IS NULL
+                      AND ds.source = 'judilibre'
+                      AND length(ds.source_fields->>'summary') > $4
+                      AND (length(ds.source_fields->>'summary')
+                           - length(replace(ds.source_fields->>'summary', ' - ', ''))) / 3 < 2
+                    UNION ALL
+                    SELECT x.v->>'body', true
+                    FROM decision_sources ds,
+                         LATERAL jsonb_array_elements(ds.source_fields->'commentaires') x(v)
+                    WHERE ds.decision_id = t.decision_id AND ds.deleted_at IS NULL
+                      AND ds.source = 'ariane-web'
+                      AND x.v->>'kind' = 'analyse'
+                      AND position(E'\n\n' in x.v->>'body') > 0
+                      AND length(trim(substr(x.v->>'body',
+                            position(E'\n\n' in x.v->>'body') + 2))) > $4
+                    ORDER BY 1 DESC
+                    LIMIT 1
+                ) c ON true
+                WHERE t.decision_id >= $1 AND t.decision_id < $2 AND {read}
+                  AND t.deleted_at IS NULL AND t.summary_engine = ANY($3)
+                ",
+                    read = super::pick::read("t")
+                ),
+                &[&from_id, &to_id, &collage_codes, &prose_min],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect())
     }
 
     /// Replaces the text alone, where [`Self::set_summary`] also stamps the engine
     /// and the generation: repairing the stock after the deterministic cleaning of
     /// `lj-core` gains a rule does not change who wrote the row.
     #[tracing::instrument(name = "db.rewrite_summary_text", skip(self, summary), fields(db.system = "postgresql"))]
-    pub async fn rewrite_summary_text(&self, decision_id: i64, summary: &str) -> Result<()> {
+    pub async fn rewrite_summary_text(
+        &self,
+        decision_id: i64,
+        summary: &str,
+        body: Option<Range<usize>>,
+        quote: Option<Range<usize>>,
+    ) -> Result<()> {
+        let (body_start, body_end) = codepoint_columns(body);
+        let (start, end) = codepoint_columns(quote);
         self.conn
             .execute(
-                "WITH t AS (UPDATE decision_text SET summary = $1 \
-                            WHERE decision_id = $3 AND lead RETURNING decision_id) \
+                &format!(
+                    "WITH t AS (UPDATE decision_text SET summary = $1, summary_quote_start = $4, \
+                            summary_quote_end = $5, summary_body_start = $6, summary_body_end = $7 \
+                            WHERE decision_id = $3 AND {read} RETURNING decision_id) \
                  UPDATE decisions SET updated_at = $2 WHERE id = (SELECT decision_id FROM t)",
-                &[&summary, &now(), &decision_id],
+                    read = super::pick::read("decision_text")
+                ),
+                &[
+                    &summary,
+                    &now(),
+                    &decision_id,
+                    &start,
+                    &end,
+                    &body_start,
+                    &body_end,
+                ],
             )
             .await?;
         Ok(())
     }
 
     #[tracing::instrument(name = "db.set_summary", skip(self, summary), fields(db.system = "postgresql"))]
+    #[allow(clippy::too_many_arguments)]
     pub async fn set_summary(
         &self,
         decision_id: i64,
         summary: &str,
+        body: Option<Range<usize>>,
+        quote: Option<Range<usize>>,
         prompt_version: i16,
         engine: i16,
     ) -> Result<()> {
+        let (body_start, body_end) = codepoint_columns(body);
+        let (start, end) = codepoint_columns(quote);
         self.conn
             .execute(
-                "WITH t AS (UPDATE decision_text SET summary = $1, summary_prompt_version = $2, \
-                            summary_engine = $3 \
-                            WHERE decision_id = $5 AND lead RETURNING decision_id) \
-                 UPDATE decisions SET updated_at = $4 WHERE id = (SELECT decision_id FROM t)",
-                &[&summary, &prompt_version, &engine, &now(), &decision_id],
+                &format!("WITH t AS (UPDATE decision_text SET summary = $1, summary_prompt_version = $2, \
+                            summary_engine = $3, summary_quote_start = $6, summary_quote_end = $7, \
+                            summary_body_start = $8, summary_body_end = $9 \
+                            WHERE decision_id = $5 AND {read} RETURNING decision_id) \
+                 UPDATE decisions SET updated_at = $4 WHERE id = (SELECT decision_id FROM t)", read = super::pick::read("decision_text")),
+                &[
+                    &summary,
+                    &prompt_version,
+                    &engine,
+                    &now(),
+                    &decision_id,
+                    &start,
+                    &end,
+                    &body_start,
+                    &body_end,
+                ],
             )
             .await?;
         Ok(())
     }
 
-    /// Iterates `(public_id, jurisdiction_type, lastmod)` over every decision, in
-    /// PK order. `lastmod` = `GREATEST(date_lecture, updated_at::date)`. Decisions
-    /// without a `public_id` are excluded; keyset pagination on `d.id`, materialised
-    /// as a `Vec`.
+    /// [`Self::set_summary`] on a row still below `target_version`, false when another
+    /// writer reached the generation first.
+    #[tracing::instrument(name = "db.set_stale_summary", skip(self, summary), fields(db.system = "postgresql"))]
+    pub async fn set_stale_summary(
+        &self,
+        decision_id: i64,
+        summary: &str,
+        body: Option<Range<usize>>,
+        target_version: i16,
+        engine: i16,
+    ) -> Result<bool> {
+        let (body_start, body_end) = codepoint_columns(body);
+        let written = self
+            .conn
+            .execute(
+                &format!("WITH t AS (UPDATE decision_text SET summary = $1, summary_prompt_version = $2, \
+                            summary_engine = $3, summary_quote_start = NULL, summary_quote_end = NULL, \
+                            summary_body_start = $6, summary_body_end = $7 \
+                            WHERE decision_id = $5 AND {read} \
+                              AND (summary IS NULL OR summary_prompt_version IS NULL \
+                                   OR summary_prompt_version < $2) \
+                            RETURNING decision_id) \
+                 UPDATE decisions SET updated_at = $4 WHERE id = (SELECT decision_id FROM t)", read = super::pick::read("decision_text")),
+                &[
+                    &summary,
+                    &target_version,
+                    &engine,
+                    &now(),
+                    &decision_id,
+                    &body_start,
+                    &body_end,
+                ],
+            )
+            .await?;
+        Ok(written == 1)
+    }
+
+    /// The rows [`Self::iter_summaries_by_jurisdiction`] yields, for decisions named by id.
+    #[tracing::instrument(name = "db.summary_rows", skip(self, ids), fields(db.system = "postgresql", n = ids.len()))]
+    pub async fn summary_rows(&self, ids: &[i64]) -> Result<Vec<MissingSummaryRow>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT d.id, d.public_id, d.jurisdiction_type, j.label, \
+                        d.date_lecture::text, d.docket_numbers \
+                 FROM decisions d \
+                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code \
+                 WHERE d.id = ANY($1) AND d.public_id IS NOT NULL AND d.deleted_at IS NULL",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|row| {
+                let docket: Option<Vec<String>> = row.get(5);
+                MissingSummaryRow {
+                    decision_id: row.get(0),
+                    public_id: row.get(1),
+                    jurisdiction_type: row.get(2),
+                    jurisdiction_name: row.get(3),
+                    date_lecture: row.get(4),
+                    docket_numbers: docket.filter(|v| !v.is_empty()),
+                }
+            })
+            .collect())
+    }
+
+    /// Iterates over every active decision, in PK order. `lastmod` =
+    /// `GREATEST(date_lecture, updated_at::date)`. Decisions without a `public_id`
+    /// are excluded; keyset pagination on `d.id`, materialised as a `Vec`.
     #[tracing::instrument(name = "db.iter_decisions_for_sitemap", skip(self), fields(db.system = "postgresql"))]
     pub async fn iter_decisions_for_sitemap(
         &self,
         batch_size: i64,
-    ) -> Result<Vec<(String, String, Option<NaiveDate>)>> {
-        let mut out: Vec<(String, String, Option<NaiveDate>)> = Vec::new();
+    ) -> Result<Vec<SitemapDecision>> {
+        let mut out: Vec<SitemapDecision> = Vec::new();
         let mut last_id: i64 = 0;
         loop {
             let rows = self
@@ -879,9 +1207,10 @@ impl DecisionRepository<'_> {
                     "
                 SELECT id, public_id,
                        GREATEST(date_lecture, updated_at::date) AS lastmod,
-                       jurisdiction_type
+                       jurisdiction_type, jurisdiction_code
                 FROM decisions
                 WHERE public_id IS NOT NULL
+                  AND deleted_at IS NULL
                   AND id > $1
                 ORDER BY id
                 LIMIT $2
@@ -895,7 +1224,7 @@ impl DecisionRepository<'_> {
             for row in &rows {
                 let public_id: String = row.get(1);
                 let lastmod: Option<NaiveDate> = row.get(2);
-                out.push((public_id, row.get(3), lastmod));
+                out.push((public_id, row.get(3), row.get(4), lastmod));
             }
             last_id = rows[rows.len() - 1].get::<_, i64>(0);
             if (rows.len() as i64) < batch_size {
@@ -935,7 +1264,8 @@ impl DecisionRepository<'_> {
         Ok(row.map(|r| (r.get(0), r.get(1))))
     }
 
-    /// `public_id`s whose provenance was (re)ingested since `since`, freshest first.
+    /// `(public_id, jurisdiction_type, jurisdiction_code)` of the decisions whose provenance was
+    /// (re)ingested since `since`, freshest first.
     ///
     /// `ingested_at` only moves on a new provenance, a `content_checksum` change or
     /// a tombstone lift, where `decisions.updated_at` follows every maintenance pass.
@@ -944,14 +1274,15 @@ impl DecisionRepository<'_> {
         &self,
         since: DateTime<Utc>,
         limit: i64,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Result<Vec<(String, String, Option<String>)>> {
         let rows = self
             .conn
             .query(
                 "
-                SELECT public_id, jurisdiction_type FROM (
+                SELECT public_id, jurisdiction_type, jurisdiction_code FROM (
                     SELECT DISTINCT ON (d.public_id)
                            d.public_id AS public_id, d.jurisdiction_type AS jurisdiction_type,
+                           d.jurisdiction_code AS jurisdiction_code,
                            s.ingested_at AS ingested_at
                     FROM decision_sources s
                     JOIN decisions d ON d.id = s.decision_id
@@ -967,15 +1298,17 @@ impl DecisionRepository<'_> {
                 &[&since, &limit],
             )
             .await?;
-        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+        Ok(rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect())
     }
 
     /// Every decision a collage engine can serve and none has written, in one pass.
     ///
-    /// Driven from `decision_sources`, which is the selective side: 161 289 rows of
-    /// 3.79 million carry a commentary, so probing `decisions` one by one costs a
-    /// scan of the whole table, measured 37 s for a page of 500 against 3,4 s for
-    /// the pass below.
+    /// Driven from `decision_sources`, which is the selective side: few of its
+    /// rows carry a commentary, so probing `decisions` one by one costs a scan of
+    /// the whole table.
     ///
     /// The usable-commentary test is structural and differs by source, a length bar
     /// admitting nomenclature chains of 200 to 400 characters: a Cour de cassation
@@ -987,7 +1320,8 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "
+                &format!(
+                    "
                 WITH porteuses AS (
                     SELECT ds.decision_id
                     FROM decision_sources ds
@@ -1007,11 +1341,13 @@ impl DecisionRepository<'_> {
                 )
                 SELECT t.decision_id
                 FROM porteuses p
-                JOIN decision_text t ON t.decision_id = p.decision_id AND t.lead
+                JOIN decision_text t ON t.decision_id = p.decision_id AND {read}
                 WHERE t.deleted_at IS NULL
                   AND (t.summary_engine IS NULL OR t.summary_engine <> ALL($1))
                 ORDER BY t.decision_id
                 ",
+                    read = super::pick::read("t")
+                ),
                 &[&collage_codes, &prose_min],
             )
             .await?;
@@ -1027,11 +1363,11 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "
-                SELECT d.id, (SELECT dt.full_text FROM decision_text dt WHERE dt.decision_id = d.id AND dt.lead), c.commentary
+                &format!("
+                SELECT d.id, {text}, c.commentary, c.analysis
                 FROM decisions d
                 JOIN LATERAL (
-                    SELECT ds.source_fields->>'summary' AS commentary
+                    SELECT ds.source_fields->>'summary' AS commentary, false AS analysis
                     FROM decision_sources ds
                     WHERE ds.decision_id = d.id AND ds.deleted_at IS NULL
                       AND ds.source = 'judilibre'
@@ -1039,7 +1375,7 @@ impl DecisionRepository<'_> {
                       AND (length(ds.source_fields->>'summary')
                            - length(replace(ds.source_fields->>'summary', ' - ', ''))) / 3 < 2
                     UNION ALL
-                    SELECT x.v->>'body'
+                    SELECT x.v->>'body', true
                     FROM decision_sources ds,
                          LATERAL jsonb_array_elements(ds.source_fields->'commentaires') x(v)
                     WHERE ds.decision_id = d.id AND ds.deleted_at IS NULL
@@ -1053,7 +1389,7 @@ impl DecisionRepository<'_> {
                 ) c ON true
                 WHERE d.id = ANY($1) AND EXISTS (SELECT 1 FROM decision_text dt WHERE dt.decision_id = d.id)
                 ORDER BY d.id
-                ",
+                ", text = super::pick::text("p.full_text", "d")),
                 &[&ids, &prose_min],
             )
             .await?;
@@ -1063,6 +1399,7 @@ impl DecisionRepository<'_> {
                 decision_id: r.get(0),
                 full_text: r.get(1),
                 commentary: r.get(2),
+                analysis: r.get(3),
             })
             .collect())
     }
@@ -1108,11 +1445,12 @@ impl DecisionRepository<'_> {
             let rows = self
                 .conn
                 .query(
-                    "
+                    &format!(
+                        "
                 SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
                        d.date_lecture::text, d.docket_numbers
                 FROM decisions d
-                JOIN decision_text t ON t.decision_id = d.id AND t.lead
+                JOIN decision_text t ON t.decision_id = d.id AND {read}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE d.id > $1
                   AND d.id <= $2
@@ -1128,6 +1466,8 @@ impl DecisionRepository<'_> {
                 ORDER BY d.id
                 LIMIT $4
                 ",
+                        read = super::pick::read("t")
+                    ),
                     &[
                         &last_id,
                         &ceiling,
@@ -1168,14 +1508,12 @@ impl DecisionRepository<'_> {
         Ok(batches)
     }
 
-    /// The same rows, most cited inside the corpus first. Measured 21/09/2026:
-    /// 27,3 % of the decisions an MCP client opens carry a citation against 7,1 %
-    /// of the corpus, and the cited set below generation 10 holds 239 477 rows
-    /// where the whole sweep holds 3,6 million.
+    /// The same rows, most cited inside the corpus first, in the types of `only`
+    /// when it names any, and only the decisions with a usage name when `named`.
     ///
     /// No keyset: `case_citation` bounds the set, so the whole order fits one
     /// query, and a rank offers nothing stable to page against.
-    #[allow(clippy::type_complexity)]
+    #[allow(clippy::type_complexity, clippy::too_many_arguments)]
     #[tracing::instrument(name = "db.iter_summaries_by_citations", skip(self), fields(db.system = "postgresql"))]
     pub async fn iter_summaries_by_citations(
         &self,
@@ -1184,11 +1522,14 @@ impl DecisionRepository<'_> {
         limit: Option<i64>,
         include_stale: bool,
         min_citations: i32,
+        only: &[&str],
+        named: bool,
     ) -> Result<Vec<Vec<MissingSummaryRow>>> {
         let rows = self
             .conn
             .query(
-                "
+                &format!(
+                    "
                 WITH cites AS (
                     SELECT target_decision_id AS id, count(*)::int AS n
                     FROM case_citation
@@ -1199,9 +1540,11 @@ impl DecisionRepository<'_> {
                        d.date_lecture::text, d.docket_numbers
                 FROM cites c
                 JOIN decisions d ON d.id = c.id
-                JOIN decision_text t ON t.decision_id = d.id AND t.lead
+                JOIN decision_text t ON t.decision_id = d.id AND {read}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE c.n >= $4
+                  AND (cardinality($5::text[]) = 0 OR d.jurisdiction_type = ANY($5))
+                  AND (NOT $6 OR d.case_name IS NOT NULL)
                   AND (
                     t.summary IS NULL
                     OR ($2 AND (
@@ -1214,11 +1557,15 @@ impl DecisionRepository<'_> {
                 ORDER BY c.n DESC, d.id
                 LIMIT $3
                 ",
+                    read = super::pick::read("t")
+                ),
                 &[
                     &target_version,
                     &include_stale,
                     &limit.unwrap_or(i64::MAX),
                     &min_citations,
+                    &only,
+                    &named,
                 ],
             )
             .await?;
@@ -1244,9 +1591,9 @@ impl DecisionRepository<'_> {
     }
 
     /// Stale or missing summaries by jurisdiction tier, then most recent first, or
-    /// the whole order backwards when `reverse`. A type absent from `types` comes
-    /// after every tier. One query bounded by `limit`: the top-N sort holds the
-    /// batch, never the 3,5 million candidates.
+    /// the whole order backwards when `reverse`, in the types of `only` when it
+    /// names any, and only the decisions with a usage name when `named`. A type absent from `types` comes after every tier. One query bounded by `limit`: the top-N sort holds the
+    /// batch, never every candidate.
     #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(name = "db.iter_summaries_by_jurisdiction", skip(self), fields(db.system = "postgresql"))]
     pub async fn iter_summaries_by_jurisdiction(
@@ -1258,6 +1605,8 @@ impl DecisionRepository<'_> {
         types: &[&str],
         tiers: &[i32],
         reverse: bool,
+        only: &[&str],
+        named: bool,
     ) -> Result<Vec<Vec<MissingSummaryRow>>> {
         let (tier, recent) = if reverse {
             ("DESC", "ASC NULLS FIRST")
@@ -1272,7 +1621,7 @@ impl DecisionRepository<'_> {
                 SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
                        d.date_lecture::text, d.docket_numbers
                 FROM decisions d
-                JOIN decision_text t ON t.decision_id = d.id AND t.lead
+                JOIN decision_text t ON t.decision_id = d.id AND {read}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE (
                     t.summary IS NULL
@@ -1283,11 +1632,13 @@ impl DecisionRepository<'_> {
                   )
                   AND d.public_id IS NOT NULL
                   AND d.deleted_at IS NULL
+                  AND (cardinality($6::text[]) = 0 OR d.jurisdiction_type = ANY($6))
+                  AND (NOT $7 OR d.case_name IS NOT NULL)
                 ORDER BY coalesce(($5::int[])[array_position($4::text[], d.jurisdiction_type)], 2147483647) {tier},
                          d.date_lecture {recent}, d.id {recent_id}
                 LIMIT $3
                 ",
-                    recent_id = if reverse { "ASC" } else { "DESC" },
+                    recent_id = if reverse { "ASC" } else { "DESC" }, read = super::pick::read("t")
                 ),
                 &[
                     &target_version,
@@ -1295,6 +1646,8 @@ impl DecisionRepository<'_> {
                     &limit.unwrap_or(i64::MAX),
                     &types,
                     &tiers,
+                    &only,
+                    &named,
                 ],
             )
             .await?;
@@ -1349,11 +1702,12 @@ impl DecisionRepository<'_> {
             let rows = self
                 .conn
                 .query(
-                    "
+                    &format!(
+                        "
                 SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
                        d.date_lecture::text, d.docket_numbers
                 FROM decisions d
-                JOIN decision_text t ON t.decision_id = d.id AND t.lead
+                JOIN decision_text t ON t.decision_id = d.id AND {read}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE d.id > $1
                   AND t.summary_engine = $2
@@ -1363,6 +1717,8 @@ impl DecisionRepository<'_> {
                 ORDER BY d.id
                 LIMIT $4
                 ",
+                        read = super::pick::read("t")
+                    ),
                     &[&last_id, &engine, &jurisdiction_type, &remaining],
                 )
                 .await?;
@@ -1391,4 +1747,88 @@ impl DecisionRepository<'_> {
         }
         Ok(batches)
     }
+
+    /// Active provenances `(decision_id, source)` on a repeatable
+    /// `TABLESAMPLE SYSTEM` of `sample_pct` percent of the pages.
+    pub async fn sample_provenances(&self, sample_pct: f32) -> Result<Vec<(i64, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT decision_id, source FROM decision_sources TABLESAMPLE SYSTEM ($1) \
+                 REPEATABLE (0) WHERE deleted_at IS NULL",
+                &[&sample_pct],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// Up to `limit` active provenances `(decision_id, source)` drawn on a hash
+    /// of the `source_uid`s in `[from, to)`, a range the unique index serves.
+    pub async fn sample_provenances_in_uid_range(
+        &self,
+        from: &str,
+        to: &str,
+        limit: i64,
+    ) -> Result<Vec<(i64, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT decision_id, source FROM decision_sources \
+                 WHERE source_uid >= $1 AND source_uid < $2 AND deleted_at IS NULL \
+                 ORDER BY hashtext(source_uid) LIMIT $3",
+                &[&from, &to, &limit],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// [`DisplayInput`] of each live decision in `ids` or `public_ids`, its
+    /// provenance ranked as the decision page ranks it.
+    pub async fn fetch_display_inputs(
+        &self,
+        ids: &[i64],
+        public_ids: &[String],
+    ) -> Result<Vec<DisplayInput>> {
+        let rows = self
+            .conn
+            .query(
+                &format!("
+                SELECT d.id, d.public_id, d.jurisdiction_type, d.jurisdiction_code,
+                  {text},
+                  ds.source, ds.source_uid, ds.source_fields
+                FROM decisions d
+                LEFT JOIN LATERAL (
+                    SELECT source_fields, source, source_uid
+                    FROM decision_sources
+                    WHERE decision_id = d.id AND deleted_at IS NULL
+                    ORDER BY source_rank DESC, (lang = 'fra') IS TRUE DESC, (lang = 'eng') IS TRUE DESC, source_uid ASC
+                    LIMIT 1
+                ) ds ON true
+                WHERE (d.id = ANY($1) OR d.public_id = ANY($2)) AND d.deleted_at IS NULL
+                ", text = super::pick::text("p.full_text", "d")),
+                &[&ids, &public_ids],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| DisplayInput {
+                id: r.get(0),
+                public_id: r.get(1),
+                jurisdiction_type: r.get(2),
+                jurisdiction_code: r.get(3),
+                full_text: r.get(4),
+                source: r.get(5),
+                source_uid: r.get(6),
+                source_fields: r.get(7),
+            })
+            .collect())
+    }
+}
+
+fn codepoints(start: Option<i32>, end: Option<i32>) -> Option<Range<usize>> {
+    Some(start? as usize..end? as usize)
+}
+
+fn codepoint_columns(span: Option<Range<usize>>) -> (Option<i32>, Option<i32>) {
+    span.map_or((None, None), |q| (Some(q.start as i32), Some(q.end as i32)))
 }

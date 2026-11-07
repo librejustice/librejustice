@@ -84,7 +84,7 @@ fn source_uid(chemin: &Path) -> Option<String> {
 /// `PC_GOLD_VERSION`. A uid the fonds does not carry is reported and skipped.
 pub async fn load_quantum_gold(dir: &Path) -> Result<()> {
     let settings = Settings::from_env()?;
-    let pool = lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
+    let pool = lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -160,7 +160,7 @@ pub async fn load_quantum_gold(dir: &Path) -> Result<()> {
 /// manual revision is never touched.
 pub async fn extract_quantum(limit: Option<usize>) -> Result<()> {
     let settings = Settings::from_env()?;
-    let pool = lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
+    let pool = lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -234,7 +234,7 @@ fn readings(path: &Path) -> Result<HashMap<String, Quantum>> {
 /// checked against what the decision writes. Idempotent.
 pub async fn load_quantum_readings(first: &Path, second: &Path) -> Result<()> {
     let settings = Settings::from_env()?;
-    let pool = lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
+    let pool = lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await

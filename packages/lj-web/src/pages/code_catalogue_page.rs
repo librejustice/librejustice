@@ -71,7 +71,7 @@ async fn fetch_catalogue(juris: String) -> Result<(String, Vec<CodeCatalogueEntr
 fn jurisdiction_rank(jurisdiction: &str) -> u8 {
     match jurisdiction {
         "FR" => 0,
-        "UE" => 1,
+        "EU" => 1,
         "INTL" => 2,
         _ => 3,
     }

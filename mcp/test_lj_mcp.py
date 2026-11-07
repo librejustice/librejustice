@@ -1,4 +1,4 @@
-"""What the mapping onto `/api` has to hold: one route per tool, four doors on `get_norm`, and the tool spellings translated to the query keys."""
+"""What the mapping onto `/api` has to hold: one route per tool, four doors on `get_norm`, and the tool arguments sent under their own names."""
 
 import json
 from pathlib import Path
@@ -13,8 +13,8 @@ DOCUMENTED = {
     "/api/search": "search_decisions",
     "/api/search-textes": "search_norms",
     "/api/decision/{id}": "get_decision",
-    "/api/norm/{juridiction}/{code}": "get_norm",
-    "/api/norm/{juridiction}/{code}/{article}": "get_norm",
+    "/api/norm/{jurisdiction}/{code}": "get_norm",
+    "/api/norm/{jurisdiction}/{code}/{article}": "get_norm",
     "/api/article/{uid}": "get_norm",
 }
 
@@ -30,7 +30,7 @@ def test_the_instructions_come_from_the_shared_surface():
     assert initialized["serverInfo"]["name"] == "librejustice"
 
 
-def test_a_search_translates_its_scalars_and_repeats_its_filters():
+def test_a_search_sends_its_scalars_and_repeats_its_filters():
     path, query = lj_mcp.search_decisions(
         {
             "query": "trouble de voisinage",
@@ -42,21 +42,18 @@ def test_a_search_translates_its_scalars_and_repeats_its_filters():
     )
     assert path == "/api/search"
     assert query == [
-        ("q", "trouble de voisinage"),
-        ("dateFrom", "2020-01-01"),
+        ("query", "trouble de voisinage"),
+        ("date_from", "2020-01-01"),
         ("limit", "5"),
-        ("jurisdictionType", "CA"),
-        ("jurisdictionType", "TJ"),
-        ("legalArticle", "code-civil/1240"),
-        ("aiMode", "1"),
+        ("jurisdiction_type", "CA"),
+        ("jurisdiction_type", "TJ"),
+        ("legal_article", "code-civil/1240"),
     ]
 
 
-def test_the_rerank_is_on_unless_it_is_refused():
-    _, on = lj_mcp.search_decisions({"query": "x"})
+def test_a_refused_rerank_is_sent_since_the_route_reranks_by_default():
     _, off = lj_mcp.search_decisions({"query": "x", "ai_rerank": False})
-    assert ("aiMode", "1") in on
-    assert not [v for k, v in off if k == "aiMode"]
+    assert ("ai_rerank", "0") in off
 
 
 def test_a_decision_is_addressed_by_the_url_of_a_hit():
@@ -82,7 +79,7 @@ def test_a_decision_is_addressed_by_the_url_of_a_hit():
         ({"url": "/texte/code-civil/1240"}, "/api/norm/code-civil/1240"),
         ({"code": "code civil", "article": "L. 121-1"}, "/api/norm/code%20civil/L.%20121-1"),
         ({"code": "cgi"}, "/api/norm/cgi"),
-        ({"textId": "LEGIARTI000006419282"}, "/api/article/LEGIARTI000006419282"),
+        ({"text_id": "LEGIARTI000006419282"}, "/api/article/LEGIARTI000006419282"),
         ({"url": "LEGIARTI000006419282"}, "/api/article/LEGIARTI000006419282"),
         ({"url": "LEGITEXT000006070721"}, "/api/article/LEGITEXT000006070721"),
     ],
@@ -93,12 +90,12 @@ def test_the_four_doors_of_a_legal_text(args, expected):
 
 def test_a_legal_text_needs_a_designation():
     with pytest.raises(ValueError, match="missing tool argument: url"):
-        lj_mcp.legal_text_path({"date": "2020-01-01"})
+        lj_mcp.legal_text_path({"as_of": "2020-01-01"})
 
 
 def test_a_date_rides_along_whichever_door_was_used():
-    asked = lj_mcp.get_norm({"code": "code-civil", "article": "1240", "date": "2015-06-01"})
-    assert asked == ("/api/norm/code-civil/1240", [("date", "2015-06-01")])
+    asked = lj_mcp.get_norm({"code": "code-civil", "article": "1240", "as_of": "2015-06-01"})
+    assert asked == ("/api/norm/code-civil/1240", [("as_of", "2015-06-01")])
 
 
 def test_a_call_without_a_key_names_where_to_get_one():
@@ -139,3 +136,13 @@ def test_the_rest_contract_answers_with_the_tool_output_schemas():
     for path, tool in DOCUMENTED.items():
         served = paths[path]["get"]["responses"]["200"]["content"]["application/json"]["schema"]
         assert served == schemas[tool], path
+
+
+def test_the_rest_searches_take_every_tool_argument_under_its_name():
+    paths = json.loads(OPENAPI.read_text(encoding="utf-8"))["paths"]
+    tools = {t["name"]: t["inputSchema"]["properties"] for t in lj_mcp._surface["tools"]}
+    for path, tool in [("/api/search", "search_decisions"), ("/api/search-textes", "search_norms")]:
+        params = {p["name"] for p in paths[path]["get"]["parameters"] if "name" in p}
+        assert set(tools[tool]) <= params, path
+    assert set(tools["search_decisions"]) <= set(lj_mcp.SEARCH_SCALARS) | set(lj_mcp.SEARCH_LISTS)
+    assert set(tools["search_norms"]) <= set(lj_mcp.TEXTS_SCALARS)

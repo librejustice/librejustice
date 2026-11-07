@@ -1,6 +1,6 @@
 //! Live quota of a ChatGPT account: the usage windows, and the credits that reset
-//! one before its term. Undocumented surface, read off the codex source on
-//! 19/09/2026 (`backend-client/src/client.rs`, `client/rate_limit_resets.rs`): a
+//! one before its term. Undocumented surface, read off the codex source
+//! (`backend-client/src/client.rs`, `client/rate_limit_resets.rs`): a
 //! base on `chatgpt.com` takes the `/wham` paths, and a header names the account.
 
 use anyhow::{bail, Result};

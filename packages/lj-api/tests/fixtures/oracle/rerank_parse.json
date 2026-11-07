@@ -1,5 +1,5 @@
 {
-  "_provenance": "Généré depuis un oracle Python retiré depuis — fonctions pures de search.py / signals.py / rerank.py. NE PAS éditer à la main. Asservi par les tests Rust de lj-api.",
+  "_provenance": "Expected scores of the listwise rerank parser of src/rerank.rs: separators `[:.-]`, stray spaces, garbage lines and indexes outside [1..=k] skipped, the last duplicate index wins, a count other than k gives null. Held by listwise_parse_parity_oracle.",
   "cases": [
     {
       "content": "1: 90\n2: 70\n3: 50",

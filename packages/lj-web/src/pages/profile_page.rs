@@ -188,15 +188,6 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
             </section>
 
             <section class="flex flex-col gap-4">
-                <h2 class=TITRE_SECTION>"Clés d'API"</h2>
-                <ClientOnly fallback=|| {
-                    view! { <Skeleton class="h-24 w-full" /> }
-                }>
-                    <ApiKeysSettings />
-                </ClientOnly>
-            </section>
-
-            <section class="flex flex-col gap-4">
                 <h2 class=TITRE_SECTION>"Connexions"</h2>
                 {FOURNISSEURS
                     .iter()
@@ -214,6 +205,15 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
                         </button>
                     </form>
                 </div>
+            </section>
+
+            <section class="flex flex-col gap-4">
+                <h2 class=TITRE_SECTION>"Clés d'API"</h2>
+                <ClientOnly fallback=|| {
+                    view! { <Skeleton class="h-24 w-full" /> }
+                }>
+                    <ApiKeysSettings />
+                </ClientOnly>
             </section>
 
             <section class="flex flex-col gap-4 rounded-md border border-red-300 bg-red-50/50 p-4 dark:border-red-900/50 dark:bg-red-950/20">

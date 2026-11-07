@@ -25,7 +25,7 @@ use std::sync::OnceLock;
 use std::time::Duration;
 use tracing::instrument;
 
-const DILA_BASE_URL: &str = "https://echanges.dila.gouv.fr/OPENDATA";
+pub(crate) const DILA_BASE_URL: &str = "https://echanges.dila.gouv.fr/OPENDATA";
 const DILA_USER_AGENT: &str = "librejustice-dila-downloader/0.1 (+https://github.com/)";
 use crate::state_paths::DILA_DIR;
 
@@ -38,6 +38,12 @@ pub enum DilaFond {
     Constit,
     /// Délibérations/décisions de la CNIL (fond `OPENDATA/CNIL/`).
     Cnil,
+    /// Judgments of the Cour de cassation printed in the Bulletin.
+    Cass,
+    /// Unpublished judgments of the Cour de cassation.
+    Inca,
+    /// A selection of courts of appeal and first-degree courts.
+    Capp,
     Legi,
     /// Journal officiel : décrets de publication des traités/accords (référentiel
     /// `source='treaty'`).
@@ -53,6 +59,9 @@ impl DilaFond {
             DilaFond::Jade => "JADE",
             DilaFond::Constit => "CONSTIT",
             DilaFond::Cnil => "CNIL",
+            DilaFond::Cass => "CASS",
+            DilaFond::Inca => "INCA",
+            DilaFond::Capp => "CAPP",
             DilaFond::Legi => "LEGI",
             DilaFond::Jorf => "JORF",
             DilaFond::Kali => "KALI",
@@ -65,6 +74,9 @@ impl DilaFond {
             DilaFond::Jade => "jade",
             DilaFond::Constit => "constit",
             DilaFond::Cnil => "cnil",
+            DilaFond::Cass => "cass",
+            DilaFond::Inca => "inca",
+            DilaFond::Capp => "capp",
             DilaFond::Legi => "legi",
             DilaFond::Jorf => "jorf",
             DilaFond::Kali => "kali",
@@ -76,6 +88,9 @@ impl DilaFond {
             "jade" => Ok(DilaFond::Jade),
             "constit" => Ok(DilaFond::Constit),
             "cnil" => Ok(DilaFond::Cnil),
+            "cass" => Ok(DilaFond::Cass),
+            "inca" => Ok(DilaFond::Inca),
+            "capp" => Ok(DilaFond::Capp),
             "legi" => Ok(DilaFond::Legi),
             "jorf" => Ok(DilaFond::Jorf),
             "kali" => Ok(DilaFond::Kali),
@@ -95,9 +110,8 @@ pub fn tarballs_dir(data_dir: &Path, fond: DilaFond) -> std::path::PathBuf {
         .join("tarballs")
 }
 
-/// Tarballs d'un fond présents en cache, dans l'ordre de rejeu. Le tri lexical
-/// des noms DILA porte cet ordre : `Freemium_<fond>_global_` précède
-/// `<FOND>_YYYYMMDD`, donc le stock passe avant ses incréments.
+/// A fund's cached tarballs in replay order: by the timestamp their name
+/// carries, a stock before the increment of the same instant.
 pub fn cached_dila_tarballs(data_dir: &Path, fond: DilaFond) -> Result<Vec<std::path::PathBuf>> {
     let dir = tarballs_dir(data_dir, fond);
     if !dir.exists() {
@@ -109,8 +123,19 @@ pub fn cached_dila_tarballs(data_dir: &Path, fond: DilaFond) -> Result<Vec<std::
         .map(|e| e.path())
         .filter(|p| p.to_string_lossy().ends_with(".tar.gz"))
         .collect();
-    paths.sort();
+    paths.sort_by_cached_key(|p| replay_key(fond, p));
     Ok(paths)
+}
+
+fn replay_key(fond: DilaFond, path: &Path) -> (String, bool) {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    match name.starts_with("Freemium_") {
+        true => (stock_watermark(fond, &name), false),
+        false => (name, true),
+    }
 }
 
 // ----------------------------------------------------------------------------
@@ -576,6 +601,20 @@ mod tests {
             stock_watermark(DilaFond::Jade, "Freemium_autre.tar.gz"),
             "JADE_.tar.gz"
         );
+    }
+
+    #[test]
+    fn a_stock_replays_before_its_increments_whatever_the_fund_letter() {
+        let names = [
+            "CASS_20260930-215413.tar.gz",
+            "Freemium_cass_global_20250713-140000.tar.gz",
+            "CASS_20250721-212334.tar.gz",
+        ];
+        let mut paths: Vec<std::path::PathBuf> =
+            names.iter().map(|n| Path::new("/c").join(n)).collect();
+        paths.sort_by_cached_key(|p| replay_key(DilaFond::Cass, p));
+        let got: Vec<_> = paths.iter().map(|p| p.file_name().unwrap()).collect();
+        assert_eq!(got, [names[1], names[2], names[0]]);
     }
 
     // ----- repair_dila -----

@@ -18,7 +18,7 @@ const LEGI_BATCH_SIZE: usize = 512;
 /// (`…/norm/version/…/LEGITEXT*.xml`), les `TEXTELR` (`…/norm/struct/…`) et
 /// les `SECTION_TA` (`…/section_ta/…`) sont ingérés ; l'arbre `eli/` est
 /// hors-périmètre.
-enum LegiMember {
+pub(super) enum LegiMember {
     Article,
     Texte,
     SectionTa,
@@ -29,7 +29,7 @@ enum LegiMember {
 /// Classe un membre par son chemin tar. Insensible à la casse de l'extension ;
 /// la discrimination se fait sur le nom de fichier (`LEGIARTI`/`LEGITEXT`/
 /// `LEGISCTA`) sous le bon dossier.
-fn classify_legi_member(name: &str) -> LegiMember {
+pub(super) fn classify_legi_member(name: &str) -> LegiMember {
     let lower = name.to_lowercase();
     let stem = name.rsplit('/').next().unwrap_or(name);
     if lower.contains("/eli/") {
@@ -214,6 +214,8 @@ fn legi_code_row(code: lj_extract::legi::LegiCode) -> Result<lj_store::repositor
         Some(d) => Some(legi_date(&d)?),
         None => None,
     };
+    let date_texte = code.date_texte.as_deref().map(legi_date).transpose()?;
+    let date_publi = code.date_publi.as_deref().map(legi_date).transpose()?;
     let title = code.titre_full.unwrap_or(code.titre);
     let title_key = lj_extract::extract::normalize_instrument(&title);
     Ok(lj_store::repository::LegalTextRow {
@@ -223,9 +225,8 @@ fn legi_code_row(code: lj_extract::legi::LegiCode) -> Result<lj_store::repositor
         title_key,
         nature: code.nature,
         last_modified,
-        // Un code n'a pas de date de signature unique ; date_publi non portée par LEGI.
-        date_texte: None,
-        date_publi: None,
+        date_texte,
+        date_publi,
         // Identité d'un code = son slug, ni date ni numéro. Le NOR des actes datés
         // (arrêtés, décrets) sert de clé de résolution au linker.
         eli: None,
@@ -255,7 +256,7 @@ pub async fn ingest_legi(
 ) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // The post-loop steps are full-table passes, and an ingest is an offline batch
     // rather than a served request. `collapse_empty_legitext_doublons` has no timeout
@@ -526,8 +527,7 @@ async fn ingest_legi_tarball(
 }
 
 /// End-of-pass finishers, after the archive loop and never inside it: the reading
-/// ranks reconcile the whole corpus, 23 s per call, zero rows written on each of
-/// 104 increments. `touches` bounds the denormalisation to the texts written.
+/// ranks reconcile the whole corpus. `touches` bounds the denormalisation to the texts written.
 async fn finir_passe_legi(repo: &DecisionRepository<'_>, touches: &[String]) -> Result<()> {
     let retitled = repo
         .refresh_article_denorm(Some(touches))
@@ -636,7 +636,7 @@ async fn flush_legi_codes(
 pub async fn backfill_links(paths: &[std::path::PathBuf]) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // La purge finale est un anti-join pleine table : batch hors-ligne, pas de timeout.
     conn.batch_execute("SET statement_timeout = 0")
@@ -786,7 +786,7 @@ async fn backfill_links_tarball(repo: &DecisionRepository<'_>, path: &Path) -> R
 pub async fn backfill_toc(paths: &[std::path::PathBuf]) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // La purge finale est un anti-join pleine table : batch hors-ligne, pas de timeout.
     conn.batch_execute("SET statement_timeout = 0")
@@ -940,7 +940,7 @@ pub async fn audit_legi_versions(text_uid: &str, paths: &[std::path::PathBuf]) -
 
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
     let tenu = repo
@@ -1035,6 +1035,267 @@ pub async fn audit_legi_versions(text_uid: &str, paths: &[std::path::PathBuf]) -
     Ok(())
 }
 
+/// Re-applies, from the latest file delivering it under each text that holds
+/// it, every LEGI and KALI version the base holds at more than one start date: the writer keeps the delivered date,
+/// drops the others with their edges and reopens the ends they capped. Only the
+/// archive tells which date is current, the row ids saying nothing once an old
+/// stock replay has reinserted a stale date. Counts only, unless `apply`.
+pub async fn redate_dila_versions(apply: bool) -> Result<()> {
+    use std::collections::{HashMap, HashSet};
+
+    let settings = Settings::from_env()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    conn.batch_execute("SET statement_timeout = 0")
+        .await
+        .map_err(|e| anyhow!("set statement_timeout: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    // The key the daily ingest writes: a KALI collection qualifies its numbers
+    // once the base records its head piece.
+    let tetes: std::sync::Arc<HashMap<String, String>> = std::sync::Arc::new(
+        repo.base_pieces()
+            .await
+            .map_err(|e| anyhow!("base_pieces: {e}"))?
+            .into_iter()
+            .collect(),
+    );
+    let mut touches: HashSet<String> = HashSet::new();
+    for (fond, prefixe) in FONDS_VERSIONNES {
+        let versions = versions_livrees(&repo, &settings, fond, prefixe, &tetes).await?;
+        if !apply {
+            continue;
+        }
+        let mut liens = Vec::new();
+        for (row, links) in versions {
+            if repo
+                .upsert_legal_article(&row, lj_store::repository::Fraicheur::Autoritaire)
+                .await
+                .map_err(|e| anyhow!("upsert_legal_article {}: {e}", row.source_uid))?
+            {
+                liens.push((
+                    lj_store::repository::LegalLinkOwner {
+                        text_uid: row.text_uid.clone(),
+                        num_key: row.num_key.clone(),
+                        date_debut: row.date_debut,
+                    },
+                    links,
+                ));
+            }
+            touches.insert(row.text_uid);
+        }
+        repo.replace_legal_links(&liens)
+            .await
+            .map_err(|e| anyhow!("replace_legal_links: {e}"))?;
+    }
+    if !apply {
+        return Ok(());
+    }
+    let touches: Vec<String> = touches.into_iter().collect();
+    finir_passe_legi(&repo, &touches).await?;
+    let liens_orphelins = repo
+        .prune_orphan_legal_links()
+        .await
+        .map_err(|e| anyhow!("prune_orphan_legal_links: {e}"))?;
+    for (fond, prefixe) in FONDS_VERSIONNES {
+        let restantes = repo
+            .versions_redatees(prefixe)
+            .await
+            .map_err(|e| anyhow!("versions_redatees: {e}"))?
+            .into_iter()
+            .map(|(uid, ..)| uid)
+            .collect::<HashSet<_>>()
+            .len();
+        tracing::warn!(fond = ?fond, restantes, "DILA versions redated");
+    }
+    tracing::warn!(
+        textes = touches.len(),
+        liens_orphelins,
+        "DILA redating pass done"
+    );
+    Ok(())
+}
+
+/// The DILA funds that version their articles, with the prefix of their ids.
+const FONDS_VERSIONNES: [(lj_sources::dila::DilaFond, &str); 2] = [
+    (lj_sources::dila::DilaFond::Legi, "LEGIARTI"),
+    (lj_sources::dila::DilaFond::Kali, "KALIARTI"),
+];
+
+/// The latest delivered file of every `fond` version the base holds at several
+/// start dates, per text holding it, with its edges: a KALI agreement that
+/// hands an avenant over to another keeps listing it. The cache is read newest
+/// first until every version is found; a version a suppression list names last
+/// is left out.
+async fn versions_livrees(
+    repo: &DecisionRepository<'_>,
+    settings: &Settings,
+    fond: lj_sources::dila::DilaFond,
+    prefixe: &str,
+    tetes: &std::sync::Arc<std::collections::HashMap<String, String>>,
+) -> Result<
+    Vec<(
+        lj_store::repository::LegalArticleRow,
+        Vec<lj_store::repository::LegalLinkRow>,
+    )>,
+> {
+    use std::collections::{HashMap, HashSet};
+
+    let paths = lj_sources::dila::cached_dila_tarballs(&settings.cache_dir(), fond)
+        .map_err(|e| anyhow!("cached_dila_tarballs {fond:?}: {e}"))?;
+    let held = repo
+        .versions_redatees(prefixe)
+        .await
+        .map_err(|e| anyhow!("versions_redatees: {e}"))?;
+    let mut dates_tenues: HashMap<(String, String, String), Vec<chrono::NaiveDate>> =
+        HashMap::new();
+    for (uid, text_uid, num_key, debut) in held {
+        dates_tenues
+            .entry((uid, text_uid, num_key))
+            .or_default()
+            .push(debut);
+    }
+    let mut pending: HashSet<(String, String)> = dates_tenues
+        .keys()
+        .map(|(uid, text_uid, _)| (uid.clone(), text_uid.clone()))
+        .collect();
+    let versions = pending.len();
+    let mut supprimees = 0usize;
+    let mut found = Vec::new();
+    for path in paths.iter().rev() {
+        if pending.is_empty() {
+            break;
+        }
+        let wanted: HashSet<String> = pending.iter().map(|(uid, _)| uid.clone()).collect();
+        let tar_path = path.clone();
+        let tetes = std::sync::Arc::clone(tetes);
+        let (rows, named) = tokio::task::spawn_blocking(move || -> Result<_> {
+            let mut rows = Vec::new();
+            let mut named: HashSet<String> = HashSet::new();
+            lj_sources::tar_reader::for_each_member_filtered(
+                &tar_path,
+                |name| {
+                    name.to_lowercase().ends_with(".dat")
+                        || name
+                            .rsplit('/')
+                            .next()
+                            .and_then(|stem| stem.strip_suffix(".xml"))
+                            .is_some_and(|uid| wanted.contains(uid))
+                },
+                |name, raw| {
+                    if name.to_lowercase().ends_with(".dat") {
+                        for ligne in String::from_utf8_lossy(&raw).lines() {
+                            let stem = ligne.trim().rsplit('/').next().unwrap_or_default();
+                            if let Some(uid) = stem.strip_suffix(".xml") {
+                                if wanted.contains(uid) {
+                                    named.insert(uid.to_string());
+                                }
+                            }
+                        }
+                        return Ok(());
+                    }
+                    if let Some(version) = version_livree(fond, &name, &raw, &tetes)? {
+                        rows.push(version);
+                    }
+                    Ok(())
+                },
+            )?;
+            Ok((rows, named))
+        })
+        .await
+        .map_err(|e| anyhow!("redate read task: {e}"))??;
+        // Within one archive the delivered file stands over the suppression list.
+        for (row, links) in rows {
+            if pending.remove(&(row.source_uid.clone(), row.text_uid.clone())) {
+                found.push((row, links));
+            }
+        }
+        for uid in named {
+            let avant = pending.len();
+            pending.retain(|(pending_uid, _)| *pending_uid != uid);
+            supprimees += avant - pending.len();
+        }
+    }
+    let (mut lignes_retirees, mut cles_divergentes) = (0usize, 0usize);
+    for (row, _) in &found {
+        match dates_tenues.get(&(
+            row.source_uid.clone(),
+            row.text_uid.clone(),
+            row.num_key.clone(),
+        )) {
+            Some(dates) => {
+                lignes_retirees += dates.iter().filter(|d| Some(**d) != row.date_debut).count()
+            }
+            None => {
+                cles_divergentes += 1;
+                tracing::warn!(
+                    source_uid = %row.source_uid,
+                    text_uid = %row.text_uid,
+                    livree = %row.num_key,
+                    date_debut = ?row.date_debut,
+                    "delivered version keyed apart from the rows the base holds"
+                );
+            }
+        }
+    }
+    tracing::warn!(
+        fond = ?fond,
+        versions,
+        found = found.len(),
+        supprimees,
+        absentes = pending.len(),
+        cles_divergentes,
+        lignes_retirees,
+        "DILA versions held at several start dates"
+    );
+    Ok(found)
+}
+
+/// An archive member as the daily ingest writes it, `None` when it is not an
+/// article version.
+fn version_livree(
+    fond: lj_sources::dila::DilaFond,
+    name: &str,
+    raw: &[u8],
+    tetes: &std::collections::HashMap<String, String>,
+) -> Result<
+    Option<(
+        lj_store::repository::LegalArticleRow,
+        Vec<lj_store::repository::LegalLinkRow>,
+    )>,
+> {
+    let checksum = xxhash_rust::xxh3::xxh3_64(raw);
+    match fond {
+        lj_sources::dila::DilaFond::Legi => {
+            if !matches!(classify_legi_member(name), LegiMember::Article) {
+                return Ok(None);
+            }
+            let mut art = lj_extract::legi::parse_legi_article(raw)?;
+            let liens = std::mem::take(&mut art.liens);
+            Ok(Some((
+                legi_article_row(art, checksum)?,
+                legal_link_rows(liens)?,
+            )))
+        }
+        lj_sources::dila::DilaFond::Kali => {
+            if !matches!(
+                super::kali::classify_kali_member(name),
+                super::kali::KaliMember::Article
+            ) {
+                return Ok(None);
+            }
+            let mut art = lj_extract::kali::parse_kali_article(raw)?;
+            let liens = std::mem::take(&mut art.liens);
+            let tete = tetes.get(&art.kalicont).map(String::as_str);
+            Ok(Some((
+                super::kali::kali_article_row(art, checksum, tete)?,
+                legal_link_rows(liens)?,
+            )))
+        }
+        autre => anyhow::bail!("{autre:?} holds no article versions"),
+    }
+}
+
 /// Backfill one-shot des métadonnées de textes : streame des tarballs LEGI et
 /// rejoue l'upsert `legal_text` (inconditionnel) + les dates `upcoming_versions`
 /// depuis les `TEXTE_VERSION` — textes seulement, ni articles ni liens ni arbre.
@@ -1042,7 +1303,7 @@ pub async fn audit_legi_versions(text_uid: &str, paths: &[std::path::PathBuf]) -
 pub async fn backfill_textes(paths: &[std::path::PathBuf]) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -1137,7 +1398,7 @@ pub async fn sync_legi() -> Result<()> {
             .map_err(|e| anyhow!("sync_dila legi: {e}"))?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     conn.batch_execute("SET statement_timeout = 0")
         .await

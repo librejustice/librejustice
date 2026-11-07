@@ -123,8 +123,8 @@ fn the_amount_owed_by_the_liable_party_confirms_the_split() {
         v.partage_responsabilite_pct = Some(50.0);
         record(v)
     };
-    // Le tableur déduisait cette case du head et du taux. Lue, elle est un
-    // second chemin, donc une confirmation, et un chiffre faux se localise.
+    // Read, the owed amount is a second path beside the head and the rate: it
+    // confirms the cell, and a wrong figure localises on it.
     let t = compute(&poste_reduit(1845.0));
     assert_eq!(t.get("v0.p0.du"), Some(1845.0));
     assert_eq!(t.source("v0.p0.du"), Some("lu"));

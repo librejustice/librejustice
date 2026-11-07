@@ -16,8 +16,8 @@ use crate::ratelimit::{now_unix, Ledger, Quota};
 
 const API_ROOT: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 
-/// Round trip of a summary call, seconds, measured 18/09/2026. A seed: the bucket
-/// replaces it with what it observes, and Little turns it into an admission rate.
+/// Round trip of a summary call, seconds. A seed: the bucket replaces it with
+/// what it observes, and Little turns it into an admission rate.
 const LATENCY_SEED: f64 = 2.6;
 
 /// A refusal naming a daily family states a `retryDelay` of a minute all the
@@ -26,7 +26,7 @@ const DAILY_QUOTA_TZ: &str = "America/Los_Angeles";
 
 /// What one key of the free tier may spend on one model. Every ceiling is held
 /// per project and per model, so a second model is capacity the first one does
-/// not have, and sixteen keys on sixteen projects multiply all three.
+/// not have.
 ///
 /// Only `req_per_day` is a wall, a refusal naming it parking the key until the
 /// Pacific reset. The other two are seeds the bucket moves on its own outcomes.
@@ -37,7 +37,7 @@ pub struct Limits {
     pub tok_per_min: u32,
 }
 
-/// Free-tier ceilings, read off the console rate limit page on 22/09/2026 and not
+/// Free-tier ceilings, read off the console rate limit page and not
 /// inferred from the name: `gemini-2.5-flash-lite` carries the day of a `flash`,
 /// so a rule on the suffix gets it wrong. An unknown model takes the `flash` row,
 /// where understating a ceiling costs throughput and overstating it buys refusals.
@@ -85,7 +85,8 @@ pub struct GeminiClient {
     refusals: std::sync::atomic::AtomicU64,
     /// `quotaId` of the last rate refusal: the only place naming the ceiling held, and whether it is per key or per project.
     refused_quota: std::sync::Mutex<Option<String>>,
-    /// Refusals naming no quota and carrying no `retryDelay`: measured 18/09/2026 at 51 of 154 calls paced under the per-project ceiling. The bucket ratchets down on them with nothing to aim at.
+    /// Refusals naming no quota and carrying no `retryDelay`. The bucket ratchets down on
+    /// them with nothing to aim at.
     bare_refusals: std::sync::atomic::AtomicU64,
     day: std::sync::Mutex<DayBudget>,
     limits: Limits,
@@ -431,10 +432,8 @@ impl GeminiClient {
 }
 
 /// The head of the system instruction is a throttle key shared by every project of
-/// the account, so naming the key there gives each project its own. Measured
-/// 20/09/2026: the shipped prompt drew a bare 429 in 0,3 s on all sixteen keys, 0 of
-/// 8 served, where one changed character served 8 of 8. Only the head counts, the
-/// boundary sitting between 120 and 130 characters; appending to the tail is refused.
+/// the account, so naming the key there gives each project its own. Only the
+/// head counts; appending to the tail is refused.
 fn keyed_system(system: &str, fingerprint: &str) -> String {
     format!("Réf. interne : {fingerprint}.\n\n{system}")
 }
@@ -580,17 +579,17 @@ impl std::error::Error for GeminiError {}
 mod tests {
     use super::*;
 
-    /// Captured verbatim from the API.
+    /// A per-minute refusal in the shape the API answers it.
     const REFUSAL: &str = r#"{"error":{"code":429,"status":"RESOURCE_EXHAUSTED",
-        "message":"Quota exceeded for metric: generate_content_free_tier_requests, limit: 15",
+        "message":"Quota exceeded for metric: generate_content_free_tier_requests, limit: 10",
         "details":[
           {"@type":"type.googleapis.com/google.rpc.Help","links":[{"url":"https://ai.google.dev/"}]},
           {"@type":"type.googleapis.com/google.rpc.QuotaFailure","violations":[{
              "quotaMetric":"generativelanguage.googleapis.com/generate_content_free_tier_requests",
              "quotaId":"GenerateRequestsPerMinutePerProjectPerModel-FreeTier",
-             "quotaDimensions":{"location":"global","model":"gemini-3.1-flash-lite"},
-             "quotaValue":"15"}]},
-          {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"35s"}]}}"#;
+             "quotaDimensions":{"location":"global","model":"gemini-flash-lite"},
+             "quotaValue":"10"}]},
+          {"@type":"type.googleapis.com/google.rpc.RetryInfo","retryDelay":"30s"}]}}"#;
 
     fn famille(quota_id: &str) -> Refusal {
         Refusal {
@@ -659,8 +658,8 @@ mod tests {
         assert_eq!((old.req_per_day, old.req_per_min), (20, 10.0));
     }
 
-    /// The store's total wins: a bench sharing the keys can dig into the day
-    /// between two flushes, and a local count would paper over it.
+    /// The store's total wins: another process sharing the keys can spend from the
+    /// day between two flushes, and a local count would paper over it.
     #[test]
     fn the_store_total_wins_over_the_local_count() {
         let c = GeminiClient::new(vec!["k0".into()], "gemini-3.5-flash-lite".into(), None)
@@ -678,12 +677,12 @@ mod tests {
     }
 
     /// The rate families state their own wait, and the bucket obeys it rather than a
-    /// back-off of its own: 35 s here, 7,5 s at another depth.
+    /// back-off of its own: 30 s here, 7.5 s at another depth.
     #[test]
     fn a_rate_refusal_carries_its_retry_delay() {
         assert_eq!(
             parse_quota_refusal(REFUSAL).retry_delay,
-            Some(std::time::Duration::from_secs(35))
+            Some(std::time::Duration::from_secs(30))
         );
         assert_eq!(
             parse_retry_delay("7.5s"),

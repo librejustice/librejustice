@@ -8,7 +8,7 @@ use anyhow::{anyhow, Result};
 
 use lj_core::decision::Decision;
 use lj_parse::FromSourceFields;
-use lj_store::db::Pool;
+use lj_pg::db::Pool;
 use lj_store::repository::{Courts, DecisionRepository, ExtractedFields, REEXTRACTABLE_FIELDS};
 
 use crate::config::Settings;
@@ -16,9 +16,7 @@ use crate::config::Settings;
 /// Taille d'un lot écrit en une transaction (fetch `id = ANY`, DELETE+INSERT bulk).
 const BATCH: usize = 256;
 
-/// Page du keyset d'énumération, distincte de [`BATCH`] : sur `decisions` le coût
-/// d'une page tient à la borne, pas à sa taille (2,5 s en tête de 566 k lignes,
-/// que la limite soit 256 ou 20 000, mesuré le 25/08).
+/// Enumeration keyset page, distinct from [`BATCH`]: on `decisions` a page costs its bound.
 const SCAN_PAGE: usize = 20_000;
 
 /// Ré-extrait les champs structurés depuis les payloads stockés.
@@ -30,10 +28,7 @@ const SCAN_PAGE: usize = 20_000;
 pub async fn reextract_fields(
     fields: Option<&[String]>,
     dry_run: bool,
-    full: bool,
-    courts: Option<&Courts>,
-    citing_ref_uid: Option<&str>,
-    text_query: Option<&str>,
+    worklist: Worklist<'_>,
     workers: Option<usize>,
 ) -> Result<()> {
     let settings = Settings::from_env()?;
@@ -42,13 +37,14 @@ pub async fn reextract_fields(
     // Fixed, not sized on the machine: a manual pass lands mid-day on a database
     // that is serving traffic. The nightly chain asks for 8 explicitly.
     let workers = workers.map(|w| w.max(1)).unwrap_or(3);
-    let pool = lj_store::db::build_pool(&settings.db_url, workers + 1)
+    let pool = lj_pg::db::build_pool(&settings.db_url, workers + 1)
         .map_err(|e| anyhow!("build_pool: {e}"))?;
 
     // Worklist: one scan (`stale_decision_ids_for_reextract`). A scoped mode
     // (courts, `--citing-ref-uid`) drains its keyset into the same worklist,
     // parallelised the same way.
-    let ids = build_worklist(&pool, full, courts, citing_ref_uid, text_query).await?;
+    let full = matches!(worklist, Worklist::Full);
+    let ids = build_worklist(&pool, worklist).await?;
     let total = ids.len();
     tracing::info!(total, workers, "reextract: worklist built");
     if ids.is_empty() {
@@ -212,32 +208,38 @@ impl DiffReport {
 /// Construit la worklist d'ids selon le mode. Défaut (version-gated) : un scan.
 /// Scopé : draine le keyset correspondant (jeux petits) pour réutiliser le même
 /// pipeline parallèle en aval.
-async fn build_worklist(
-    pool: &Pool,
-    full: bool,
-    courts: Option<&Courts>,
-    citing_ref_uid: Option<&str>,
-    text_query: Option<&str>,
-) -> Result<Vec<i64>> {
+/// Which decisions a pass re-extracts.
+pub enum Worklist<'a> {
+    /// Those whose extraction version is behind.
+    Stale,
+    Full,
+    SeveralProvenances,
+    CitingRefUid(&'a str),
+    Courts {
+        courts: &'a Courts,
+        text_query: Option<&'a str>,
+    },
+}
+
+async fn build_worklist(pool: &Pool, worklist: Worklist<'_>) -> Result<Vec<i64>> {
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
-    // The worklist scan sweeps all of `decisions`; a parallel plan would take up to
-    // 4 of the 10 workers the whole cluster shares, out of the searches being served.
+    // The worklist scan sweeps all of `decisions`; a parallel plan would take the
+    // workers the whole cluster shares away from the searches being served.
     conn.batch_execute(
         "SET statement_timeout = 0; \
          SET max_parallel_workers_per_gather = 0",
     )
     .await?;
     let repo = DecisionRepository::new(&conn);
-    if full {
-        return Ok(repo.all_decision_ids_for_reextract().await?);
-    }
-    match (citing_ref_uid, courts) {
-        (None, None) => Ok(repo.stale_decision_ids_for_reextract().await?),
+    match worklist {
+        Worklist::Stale => Ok(repo.stale_decision_ids_for_reextract().await?),
+        Worklist::Full => Ok(repo.all_decision_ids_for_reextract().await?),
+        Worklist::SeveralProvenances => Ok(repo.all_decisions_with_several_provenances().await?),
         // Ciblé par texte cité : un seul scan GIN-piloté.
-        (Some(uid), _) => Ok(repo
+        Worklist::CitingRefUid(uid) => Ok(repo
             .decision_ids_for_reextract_by_citing_ref_uid(uid)
             .await?),
-        (None, Some(courts)) => {
+        Worklist::Courts { courts, text_query } => {
             let mut out = Vec::new();
             let mut last_id = 0i64;
             loop {
@@ -289,8 +291,7 @@ async fn worker_loop(
     let ctx = super::extract_ctx(&conn).await?;
 
     for batch in slice.chunks(BATCH) {
-        let rows: Vec<(i64, String, serde_json::Value, String, Option<String>)> =
-            repo.fetch_reextract_inputs_batch(batch).await?;
+        let rows = repo.fetch_reextract_inputs_batch(batch).await?;
         if rows.is_empty() {
             continue;
         }
@@ -300,16 +301,9 @@ async fn worker_loop(
         let extracted = tokio::task::spawn_blocking(move || {
             use rayon::prelude::*;
             rows.into_par_iter()
-                .map(|(id, full_text, source_fields, source_uid, case_name)| {
-                    reextract_one(
-                        id,
-                        &full_text,
-                        &source_fields,
-                        &source_uid,
-                        case_name.as_deref(),
-                        ctx,
-                    )
-                    .map(|fields| (id, fields))
+                .map(|(id, full_text, provenances, case_name)| {
+                    reextract_one(id, &full_text, &provenances, case_name.as_deref(), ctx)
+                        .map(|fields| (id, fields))
                 })
                 .collect::<Vec<Result<(i64, ExtractedFields)>>>()
         })
@@ -350,10 +344,11 @@ async fn worker_loop(
                 // `anyhow::Error::new` préserve la chaîne `StoreError → DbError`
                 // (SQLSTATE + message).
                 .map_err(|e| anyhow::Error::new(e).context("update_extracted_fields_bulk"))?;
+            let ids: Vec<i64> = items.iter().map(|(id, _)| *id).collect();
+            repo.mirror_text_facets(&ids).await?;
             // Sonde inversée : des dockets réécrits peuvent faire de ces
             // décisions la cible de pendants plus anciens.
             if selected.iter().any(|f| f == "docket_numbers") {
-                let ids: Vec<i64> = items.iter().map(|(id, _)| *id).collect();
                 super::attract::attract_pending_for(&repo, &ids).await?;
             }
             Ok::<(), anyhow::Error>(())
@@ -373,34 +368,73 @@ async fn worker_loop(
     Ok(())
 }
 
-/// Re-parse + re-extract depuis la reconstruction `(full_text, source_fields)` —
-/// chemin linéaire unique, quel que soit le format du payload d'origine (le texte
-/// extrait vit en base, jamais re-parsé). `member_name` reconstruit par
-/// `from_source_fields` (provenance) ; `classify_uid`/fond/numéro dérivés du
-/// `source_uid` ; couche préconstruite relue de `source_fields`, comme
-/// `prepare::extract_write` la superpose à l'ingest.
-fn reextract_one(
+/// The decisions just written that hold several provenances take the fusion of
+/// all of them, in place of the incoming one's fields.
+pub(super) async fn fuse_written(repo: &DecisionRepository<'_>, ids: &[i64]) -> Result<()> {
+    let several = repo.decisions_with_several_provenances(ids).await?;
+    if several.is_empty() {
+        return Ok(());
+    }
+    let ctx = super::extract_ctx(repo.conn).await?;
+    let rows = repo.fetch_reextract_inputs_batch(&several).await?;
+    let items = tokio::task::spawn_blocking(move || {
+        use rayon::prelude::*;
+        rows.into_par_iter()
+            .map(|(id, full_text, provenances, case_name)| {
+                reextract_one(id, &full_text, &provenances, case_name.as_deref(), ctx)
+                    .map(|fields| (id, fields))
+            })
+            .collect::<Result<Vec<(i64, ExtractedFields)>>>()
+    })
+    .await
+    .map_err(|e| anyhow!("join fuse: {e}"))??;
+    repo.update_extracted_fields_bulk(&items, None)
+        .await
+        .map_err(|e| anyhow::Error::new(e).context("fuse_written"))?;
+    Ok(())
+}
+
+/// Re-parse + re-extract of every provenance from `(full_text, source_fields)`,
+/// fused ([`lj_extract_rows::fuse_provenances`]): the extracted text lives in
+/// the base and is never re-parsed. The authority's failure fails the decision;
+/// another provenance that does not read is left out, logged.
+pub(super) fn reextract_one(
     decision_id: i64,
     full_text: &str,
-    source_fields: &serde_json::Value,
-    source_uid: &str,
+    provenances: &[(String, serde_json::Value)],
     case_name: Option<&str>,
     ctx: &super::ExtractCtx,
 ) -> Result<ExtractedFields> {
-    let decision = Decision::from_source_fields(full_text, source_fields, source_uid);
-    let full = lj_extract_rows::extracted_fields(&decision, &ctx.snapshots())
-        .map_err(|e| anyhow!("extract id={decision_id}: {e}"))?;
-    // Même superposition qu'à l'ingest (`prepare::extract_write`).
-    let fields = match lj_extract_rows::prebuilt_from_source_fields(source_uid, source_fields) {
-        Some(pre) => lj_extract_rows::merge_prebuilt(pre, full),
-        None => full,
+    let extract = |source_uid: &str, source_fields: &serde_json::Value| {
+        let decision = Decision::from_source_fields(full_text, source_fields, source_uid);
+        let full = lj_extract_rows::extracted_fields(&decision, &ctx.snapshots())
+            .map_err(|e| anyhow!("extract id={decision_id} {source_uid}: {e}"))?;
+        let fields = match lj_extract_rows::prebuilt_from_source_fields(source_uid, source_fields) {
+            Some(pre) => lj_extract_rows::merge_prebuilt(pre, full),
+            None => full,
+        };
+        Ok::<_, anyhow::Error>((decision.jurisdiction_type, fields))
     };
+    let ((authority_uid, authority_fields), rest) = provenances
+        .split_first()
+        .ok_or_else(|| anyhow!("reextract id={decision_id}: no provenance"))?;
+    let (jurisdiction_type, authority) = extract(authority_uid, authority_fields)?;
+    let others = rest
+        .iter()
+        .filter_map(|(uid, sf)| match extract(uid, sf) {
+            Ok((_, fields)) => Some(fields),
+            Err(e) => {
+                tracing::warn!(error = %e, "reextract: provenance left out of the fusion");
+                None
+            }
+        })
+        .collect();
     // The stored name does not go back into `case_name`: `set_source_case_names`
     // would rewrite it at rank `source`, above whoever elected it. It only feeds
     // the title.
     Ok(lj_extract_rows::with_search_title(
-        fields,
-        decision.jurisdiction_type.as_deref(),
+        lj_extract_rows::fuse_provenances(authority, others),
+        jurisdiction_type.as_deref(),
         &ctx.jur_labels,
         case_name,
     ))

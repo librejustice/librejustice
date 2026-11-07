@@ -27,7 +27,7 @@ struct Compte {
 
 pub async fn run(revue: Option<i64>) -> Result<()> {
     let settings = Settings::from_env()?;
-    let pool = lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
+    let pool = lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 

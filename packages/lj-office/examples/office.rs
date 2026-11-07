@@ -18,7 +18,7 @@ const USAGE: &str =
 /// Raster resolution of every page image, the LibreOffice reference's too.
 const DPI: f64 = 48.0;
 
-/// resvg takes ~0.15 s a page: a 773-page file outlasted the deadline on one thread.
+/// On one thread, resvg makes a long file outlast the deadline.
 const RASTER_THREADS: usize = 4;
 
 fn main() -> Result<()> {

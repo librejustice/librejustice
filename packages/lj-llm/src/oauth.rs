@@ -2,7 +2,7 @@
 //!
 //! OpenAI does not advertise this grant in its OIDC discovery document, which
 //! lists `authorization_code` and `refresh_token` only. The contract below is the
-//! one `codex` 0.154.0 speaks, read off its source on 18/09/2026
+//! one `codex` 0.154.0 speaks, read off its source
 //! (`login/src/device_code_auth.rs`, `login/src/oauth/client.rs`): the device poll
 //! hands back an authorization code carrying its own PKCE pair, which a second
 //! call trades for tokens, and it answers 403 or 404 until a browser approves.
@@ -20,7 +20,7 @@ const ISSUER: &str = "https://auth.openai.com";
 pub const CODEX_CLIENT_ID: &str = "app_EMoamEEZ73f0CkXaXp7hrann";
 
 /// Where the human types the `user_code`, read off `codex login --device-auth`
-/// 0.154.0 on 18/09/2026: the same path on `chatgpt.com` answers 404.
+/// 0.154.0: the same path on `chatgpt.com` answers 404.
 pub const VERIFICATION_URL: &str = "https://auth.openai.com/codex/device";
 
 /// An open device authorisation, waiting on a browser.
@@ -88,8 +88,7 @@ pub fn account_id(id_token: &str) -> Result<String> {
 }
 
 /// Seat the token speaks for, which with the workspace identifies a credential: each
-/// pair carries its own window, one seat reading 25 % of its team one against 0 % of
-/// its personal one, two seats of one workspace 37 % and 10 % of the same weekly one.
+/// pair carries its own window.
 pub fn user_id(id_token: &str) -> Result<String> {
     auth_claims(id_token)?["chatgpt_user_id"]
         .as_str()
@@ -236,8 +235,8 @@ pub async fn refresh(
     })
 }
 
-/// The `expires_in` of the answer, or the `exp` of the access token, which is a
-/// JWT: measured 18/09/2026, it sits ten days out and the field is absent.
+/// The `expires_in` of the answer, or, the field being absent, the `exp` of the
+/// access token, which is a JWT.
 fn expires_in(body: &Value, access_token: Option<&str>) -> Option<i64> {
     if let Some(secs) = body.get("expires_in").and_then(Value::as_i64) {
         return Some(secs);

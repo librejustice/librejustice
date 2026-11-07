@@ -1,1 +1,0 @@
-ALTER TABLE chamber ALTER COLUMN label SET DEFAULT '';

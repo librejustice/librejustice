@@ -13,7 +13,7 @@ use crate::auth::AuthGuard;
 #[component]
 pub fn BookmarksPage() -> impl IntoView {
     view! {
-        <Title text="Mes signets - LibreJustice" />
+        <Title text="Signets - LibreJustice" />
         <Meta name="robots" content="noindex" />
         <Shell>
             <AuthGuard fallback=|| view! { <ListSkeleton /> }>
@@ -31,7 +31,7 @@ fn Shell(children: Children) -> impl IntoView {
                 class="font-sans text-2xl text-[var(--color-ink)]"
                 style="font-variation-settings: 'wght' 300"
             >
-                "Mes signets"
+                "Signets"
             </h1>
             {children()}
         </div>
@@ -109,7 +109,7 @@ fn BookmarkCard(item: BookmarkItem, items: RwSignal<Vec<BookmarkItem>>) -> impl 
         <li class="group relative flex items-start gap-3 rounded-xl border border-[var(--color-rule)] bg-[var(--color-parchment)] p-4 transition-colors hover:border-[var(--color-ink-subtle)]">
             <div class="flex min-w-0 flex-1 flex-col gap-1.5">
                 <A
-                    href=lj_dtos::decision_path(item.jurisdiction_type, &item.id)
+                    href=lj_dtos::decision_path(item.jurisdiction_type, item.jurisdiction_code.as_deref(), &item.id)
                     attr:class="line-clamp-2 text-[15px] leading-snug font-medium text-[var(--color-ink)] transition-colors hover:text-[var(--color-accent)]"
                 >
                     {item.title}

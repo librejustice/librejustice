@@ -143,17 +143,17 @@ jsonpath "$.texte" contains "Tout fait quelconque"
 
 # The reader's place sets the corpora searched. Without one, the law applicable
 # in France, which is what every caller had before the place was a setting.
-GET {{base}}/internal/search-textes?q=code+civil&limit=1
+GET {{base}}/internal/search-textes?query=code+civil&limit=1
 HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" count == 3
 jsonpath "$.jurisdictions" contains "FR"
-jsonpath "$.jurisdictions" contains "UE"
+jsonpath "$.jurisdictions" contains "EU"
 jsonpath "$.readerPlace" not exists
 
 # Placed in Switzerland, the same query searches Swiss law, and the answer says
 # where it is read from so a page opened from it keeps the place.
-GET {{base}}/internal/search-textes?q=code+civil&limit=1&place=CH
+GET {{base}}/internal/search-textes?query=code+civil&limit=1&place=CH
 HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" contains "CH"
@@ -163,24 +163,24 @@ jsonpath "$.readerPlace.label" == "Suisse"
 
 # A place of the Union is reached by the Union, an overseas country is not: the
 # rules of the JOUE say it.
-GET {{base}}/internal/search-textes?q=responsabilite&limit=1&place=GP
+GET {{base}}/internal/search-textes?query=responsabilite&limit=1&place=GP
 HTTP 200
 [Asserts]
-jsonpath "$.jurisdictions" contains "UE"
+jsonpath "$.jurisdictions" contains "EU"
 
-GET {{base}}/internal/search-textes?q=responsabilite&limit=1&place=PF
+GET {{base}}/internal/search-textes?query=responsabilite&limit=1&place=PF
 HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" contains "FR"
-jsonpath "$.jurisdictions" not contains "UE"
+jsonpath "$.jurisdictions" not contains "EU"
 
 # A country named in the query still wins over the reader's place.
-GET {{base}}/internal/search-textes?q=code+civil+belge&limit=1&place=CH
+GET {{base}}/internal/search-textes?query=code+civil+belge&limit=1&place=CH
 HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" contains "BE"
 
-GET {{base}}/internal/search-textes?q=code+civil&limit=1&place=XX
+GET {{base}}/internal/search-textes?query=code+civil&limit=1&place=XX
 HTTP 422
 [Asserts]
 jsonpath "$.detail[0].loc[1]" == "place"
@@ -209,7 +209,7 @@ jsonpath "$.applicability.reader.uid" == "FR-M"
 jsonpath "$.applicability.status" == "applicable"
 
 # A country the query names is searched alone.
-GET {{base}}/internal/search-textes?q=code+civil+belge&limit=3
+GET {{base}}/internal/search-textes?query=code+civil+belge&limit=3
 HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" count == 1
@@ -219,14 +219,14 @@ jsonpath "$.hits[0].codeTitle" contains "Code civil belge"
 # A bilateral treaty lives in INTL, which every place searches, and
 # « franco-algérien » names no country: the accord comes first read from France
 # as from Algeria.
-GET {{base}}/internal/search-textes?q=trait%C3%A9+franco+alg%C3%A9rien&limit=3
+GET {{base}}/internal/search-textes?query=trait%C3%A9+franco+alg%C3%A9rien&limit=3
 HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" contains "INTL"
 jsonpath "$.jurisdictions" not contains "DZ"
 jsonpath "$.hits[0].codeTitle" contains "franco-algérien"
 
-GET {{base}}/internal/search-textes?q=trait%C3%A9+franco+alg%C3%A9rien&limit=3&place=DZ
+GET {{base}}/internal/search-textes?query=trait%C3%A9+franco+alg%C3%A9rien&limit=3&place=DZ
 HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" contains "INTL"

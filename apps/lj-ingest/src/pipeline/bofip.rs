@@ -34,7 +34,7 @@ pub async fn sync_bofip() -> Result<()> {
 pub async fn ingest_bofip(path: &Path) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // Le refresh `code_title` final est un UPDATE-jointure pleine table : hors
     // statement_timeout.

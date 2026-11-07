@@ -1,4 +1,4 @@
-use lj_dtos::{ActivitySource, ReadKind, SearchContext, SearchEngine};
+use lj_dtos::{ActivitySource, ReadKind, SearchContext, SearchEngine, UiAction};
 
 pub const LOG_TARGET: &str = "lj_api::usage";
 
@@ -17,6 +17,44 @@ pub struct Caller {
     pub caller: Option<String>,
     pub visit: Option<String>,
     pub user_agent: Option<String>,
+    pub request: Request,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Request {
+    pub headers: Option<String>,
+    pub worker: Option<String>,
+}
+
+// Added by Cloudflare or Caddy on every request, so they say nothing of the client.
+const PROXY_HEADERS: [&str; 9] = [
+    "cdn-loop",
+    "cf-connecting-ip",
+    "cf-ipcountry",
+    "cf-ray",
+    "cf-visitor",
+    "via",
+    "x-forwarded-for",
+    "x-forwarded-host",
+    "x-forwarded-proto",
+];
+
+impl Request {
+    pub fn read(headers: &axum::http::HeaderMap) -> Self {
+        let mut names: Vec<&str> = headers
+            .keys()
+            .map(axum::http::HeaderName::as_str)
+            .filter(|n| !PROXY_HEADERS.contains(n))
+            .collect();
+        names.sort_unstable();
+        Self {
+            headers: Some(names.join(",")),
+            worker: headers
+                .get("cf-worker")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned),
+        }
+    }
 }
 
 pub fn is_first_party(headers: &axum::http::HeaderMap, settings: &crate::config::Settings) -> bool {
@@ -57,6 +95,7 @@ impl Caller {
             caller: None,
             visit: None,
             user_agent: None,
+            request: Request::default(),
         }
     }
 
@@ -75,6 +114,10 @@ impl Caller {
             caller: None,
             visit: None,
             user_agent: user_agent(headers).map(str::to_owned),
+            request: match source {
+                ActivitySource::Web => Request::default(),
+                ActivitySource::Api | ActivitySource::Mcp => Request::read(headers),
+            },
         }
     }
 
@@ -109,6 +152,14 @@ impl Caller {
         span.record("librejustice.search.caller", self.caller.as_deref());
         span.record("librejustice.search.visit", self.visit.as_deref());
         span.record("user_agent.original", self.user_agent.as_deref());
+        span.record(
+            "librejustice.request.headers",
+            self.request.headers.as_deref(),
+        );
+        span.record(
+            "librejustice.request.worker",
+            self.request.worker.as_deref(),
+        );
         span.record("librejustice.search.query", query);
         span.record("librejustice.search.page", shape.page);
         span.record("librejustice.search.filters", shape.filters);
@@ -145,11 +196,49 @@ impl Caller {
 }
 
 impl Caller {
-    pub fn record_read(&self, kind: ReadKind, reference: &str) {
+    pub fn record_read(&self, kind: ReadKind, reference: &str, document: &str) {
         let _span = tracing::info_span!(
             "read",
             librejustice.read.kind = kind.as_str(),
             librejustice.read.reference = reference,
+            librejustice.read.document = document,
+            librejustice.search.source = source_value(self.source),
+            librejustice.search.identity = identity_value(self.authenticated),
+            librejustice.search.origin = origin_value(self.first_party),
+            librejustice.search.caller = self.caller.as_deref(),
+            librejustice.search.visit = self.visit.as_deref(),
+            user_agent.original = self.user_agent.as_deref(),
+            librejustice.request.headers = self.request.headers.as_deref(),
+            librejustice.request.worker = self.request.worker.as_deref(),
+        );
+    }
+
+    pub fn record_landing(
+        &self,
+        page: &str,
+        referrer: Option<&str>,
+        utm_source: Option<&str>,
+        utm_campaign: Option<&str>,
+    ) {
+        let _span = tracing::info_span!(
+            "landing",
+            librejustice.landing.page = page,
+            librejustice.landing.referrer = referrer,
+            librejustice.landing.utm_source = utm_source,
+            librejustice.landing.utm_campaign = utm_campaign,
+            librejustice.search.source = source_value(self.source),
+            librejustice.search.identity = identity_value(self.authenticated),
+            librejustice.search.origin = origin_value(self.first_party),
+            librejustice.search.caller = self.caller.as_deref(),
+            librejustice.search.visit = self.visit.as_deref(),
+            user_agent.original = self.user_agent.as_deref(),
+        );
+    }
+
+    pub fn record_action(&self, action: UiAction) {
+        let _span = tracing::info_span!(
+            "ui_action",
+            librejustice.ui.action = action.as_str(),
             librejustice.search.source = source_value(self.source),
             librejustice.search.identity = identity_value(self.authenticated),
             librejustice.search.origin = origin_value(self.first_party),
@@ -176,6 +265,8 @@ impl Caller {
             librejustice.search.origin = tracing::field::Empty,
             librejustice.search.caller = tracing::field::Empty,
             user_agent.original = tracing::field::Empty,
+            librejustice.request.headers = tracing::field::Empty,
+            librejustice.request.worker = tracing::field::Empty,
             librejustice.search.visit = tracing::field::Empty,
             librejustice.search.page = tracing::field::Empty,
             librejustice.search.filters = tracing::field::Empty,

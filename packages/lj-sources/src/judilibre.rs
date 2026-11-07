@@ -78,17 +78,47 @@ impl JudilibreClient {
             .await
     }
 
+    /// Jurisdiction codes the API serves, read from `/taxonomy?id=jurisdiction`.
+    pub async fn jurisdictions(&self) -> Result<Vec<String>> {
+        let page = self
+            .get("/taxonomy", &[("id", "jurisdiction".to_string())])
+            .await?;
+        let codes = page
+            .get("result")
+            .and_then(Value::as_object)
+            .ok_or_else(|| {
+                SourceError::Invalid(format!("judilibre taxonomy jurisdiction: {page}"))
+            })?;
+        Ok(codes.keys().cloned().collect())
+    }
+
     /// Cœur partagé : GET signé Bearer, JSON ou `JudilibreApi` sur statut ≠ 200.
     ///
     /// Sur **401**, le jeton caché est purgé et la requête rejouée **une fois**
-    /// avec un Bearer frais.
+    /// avec un Bearer frais. A 429 or a 5xx is asked again three times, 1, 2
+    /// then 4 s apart: the source answers 500 while its Elasticsearch memory
+    /// breaker is tripped.
     async fn get(&self, path: &str, params: &[(&str, String)]) -> Result<Value> {
-        match self.get_once(path, params).await {
-            Err(SourceError::JudilibreApi { status: 401, .. }) => {
-                self.oauth.invalidate().await;
-                self.get_once(path, params).await
+        let mut delay = Duration::from_secs(1);
+        let mut retries = 0;
+        loop {
+            let result = match self.get_once(path, params).await {
+                Err(SourceError::JudilibreApi { status: 401, .. }) => {
+                    self.oauth.invalidate().await;
+                    self.get_once(path, params).await
+                }
+                other => other,
+            };
+            match result {
+                Err(SourceError::JudilibreApi { status, .. })
+                    if (status == 429 || status >= 500) && retries < 3 =>
+                {
+                    tokio::time::sleep(delay).await;
+                    delay *= 2;
+                    retries += 1;
+                }
+                other => return other,
             }
-            other => other,
         }
     }
 
@@ -119,9 +149,13 @@ impl JudilibreClient {
 }
 
 /// Out of the async body, which compiles in its caller, at the caller's opt-level.
+/// A decision text can carry a lone UTF-16 surrogate, read as U+FFFD.
 #[inline(never)]
 fn parse_response(text: &str) -> Result<Value> {
-    Ok(sonic_rs::from_str(text)?)
+    let mut de = sonic_rs::Deserializer::from_str(text).utf8_lossy();
+    let value = de.deserialize()?;
+    de.end()?;
+    Ok(value)
 }
 
 /// Extrait un paramètre d'une querystring (`?key=value` ou `key=value`).
@@ -227,5 +261,11 @@ mod tests {
     fn base_url_trailing_slash_trimmed() {
         let c = JudilibreClient::new("https://x/v1/", "id", "secret");
         assert_eq!(c.base_url, "https://x/v1");
+    }
+
+    #[test]
+    fn lone_surrogate_reads_as_replacement_character() {
+        let v = parse_response(r#"{"text":"Localit\ud83d\u00e9"}"#).unwrap();
+        assert_eq!(v["text"], "Localit\u{FFFD}\u{e9}");
     }
 }

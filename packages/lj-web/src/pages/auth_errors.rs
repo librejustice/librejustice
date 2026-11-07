@@ -13,6 +13,7 @@ fn code_map(code: &str) -> Option<&'static str> {
         "mot_de_passe_trop_long" => "Mot de passe trop long (72 octets au plus).",
         "mots_de_passe_differents" => "Les mots de passe ne correspondent pas.",
         "email_invalide" => "Adresse e-mail invalide.",
+        "email_jetable" => "Les adresses jetables ne sont pas autorisées.",
         "lien_invalide_ou_expire" => {
             "Ce lien a expiré ou a déjà servi. Demandez-en un nouveau."
         }

@@ -5,7 +5,7 @@ Why it matters: nationality, filiation, civil status, family and personal-status
 ## Working the corpus
 
 - **Find a country's texts**: `search_norms` with `jurisdiction` set to the ISO code (`SN`, `DZ`, `MA`, `CM`, `CD`…), descriptive French query. Slugs carry a country suffix (`code-de-la-famille-sen`). 59 countries are covered, strongest on family, nationality and civil-status law of francophone Africa and the Maghreb, plus BE/CH/DE/LU codes from their official publishers.
-- **Find a treaty**: `jurisdiction: "INTL"` plus a descriptive query, or the exact official name in `code`. Bilateral accords often live under the décret that published them: searching « décret portant publication accord [pays] [matière] » in the query text works. Amended accords (avenants) carry the amendments as versions: pass `date` to get the state applicable to your case.
+- **Find a treaty**: `jurisdiction: "INTL"` plus a descriptive query, or the exact official name in `code`. Bilateral accords often live under the décret that published them: searching « décret portant publication accord [pays] [matière] » in the query text works. Amended accords (avenants) carry the amendments as versions: pass `as_of` to get the state applicable to your case.
 - **From a decision**: French decisions applying foreign law usually quote or reproduce it; the decision text carries inline `/norm/` links when the cited text is in the corpus. The reverse chain finds the case law applying a foreign provision: `search_decisions` + `legal_instrument: ["code-de-la-famille-sen"]` or `legal_article: ["…|40"]`.
 
 ## When the corpus does not have the text

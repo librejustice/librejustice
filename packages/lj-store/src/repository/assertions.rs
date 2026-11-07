@@ -1329,8 +1329,7 @@ impl DecisionRepository<'_> {
     /// The texts of `jurisdictions` the coverage places on `at`'s day somewhere
     /// else than `at`, under a key `at` drops or by name, and never there nor
     /// under a key `at` keeps. `journals` are those of the texts: naming them
-    /// keeps the indexes in play, 36 ms from the metropole against 0.57 s for a
-    /// negation.
+    /// keeps the indexes in play, where a negation does not.
     pub async fn texts_placed_elsewhere(
         &self,
         at: &PlaceReading<'_>,

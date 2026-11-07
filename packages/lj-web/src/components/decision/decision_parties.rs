@@ -1,8 +1,8 @@
-//! Encart « Parties » de la page décision. Acteurs extraits de la décision
-//! (`decision_party`), **résolus au registre uniquement** — même règle que les
-//! références de lois : pas de fiche, pas d'affichage. Gabarit façon secteur :
-//! une carte par côté (demandeurs / défendeurs), les conseils du côté rattachés
-//! sous ses parties. Rien rendu si aucun acteur résolu.
+//! The « Parties » panel of the decision page. The decision's extracted actors,
+//! **resolved in the registry only**, the same rule as law references: no
+//! entity page, no display. One group per side (applicants / defendants), each
+//! side's counsel under the parties they represent. Nothing rendered when no
+//! actor resolves.
 //!
 //! Une exception, et une seule : la partie qu'un conseil résolu représente est
 //! affichée même non résolue, en texte simple. Sans elle l'arête pointe dans le
@@ -16,7 +16,12 @@ use lj_dtos::DecisionPartyDto;
 use crate::helpers::split_entity_uid;
 
 #[component]
-pub fn DecisionParties(parties: Vec<DecisionPartyDto>) -> impl IntoView {
+pub fn DecisionParties(
+    parties: Vec<DecisionPartyDto>,
+    /// Appended to the root: the page renders the block twice, once per layout.
+    #[prop(optional)]
+    class: &'static str,
+) -> impl IntoView {
     let is_counsel =
         |p: &DecisionPartyDto| matches!(p.quality.as_str(), "law_firm" | "counsel_name");
     let counsels: Vec<DecisionPartyDto> = parties
@@ -51,12 +56,11 @@ pub fn DecisionParties(parties: Vec<DecisionPartyDto>) -> impl IntoView {
     };
 
     view! {
-        <section
-            aria-label="Parties"
-            class="rounded-lg border border-[var(--color-rule)] bg-[var(--color-vellum)]/40 p-6 print:hidden"
-        >
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Parties"</h2>
-            <div class="mt-4 grid gap-6 sm:grid-cols-2">
+        <section aria-label="Parties" class=format!("flex flex-col gap-3 print:hidden {class}")>
+            <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
+                "Parties"
+            </h2>
+            <div class="flex flex-col gap-4">
                 {side_card(
                     "Demandeurs",
                     of_side(Some("applicant"), false),
@@ -109,15 +113,13 @@ fn side_card(
                 }
             })
             .collect_view();
-        view! { <ul class="flex flex-col gap-1.5">{items}</ul> }
+        view! { <ul class="flex flex-col gap-1.5 text-sm">{items}</ul> }
     });
     let counsel_line = counsel_line(orphelins);
     Some(
         view! {
-            <div class="flex flex-col gap-2">
-                <h3 class="text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                    {title}
-                </h3>
+            <div class="flex flex-col gap-1.5">
+                <h3 class="text-xs font-medium text-[var(--color-ink-muted)]">{title}</h3>
                 {rows}
                 {counsel_line}
             </div>
@@ -150,7 +152,7 @@ fn counsel_line(conseils: Vec<DecisionPartyDto>) -> Option<AnyView> {
         .collect_view();
     Some(
         view! {
-            <p class="text-sm">
+            <p class="text-xs">
                 <span class="text-[var(--color-ink-subtle)]">{label}</span>
                 {links}
             </p>
@@ -163,17 +165,14 @@ fn counsel_line(conseils: Vec<DecisionPartyDto>) -> Option<AnyView> {
 /// sinon (une personne physique ne l'est jamais).
 fn party_label(party: DecisionPartyDto) -> AnyView {
     let Some(uid) = party.entity_uid else {
-        return view! {
-            <span class="text-sm text-[var(--color-ink)]">{party.value}</span>
-        }
-        .into_any();
+        return view! { <span class="text-[var(--color-ink)]">{party.value}</span> }.into_any();
     };
     let (ns, local) = split_entity_uid(&uid);
     let href = lj_vocab::entity_path(ns, local);
     view! {
         <A
             href=href
-            attr:class="text-sm text-[var(--color-ink)] underline underline-offset-4 hover:text-[var(--color-accent)]"
+            attr:class="text-[var(--color-ink)] underline decoration-[var(--color-rule)] underline-offset-4 transition-colors hover:text-[var(--color-accent)] hover:decoration-current"
         >
             {party.value}
         </A>

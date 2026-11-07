@@ -2,6 +2,9 @@
 //! decision body and the summary. The summary offers no « Copier + référence »:
 //! a model may have written it, so it is not quoted as the court's words.
 use leptos::prelude::*;
+use lj_dtos::UiAction;
+
+use crate::components::search::CardViewPref;
 
 /// Position and normalised text of the current selection. `None` = no toolbar.
 #[derive(Debug, Clone, PartialEq)]
@@ -111,14 +114,22 @@ pub fn SelectionToolbar(
 
     let on_search = {
         let _text = state.text.clone();
+        let _card_view = expect_context::<CardViewPref>();
         move |_| {
             #[cfg(feature = "hydrate")]
             {
+                use crate::components::search::CardView;
                 use crate::pages::decision_page::reference::flatten_selection_text;
                 let flat = flatten_selection_text(&_text);
-                let query = String::from(js_sys::encode_uri_component(
-                    &flat.chars().take(512).collect::<String>(),
-                ));
+                // The results page keys the pinned view on the trimmed `q`.
+                let q = flat
+                    .chars()
+                    .take(512)
+                    .collect::<String>()
+                    .trim_end()
+                    .to_string();
+                let query = String::from(js_sys::encode_uri_component(&q));
+                _card_view.pin(q, CardView::Snippet);
                 let navigate = leptos_router::hooks::use_navigate();
                 navigate(
                     &format!("/decision-search?q={query}"),
@@ -159,7 +170,11 @@ pub fn SelectionToolbar(
                 });
             }
         };
-        view! { <ToolbarButton label="Copier + référence" on_click=on_copy_ref /> }
+        view! { <ToolbarButton
+            label="Copier + référence"
+            usage=UiAction::DecisionSelectionCopyReference
+            on_click=on_copy_ref
+        /> }
     });
 
     view! {
@@ -168,8 +183,8 @@ pub fn SelectionToolbar(
             class="fixed z-50 flex w-max -translate-x-1/2 -translate-y-full items-center overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] shadow-lg print:hidden"
             style=style
         >
-            <ToolbarButton label="Rechercher" on_click=on_search />
-            <ToolbarButton label="Copier" on_click=on_copy />
+            <ToolbarButton label="Rechercher" usage=UiAction::DecisionSelectionSearch on_click=on_search />
+            <ToolbarButton label="Copier" usage=UiAction::DecisionSelectionCopy on_click=on_copy />
             {copy_ref_view}
         </div>
     }
@@ -178,12 +193,14 @@ pub fn SelectionToolbar(
 #[component]
 fn ToolbarButton(
     label: &'static str,
+    usage: UiAction,
     on_click: impl FnMut(leptos::ev::MouseEvent) + 'static,
 ) -> impl IntoView {
     view! {
         <button
             type="button"
             on:click=on_click
+            data-usage=usage.as_str()
             class="border-l border-[var(--color-rule)] px-3 py-2 text-sm text-[var(--color-ink)] first:border-l-0 hover:bg-[var(--color-vellum)]"
         >
             {label}

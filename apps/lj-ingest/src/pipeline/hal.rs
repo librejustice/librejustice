@@ -15,13 +15,14 @@ use crate::config::Settings;
 /// How far back a scan reads HAL's submission dates.
 #[derive(Copy, Clone, Debug, Default, ValueEnum)]
 pub enum HalScan {
-    /// 30 days, ~1 500 deposits in 2 requests: the daily pass.
+    /// 30 days: the daily pass.
     #[default]
     Daily,
-    /// 180 days, ~9 600 deposits in 10 requests: the idempotent net, which
-    /// warns about what the daily pass missed and normally repairs nothing.
+    /// 180 days: the idempotent net, which warns about what the daily pass missed
+    /// and normally repairs nothing.
     Repair,
-    /// The whole law fonds, ~238 000 deposits in ~240 requests: initial load.
+    /// The whole law fonds: initial load, and the only scan that retires the
+    /// links it no longer gives.
     Full,
 }
 
@@ -55,17 +56,17 @@ struct Stats {
     law_upserted: usize,
     law_unchanged: usize,
     law_orphans: usize,
+    kept: Vec<String>,
+    kept_laws: Vec<String>,
 }
 
 /// Reads HAL's recent law deposits and attaches those citing a docket number
 /// to the decisions already in the stock.
-///
-/// 4,0 % of law deposits carry a docket number, measured over a 30-day window.
 pub async fn sync_hal(scan: HalScan) -> Result<()> {
     let settings = Settings::from_env()?;
 
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 4).map_err(|e| anyhow!("build_pool: {e}"))?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
         .await
@@ -89,10 +90,10 @@ pub async fn sync_hal(scan: HalScan) -> Result<()> {
         stats.pages += 1;
         stats.deposits += page.deposits.len();
         for deposit in &page.deposits {
-            if !deposit.is_law() || deposit.uri.is_empty() {
+            if !deposit.is_law() || deposit.link().is_none() {
                 continue;
             }
-            let dockets = extract_dockets(deposit);
+            let dockets = extract_dockets(&deposit.haystack());
             if dockets.is_empty() {
                 continue;
             }
@@ -100,7 +101,7 @@ pub async fn sync_hal(scan: HalScan) -> Result<()> {
             attach(&repo, deposit, &dockets, &existing, &mut stats).await?;
         }
         for deposit in &page.deposits {
-            if !deposit.is_law() || deposit.uri.is_empty() {
+            if !deposit.is_law() || deposit.link().is_none() {
                 continue;
             }
             let laws = extract_law_numbers(deposit);
@@ -117,6 +118,15 @@ pub async fn sync_hal(scan: HalScan) -> Result<()> {
         tokio::time::sleep(hal::THROTTLE).await;
     }
 
+    let (retired, laws_retired) = match scan {
+        HalScan::Full => (
+            repo.tombstone_absent_web_commentaries("hal", &stats.kept)
+                .await?,
+            repo.tombstone_absent_article_commentaires("hal", &stats.kept_laws)
+                .await?,
+        ),
+        HalScan::Daily | HalScan::Repair => (0, 0),
+    };
     if matches!(scan, HalScan::Repair) && stats.upserted > 0 {
         tracing::warn!(
             repaired = stats.upserted,
@@ -134,6 +144,8 @@ pub async fn sync_hal(scan: HalScan) -> Result<()> {
         laws_upserted = stats.law_upserted,
         laws_unchanged = stats.law_unchanged,
         laws_orphans = stats.law_orphans,
+        retired,
+        laws_retired,
         "sync_hal finished"
     );
     Ok(())
@@ -160,6 +172,7 @@ async fn attach(
             continue;
         }
         let source_uid = format!("hal/{}#{public_id}", deposit.hal_id);
+        stats.kept.push(source_uid.clone());
         if existing.get(&source_uid) == Some(&checksum) {
             stats.unchanged += 1;
             continue;
@@ -194,6 +207,7 @@ async fn attach_law(
             continue;
         }
         let source_uid = format!("hal/{}#{slug}", deposit.hal_id);
+        stats.kept_laws.push(source_uid.clone());
         if existing.get(&source_uid) == Some(&checksum) {
             stats.law_unchanged += 1;
             continue;

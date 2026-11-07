@@ -125,12 +125,27 @@ pub fn download_resource(res: &RegistryResource, dir: &Path) -> Result<PathBuf> 
     Ok(dst)
 }
 
-/// Décode un champ CSV : UTF-8 si valide, sinon Latin-1 (les stocks RNA et
+/// Décode un champ CSV : UTF-8 si valide, sinon Windows-1252 (les stocks RNA et
 /// l'annuaire des avocats mélangent les deux selon les millésimes).
 pub fn decode_field(bytes: &[u8]) -> Cow<'_, str> {
     match std::str::from_utf8(bytes) {
         Ok(s) => Cow::Borrowed(s),
-        Err(_) => Cow::Owned(bytes.iter().map(|&b| b as char).collect()),
+        Err(_) => Cow::Owned(bytes.iter().map(|&b| cp1252(b)).collect()),
+    }
+}
+
+/// Unassigned bytes 0x81, 0x8D, 0x8F, 0x90 and 0x9D keep their Latin-1 control.
+fn cp1252(b: u8) -> char {
+    const HIGH: [char; 32] = [
+        '\u{20AC}', '\u{81}', '\u{201A}', '\u{0192}', '\u{201E}', '\u{2026}', '\u{2020}',
+        '\u{2021}', '\u{02C6}', '\u{2030}', '\u{0160}', '\u{2039}', '\u{0152}', '\u{8D}',
+        '\u{017D}', '\u{8F}', '\u{90}', '\u{2018}', '\u{2019}', '\u{201C}', '\u{201D}', '\u{2022}',
+        '\u{2013}', '\u{2014}', '\u{02DC}', '\u{2122}', '\u{0161}', '\u{203A}', '\u{0153}',
+        '\u{9D}', '\u{017E}', '\u{0178}',
+    ];
+    match b {
+        0x80..=0x9F => HIGH[usize::from(b - 0x80)],
+        _ => char::from(b),
     }
 }
 
@@ -189,5 +204,19 @@ fn read_csv(
             Ok(false) => return Ok(()),
             Err(e) => return Err(SourceError::Invalid(format!("csv record: {e}"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_field_reads_windows_1252() {
+        assert_eq!(decode_field("Ploÿart".as_bytes()), "Ploÿart");
+        assert_eq!(decode_field(b"Plo\xffart"), "Ploÿart");
+        assert_eq!(decode_field(b"PLO\x9fART"), "PLO\u{0178}ART");
+        assert_eq!(decode_field(b"d\x92Aubrac"), "d\u{2019}Aubrac");
+        assert_eq!(decode_field(b"\x8d"), "\u{8d}");
     }
 }

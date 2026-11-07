@@ -20,7 +20,7 @@ pub fn fold_char(c: char, out: &mut Vec<char>) {
 }
 
 /// [`fold_char`] knowing the character that follows: a comma before a blank
-/// folds to a blank, so `Pascal, COUMES` reads as `Pascal COUMES`.
+/// folds to a blank, so `Pascal, VERDIER` reads as `Pascal VERDIER`.
 pub fn fold_char_before(c: char, next: Option<char>, out: &mut Vec<char>) {
     let start = out.len();
     fold_char(c, out);
@@ -71,7 +71,7 @@ mod tests {
 
     #[test]
     fn accents_case_and_spacing_fold_away() {
-        assert_eq!(fold("Éric DUPONT-MORETTI"), "eric dupont-moretti");
+        assert_eq!(fold("Éric DUPONT-MAREUIL"), "eric dupont-mareuil");
         assert_eq!(fold("  Maître   Noël  "), "maitre noel");
         assert_eq!(fold("Ça ÎLE ŸN"), "ca ile yn");
     }
@@ -105,8 +105,8 @@ mod tests {
 
     #[test]
     fn a_comma_before_a_blank_is_a_blank_and_one_inside_a_word_stays() {
-        assert_eq!(fold("Pascal, COUMES"), "pascal coumes");
-        assert_eq!(fold_stripped("Pascal,\nCOUMES"), "pascalcoumes");
+        assert_eq!(fold("Pascal, VERDIER"), "pascal verdier");
+        assert_eq!(fold_stripped("Pascal,\nVERDIER"), "pascalverdier");
         assert_eq!(fold("1,5 m"), "1,5 m");
         assert_eq!(fold("fin,"), "fin,");
     }

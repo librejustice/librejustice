@@ -1,11 +1,9 @@
 //! Whole-corpus counters (`corpus_counts`), decisions and legal texts alike.
 //! Single writer: `precompute`. Both citation axes come from the index rather
-//! than a `GROUP BY` over the arrays, 2.3 s against 6.45 s; the count of
-//! articles in force takes 8.2 s on its own, which is what justifies writing a
-//! snapshot instead of counting at read time. The `seat` dimension carries the
-//! whole room axis, one row per unfolded path, its parent being the path minus
-//! its last segment: the tree has as many levels as the corpus has, and the
-//! landing page no longer advertises a third level that was always empty.
+//! than a `GROUP BY` over the arrays; counting at read time is too slow, hence
+//! a snapshot. The `seat` dimension carries the whole room axis, one row per
+//! unfolded path, its parent being the path minus its last segment: the tree
+//! has as many levels as the corpus has.
 
 use super::DecisionRepository;
 use crate::error::Result;
@@ -48,9 +46,10 @@ const REBUILD_TAIL: &str = r#"
             WHERE d.deleted_at IS NULL
             GROUP BY p
         UNION ALL
-            SELECT 'office', office_uid, NULL, count(*)
-            FROM decisions WHERE deleted_at IS NULL AND office_uid IS NOT NULL
-            GROUP BY office_uid
+            SELECT 'formation', p, NULL, count(*)
+            FROM decisions d, unnest(d.formation_paths) p
+            WHERE d.deleted_at IS NULL
+            GROUP BY p
         UNION ALL
             SELECT 'legal_domain', legal_domain_uid, NULL, count(*)
             FROM decisions WHERE deleted_at IS NULL AND legal_domain_uid IS NOT NULL
@@ -59,10 +58,6 @@ const REBUILD_TAIL: &str = r#"
             SELECT 'solution', solution_uid, NULL, count(*)
             FROM decisions WHERE deleted_at IS NULL AND solution_uid IS NOT NULL
             GROUP BY solution_uid
-        UNION ALL
-            SELECT 'procedure', procedure_uid, NULL, count(*)
-            FROM decisions WHERE deleted_at IS NULL AND procedure_uid IS NOT NULL
-            GROUP BY procedure_uid
         UNION ALL
             SELECT 'year', extract(year FROM date_lecture)::int::text, NULL, count(*)
             FROM decisions WHERE deleted_at IS NULL AND date_lecture IS NOT NULL

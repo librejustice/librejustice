@@ -14,17 +14,12 @@ use opentelemetry::KeyValue;
 
 use crate::config::Settings;
 
-/// Sources de décisions qu'une chaîne synchronise, et le nombre de jours sans
-/// nouvelle ligne au-delà duquel la source est tenue pour muette. Chaque seuil
-/// vaut environ le double du plus grand écart observé sur 120 jours entre deux
-/// journées d'ingestion (judilibre 3, opendata 3, dila-jade 4, cjue 6,
-/// dila-cnil 11, cnda 13, cedh 15, dila-constit 27) : le contrôle vise une
-/// source cassée, pas une source lente.
+/// Decision sources a chain syncs, and the days without a new row past which one
+/// is taken for broken: about twice the widest gap seen between two ingest days.
 ///
-/// Une source absente de cette liste n'est surveillée par rien : `adde` parce
-/// qu'aucune chaîne ne le synchronise, `ariane-web` et `ariane-dce` parce que
-/// leur job se mesure contre le fond et qu'une journée sans nouvelle ligne y est
-/// l'état normal. C'est ici que se lit la différence entre dormante et cassée.
+/// A source missing from this list is watched by nothing: `ariane-web` and
+/// `ariane-dce`, whose job is measured against the stock, where a day without
+/// a new row is the normal state. This list tells a dormant source from a broken one.
 const SOURCES_SUIVIES: &[(&str, i64)] = &[
     ("judilibre", 7),
     ("opendata", 7),
@@ -33,21 +28,23 @@ const SOURCES_SUIVIES: &[(&str, i64)] = &[
     ("dila-cnil", 25),
     ("cedh", 30),
     ("dila-constit", 55),
-    // cnda publishes in bursts: its catalogue shows a 47-day hole (26/02 → 14/04
-    // 2026) that the calibration window started just after, so the 30 it yielded
-    // alerted on 08/09/2026 against a source already fully ingested.
+    // cnda publishes in bursts, its catalogue holding holes of several weeks.
     ("cnda", 95),
+    // Decision dates 34 days apart at most over 2023-2026: the catalogue files them in batches.
+    ("ddd", 90),
+    // Weekly file, decision dates 17 days apart at most over 2023-2026.
+    ("adlc", 35),
+    // Adoption dates 14 days apart at most over 2023-2026, across the Christmas break.
+    ("comeu", 30),
 ];
 
 /// Channels of the Annonces pot, and the days without a new row past which the
-/// channel is taken for broken. The pot is 44 days old on 16/09/2026, a third
-/// of the window the decision sources were calibrated on, so the floor is a
-/// week rather than twice the widest gap seen: at that date the widest was 8
-/// days on atline, 4 on achatpublic and klekoon, 2 or 3 everywhere else.
+/// channel is taken for broken. The floor is a week rather than twice the widest
+/// gap seen, the pot being younger than the window the decision sources were
+/// calibrated on.
 ///
-/// `nicematin` and `provincenord` are watched by nothing: 65 and 11 rows since
-/// they opened, a press dump and a territorial portal publishing in bursts,
-/// where a silent week is the normal state.
+/// `nicematin` and `provincenord` are watched by nothing: a press dump and a
+/// territorial portal publishing in bursts, where a silent week is the normal state.
 const CANAUX_SUIVIS: &[(&str, i64)] = &[
     ("boamp", 7),
     ("ted", 7),
@@ -134,10 +131,8 @@ async fn marche_decp_sans_resultat() -> Result<u64> {
 }
 
 /// Counts 1 while a crash recovery younger than the chain's own period is
-/// visible. On 09/09/2026 the cluster killed and re-initialised every backend
-/// for one to two minutes and nothing said so: the postmaster survives the
-/// death of a child it does not track, so its start time never moves. The
-/// window is the chain's period, so the alert fires once and clears itself.
+/// visible: the postmaster outlives the recovery, so its start time never moves.
+/// The window is the chain's period, so the alert fires once and clears itself.
 async fn base_reinitialisee() -> Result<u64> {
     let conn = repo_conn().await?;
     let quand = DecisionRepository::new(&conn)
@@ -186,7 +181,7 @@ async fn mesurer(invariant: &'static str, mesure: impl Future<Output = Result<u6
 async fn repo_conn() -> Result<deadpool_postgres::Object> {
     let settings = Settings::from_env()?;
     let pool =
-        lj_store::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
+        lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
     pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))
 }
 
@@ -207,12 +202,10 @@ fn publier_lisibilite(invariant: &'static str, illisible: u64) {
         .record(illisible, &[KeyValue::new("invariant", invariant)]);
 }
 
-/// Compte les décisions qu'aucune provenance ne peut ré-extraire. Le rang 0 dit
-/// qu'une ligne de `decision_sources` ne porte aucune décision (commentaires
-/// ArianeWeb, analyses ADDE) ; une décision qui n'a que celles-là garde
-/// éternellement sa version d'extraction de création, sans qu'aucune erreur ne
-/// remonte. C'est ainsi que 93 décisions du Conseil d'État sont restées sur une
-/// version de 2026-08.
+/// Counts the decisions no provenance can re-extract. Rank 0 marks a
+/// `decision_sources` row that carries no decision (ArianeWeb commentaries,
+/// doctrine notes): a decision with only those keeps its creation extract
+/// version for ever, with no error raised.
 async fn decision_sans_charge() -> Result<u64> {
     let conn = repo_conn().await?;
     let fautives = DecisionRepository::new(&conn)
@@ -260,10 +253,8 @@ async fn alias_sur_slug_mort() -> Result<u64> {
     Ok(fautifs.len() as u64)
 }
 
-/// Compte les uid du dataset curé qu'aucun texte ne porte. Seules les entrées
-/// sans slug sont visées : ailleurs le slug gagne, et l'uid n'est lu par rien.
-/// C'est le pendant de [`alias_sur_slug_mort`] sur l'autre ancre, mais sans
-/// filet — un uid ne redirige pas, il désigne ou ne désigne rien.
+/// Counts the slugless entries of the curated dataset whose uid names no text with
+/// something to read, a publication decree with no article being as dead as no text.
 async fn alias_sur_uid_mort() -> Result<u64> {
     let vises: Vec<String> = lj_norm::aliases::canonical_uids()
         .map(str::to_string)
@@ -352,24 +343,29 @@ async fn dataset_ue_uid_ferme() -> Result<u64> {
     Ok(fautifs.len() as u64)
 }
 
-/// Compte les versions d'article qui ne sont pas situées entre leurs voisines :
-/// sentinelle doublonnée, ou version qu'aucune suivante ne ferme. Dans les deux
-/// cas deux textes se disent applicables le même jour et la lecture n'en sert
-/// qu'un, sans le dire.
+/// Counts the article versions not placed between their neighbours: a doubled
+/// sentinel, a DILA version held at several start dates, or a version no next
+/// one closes: two texts claiming the same day, or a text a date that is no
+/// longer its own.
 ///
-/// L'écriture situe la version, `reconcile` rattrape la chaîne une fois par
-/// semaine et échoue s'il a eu à le faire : cet invariant est l'œil quotidien
-/// entre deux passages, il ne répare rien.
+/// The write places the version, `reconcile` repairs the chain once a week and
+/// fails when it had to: this invariant is the daily eye in between, it repairs
+/// nothing.
 async fn version_article_mal_situee() -> Result<u64> {
     let conn = repo_conn().await?;
-    let (sentinelles, non_fermees) = DecisionRepository::new(&conn)
+    let (sentinelles, redatees, non_fermees) = DecisionRepository::new(&conn)
         .versions_mal_situees()
         .await
         .map_err(|e| anyhow!("versions_mal_situees: {e}"))?;
-    if sentinelles + non_fermees > 0 {
-        tracing::warn!(sentinelles, non_fermees, "article versions misplaced");
+    if sentinelles + redatees + non_fermees > 0 {
+        tracing::warn!(
+            sentinelles,
+            redatees,
+            non_fermees,
+            "article versions misplaced"
+        );
     }
-    Ok(sentinelles + non_fermees)
+    Ok(sentinelles + redatees + non_fermees)
 }
 
 /// Counts article versions whose end precedes their start: the row leaves every

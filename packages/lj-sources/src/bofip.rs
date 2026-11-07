@@ -1,10 +1,10 @@
 //! BOFiP-Impôts : doctrine fiscale DGFiP opposable (LPF, art. L. 80 A).
 //!
-//! Source : dataset open data **`bofip-vigueur`** (data.economie.gouv.fr,
-//! licence ouverte) — un record par publication doctrinale **en vigueur**
-//! (~9 k), champs `identifiant_juridique` (`BOI-TVA-DECLA-20-30-20-30`),
-//! `serie`/`division`, `titre` (fil d'Ariane complet), `debut_de_validite`,
-//! `contenu_html`. Export JSONL streamé sur disque puis parsé ligne à ligne.
+//! Source: the open data dataset **`bofip-vigueur`** (data.economie.gouv.fr,
+//! licence ouverte), one record per doctrinal publication **in force**, fields
+//! `identifiant_juridique` (`BOI-TVA-DECLA-20-30-20-30`), `serie`/`division`,
+//! `titre` (the full breadcrumb), `debut_de_validite`, `contenu_html`. The JSONL
+//! export is streamed to disk, then parsed line by line.
 //!
 //! Le corps HTML porte les **paragraphes numérotés**, l'unité que citent les
 //! décisions (« paragraphe n° 130 du BOI-… »), et des intertitres `<h1>`–`<h6>`

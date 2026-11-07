@@ -4,6 +4,7 @@
 use leptos::either::Either;
 use leptos::prelude::*;
 
+use super::outlet::{Handover, Outlets};
 use super::state::{Check, Eye, Reading, Session, Verdict, ERASED, FAMILIES};
 
 #[cfg(feature = "hydrate")]
@@ -11,6 +12,11 @@ use super::engine;
 
 const SECTION: &str =
     "text-xs font-medium uppercase tracking-widest text-[var(--color-ink-subtle)]";
+const OUTLET: &str = "h-11 min-w-0 flex-1 truncate rounded-md px-4 text-sm font-medium md:w-full md:flex-none disabled:pointer-events-none disabled:opacity-40";
+const FOREMOST: &str =
+    "bg-[var(--color-accent)] text-[var(--color-accent-foreground)] hover:opacity-90";
+const ASIDE: &str =
+    "border border-[var(--color-rule)] text-[var(--color-ink)] hover:bg-[var(--color-vellum)]";
 
 #[component]
 fn Cross() -> impl IntoView {
@@ -373,24 +379,48 @@ pub fn Sidebar(session: Session) -> impl IntoView {
         #[cfg(feature = "hydrate")]
         engine::apply(session);
     };
-    let warning = RwSignal::new(false);
-    let on_download = move |_| {
-        if session.stale() {
-            warning.set(true);
-        } else {
-            #[cfg(feature = "hydrate")]
-            engine::download();
+    let outlets = StoredValue::new(expect_context::<Outlets>().0);
+    let fire = move |at: usize| {
+        outlets.with_value(|list| {
+            list.iter()
+                .for_each(|outlet| outlet.state.set(Handover::Idle));
+            list[at].fire();
+        })
+    };
+    let held = RwSignal::new(None::<usize>);
+    let send = move |at: usize| match session.stale() {
+        true => held.set(Some(at)),
+        false => fire(at),
+    };
+    let on_send_anyway = move |_| {
+        if let Some(at) = held.get_untracked() {
+            held.set(None);
+            fire(at);
         }
     };
-    let on_download_anyway = move |_| {
-        warning.set(false);
-        #[cfg(feature = "hydrate")]
-        engine::download();
-    };
     let on_apply_again = move |_| {
-        warning.set(false);
+        held.set(None);
         #[cfg(feature = "hydrate")]
         engine::apply(session);
+    };
+    Effect::new(move |_| {
+        session.generation.track();
+        outlets.with_value(|list| {
+            list.iter()
+                .for_each(|outlet| outlet.state.set(Handover::Idle))
+        });
+    });
+    let sending =
+        move || outlets.with_value(|list| list.iter().any(|o| o.state.get() == Handover::Busy));
+    let said = move || {
+        outlets.with_value(|list| {
+            list.iter().find_map(|outlet| match outlet.state.get() {
+                Handover::Idle => None,
+                Handover::Busy => Some((false, "Un instant...".to_string())),
+                Handover::Done(said) => Some((false, said.to_string())),
+                Handover::Failed(why) => Some((true, format!("L'envoi s'est arrêté : {why}"))),
+            })
+        })
     };
 
     let waiting = move || {
@@ -498,24 +528,49 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                     {move || {
                         waiting()
                             .then(|| {
-                                view! {
-                                    <button
-                                        type="button"
-                                        class="h-11 min-w-0 flex-1 truncate rounded-md md:w-full md:flex-none bg-[var(--color-accent)] px-4 text-sm font-medium text-[var(--color-accent-foreground)] hover:opacity-90 disabled:pointer-events-none disabled:opacity-40"
-                                        disabled=move || session.busy.get()
-                                        on:click=on_download
-                                    >
-                                        "Exporter"
-                                    </button>
-                                }
+                                outlets
+                                    .get_value()
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(at, outlet)| {
+                                        let tone = match at {
+                                            0 => FOREMOST,
+                                            _ => ASIDE,
+                                        };
+                                        view! {
+                                            <button
+                                                type="button"
+                                                class=format!("{OUTLET} {tone}")
+                                                disabled=move || session.busy.get() || sending()
+                                                on:click=move |_| send(at)
+                                            >
+                                                {outlet.label}
+                                            </button>
+                                        }
+                                    })
+                                    .collect_view()
                             })
                     }}
                 </div>
+                {move || {
+                    said()
+                        .map(|(failed, text)| {
+                            let tone = match failed {
+                                true => "text-[var(--color-accent)]",
+                                false => "text-[var(--color-ink-muted)]",
+                            };
+                            view! {
+                                <p role="status" class=format!("text-sm leading-relaxed {tone}")>
+                                    {text}
+                                </p>
+                            }
+                        })
+                }}
             </div>
-            <Show when=move || warning.get()>
+            <Show when=move || held.get().is_some()>
                 <div
                     class="fixed inset-0 z-50 flex items-center justify-center bg-[var(--color-ink)]/40 p-4"
-                    on:click=move |_| warning.set(false)
+                    on:click=move |_| held.set(None)
                 >
                     <div
                         role="alertdialog"
@@ -528,15 +583,21 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                             "Ce fichier ne contient pas vos dernières modifications"
                         </p>
                         <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                            "Il a été produit avant les rectangles et les cases cochées depuis. Anonymisez à nouveau pour les y inclure."
+                            "Anonymisez à nouveau pour y inclure les rectangles et les cases cochées depuis."
                         </p>
                         <div class="mt-2 flex flex-wrap justify-end gap-2">
                             <button
                                 type="button"
                                 class="h-9 rounded-md border border-[var(--color-rule)] px-3 text-sm text-[var(--color-ink)] hover:bg-[var(--color-vellum)]"
-                                on:click=on_download_anyway
+                                on:click=on_send_anyway
                             >
-                                "Exporter quand même"
+                                {move || {
+                                    let label = held
+                                        .get()
+                                        .and_then(|at| outlets.with_value(|list| list.get(at).map(|o| o.label)))
+                                        .unwrap_or_default();
+                                    format!("{label} quand même")
+                                }}
                             </button>
                             <button
                                 type="button"
@@ -566,7 +627,7 @@ fn Panel(verdict: Verdict) -> impl IntoView {
     match (withheld, verdict.check) {
         (Some(detail), _) => Either::Left(view! {
             <div class="flex flex-col gap-1 rounded-md border border-[var(--color-accent)] bg-[var(--color-accent-soft)] p-3 text-sm text-[var(--color-accent)]">
-                <p class="font-medium">"Le fichier n'est pas rendu."</p>
+                <p class="font-medium">"Le fichier anonymisé n'est pas téléchargeable."</p>
                 <p class="leading-relaxed">{detail}</p>
             </div>
         }),

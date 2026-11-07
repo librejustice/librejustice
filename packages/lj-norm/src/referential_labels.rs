@@ -3,7 +3,7 @@
 //! facettes de `/norm-search` et le catalogue des codes.
 //!
 //! Trois axes :
-//! - `jurisdiction` : ISO 3166-1 alpha-2 + sentinelles `UE`/`INTL` → nom FR ;
+//! - `jurisdiction` : ISO 3166-1 alpha-2 + sentinelles `EU`/`INTL` → nom FR ;
 //! - `nature` : jetons LEGI (`LOI_ORGANIQUE`) et catégories curées
 //!   (`code_famille`) → libellé FR — l'entrée est normalisée en majuscules
 //!   (le corpus curé mélange `loi`/`LOI`, `constitution`/`CONSTITUTION`) ;
@@ -13,11 +13,11 @@
 //!
 //! `None` = valeur inconnue du mapping, l'appelant retombe sur la valeur brute.
 
-/// Nom FR d'une juridiction du référentiel (code ISO alpha-2, `UE`, `INTL`).
+/// Nom FR d'une juridiction du référentiel (code ISO alpha-2, `EU`, `INTL`).
 pub fn jurisdiction_label(code: &str) -> Option<&'static str> {
     Some(match code {
         "FR" => "France",
-        "UE" => "Union européenne",
+        "EU" => "Union européenne",
         "INTL" => "International",
         "AM" => "Arménie",
         "AO" => "Angola",
@@ -127,6 +127,7 @@ pub fn nature_label(nature: &str) -> Option<&'static str> {
         "DIRECTIVE_EURO" => "Directive européenne",
         "ENTENTE" => "Entente",
         "ETAT_CIVIL" => "État civil",
+        "FICHE_PRATIQUE" => "Fiche pratique",
         "IDCC" => "Convention collective",
         "INFORMATIONS_PARLEMENTAIRES" => "Informations parlementaires",
         "INSTRUCTION" => "Instruction",
@@ -162,6 +163,7 @@ pub fn source_label(source: &str) -> Option<&'static str> {
         "legifrance" => "Légifrance",
         "bofip" => "BOFiP (DGFiP)",
         "circulaire" => "Circulaires (DILA)",
+        "fiche_pratique" => "Service-Public.fr (DILA)",
         "kali" => "Conventions collectives (KALI)",
         "jorf" => "Journal officiel (JORF)",
         "jafbase" => "JAFBase",
@@ -182,10 +184,8 @@ pub fn source_label(source: &str) -> Option<&'static str> {
     })
 }
 
-/// Fonds du catalogue des normes (`/norm-index/{juris}`), dans l'ordre d'affichage.
-/// `codes` a son propre catalogue `/norm-index/{juris}/codes` (sommaire par code) ; les
-/// autres fonds ont des hubs année (`/norm-index/{juris}/{fond}/{annee}`). L'affectation
-/// nature → fond vit dans le fragment SQL de `lj-store::norm_hubs`, seule source.
+/// The norms catalogue's fonds in display order, each text placed by `norm_fond`;
+/// `codes` has its own catalogue, the others a hub per year.
 pub const NORM_FONDS: &[&str] = &[
     "codes",
     "lois",
@@ -196,6 +196,7 @@ pub const NORM_FONDS: &[&str] = &[
     "traites",
     "circulaires",
     "bofip",
+    "fiches-pratiques",
     "autres",
 ];
 
@@ -211,15 +212,14 @@ pub fn norm_fond_label(fond: &str) -> Option<&'static str> {
         "traites" => "Traités et accords internationaux",
         "circulaires" => "Circulaires et instructions",
         "bofip" => "BOFiP (doctrine fiscale)",
+        "fiches-pratiques" => "Fiches pratiques (Service-Public)",
         "autres" => "Autres publications officielles",
         _ => return None,
     })
 }
 
-/// Natures « doctrine administrative » : interprétations officielles de la
-/// norme par l'administration (opposables/invocables dans leurs régimes), par
-/// opposition aux normes elles-mêmes. Pilote la sur-facette `scope` du scope
-/// textes ; toute nature hors liste est une norme.
+/// The administrative doctrine natures: the administration's official reading
+/// of a norm, invocable under its own regime, and not a norm itself.
 pub const DOCTRINE_ADMIN_NATURES: &[&str] = &[
     "BOFIP",
     "CIRCULAIRE",
@@ -228,10 +228,17 @@ pub const DOCTRINE_ADMIN_NATURES: &[&str] = &[
     "RESCRIT",
 ];
 
-/// Portée d'une nature : `norme` | `doctrine_administrative`.
+/// The public information natures: the administration explaining the law to
+/// the public, binding nobody.
+pub const PUBLIC_INFO_NATURES: &[&str] = &["FICHE_PRATIQUE"];
+
+/// The scope of a nature: `norme` | `doctrine_administrative` | `information_publique`.
 pub fn nature_scope(nature: &str) -> &'static str {
-    if DOCTRINE_ADMIN_NATURES.contains(&nature.to_uppercase().as_str()) {
+    let nature = nature.to_uppercase();
+    if DOCTRINE_ADMIN_NATURES.contains(&nature.as_str()) {
         "doctrine_administrative"
+    } else if PUBLIC_INFO_NATURES.contains(&nature.as_str()) {
+        "information_publique"
     } else {
         "norme"
     }
@@ -365,6 +372,7 @@ pub fn scope_label(scope: &str) -> Option<&'static str> {
     Some(match scope {
         "norme" => "Normes",
         "doctrine_administrative" => "Doctrine administrative",
+        "information_publique" => "Information du public",
         _ => return None,
     })
 }
@@ -385,7 +393,7 @@ mod tests {
     #[test]
     fn jurisdiction_label_covers_sentinels_and_iso() {
         assert_eq!(jurisdiction_label("FR"), Some("France"));
-        assert_eq!(jurisdiction_label("UE"), Some("Union européenne"));
+        assert_eq!(jurisdiction_label("EU"), Some("Union européenne"));
         assert_eq!(jurisdiction_label("INTL"), Some("International"));
         assert_eq!(jurisdiction_label("ZZ"), None);
     }

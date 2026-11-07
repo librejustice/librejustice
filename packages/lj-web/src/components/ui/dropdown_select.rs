@@ -8,8 +8,7 @@ use super::panel::PanelAnchor;
 use super::panel::{dismiss, Dismiss, PanelEdge};
 use super::SelectOption;
 
-/// Dropdown custom controle. `value` courant, `on_change` nouvelle valeur,
-/// `options` la liste, `aria_label` le libelle accessible du bouton.
+/// `field` draws it as a form field: full width, at an input's height.
 #[component]
 pub fn DropdownSelect(
     #[prop(into)] value: Signal<String>,
@@ -17,6 +16,7 @@ pub fn DropdownSelect(
     #[prop(into)] options: Signal<Vec<SelectOption>>,
     #[prop(optional, into)] aria_label: String,
     #[prop(optional, into)] class: String,
+    #[prop(optional)] field: bool,
 ) -> impl IntoView {
     let open = RwSignal::new(false);
     let container_ref = NodeRef::<leptos::html::Div>::new();
@@ -55,6 +55,17 @@ pub fn DropdownSelect(
     };
 
     let wrapper = format!("relative inline-flex {class}");
+    let (trigger, text_size) = if field {
+        (
+            "flex h-10 w-full items-center justify-between gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 text-left text-sm text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]",
+            "text-sm",
+        )
+    } else {
+        (
+            "flex items-center gap-1.5 rounded border border-[var(--color-rule)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]",
+            "text-xs",
+        )
+    };
 
     view! {
         <div node_ref=container_ref class=wrapper>
@@ -64,14 +75,14 @@ pub fn DropdownSelect(
                 aria-label=aria_label
                 aria-expanded=move || open.get().then_some("true")
                 on:click=on_toggle
-                class="flex items-center gap-1.5 rounded border border-[var(--color-rule)] px-2.5 py-1 text-xs text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]"
+                class=trigger
             >
-                <span>{current_label}</span>
+                <span class="min-w-0 truncate">{current_label}</span>
                 <svg
                     viewBox="0 0 12 8"
                     class=move || {
                         format!(
-                            "h-2 w-2.5 text-[var(--color-ink-subtle)] transition-transform {}",
+                            "h-2 w-2.5 shrink-0 text-[var(--color-ink-subtle)] transition-transform {}",
                             if open.get() { "rotate-180" } else { "" },
                         )
                     }
@@ -114,7 +125,7 @@ pub fn DropdownSelect(
                                         // `width:max-content` les options se mettent côte
                                         // à côte.
                                         format!(
-                                            "block w-full whitespace-nowrap px-3 py-1.5 text-left text-xs transition-colors {}",
+                                            "block w-full whitespace-nowrap px-3 py-1.5 text-left {text_size} transition-colors {}",
                                             if selected() {
                                                 "bg-[var(--color-bordeaux-soft)] text-[var(--color-accent)]"
                                             } else {

@@ -207,8 +207,8 @@ mod tests {
 
     #[test]
     fn le_prefixe_rattrape_un_slug_catalogue_tronque() {
-        // Relevé MCP du 16/08/2026 : le catalogue coupe ses slugs, l'appelant
-        // écrit le nom entier et tombe sur un préfixe.
+        // The catalogue truncates its slugs: a caller writing the full name
+        // lands on a prefix.
         let candidats = [
             (
                 "decret-n-93-1371-du-30-decembre-1993-modifiant-le-decret-93451",
@@ -231,7 +231,7 @@ mod tests {
 
     #[test]
     fn le_numero_tranche_ce_que_la_formulation_brouille() {
-        // Relevé MCP du 14/08/2026 : nom reformulé, numéro juste.
+        // Name reworded, number right.
         let candidats = [
             (
                 "decret-n-2019-536-du-29-mai-2019-pris-pour-l-application-de-la-loi-n-78-17-du-6",

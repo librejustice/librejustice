@@ -1,8 +1,8 @@
 //! The « Lois et règlements » view of `/norm-search`: a filter bar
 //! `Droit ▾ · Nature ▾ · Source ▾`, the active chips and a paged list of hits
 //! with an exact total. The state (query, filters, page) lives in the query
-//! params, named as those of `/internal/search-textes`; data through
-//! `ApiClient::search_textes`.
+//! params, the filters named as those of `/internal/search-textes`; data
+//! through `ApiClient::search_textes`.
 
 use leptos::prelude::*;
 use leptos_router::components::A;
@@ -17,6 +17,7 @@ use crate::helpers::{
 };
 use crate::pages::decision_page::data::sendable;
 
+use super::annonce_results::date_fr;
 use super::compact_search::highlight::Highlighted;
 use super::compact_search::query_state;
 use super::corpus_intro::{corpus_stats, DecisionsCorpusTeaser};
@@ -33,7 +34,14 @@ use super::CompactSearch;
 /// un texte (posé par le formulaire « Rechercher dans ce code » de `/norm/{juris}/{code}`).
 /// `place` is not one of them: the places read from are a setting, not a
 /// filter, so no chip takes them off.
-const FILTER_KEYS: [&str; 5] = ["jurisdiction", "nature", "source", "scope", "code"];
+const FILTER_KEYS: [&str; 6] = [
+    "jurisdiction",
+    "source",
+    "scope",
+    "code",
+    "valid_from",
+    "as_of",
+];
 
 /// État de recherche lu depuis l'URL.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -41,10 +49,11 @@ struct TextesQuery {
     q: String,
     code: Option<String>,
     places: Vec<String>,
-    jurisdiction: Option<String>,
-    nature: Option<String>,
+    jurisdictions: Vec<String>,
     source: Option<String>,
     scope: Option<String>,
+    valid_from: Option<String>,
+    as_of: Option<String>,
     mode: lj_dtos::SearchMode,
     page: u32,
 }
@@ -56,23 +65,26 @@ impl TextesQuery {
                 .map(|s| s.trim().to_string())
                 .filter(|s| !s.is_empty())
         };
+        let repeated = |key: &str| -> Vec<String> {
+            map.get_all(key)
+                .unwrap_or_default()
+                .into_iter()
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty())
+                .collect()
+        };
         Self {
             q: map
                 .get("q")
                 .map(|s| s.trim().to_string())
                 .unwrap_or_default(),
             code: single("code"),
-            places: map
-                .get_all("place")
-                .unwrap_or_default()
-                .into_iter()
-                .map(|p| p.trim().to_string())
-                .filter(|p| !p.is_empty())
-                .collect(),
-            jurisdiction: single("jurisdiction"),
-            nature: single("nature"),
+            places: repeated("place"),
+            jurisdictions: repeated("jurisdiction"),
             source: single("source"),
             scope: single("scope"),
+            valid_from: single("valid_from"),
+            as_of: single("as_of"),
             mode: match map.get("mode").as_deref() {
                 Some("lexical") => lj_dtos::SearchMode::Lexical,
                 Some("reference") => lj_dtos::SearchMode::Reference,
@@ -105,10 +117,11 @@ async fn fetch_textes(
     let filters = TextesFilters {
         code: state.code.as_deref(),
         places: &state.places,
-        jurisdiction: state.jurisdiction.as_deref(),
-        nature: state.nature.as_deref(),
+        jurisdictions: &state.jurisdictions,
         source: state.source.as_deref(),
         scope: state.scope.as_deref(),
+        valid_from: state.valid_from.as_deref(),
+        as_of: state.as_of.as_deref(),
     };
     let offset = (state.page - 1) * SEARCH_PAGE_SIZE;
     ApiClient::from_context()
@@ -295,7 +308,7 @@ fn TextesSummary(
                         {format_results_count(total)}
                     </h2>
                     <p class="text-xs text-[var(--color-ink-subtle)]">
-                        "Articles en vigueur, par entrée en vigueur"
+                        "Textes, du dernier modifié au plus ancien"
                     </p>
                 </div>
             }
@@ -350,10 +363,7 @@ fn PinnedArticlesCard(
     if pinned.is_empty() {
         return ().into_any();
     }
-    let label = match pinned.len() {
-        1 => "Cherchez-vous cet article ?",
-        _ => "Cherchez-vous ces articles ?",
-    };
+    let label = "Vous cherchez peut-être";
     view! {
         <section
             aria-label=label
@@ -376,12 +386,14 @@ fn PinnedArticlesCard(
 
 #[component]
 fn PinnedArticleRow(article: lj_dtos::PinnedArticle, place: String) -> impl IntoView {
-    let href = format!(
-        "{}/{}{place}",
-        lj_vocab::norm_path(&article.jurisdiction, &article.code),
-        article.num_key
-    );
-    let titre = format!("{}, article {}", article.code_title, article.num);
+    let text = lj_vocab::norm_path(&article.jurisdiction, &article.code);
+    let (href, titre) = match article.num_key.as_str() {
+        "" => (format!("{text}{place}"), article.code_title.clone()),
+        key => (
+            format!("{text}/{key}{place}"),
+            format!("{}, article {}", article.code_title, article.num),
+        ),
+    };
     let chemin = article
         .titre_path
         .as_deref()
@@ -426,7 +438,7 @@ fn PinnedArticlesMore() -> impl IntoView {
 /// Lignes par bloc de facettes du rail.
 const RAIL_ROWS: usize = 5;
 
-/// Left rail of `/norm-search`: clickable facet blocks (Portée, Nature, Droit,
+/// Left rail of `/norm-search`: clickable facet blocks (Portée, Droit,
 /// Sources). A click goes through the same single-choice URL change as the
 /// bar's dropdowns (clicking the active value again removes it, back to page
 /// 1). `loading`: the facets at hand answer another query, so the rows stay
@@ -453,18 +465,16 @@ fn TextesRail(
             state.get().scope,
         )
     };
-    let natures = move || {
-        rail_facet_block(
-            "Nature",
-            "nature",
-            facets.get().map(|f| f.nature).unwrap_or_default(),
-            state.get().nature,
-        )
-    };
     let jurisdictions = move || {
+        let active = state.get().jurisdictions;
+        let tree = facets
+            .get()
+            .as_ref()
+            .map(jurisdiction_tree)
+            .unwrap_or_default();
         jurisdiction_block(
-            facets.get().map(|f| f.jurisdiction).unwrap_or_default(),
-            state.get().jurisdiction,
+            rail_tree(tree, &active),
+            active,
             searched.get().unwrap_or_default(),
             vocabulary,
             state.get().places,
@@ -485,7 +495,6 @@ fn TextesRail(
             return view! {
                 <div class=RAIL_COLUMN>
                     {skeleton_block("Portée", skeleton_rows(RAIL_ROWS))}
-                    {skeleton_block("Nature", skeleton_rows(RAIL_ROWS))}
                     {skeleton_block("Droit", skeleton_rows(RAIL_ROWS))}
                     {skeleton_block("Sources", skeleton_rows(RAIL_ROWS))}
                 </div>
@@ -495,7 +504,6 @@ fn TextesRail(
         view! {
             <div class=RAIL_COLUMN>
                 {scopes}
-                {natures}
                 {jurisdictions}
                 {sources}
             </div>
@@ -674,7 +682,7 @@ fn ReaderPlacePicker(
 /// answers to.
 fn jurisdiction_block(
     choices: Vec<FacetChoice>,
-    active: Option<String>,
+    active: Vec<String>,
     searched: Vec<String>,
     vocabulary: Resource<Vec<lj_dtos::PlaceNode>>,
     picked: Vec<String>,
@@ -686,7 +694,7 @@ fn jurisdiction_block(
     let query_map = use_query_map();
     let nav = Nav::new();
     let stale = stale_counts();
-    let auto = active.is_none();
+    let auto = active.is_empty();
     let auto_row = view! {
         <button
             type="button"
@@ -702,8 +710,13 @@ fn jurisdiction_block(
     let rows = choices
         .into_iter()
         .map(|c| {
-            let is_active = active.as_deref() == Some(c.value.as_str());
+            let is_active = active.contains(&c.value);
             let echoed = auto && searched.contains(&c.value);
+            let row_class = match tree_depth(&c) {
+                0 => RAIL_ROW.to_string(),
+                1 => format!("{RAIL_ROW} pl-4"),
+                _ => format!("{RAIL_ROW} pl-8"),
+            };
             let count = c.count;
             let counted = count > 0;
             let label_class = match (is_active, echoed) {
@@ -715,11 +728,11 @@ fn jurisdiction_block(
             view! {
                 <button
                     type="button"
-                    class=RAIL_ROW
+                    class=row_class
                     title=c.label.clone()
                     on:click=move |_| {
                         let next = if is_active {
-                            query_state::with_param(&query_map.get_untracked(), "jurisdiction", None, true)
+                            query_state::toggle_multi(&query_map.get_untracked(), "jurisdiction", &value)
                         } else {
                             query_state::with_param(
                                 &query_map.get_untracked(),
@@ -816,10 +829,57 @@ fn rail_facet_block(
     .into_any()
 }
 
+/// The orders, each followed by the types the hits sit on under it, depth first.
+fn jurisdiction_tree(facets: &ArticleSearchFacets) -> Vec<FacetChoice> {
+    fn under(out: &mut Vec<FacetChoice>, paths: &[FacetChoice], parent: &str) {
+        for child in paths.iter().filter(|c| c.parent.as_deref() == Some(parent)) {
+            out.push(child.clone());
+            under(out, paths, &child.value);
+        }
+    }
+    let mut out = Vec::new();
+    for order in &facets.jurisdiction {
+        out.push(order.clone());
+        under(&mut out, &facets.path, &order.value);
+    }
+    out
+}
+
+/// The rail's share of the tree: every order and its first types, the active
+/// row kept wherever it sits. The bar's dropdown holds the whole tree.
+fn rail_tree(tree: Vec<FacetChoice>, active: &[String]) -> Vec<FacetChoice> {
+    let mut types_shown = 0;
+    tree.into_iter()
+        .filter(|c| {
+            let is_active = active.contains(&c.value);
+            match tree_depth(c) {
+                0 => {
+                    types_shown = 0;
+                    true
+                }
+                1 => {
+                    types_shown += 1;
+                    types_shown <= RAIL_ROWS || is_active
+                }
+                _ => is_active,
+            }
+        })
+        .collect()
+}
+
+/// A row's depth under its order, `FR.LOI.ORGANIQUE` 2; a row with no parent
+/// sits at 0, whatever dots its value carries.
+fn tree_depth(choice: &FacetChoice) -> usize {
+    match choice.parent {
+        Some(_) => choice.value.matches('.').count(),
+        None => 0,
+    }
+}
+
 /// Filter bar of the text search (the « Lois et règlements » template):
-/// `Droit ▾ · Nature ▾ · Source ▾`. Each facet takes one value: clicking a
-/// value sets it (`?<key>=<value>`), clicking it again removes it, and any
-/// change drops `page` (back to page 1).
+/// `Droit ▾ · Portée ▾ · Source ▾`, `Droit` an order or a type under it. Each
+/// facet takes one value: clicking a value sets it (`?<key>=<value>`), clicking
+/// it again removes it, and any change drops `page` (back to page 1).
 #[component]
 fn TextesFilterBar(
     #[prop(into)] facets: Signal<Option<ArticleSearchFacets>>,
@@ -837,29 +897,14 @@ fn TextesFilterBar(
             <FilterDropdown
                 id="jurisdiction"
                 label="Droit"
-                active_count=Signal::derive(move || {
-                    usize::from(state.get().jurisdiction.is_some())
-                })
+                active_count=Signal::derive(move || state.get().jurisdictions.len())
             >
                 <MonoFacetList
                     url_key="jurisdiction"
                     choices=Signal::derive(move || {
-                        facets.get().map(|f| f.jurisdiction).unwrap_or_default()
+                        facets.get().as_ref().map(jurisdiction_tree).unwrap_or_default()
                     })
-                    active=Signal::derive(move || state.get().jurisdiction)
-                />
-            </FilterDropdown>
-            <FilterDropdown
-                id="nature"
-                label="Nature"
-                active_count=Signal::derive(move || usize::from(state.get().nature.is_some()))
-            >
-                <MonoFacetList
-                    url_key="nature"
-                    choices=Signal::derive(move || {
-                        facets.get().map(|f| f.nature).unwrap_or_default()
-                    })
-                    active=Signal::derive(move || state.get().nature)
+                    active=Signal::derive(move || state.get().jurisdictions)
                 />
             </FilterDropdown>
             <FilterDropdown
@@ -872,7 +917,7 @@ fn TextesFilterBar(
                     choices=Signal::derive(move || {
                         facets.get().map(|f| f.scope).unwrap_or_default()
                     })
-                    active=Signal::derive(move || state.get().scope)
+                    active=Signal::derive(move || state.get().scope.into_iter().collect::<Vec<_>>())
                 />
             </FilterDropdown>
             <FilterDropdown
@@ -885,28 +930,28 @@ fn TextesFilterBar(
                     choices=Signal::derive(move || {
                         facets.get().map(|f| f.source).unwrap_or_default()
                     })
-                    active=Signal::derive(move || state.get().source)
+                    active=Signal::derive(move || state.get().source.into_iter().collect::<Vec<_>>())
                 />
             </FilterDropdown>
         </div>
     }
 }
 
-/// Liste mono-sélection d'un dropdown textes : lignes valeur/compte, la valeur
-/// active se retire au re-clic. Sélection orpheline (URL partagée, absente de la
-/// facette) affichée en tête, compteur 0.
+/// Liste d'un dropdown textes : lignes valeur/compte, un clic pose la valeur
+/// seule, la valeur active se retire au re-clic. Sélection orpheline (URL
+/// partagée, absente de la facette) affichée en tête, compteur 0.
 #[component]
 fn MonoFacetList(
     url_key: &'static str,
     #[prop(into)] choices: Signal<Vec<FacetChoice>>,
-    #[prop(into)] active: Signal<Option<String>>,
+    #[prop(into)] active: Signal<Vec<String>>,
 ) -> impl IntoView {
     let query_map = use_query_map();
     let nav = Nav::new();
     let stale = stale_counts();
     let select = move |value: String, is_active: bool| {
         let next = if is_active {
-            query_state::with_param(&query_map.get_untracked(), url_key, None, true)
+            query_state::toggle_multi(&query_map.get_untracked(), url_key, &value)
         } else {
             query_state::with_param(&query_map.get_untracked(), url_key, Some(&value), true)
         };
@@ -918,6 +963,7 @@ fn MonoFacetList(
         let choices = choices.get();
         let mut out: Vec<FacetChoice> = active
             .get()
+            .into_iter()
             .filter(|a| !choices.iter().any(|c| &c.value == a))
             .map(|a| FacetChoice {
                 label: a.clone(),
@@ -926,7 +972,6 @@ fn MonoFacetList(
                 parent: None,
                 hint: None,
             })
-            .into_iter()
             .collect();
         out.extend(choices);
         out
@@ -953,11 +998,16 @@ fn MonoFacetList(
                     let row_count =
                         Signal::derive(move || row.get().map(|x| x.count).unwrap_or(0));
                     let sel_value = c.value.clone();
-                    let is_active =
-                        Signal::derive(move || active.get().as_deref() == Some(sel_value.as_str()));
+                    let is_active = Signal::derive(move || active.get().contains(&sel_value));
+                    let indent = match tree_depth(&c) {
+                        0 => "pl-2",
+                        1 => "pl-6",
+                        _ => "pl-10",
+                    };
                     let row_class = move || {
                         crate::helpers::cn([
-                            "flex w-full items-center gap-2.5 rounded px-2 py-1 text-left text-sm transition-colors",
+                            "flex w-full items-center gap-2.5 rounded pr-2 py-1 text-left text-sm transition-colors",
+                            indent,
                             if is_active.get() {
                                 "bg-[var(--color-bordeaux-soft)] text-[var(--color-accent)]"
                             } else {
@@ -986,7 +1036,7 @@ fn MonoFacetList(
     }
 }
 
-/// Chips des filtres textes actifs (une par clé mono-valeur) + « Tout effacer ».
+/// The chips of the active norms filters, one per key with the date bounds together, and the clear-all button.
 #[component]
 fn TextesActiveChips(
     #[prop(into)] facets: Signal<Option<ArticleSearchFacets>>,
@@ -1012,13 +1062,18 @@ fn TextesActiveChips(
             let label = format!("Dans\u{00A0}: {}", humanize_slug(&v));
             out.push(("code", v, label));
         }
-        if let Some(v) = state.jurisdiction {
-            let label = resolve(facets.as_ref().map(|f| f.jurisdiction.as_slice()), &v);
-            out.push(("jurisdiction", v, label));
-        }
-        if let Some(v) = state.nature {
-            let label = resolve(facets.as_ref().map(|f| f.nature.as_slice()), &v);
-            out.push(("nature", v, label));
+        if !state.jurisdictions.is_empty() {
+            let tree = facets.as_ref().map(jurisdiction_tree);
+            let labels: Vec<String> = state
+                .jurisdictions
+                .iter()
+                .map(|v| resolve(tree.as_deref(), v))
+                .collect();
+            out.push((
+                "jurisdiction",
+                state.jurisdictions.join(","),
+                labels.join(", "),
+            ));
         }
         if let Some(v) = state.source {
             let label = resolve(facets.as_ref().map(|f| f.source.as_slice()), &v);
@@ -1027,6 +1082,16 @@ fn TextesActiveChips(
         if let Some(v) = state.scope {
             let label = resolve(facets.as_ref().map(|f| f.scope.as_slice()), &v);
             out.push(("scope", v, label));
+        }
+        let day = |iso: &str| date_fr(iso).unwrap_or_else(|| iso.to_string());
+        let dates = match (state.valid_from.as_deref(), state.as_of.as_deref()) {
+            (Some(from), Some(at)) => Some(format!("Du {} au {}", day(from), day(at))),
+            (Some(from), None) => Some(format!("Depuis le {}", day(from))),
+            (None, Some(at)) => Some(format!("En vigueur au {}", day(at))),
+            (None, None) => None,
+        };
+        if let Some(label) = dates {
+            out.push(("dates", String::new(), label));
         }
         out
     });
@@ -1041,13 +1106,12 @@ fn TextesActiveChips(
                         format!("{key}:{value}:{label}")
                     }
                     children=move |(key, _value, label): (&'static str, String, String)| {
+                        let keys: Vec<&'static str> = match key {
+                            "dates" => vec!["valid_from", "as_of", "page"],
+                            _ => vec![key, "page"],
+                        };
                         let on_remove = move |_| {
-                            nav.go(query_state::with_param(
-                                &query_map.get_untracked(),
-                                key,
-                                None,
-                                true,
-                            ));
+                            nav.go(query_state::without_keys(&query_map.get_untracked(), &keys));
                         };
                         view! {
                             <span class="inline-flex h-7 items-center gap-1.5 rounded-full border border-[var(--color-rule)] bg-[var(--color-bordeaux-soft)] pl-3 pr-1.5 text-xs text-[var(--color-accent)]">
@@ -1102,7 +1166,10 @@ fn TextResults(
         return view! {
             <div class="border-t border-[var(--color-rule)] py-16">
                 <p class="text-[var(--color-ink-muted)]">
-                    {format!("Aucun article pour « {query} ».")}
+                    {match query.is_empty() {
+                        true => "Aucun texte pour ces filtres.".to_string(),
+                        false => format!("Aucun article pour « {query} »."),
+                    }}
                 </p>
             </div>
         }
@@ -1130,46 +1197,7 @@ fn TextHit(hit: ArticleSearchHit, index: usize, page: u32, place: String) -> imp
     };
     let position = (page as usize - 1) * SEARCH_PAGE_SIZE as usize + index + 1;
     let numeral = format!("{position:02}");
-    // Fil d'ariane LEGI compacté aux deux derniers échelons : ils situent
-    // l'article, le chemin complet (Partie > Livre > Titre > …) noie le hit.
-    let crumb = hit.titre_path.filter(|t| !t.trim().is_empty()).map(|t| {
-        let segs: Vec<&str> = t
-            .split('>')
-            .map(str::trim)
-            .filter(|s| !s.is_empty())
-            .collect();
-        segs[segs.len().saturating_sub(2)..].join(" › ")
-    });
-    // Badge d'état : « JO du <date> » pour une publication (`source = "jorf"`,
-    // jamais d'état DILA), libellé d'état pour une version quand il porte un
-    // signal — `VIGUEUR` est l'état par défaut du droit servi dans la fenêtre.
-    let badge = if hit.source == "jorf" {
-        hit.date_debut
-            .as_deref()
-            .and_then(super::annonce_results::date_fr)
-            .map(|d| format!("JO du {d}"))
-    } else {
-        hit.status
-            .as_deref()
-            .filter(|s| *s != "VIGUEUR")
-            .and_then(lj_dtos::article_status_label)
-            .map(str::to_string)
-    };
-    let meta_line = (badge.is_some() || crumb.is_some()).then(|| {
-        view! {
-            <p class="flex min-w-0 items-baseline gap-2 text-xs text-[var(--color-ink-subtle)]">
-                {badge
-                    .map(|b| {
-                        view! {
-                            <span class="shrink-0 rounded border border-[var(--color-rule)] px-1.5 py-0.5">
-                                {b}
-                            </span>
-                        }
-                    })}
-                {crumb.map(|c| view! { <span class="truncate">{c}</span> })}
-            </p>
-        }
-    });
+    let meta_line = article_meta_line(&hit);
     view! {
         <li class="group grid grid-cols-[auto_1fr] gap-x-6 border-t border-[var(--color-rule)] py-7">
             <span aria-hidden="true" class="hit-numeral pt-0.5">
@@ -1196,6 +1224,53 @@ fn TextHit(hit: ArticleSearchHit, index: usize, page: u32, place: String) -> imp
             </A>
         </li>
     }
+}
+
+pub(super) fn article_meta_line(hit: &ArticleSearchHit) -> Option<impl IntoView> {
+    // Fil d'ariane LEGI compacté aux deux derniers échelons : ils situent
+    // l'article, le chemin complet (Partie > Livre > Titre > …) noie le hit.
+    let crumb = hit
+        .titre_path
+        .as_deref()
+        .filter(|t| !t.trim().is_empty())
+        .map(|t| {
+            let segs: Vec<&str> = t
+                .split('>')
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .collect();
+            segs[segs.len().saturating_sub(2)..].join(" › ")
+        });
+    // Badge d'état : « JO du <date> » pour une publication (`source = "jorf"`,
+    // jamais d'état DILA), libellé d'état pour une version quand il porte un
+    // signal — `VIGUEUR` est l'état par défaut du droit servi dans la fenêtre.
+    let badge = if hit.source == "jorf" {
+        hit.date_debut
+            .as_deref()
+            .and_then(super::annonce_results::date_fr)
+            .map(|d| format!("JO du {d}"))
+    } else {
+        hit.status
+            .as_deref()
+            .filter(|s| *s != "VIGUEUR")
+            .and_then(lj_dtos::article_status_label)
+            .map(str::to_string)
+    };
+    (badge.is_some() || crumb.is_some()).then(|| {
+        view! {
+            <p class="flex min-w-0 items-baseline gap-2 text-xs text-[var(--color-ink-subtle)]">
+                {badge
+                    .map(|b| {
+                        view! {
+                            <span class="shrink-0 rounded border border-[var(--color-rule)] px-1.5 py-0.5">
+                                {b}
+                            </span>
+                        }
+                    })}
+                {crumb.map(|c| view! { <span class="truncate">{c}</span> })}
+            </p>
+        }
+    })
 }
 
 /// Pagination du corpus articles : fenêtre `[1] … [current±2] … [total]`, chaque
@@ -1371,7 +1446,7 @@ mod tests {
         assert_eq!(base.count_key(), page4.count_key());
 
         let filtre = TextesQuery {
-            nature: Some("CODE".to_string()),
+            jurisdictions: vec!["FR.CODE".to_string()],
             ..base.clone()
         };
         assert_ne!(base.count_key(), filtre.count_key());
