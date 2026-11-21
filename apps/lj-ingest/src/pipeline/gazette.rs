@@ -25,6 +25,8 @@ const READ_IDS: usize = 50_000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum GazetteMode {
     Import,
+    /// Imports, and writes again each unchanged container whose notice count is no longer the one stored.
+    Recount,
     DryRun,
     Verify,
     Reclass,
@@ -47,7 +49,7 @@ struct Item {
 fn item(source: Source, mode: GazetteMode, c: Container) -> Result<Item, String> {
     let parsed = rows::parse_container(source, c.origin, &c.docs).map_err(|e| e.to_string())?;
     Ok(match mode {
-        GazetteMode::Import | GazetteMode::Reclass => Item {
+        GazetteMode::Import | GazetteMode::Recount | GazetteMode::Reclass => Item {
             parsed,
             raw: None,
             inspection: None,
@@ -72,7 +74,7 @@ fn item(source: Source, mode: GazetteMode, c: Container) -> Result<Item, String>
 struct Producer {
     source: Source,
     mode: GazetteMode,
-    known: HashMap<String, i64>,
+    known: HashMap<String, (i64, i32)>,
     pending: Vec<Container>,
     bytes: usize,
     unchanged: usize,
@@ -81,8 +83,34 @@ struct Producer {
 }
 
 impl Producer {
+    fn counted(&self, parsed: &Parsed) -> bool {
+        let notices: usize = parsed.docs.iter().map(Doc::notices).sum();
+        self.known
+            .get(&parsed.origin)
+            .is_some_and(|&(checksum, n)| checksum == parsed.checksum && n as usize == notices)
+    }
+
+    fn redelivered(&self, parsed: &Parsed) {
+        if self
+            .known
+            .get(&parsed.origin)
+            .is_some_and(|&(checksum, _)| checksum != parsed.checksum)
+        {
+            let mut parutions: Vec<u32> = parsed.docs.iter().map(Doc::parution).collect();
+            parutions.dedup();
+            warn!(
+                source = self.source.slug(),
+                file = %parsed.origin,
+                ?parutions,
+                "gazette container re-delivered with another checksum"
+            );
+        }
+    }
+
     fn push(&mut self, c: Container) -> Result<()> {
-        if self.known.get(&c.origin) == Some(&rows::checksum(&c.docs)) {
+        if self.mode != GazetteMode::Recount
+            && self.known.get(&c.origin).map(|k| k.0) == Some(rows::checksum(&c.docs))
+        {
             self.unchanged += 1;
             return Ok(());
         }
@@ -105,7 +133,13 @@ impl Producer {
         let mut batch = Vec::with_capacity(results.len());
         for r in results {
             match r {
-                Ok(i) => batch.push(i),
+                Ok(i) if mode == GazetteMode::Recount && self.counted(&i.parsed) => {
+                    self.unchanged += 1
+                }
+                Ok(i) => {
+                    self.redelivered(&i.parsed);
+                    batch.push(i)
+                }
                 Err(e) if mode == GazetteMode::DryRun => {
                     warn!(error = %e, "gazette container unreadable");
                     self.unreadable.push(e);
@@ -127,7 +161,7 @@ fn produce(
     dir: PathBuf,
     scope: Scope,
     mode: GazetteMode,
-    known: HashMap<String, i64>,
+    known: HashMap<String, (i64, i32)>,
 ) -> (Produced, mpsc::Receiver<Vec<Item>>) {
     let (tx, rx) = mpsc::channel(2);
     let handle = std::thread::spawn(move || {
@@ -174,7 +208,7 @@ pub async fn gazette(source: Source, stock: bool, offline: bool, mode: GazetteMo
     }
     match mode {
         GazetteMode::DryRun => dry_run(source, dir, scope).await,
-        GazetteMode::Import | GazetteMode::Verify | GazetteMode::Reclass => {
+        GazetteMode::Import | GazetteMode::Recount | GazetteMode::Verify | GazetteMode::Reclass => {
             let pool = lj_pg::db::build_pool(&settings.db_url, 1)
                 .map_err(|e| anyhow!("build_pool: {e}"))?;
             let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
@@ -193,7 +227,9 @@ pub async fn gazette(source: Source, stock: bool, offline: bool, mode: GazetteMo
                 codes.load(kind, code, value)?;
             }
             match mode {
-                GazetteMode::Import => import(&repo, codes, source, dir, scope).await,
+                GazetteMode::Import | GazetteMode::Recount => {
+                    import(&repo, codes, source, dir, scope, mode).await
+                }
                 GazetteMode::Verify => verify(&repo, codes, source, dir, scope).await,
                 _ => reclass(&repo, source, dir, scope).await,
             }
@@ -207,12 +243,13 @@ async fn import(
     source: Source,
     dir: PathBuf,
     scope: Scope,
+    mode: GazetteMode,
 ) -> Result<()> {
     if !repo.gazette_lock().await? {
         bail!("another gazette import holds the lock");
     }
     let known = repo.gazette_files(source).await?;
-    let (handle, mut rx) = produce(source, dir, scope, GazetteMode::Import, known);
+    let (handle, mut rx) = produce(source, dir, scope, mode, known);
     let started = Instant::now();
     let (mut containers, mut notices, mut officers, mut addresses, mut repeated) =
         (0usize, 0usize, 0usize, 0usize, 0usize);

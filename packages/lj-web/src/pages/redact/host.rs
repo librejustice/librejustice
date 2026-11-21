@@ -11,6 +11,8 @@ use wasm_bindgen::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen_futures::JsFuture;
 
+use super::fault::Fault;
+
 const PROTOCOL: &str = "2026-01-26";
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
@@ -82,18 +84,20 @@ fn parent() -> Option<web_sys::Window> {
     window().parent().ok().flatten()
 }
 
-fn reason(error: JsValue) -> String {
+/// A host's error that says nothing comes back as null.
+fn reason(error: JsValue) -> Fault {
+    if error.is_null() {
+        return Fault::HostRefused;
+    }
     js_sys::Reflect::get(&error, &JsValue::from_str("message"))
         .ok()
         .and_then(|message| message.as_string())
         .or_else(|| error.as_string())
-        .unwrap_or_else(|| "l'hôte n'a pas répondu".to_string())
+        .map_or(Fault::HostSilent, Fault::Said)
 }
 
-fn to_js(value: &Value) -> Result<JsValue, String> {
-    value
-        .serialize(&serde_wasm_bindgen::Serializer::json_compatible())
-        .map_err(|error| error.to_string())
+fn to_js(value: &Value) -> Result<JsValue, serde_wasm_bindgen::Error> {
+    value.serialize(&serde_wasm_bindgen::Serializer::json_compatible())
 }
 
 fn post(message: &Value) {
@@ -106,14 +110,14 @@ fn notify(method: &str, params: Value) {
     post(&json!({"jsonrpc": "2.0", "method": method, "params": params}));
 }
 
-async fn request(method: &str, params: Value) -> Result<Value, String> {
+async fn request(method: &str, params: Value) -> Result<Value, Fault> {
     let id = NEXT.with(|next| next.replace(next.get() + 1));
     let answer = js_sys::Promise::new(&mut |resolve, reject| {
         PENDING.with(|pending| pending.borrow_mut().insert(id, (resolve, reject)));
     });
     post(&json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
     let result = JsFuture::from(answer).await.map_err(reason)?;
-    serde_wasm_bindgen::from_value(result).map_err(|error| error.to_string())
+    serde_wasm_bindgen::from_value(result).map_err(Fault::said)
 }
 
 fn settle(id: u64, message: &Value) {
@@ -123,13 +127,14 @@ fn settle(id: u64, message: &Value) {
     let outcome = match message.get("error") {
         Some(error) => Err(error["message"]
             .as_str()
-            .unwrap_or("refusé par l'hôte")
-            .to_string()),
-        None => to_js(&message["result"]),
+            .map_or(JsValue::NULL, |why| js_sys::Error::new(why).into())),
+        None => {
+            to_js(&message["result"]).map_err(|error| js_sys::Error::new(&error.to_string()).into())
+        }
     };
     let _ = match outcome {
         Ok(result) => resolve.call1(&JsValue::NULL, &result),
-        Err(why) => reject.call1(&JsValue::NULL, &js_sys::Error::new(&why)),
+        Err(why) => reject.call1(&JsValue::NULL, &why),
     };
 }
 
@@ -174,7 +179,9 @@ impl Host {
                     host.absorb(context);
                     notify("ui/notifications/initialized", json!({}));
                 }
-                Err(why) => leptos::logging::warn!("the host did not answer ui/initialize: {why}"),
+                Err(why) => {
+                    leptos::logging::warn!("the host did not answer ui/initialize: {why:?}")
+                }
             }
         });
         host
@@ -240,7 +247,7 @@ impl Host {
                         self.mode.set(mode);
                     }
                 }
-                Err(why) => leptos::logging::warn!("display mode refused: {why}"),
+                Err(why) => leptos::logging::warn!("display mode refused: {why:?}"),
             }
         });
     }
@@ -248,7 +255,7 @@ impl Host {
     pub fn open_link(self, url: String) {
         leptos::task::spawn_local(async move {
             if let Err(why) = request("ui/open-link", json!({"url": url})).await {
-                leptos::logging::warn!("link refused: {why}");
+                leptos::logging::warn!("link refused: {why:?}");
             }
         });
     }
@@ -258,7 +265,7 @@ impl Host {
     }
 
     /// `None` when the user declines the host's confirmation.
-    pub async fn download(self, name: &str, bytes: &[u8]) -> Result<Option<Saved>, String> {
+    pub async fn download(self, name: &str, bytes: &[u8]) -> Result<Option<Saved>, Fault> {
         if let Some(store) = file_store() {
             let (id, _) = uploaded(&store, name, bytes).await?;
             let asked = js_sys::Object::new();
@@ -267,7 +274,7 @@ impl Host {
             let url = js_sys::Reflect::get(&answer, &"downloadUrl".into())
                 .ok()
                 .and_then(|url| url.as_string())
-                .ok_or("l'hôte n'a pas donné d'adresse au fichier")?;
+                .ok_or(Fault::HostGaveNoAddress)?;
             let answer = request("ui/open-link", json!({"url": url})).await?;
             return Ok((!declined(&answer)).then_some(Saved::Opened));
         }
@@ -290,18 +297,22 @@ impl Host {
     }
 
     /// Only a tool result the model requests puts a file in the conversation.
-    pub async fn attach(self, name: &str, bytes: &[u8]) -> Result<(), String> {
-        let store = file_store().ok_or("l'hôte ne garde pas de fichier")?;
+    pub async fn attach(
+        self,
+        name: &str,
+        bytes: &[u8],
+        prompt: fn(&str, &str) -> String,
+    ) -> Result<(), Fault> {
+        let store = file_store().ok_or(Fault::HostKeepsNoFile)?;
         let (id, name) = uploaded(&store, name, bytes).await?;
-        let text =
-            format!("Ajoute à la conversation le document anonymisé « {name} » (fichier {id}).");
+        let text = prompt(&name, &id);
         let answer = request(
             "ui/message",
             json!({"role": "user", "content": [{"type": "text", "text": text}]}),
         )
         .await?;
         match declined(&answer) {
-            true => Err("l'hôte n'a pas envoyé le message".to_string()),
+            true => Err(Fault::MessageNotSent),
             false => Ok(()),
         }
     }
@@ -338,11 +349,11 @@ fn file_store() -> Option<JsValue> {
         .map(|_| store)
 }
 
-async fn call(store: &JsValue, method: &str, argument: &JsValue) -> Result<JsValue, String> {
+async fn call(store: &JsValue, method: &str, argument: &JsValue) -> Result<JsValue, Fault> {
     let function: js_sys::Function = js_sys::Reflect::get(store, &method.into())
         .map_err(reason)?
         .dyn_into()
-        .map_err(|_| format!("{method} manque à l'hôte"))?;
+        .map_err(|_| Fault::HostLacks(method.to_string()))?;
     let answer = function.call1(store, argument).map_err(reason)?;
     JsFuture::from(js_sys::Promise::resolve(&answer))
         .await
@@ -350,7 +361,7 @@ async fn call(store: &JsValue, method: &str, argument: &JsValue) -> Result<JsVal
 }
 
 /// The stored file's id and the name it was stored under.
-async fn uploaded(store: &JsValue, name: &str, bytes: &[u8]) -> Result<(String, String), String> {
+async fn uploaded(store: &JsValue, name: &str, bytes: &[u8]) -> Result<(String, String), Fault> {
     let known = UPLOADED.with(|slot| {
         slot.borrow()
             .as_ref()
@@ -370,7 +381,7 @@ async fn uploaded(store: &JsValue, name: &str, bytes: &[u8]) -> Result<(String, 
     let id = js_sys::Reflect::get(&answer, &"fileId".into())
         .ok()
         .and_then(|id| id.as_string())
-        .ok_or("l'hôte n'a pas gardé le fichier")?;
+        .ok_or(Fault::HostKeptNoFile)?;
     UPLOADED.with(|slot| {
         *slot.borrow_mut() = Some(Upload {
             bytes: bytes.to_vec(),
@@ -397,7 +408,7 @@ fn versioned(name: &str) -> String {
     }
 }
 
-fn base64(bytes: &[u8]) -> Result<String, String> {
+fn base64(bytes: &[u8]) -> Result<String, Fault> {
     let binary: String = bytes.iter().map(|&byte| char::from(byte)).collect();
     window().btoa(&binary).map_err(reason)
 }

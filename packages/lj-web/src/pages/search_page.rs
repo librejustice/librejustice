@@ -30,12 +30,12 @@ use crate::components::search::compact_search::search_state::{key_from_map, Sear
 use crate::components::search::compact_search::DraftQuery;
 use crate::components::search::view_prefs::CardView;
 use crate::components::search::{
-    answered, corpus_stats, effective_card_view, is_stale, ActiveFilterChips, CompactSearch,
-    DecisionsFilterBar, ModeSelect, Pagination, ResultEmpty, ResultError, ResultList,
-    ResultSkeleton, SearchRail, SortSelect, StaleCounts, SyntaxHint, TextesCorpusTeaser,
-    TextesTeaser, ViewControls, DECISION_MODES,
+    answered, corpus_stats, decision_modes, effective_card_view, is_stale, ActiveFilterChips,
+    CompactSearch, DecisionsFilterBar, ModeSelect, Pagination, ResultEmpty, ResultError,
+    ResultList, ResultSkeleton, SearchRail, SortSelect, StaleCounts, SyntaxHint,
+    TextesCorpusTeaser, TextesTeaser, ViewControls,
 };
-use crate::helpers::{format_results_count, total_pages, SEARCH_PAGE_SIZE};
+use crate::helpers::{total_pages, SEARCH_PAGE_SIZE};
 
 /// `/decision-search` est **rendue côté client** : route non indexée, la plus coûteuse
 /// en SSR (elle rend CompactSearch + cartes + facettes côté serveur) et la seule
@@ -46,6 +46,7 @@ use crate::helpers::{format_results_count, total_pages, SEARCH_PAGE_SIZE};
 #[component]
 pub fn SearchPage() -> impl IntoView {
     crate::pages::cache_public_5_min();
+    let ui = &crate::i18n::use_ui().search;
     let query_map = use_query_map();
     // `leptos_meta` réévalue cette clôture après le démontage de la route, quand
     // `query_map` est déjà libéré : `try_get` au lieu de `get`.
@@ -56,7 +57,7 @@ pub fn SearchPage() -> impl IntoView {
             .unwrap_or_default();
         let q = q.trim();
         if q.is_empty() {
-            "Décisions - LibreJustice".to_string()
+            ui.decisions_title.to_string()
         } else {
             format!("{q} - LibreJustice")
         }
@@ -78,7 +79,7 @@ pub fn SearchPage() -> impl IntoView {
 fn SearchPageSkeleton() -> impl IntoView {
     view! {
         <div class=SHELL>
-            <h1 class="sr-only">"Recherche"</h1>
+            <h1 class="sr-only">{crate::i18n::use_ui().search.page_title}</h1>
             <div class=GRID_3COL>
                 <div class="hidden lg:block"></div>
                 <div class=CONTENT_COL>
@@ -101,7 +102,7 @@ fn SearchPageBody() -> impl IntoView {
 
     view! {
         <div class=SHELL>
-            <h1 class="sr-only">"Recherche"</h1>
+            <h1 class="sr-only">{crate::i18n::use_ui().search.page_title}</h1>
             <DecisionsView />
         </div>
     }
@@ -123,13 +124,16 @@ fn DecisionsView() -> impl IntoView {
             .map(|s| s.trim().to_string())
             .unwrap_or_default()
     });
-    let key = Signal::derive(move || key_from_map(&query_map.get()));
+    let scope = crate::jurisdiction::use_reader_scope();
+    let lang = crate::i18n::use_reader_lang().get();
+    let key = Signal::derive(move || key_from_map(&query_map.get(), scope.code(), lang.code()));
     let resource = search_resource(key);
     // Facettes et volumétrie remontées de la réponse par `Effect` : ne jamais lire
     // la `Resource` dans le rendu du rail ou de la barre. Mises à jour sur réponse
     // Ok SEULEMENT — pendant un refetch, rail et barre gardent les valeurs
     // précédentes, interactives.
     let facets = RwSignal::new(None::<lj_dtos::SearchFacets>);
+    let lang = crate::i18n::use_reader_lang().get();
     let volume = RwSignal::new(None::<Volume>);
     // Décompte et facettes arrivent par leur propre appel, sauf en parcours où la
     // réponse de liste les porte : deux sources, un seul jeu de signaux.
@@ -152,7 +156,7 @@ fn DecisionsView() -> impl IntoView {
                 total.set(Some(compte));
             }
             if let Some(f) = resp.facets {
-                facets.set(Some(f));
+                facets.set(Some(crate::i18n::relabel_facets(lang, f)));
                 counted.set(Some(key.get_untracked().count_key()));
             }
         }
@@ -161,7 +165,7 @@ fn DecisionsView() -> impl IntoView {
     Effect::new(move |_| {
         if let Some(Ok(compte)) = compte.get() {
             total.set(Some(compte.total));
-            facets.set(Some(compte.facets));
+            facets.set(Some(crate::i18n::relabel_facets(lang, compte.facets)));
             counted.set(Some(key.get_untracked().count_key()));
         }
     });
@@ -201,7 +205,7 @@ fn DecisionsView() -> impl IntoView {
 
     view! {
         <div class=GRID_3COL>
-            <aside aria-label="Synthèse des résultats" class=SIDE_RAIL>
+            <aside aria-label=crate::i18n::use_ui().search.results_summary class=SIDE_RAIL>
                 <SearchRail facets=facets loading=rail_loading />
             </aside>
             <div class=CONTENT_COL>
@@ -237,7 +241,7 @@ fn DecisionsView() -> impl IntoView {
                             on_rerank=set_ai_mode
                             reranked=reranked
                         >
-                            <ModeSelect resolved=mode modes=DECISION_MODES />
+                            <ModeSelect resolved=mode modes=decision_modes(&crate::i18n::use_ui().search) />
                             <div class="ml-auto">
                                 <SortSelect />
                             </div>
@@ -256,7 +260,7 @@ fn DecisionsView() -> impl IntoView {
             // vers le moteur textes (la même requête posée à l'autre moteur). Sans
             // question à poser, le pont montre le fonds normatif. Sous lg la
             // colonne disparaît.
-            <aside aria-label="Voir aussi" class=SIDE_RAIL>
+            <aside aria-label=crate::i18n::use_ui().search.see_also class=SIDE_RAIL>
                 <div class="flex flex-col gap-4">
                     <SearchSummary
                         query=query
@@ -264,7 +268,11 @@ fn DecisionsView() -> impl IntoView {
                         total=shown_total
                         loading=show_skeleton
                     />
-                    <ModeSelect resolved=mode modes=DECISION_MODES class="w-full" />
+                    <ModeSelect
+                        resolved=mode
+                        modes=decision_modes(&crate::i18n::use_ui().search)
+                        class="w-full"
+                    />
                     <ViewControls
                         query=query
                         mode=dernier_mode
@@ -299,6 +307,7 @@ fn SearchSummary(
     #[prop(into)] total: Signal<Option<i64>>,
     #[prop(into)] loading: Signal<bool>,
 ) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
     move || {
         if loading.get() {
             return waiting_summary(query.get()).into_any();
@@ -309,7 +318,7 @@ fn SearchSummary(
         let compte = move || match total.get() {
             Some(total) => view! {
                 <h2 class="font-sans text-xl text-[var(--color-ink)]">
-                    {format_results_count(total)}
+                    {(numbers.results)(total)}
                 </h2>
             }
             .into_any(),
@@ -326,7 +335,7 @@ fn CountPlaceholder() -> impl IntoView {
     view! {
         <div
             class="h-7 w-32 animate-pulse rounded bg-[var(--color-rule)]/40"
-            aria-label="Décompte en cours"
+            aria-label=crate::i18n::use_ui().search.counting
         ></div>
     }
 }
@@ -341,10 +350,11 @@ struct Volume {
 }
 
 fn waiting_summary(query: String) -> AnyView {
+    let ui = &crate::i18n::use_ui().search;
     let label = if query.is_empty() {
-        "Chargement du fonds…"
+        ui.loading_corpus
     } else {
-        "Recherche en cours…"
+        ui.searching
     };
     view! { <h2 class="font-sans text-xl text-[var(--color-ink-subtle)]">{label}</h2> }.into_any()
 }
@@ -357,10 +367,11 @@ fn MobileSummary(
     #[prop(into)] total: Signal<Option<i64>>,
     #[prop(into)] loading: Signal<bool>,
 ) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
     move || {
         if loading.get() {
             return view! {
-                <p class="text-sm text-[var(--color-ink-subtle)]">"Recherche en cours…"</p>
+                <p class="text-sm text-[var(--color-ink-subtle)]">{crate::i18n::use_ui().search.searching}</p>
             }
             .into_any();
         }
@@ -375,7 +386,7 @@ fn MobileSummary(
                         .map(|total| {
                             view! {
                                 <span class="font-medium text-[var(--color-ink)]">
-                                    {format_results_count(total)}
+                                    {(numbers.results)(total)}
                                 </span>
                             }
                         })
@@ -408,7 +419,7 @@ fn SearchResults(
         .unwrap_or_else(|| StoredValue::new(std::collections::HashSet::<SearchKey>::new()));
 
     view! {
-        <section aria-label="Résultats de recherche" class="min-w-0">
+        <section aria-label=crate::i18n::use_ui().search.search_results class="min-w-0">
             <Show
                 when=move || show_skeleton.get()
                 fallback=move || {
@@ -579,9 +590,10 @@ fn PinnedCard(pinned: Vec<PinnedDecision>, more: bool) -> impl IntoView {
     if pinned.is_empty() {
         return ().into_any();
     }
+    let ui = &crate::i18n::use_ui().search;
     let label = match pinned.len() {
-        1 => "Cherchez-vous cette décision ?",
-        _ => "Cherchez-vous ces décisions ?",
+        1 => ui.looking_for_this_one,
+        _ => ui.looking_for_these,
     };
     view! {
         <section
@@ -607,11 +619,14 @@ fn PinnedCard(pinned: Vec<PinnedDecision>, more: bool) -> impl IntoView {
 fn PinnedRow(decision: PinnedDecision) -> impl IntoView {
     use crate::components::ui::{Badge, BadgeTone};
 
-    let seat = decision.seat.filter(|s| !s.trim().is_empty());
+    let seat = crate::i18n::use_ui()
+        .referential
+        .named_seat(decision.seat, decision.seat_parts.as_ref())
+        .filter(|s| !s.trim().is_empty());
     let solution = decision
         .solution
         .filter(|t| t.key != "AUTRE")
-        .map(|t| t.label);
+        .map(|t| crate::i18n::ReferentialUi::label(crate::i18n::use_ui().referential.solution, &t));
     let on_navigate = |ev: leptos::ev::MouseEvent| {
         carry_seed(
             &ev,
@@ -659,7 +674,7 @@ fn PinnedMore() -> impl IntoView {
             href=href
             attr:class="mt-3 inline-block text-xs text-[var(--color-ink-subtle)] underline decoration-dotted underline-offset-4 transition-colors hover:text-[var(--color-accent)]"
         >
-            "D'autres décisions répondent à cette référence"
+            {crate::i18n::use_ui().search.other_decisions_match}
         </A>
     }
 }

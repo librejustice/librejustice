@@ -1,5 +1,5 @@
 # ============================================================================
-# Contract tests: route groups `me` (profile, bookmarks) and `account`
+# Contract tests: route groups `me` (profile) and `account`
 # (résumé, display-name, password-link, unlink, email-change, delete). All
 # require auth (RequiredUser).
 #
@@ -50,16 +50,4 @@ HTTP 401
 POST {{base}}/internal/account/delete
 [Form]
 confirm: SUPPRIMER
-HTTP 401
-
-# ── GET /internal/me/bookmarks, unauth ──────────────────────────────────────
-GET {{base}}/internal/me/bookmarks
-HTTP 401
-
-# ── PUT /internal/me/bookmarks/{id}, unauth ─────────────────────────────────
-PUT {{base}}/internal/me/bookmarks/ABC123
-HTTP 401
-
-# ── DELETE /internal/me/bookmarks/{id}, unauth ──────────────────────────────
-DELETE {{base}}/internal/me/bookmarks/ABC123
 HTTP 401

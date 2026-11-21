@@ -419,6 +419,13 @@ impl Doc {
         }
     }
 
+    pub fn parution(&self) -> u32 {
+        match self {
+            Doc::Bodacc(f) => f.parution,
+            Doc::Joafe(d) => d.parution,
+        }
+    }
+
     pub fn records(&self) -> Vec<(i64, &Record)> {
         match self {
             Doc::Bodacc(f) => f.notices.iter().map(|n| (n.id, &n.record)).collect(),
@@ -456,8 +463,18 @@ pub fn checksum(docs: &[Vec<u8>]) -> i64 {
     h.digest() as i64
 }
 
+/// A document's element tree, from its XML or, since JOAFE parution 20260045, its JSON.
+pub fn root(raw: &[u8]) -> Result<crate::tree::Node, Error> {
+    let text = crate::tree::decode(raw)?;
+    if text.trim_start().starts_with('{') {
+        crate::json::parse(&text)
+    } else {
+        crate::tree::parse(&text)
+    }
+}
+
 pub fn parse_doc(source: Source, raw: &[u8]) -> Result<Doc, Error> {
-    let root = crate::tree::parse(&crate::tree::decode(raw)?)?;
+    let root = root(raw)?;
     Ok(match source {
         Source::Bodacc => Doc::Bodacc(bodacc::parse_file(root)?),
         Source::Joafe => Doc::Joafe(joafe::parse(root)?),
@@ -472,6 +489,9 @@ pub fn parse_container(source: Source, origin: String, docs: &[Vec<u8>]) -> Resu
             parse_doc(source, raw).map_err(|e| Error::new(format!("{origin} document {i}: {e}")))
         })
         .collect::<Result<Vec<_>, _>>()?;
+    if parsed.iter().all(|d| d.notices() == 0) {
+        return Err(Error::new(format!("{origin}: no notice")));
+    }
     Ok(Parsed {
         checksum: checksum(docs),
         origin,
@@ -609,8 +629,28 @@ impl Codes {
     }
 }
 
+/// What a stored code reads back to: the whole dictionary an import holds, or the few
+/// entries one notice names.
+pub trait Dictionary {
+    fn value(&self, kind: i16, code: i32) -> Result<&str, Error>;
+}
+
+impl Dictionary for Codes {
+    fn value(&self, kind: i16, code: i32) -> Result<&str, Error> {
+        Codes::value(self, kind, code)
+    }
+}
+
+impl Dictionary for HashMap<(i16, i32), String> {
+    fn value(&self, kind: i16, code: i32) -> Result<&str, Error> {
+        self.get(&(kind, code))
+            .map(String::as_str)
+            .ok_or_else(|| Error::new(format!("dictionary {kind}: code {code} not loaded")))
+    }
+}
+
 fn cell(
-    codes: &Codes,
+    codes: &impl Dictionary,
     codec: Codec,
     v: &Value,
     addresses: &HashMap<i32, Record>,
@@ -649,11 +689,29 @@ impl Layout {
             .collect()
     }
 
+    /// The `(kind, code)` of the dictionary entries a row names: its shape and its coded cells.
+    pub fn dictionary_codes(&self, row: &Row) -> Vec<(i16, i32)> {
+        let mut codes = Vec::new();
+        if let Value::Int(shape) = row[self.own - 1] {
+            codes.push((self.shape_kind, shape));
+        }
+        for (k, &col) in self.stored.iter().enumerate() {
+            if let Codec::Dict(kind) = self.spec.columns[col].codec {
+                match row[self.own + k] {
+                    Value::Small(c) => codes.push((kind, i32::from(c))),
+                    Value::Int(c) => codes.push((kind, c)),
+                    _ => {}
+                }
+            }
+        }
+        codes
+    }
+
     /// The row's id and the record it gives back.
     pub fn record(
         &self,
         row: &Row,
-        codes: &Codes,
+        codes: &impl Dictionary,
         addresses: &HashMap<i32, Record>,
     ) -> Result<(i64, Record), Error> {
         let id = match row.first() {

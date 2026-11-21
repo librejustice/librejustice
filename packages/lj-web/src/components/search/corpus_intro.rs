@@ -10,6 +10,7 @@ use lj_dtos::CorpusStatsResponse;
 
 use crate::api::ApiClient;
 use crate::helpers::group_thousands;
+use crate::jurisdiction::use_reader_scope;
 
 /// Compteurs corpus, chargés une fois par page (cache 12 h côté API). Erreur ⇒
 /// `None` : les blocs qui en dépendent disparaissent.
@@ -23,27 +24,29 @@ pub fn corpus_stats() -> Signal<Option<CorpusStatsResponse>> {
     data.into()
 }
 
-/// « Dans les textes » bridge of `/decision-search` without a query.
+/// « Dans les textes » bridge of the decision search without a query.
 #[component]
 pub fn TextesCorpusTeaser(
     #[prop(into)] stats: Signal<Option<CorpusStatsResponse>>,
 ) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
+    let scope = use_reader_scope();
+    let ui = &crate::i18n::use_ui().search;
     move || {
         stats.get().map(|s| {
             rail_block(
-                "Dans les textes",
+                ui.in_texts,
                 view! {
                     <p class="text-[13px] leading-snug text-[var(--color-ink-muted)]">
-                        {format!(
-                            "{} textes · {} articles en vigueur",
-                            group_thousands(s.texts_count),
-                            group_thousands(s.articles_count),
+                        {(ui.texts_stats)(
+                            &group_thousands(numbers, s.texts_count),
+                            &group_thousands(numbers, s.articles_count),
                         )}
                     </p>
                 }
                 .into_any(),
-                "/norm-search".to_string(),
-                "Rechercher dans les textes".to_string(),
+                scope.path("/norm-search"),
+                ui.search_texts.to_string(),
             )
         })
     }
@@ -54,21 +57,21 @@ pub fn TextesCorpusTeaser(
 pub fn DecisionsCorpusTeaser(
     #[prop(into)] stats: Signal<Option<CorpusStatsResponse>>,
 ) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
+    let scope = use_reader_scope();
+    let ui = &crate::i18n::use_ui().search;
     move || {
         stats.get().map(|s| {
             rail_block(
-                "Dans les décisions",
+                ui.in_decisions,
                 view! {
                     <p class="text-[13px] leading-snug text-[var(--color-ink-muted)]">
-                        {format!(
-                            "{} décisions, deux ordres de juridiction",
-                            group_thousands(s.decisions_count),
-                        )}
+                        {(ui.decisions_stats)(&group_thousands(numbers, s.decisions_count))}
                     </p>
                 }
                 .into_any(),
-                "/decision-search".to_string(),
-                "Rechercher dans les décisions".to_string(),
+                scope.path("/decision-search"),
+                ui.search_decisions.to_string(),
             )
         })
     }

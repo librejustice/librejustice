@@ -2,6 +2,8 @@
 
 use lj_dtos::{CitationSpan, DecisionDetail, UiAction};
 
+use crate::i18n::DecisionUi;
+
 /// Bloc de rendu : `id` (ancre DOM), `title` (libellé), `paragraphs`. Distinct du
 /// DTO `DecisionSection` (`kind`/`anchor`/`label`/`paragraphs`).
 ///
@@ -25,7 +27,7 @@ fn spans_at(spans: &[Vec<CitationSpan>], i: usize) -> Vec<CitationSpan> {
 /// - `detail.sections` non-vide ⇒ map `{id: anchor, title: label, paragraphs}` ;
 /// - sinon `detail.paragraphs` vide ⇒ `[]` ;
 /// - sinon un bloc unique « Texte intégral » (ancre `texte-integral`).
-pub fn resolve_decision_sections(detail: &DecisionDetail) -> Vec<RenderSection> {
+pub fn resolve_decision_sections(detail: &DecisionDetail, ui: &DecisionUi) -> Vec<RenderSection> {
     if let Some(sections) = detail.sections.as_ref().filter(|s| !s.is_empty()) {
         return sections
             .iter()
@@ -44,7 +46,7 @@ pub fn resolve_decision_sections(detail: &DecisionDetail) -> Vec<RenderSection> 
     }
     vec![RenderSection {
         id: "texte-integral".to_string(),
-        title: "Texte intégral".to_string(),
+        title: ui.full_text.to_string(),
         paragraphs: detail.paragraphs.clone(),
         paragraph_spans: (0..detail.paragraphs.len())
             .map(|i| spans_at(&detail.paragraph_spans, i))
@@ -78,7 +80,11 @@ fn toc_usage(kind: &str) -> UiAction {
 /// Sommaire de la décision : entrée `Synthèse` en tête, puis une entrée par
 /// `kind` canonique (première occurrence, ancrée sur `anchor`), avec repli sur
 /// les sections rendues quand l'API n'en fournit pas.
-pub fn toc_sections(detail: &DecisionDetail, body_sections: &[RenderSection]) -> Vec<TocEntry> {
+pub fn toc_sections(
+    detail: &DecisionDetail,
+    body_sections: &[RenderSection],
+    ui: &DecisionUi,
+) -> Vec<TocEntry> {
     let mut toc_body: Vec<TocEntry> = Vec::new();
     let mut seen_kinds: Vec<String> = Vec::new();
     for section in detail.sections.iter().flatten() {
@@ -94,7 +100,7 @@ pub fn toc_sections(detail: &DecisionDetail, body_sections: &[RenderSection]) ->
     }
     let mut out = vec![TocEntry {
         id: "synthese".to_string(),
-        title: "Synthèse".to_string(),
+        title: ui.summary.to_string(),
         usage: UiAction::DecisionTocSynthesis,
     }];
     if toc_body.is_empty() {

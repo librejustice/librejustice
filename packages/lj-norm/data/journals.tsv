@@ -1,23 +1,76 @@
-code	label	publisher	languages	defaults_from
-JORF	Journal officiel de la République française	Direction de l'information légale et administrative	fr	
-BOCC	Bulletin officiel des conventions collectives	Direction de l'information légale et administrative	fr	JORF
-BOFIP	Bulletin officiel des finances publiques	Direction générale des finances publiques	fr	JORF
-BO-MTE	Bulletin officiel du ministère de la Transition écologique	Ministère de la Transition écologique	fr	JORF
-BO-JUSTICE	Bulletin officiel du ministère de la Justice	Ministère de la Justice	fr	JORF
-BO-ARMEES	Bulletin officiel des armées	Ministère des Armées	fr	JORF
-BO-AGRI	Bulletin officiel du ministère de l'Agriculture	Ministère de l'Agriculture	fr	JORF
-BO-SOCIAL	Bulletins officiels des ministères sociaux	Ministères chargés de la santé et du travail	fr	JORF
-BO-DGAFP	Circulaires de la fonction publique	Direction générale de l'administration et de la fonction publique	fr	JORF
-BO-CULTURE	Bulletin officiel du ministère de la Culture	Ministère de la Culture	fr	JORF
-BO-EDUCATION	Bulletin officiel de l'éducation nationale	Ministère de l'Éducation nationale	fr	JORF
-BO-INTERIEUR	Bulletin officiel du ministère de l'Intérieur	Ministère de l'Intérieur	fr	JORF
-BO-ECONOMIE	Bulletin officiel de l'administration centrale des ministères économiques et financiers	Ministère de l'Économie et des Finances	fr	JORF
-JOUE	Journal officiel de l'Union européenne	Office des publications de l'Union européenne	bg,cs,da,de,el,en,es,et,fi,fr,ga,hr,hu,it,lt,lv,mt,nl,pl,pt,ro,sk,sl,sv	
-JONC	Journal officiel de la Nouvelle-Calédonie	Gouvernement de la Nouvelle-Calédonie	fr	
-JOPF	Journal officiel de la Polynésie française	Gouvernement de la Polynésie française	fr	
-JO-OHADA	Journal officiel de l'OHADA	Secrétariat permanent de l'OHADA	fr,en,es,pt	
-MB	Moniteur belge	Service public fédéral Justice	fr,nl,de	
-RO	Recueil officiel du droit fédéral	Chancellerie fédérale suisse	de,fr,it	
-JO-LU	Journal officiel du Grand-Duché de Luxembourg	Service central de législation	fr,de	
-JORADP	Journal officiel de la République algérienne démocratique et populaire	Secrétariat général du gouvernement	ar,fr	
-JORS	Journal officiel de la République du Sénégal	Secrétariat général du gouvernement	fr	
+code	label	publisher	languages	defaults_from	courts
+JORF	Journal officiel de la République française	Direction de l'information légale et administrative	fr		
+BOCC	Bulletin officiel des conventions collectives	Direction de l'information légale et administrative	fr	JORF	
+BOFIP	Bulletin officiel des finances publiques	Direction générale des finances publiques	fr	JORF	
+BO-MTE	Bulletin officiel du ministère de la Transition écologique	Ministère de la Transition écologique	fr	JORF	
+BO-JUSTICE	Bulletin officiel du ministère de la Justice	Ministère de la Justice	fr	JORF	
+BO-ARMEES	Bulletin officiel des armées	Ministère des Armées	fr	JORF	
+BO-AGRI	Bulletin officiel du ministère de l'Agriculture	Ministère de l'Agriculture	fr	JORF	
+BO-SOCIAL	Bulletins officiels des ministères sociaux	Ministères chargés de la santé et du travail	fr	JORF	
+BO-DGAFP	Circulaires de la fonction publique	Direction générale de l'administration et de la fonction publique	fr	JORF	
+BO-CULTURE	Bulletin officiel du ministère de la Culture	Ministère de la Culture	fr	JORF	
+BO-EDUCATION	Bulletin officiel de l'éducation nationale	Ministère de l'Éducation nationale	fr	JORF	
+BO-INTERIEUR	Bulletin officiel du ministère de l'Intérieur	Ministère de l'Intérieur	fr	JORF	
+BO-ECONOMIE	Bulletin officiel de l'administration centrale des ministères économiques et financiers	Ministère de l'Économie et des Finances	fr	JORF	
+BO-MEAE	Bulletin officiel du ministère de l'Europe et des Affaires étrangères	Ministère de l'Europe et des Affaires étrangères	fr	JORF	
+BO-ESR	Bulletin officiel de l'enseignement supérieur et de la recherche	Ministère de l'Enseignement supérieur et de la Recherche	fr	JORF	
+BO-SPORTS	Bulletin officiel jeunesse, sports et vie associative	Ministère des Sports	fr	JORF	
+BO-ACPR	Registre officiel de l'ACPR	Autorité de contrôle prudentiel et de résolution	fr	JORF	
+BO-DOUANE	Bulletin officiel des douanes	Direction générale des douanes et droits indirects	fr	JORF	
+RAA	Recueil des actes administratifs	Préfectures	fr		
+BODACC	Bulletin officiel des annonces civiles et commerciales	Direction de l'information légale et administrative	fr		
+JOAFE	Journal officiel des associations et fondations d'entreprise	Direction de l'information légale et administrative	fr		
+JO-DEBATS-AN	Journal officiel, Débats de l'Assemblée nationale	Direction de l'information légale et administrative	fr	JORF	
+JO-QR-AN	Journal officiel, Questions et réponses de l'Assemblée nationale	Direction de l'information légale et administrative	fr	JORF	
+JO-DEBATS-SENAT	Journal officiel, Débats du Sénat	Direction de l'information légale et administrative	fr	JORF	
+JO-QR-SENAT	Journal officiel, Questions et réponses du Sénat	Direction de l'information légale et administrative	fr	JORF	
+JOUE	Journal officiel de l'Union européenne	Office des publications de l'Union européenne	bg,cs,da,de,el,en,es,et,fi,fr,ga,hr,hu,it,lt,lv,mt,nl,pl,pt,ro,sk,sl,sv		EU
+JONC	Journal officiel de la Nouvelle-Calédonie	Gouvernement de la Nouvelle-Calédonie	fr		
+JOPF	Journal officiel de la Polynésie française	Gouvernement de la Polynésie française	fr		
+JO-OHADA	Journal officiel de l'OHADA	Secrétariat permanent de l'OHADA	fr,en,es,pt		OHADA
+MB	Moniteur belge	Service public fédéral Justice	fr,nl,de		
+MB-VLG	Moniteur belge (Communauté et Région flamandes)	Service public fédéral Justice	nl		
+MB-WAL	Moniteur belge (Région wallonne)	Service public fédéral Justice	fr		
+MB-BRU	Moniteur belge (Région de Bruxelles-Capitale, COCOM et COCOF)	Service public fédéral Justice	fr,nl		
+MB-CFR	Moniteur belge (Communauté française)	Service public fédéral Justice	fr		
+MB-CDE	Moniteur belge (Communauté germanophone)	Service public fédéral Justice	de		
+RO	Recueil officiel du droit fédéral	Chancellerie fédérale suisse	de,fr,it		
+JO-CH-AG	Amtsblatt des Kantons Aargau	Staatskanzlei des Kantons Aargau	de		
+JO-CH-AI	Amtsblatt des Kantons Appenzell Innerrhoden	Ratskanzlei des Kantons Appenzell Innerrhoden	de		
+JO-CH-AR	Amtsblatt des Kantons Appenzell Ausserrhoden	Kantonskanzlei Appenzell Ausserrhoden	de		
+JO-CH-BE	Feuille officielle du canton de Berne	Chancellerie d'État du canton de Berne	de,fr		
+JO-CH-BL	Amtsblatt des Kantons Basel-Landschaft	Landeskanzlei Basel-Landschaft	de		
+JO-CH-BS	Kantonsblatt Basel-Stadt	Staatskanzlei des Kantons Basel-Stadt	de		
+JO-CH-FR	Feuille officielle du canton de Fribourg	Chancellerie d'État du canton de Fribourg	fr,de		
+JO-CH-GE	Feuille d'avis officielle de la République et canton de Genève	Chancellerie d'État de la République et canton de Genève	fr		
+JO-CH-GL	Amtsblatt des Kantons Glarus	Staatskanzlei des Kantons Glarus	de		
+JO-CH-GR	Kantonsamtsblatt Graubünden	Standeskanzlei Graubünden	de,rm,it		
+JO-CH-JU	Journal officiel de la République et Canton du Jura	Chancellerie d'État de la République et Canton du Jura	fr		
+JO-CH-LU	Kantonsblatt Luzern	Staatskanzlei des Kantons Luzern	de		
+JO-CH-NE	Feuille officielle de la République et Canton de Neuchâtel	Chancellerie d'État de la République et Canton de Neuchâtel	fr		
+JO-CH-NW	Amtsblatt des Kantons Nidwalden	Staatskanzlei des Kantons Nidwalden	de		
+JO-CH-OW	Amtsblatt des Kantons Obwalden	Staatskanzlei des Kantons Obwalden	de		
+JO-CH-SG	Amtsblatt des Kantons St.Gallen	Staatskanzlei des Kantons St.Gallen	de		
+JO-CH-SH	Amtsblatt des Kantons Schaffhausen	Staatskanzlei des Kantons Schaffhausen	de		
+JO-CH-SO	Amtsblatt des Kantons Solothurn	Staatskanzlei des Kantons Solothurn	de		
+JO-CH-SZ	Amtsblatt des Kantons Schwyz	Staatskanzlei des Kantons Schwyz	de		
+JO-CH-TG	Amtsblatt des Kantons Thurgau	Staatskanzlei des Kantons Thurgau	de		
+JO-CH-TI	Foglio ufficiale della Repubblica e Cantone Ticino	Cancelleria dello Stato del Cantone Ticino	it		
+JO-CH-UR	Amtsblatt des Kantons Uri	Standeskanzlei Uri	de		
+JO-CH-VD	Feuille des avis officiels du canton de Vaud	Chancellerie d'État du canton de Vaud	fr		
+JO-CH-VS	Bulletin officiel du canton du Valais	Chancellerie d'État du canton du Valais	fr,de		
+JO-CH-ZG	Amtsblatt des Kantons Zug	Staatskanzlei des Kantons Zug	de		
+JO-CH-ZH	Amtsblatt des Kantons Zürich	Staatskanzlei des Kantons Zürich	de		
+JO-LU	Journal officiel du Grand-Duché de Luxembourg	Service central de législation	fr,de		
+CG	Gazette du Canada	Imprimeur du Roi pour le Canada	en,fr		
+JO-CA-ON	Gazette de l'Ontario	Imprimeur du Roi pour l'Ontario	en,fr		
+JO-CA-QC	Gazette officielle du Québec	Éditeur officiel du Québec	fr,en		
+JO-CA-NB	Gazette royale	Imprimeur du Roi pour le Nouveau-Brunswick	fr,en		
+JORADP	Journal officiel de la République algérienne démocratique et populaire	Secrétariat général du gouvernement	ar,fr		
+JORS	Journal officiel de la République du Sénégal	Secrétariat général du gouvernement	fr		
+STCE	Série des traités du Conseil de l'Europe	Conseil de l'Europe	en,fr		INTL.CEDH
+JO-UEMOA	Bulletin officiel de l'Union économique et monétaire ouest-africaine	Commission de l'UEMOA	fr		UEMOA
+JO-CEDEAO	Journal officiel de la Communauté économique des États de l'Afrique de l'Ouest	Commission de la CEDEAO	en,fr,pt		CEDEAO
+JO-CEMAC	Bulletin officiel de la Communauté économique et monétaire de l'Afrique centrale	Commission de la CEMAC	fr,en,es,ar		CEMAC
+BO-CIMA	Bulletin officiel de la Conférence interafricaine des marchés d'assurances	Secrétariat général de la CIMA	fr		
+TRAITES-UA	Traités de l'Union africaine	Commission de l'Union africaine	ar,en,fr,pt,es,sw		UNIONAFRICAINE

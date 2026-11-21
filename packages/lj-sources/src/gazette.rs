@@ -243,7 +243,7 @@ fn un7z(bytes: Vec<u8>) -> Result<Vec<u8>> {
 }
 
 /// `compress(1)` data, which `gzip -d` still decodes.
-fn unlzw(bytes: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn unlzw(bytes: &[u8]) -> Result<Vec<u8>> {
     use std::io::Write;
     let mut child = std::process::Command::new("gzip")
         .arg("-dc")
@@ -318,11 +318,30 @@ fn taz_docs(bytes: Vec<u8>) -> Result<Vec<Vec<u8>>> {
     if is_markup(&raw) {
         return Ok(vec![raw]);
     }
-    Ok(tar_files(&raw)?
-        .into_iter()
-        .filter(|(name, data)| is_xml(name) && is_markup(data))
-        .map(|(_, data)| data.to_vec())
-        .collect())
+    let mut docs = Vec::new();
+    tar_docs(&raw, &mut docs)?;
+    Ok(docs)
+}
+
+/// A member that is neither a document (XML, or JSON for the JOAFE since parution 20260045), nor a tar
+/// of them (BODACC C since parution 20260214), nor a notice's HTML rendering beside the XML (JOAFE 2004
+/// to 2019), nor one of the binary extracts named `.xml`, is an error.
+fn tar_docs(raw: &[u8], docs: &mut Vec<Vec<u8>>) -> Result<()> {
+    for (name, data) in tar_files(raw)? {
+        let lower = name.to_ascii_lowercase();
+        if lower.ends_with(".tar") {
+            tar_docs(data, docs)?;
+        } else if lower.ends_with(".htm") {
+            continue;
+        } else if lower.ends_with(".json") {
+            docs.push(data.to_vec());
+        } else if !is_xml(&name) {
+            return Err(SourceError::Invalid(format!("unknown member {name}")));
+        } else if is_markup(data) {
+            docs.push(data.to_vec());
+        }
+    }
+    Ok(())
 }
 
 /// A tar stream under as many gzip layers as it carries: some yearly archives are gzipped twice.
@@ -360,6 +379,9 @@ fn unitary_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"^affaire_\d{8}_\d+\.xml$").expect("unitary regex"))
 }
 
+/// Re-delivered 12/10/2026 as JSON that does not parse, numbering 18 foundations as the parution's first 18 associations.
+const SKIPPED: &[&str] = &["ASS_2024/ASS20240033.taz"];
+
 /// In path order; the one-notice files of a zip directory make one container.
 pub fn for_each_container(
     source: Source,
@@ -377,6 +399,10 @@ pub fn for_each_container(
             .to_string_lossy()
             .into_owned();
         if !wanted(source, &rel) || !in_scope(source, scope, &rel) {
+            continue;
+        }
+        if SKIPPED.contains(&rel.as_str()) {
+            tracing::warn!(source = source.slug(), file = %rel, "gazette container known broken, skipped");
             continue;
         }
         container_file(&rel, &path, &mut f)

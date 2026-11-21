@@ -1,18 +1,22 @@
 //! The issues of a JORF archive and the publication of each of its texts,
 //! merged member by member into `journal_issue` and `text_publication`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
-use lj_store::repository::{DecisionRepository, IssuePlacement, JournalIssueRow};
+use lj_store::repository::{DecisionRepository, Edition, IssuePlacement, JournalIssueRow};
 use serde_json::{json, Map, Value};
 
 use super::jorf::{classify_jorf_member, JorfMember};
 use crate::config::Settings;
 
 const BATCH: usize = 1000;
+const JORF: Edition = Edition {
+    language: "fr",
+    status: "authentic",
+};
 
 enum Msg {
     Issue(JournalIssueRow, Vec<String>),
@@ -20,7 +24,6 @@ enum Msg {
     Structure(String, Value),
     Section(String, String, Value),
     Article(String, String, Value),
-    Numbered(String, String, Value),
     Deleted(Vec<String>),
     Failed,
 }
@@ -32,8 +35,7 @@ struct Pending {
     facts: HashMap<String, Value>,
     structures: HashMap<String, Value>,
     sections: HashMap<String, Map<String, Value>>,
-    articles: HashMap<String, Map<String, Value>>,
-    numbered: Vec<(String, String, Value)>,
+    articles: Vec<(String, String, Value)>,
     entries: usize,
 }
 
@@ -75,6 +77,7 @@ fn member_msg(name: &str, raw: &[u8]) -> Result<Option<Msg>> {
             date(p.date_publi.as_deref())?;
             let facts = json!({
                 "text_uid": p.jorftext,
+                "nature": p.nature,
                 "num_parution": p.num_parution,
                 "num_sequence": p.num_sequence,
                 "origine_publi": p.origine_publi,
@@ -105,11 +108,7 @@ fn member_msg(name: &str, raw: &[u8]) -> Result<Option<Msg>> {
             let Some(text) = a.published_text() else {
                 return Ok(None);
             };
-            let text = serde_json::to_value(&text)?;
-            match a.num {
-                Some(_) => Msg::Numbered(a.jorftext, a.jorfarti, text),
-                None => Msg::Article(a.jorftext, a.jorfarti, text),
-            }
+            Msg::Article(a.jorftext, a.jorfarti, serde_json::to_value(&text)?)
         }
         JorfMember::Ignore => return Ok(None),
     }))
@@ -136,11 +135,7 @@ impl Pending {
                 self.entries += 1;
             }
             Msg::Article(text, id, body) => {
-                self.articles.entry(text).or_default().insert(id, body);
-                self.entries += 1;
-            }
-            Msg::Numbered(text, id, body) => {
-                self.numbered.push((text, id, body));
+                self.articles.push((text, id, body));
                 self.entries += 1;
             }
             Msg::Deleted(paths) => deleted.extend(paths),
@@ -155,10 +150,15 @@ impl Pending {
             || self.entries >= BATCH
     }
 
-    async fn flush(&mut self, repo: &DecisionRepository<'_>, counts: &mut Counts) -> Result<()> {
-        let mut p = std::mem::take(self);
+    async fn flush(
+        &mut self,
+        repo: &DecisionRepository<'_>,
+        counts: &mut Counts,
+        with_entries: &mut HashSet<String>,
+    ) -> Result<()> {
+        let p = std::mem::take(self);
         if !p.issues.is_empty() {
-            counts.issues += repo.upsert_journal_issues(&p.issues).await?;
+            counts.issues += repo.upsert_journal_issues(JORF, &p.issues).await?;
             let placements: Vec<IssuePlacement> = p
                 .placements
                 .into_iter()
@@ -168,30 +168,30 @@ impl Pending {
                     issue_rank,
                 })
                 .collect();
-            counts.placed += repo.place_publications(&placements).await?;
+            counts.placed += repo.place_publications(JORF, &placements).await?;
         }
         if !p.facts.is_empty() {
             let facts: Vec<Value> = p.facts.into_values().collect();
-            counts.facts += repo.upsert_publication_facts(&facts).await?;
+            counts.facts += repo.upsert_publication_facts(JORF, &facts).await?;
         }
         if !p.structures.is_empty() {
             let rows: Vec<(String, Value)> = p.structures.into_iter().collect();
-            counts.structures += repo.upsert_publication_structures(&rows).await?;
+            counts.structures += repo.upsert_publication_structures(JORF, &rows).await?;
         }
         if !p.sections.is_empty() {
-            counts.sections += repo.merge_publication_sections(&maps(p.sections)).await?;
-        }
-        if !p.numbered.is_empty() {
-            let uids: Vec<&str> = p.numbered.iter().map(|(_, id, _)| id.as_str()).collect();
-            let held = repo.jorf_articles_held(&uids).await?;
-            for (text, id, body) in p.numbered {
-                if !held.contains(&id) {
-                    p.articles.entry(text).or_default().insert(id, body);
-                }
-            }
+            counts.sections += repo
+                .merge_publication_sections(JORF, &maps(p.sections))
+                .await?;
         }
         if !p.articles.is_empty() {
-            counts.articles += repo.merge_publication_articles(&maps(p.articles)).await?;
+            let mut articles: HashMap<String, Map<String, Value>> = HashMap::new();
+            for (text, id, body) in p.articles {
+                articles.entry(text).or_default().insert(id, body);
+            }
+            with_entries.extend(articles.keys().cloned());
+            counts.articles += repo
+                .merge_publication_articles(JORF, &maps(articles))
+                .await?;
         }
         Ok(())
     }
@@ -228,8 +228,11 @@ fn deleted_members(paths: &[String]) -> [Vec<String>; 4] {
 }
 
 /// Reads one archive for its issues and publications, then applies its
-/// deletion list.
-pub(super) async fn ingest_publications(repo: &DecisionRepository<'_>, path: &Path) -> Result<()> {
+/// deletion list. Returns the texts whose articles took entries.
+pub(super) async fn ingest_publications(
+    repo: &DecisionRepository<'_>,
+    path: &Path,
+) -> Result<HashSet<String>> {
     let (tx, mut rx) = tokio::sync::mpsc::channel::<Msg>(BATCH * 4);
     let tar_path = path.to_path_buf();
     let reader = tokio::task::spawn_blocking(move || -> Result<()> {
@@ -260,25 +263,27 @@ pub(super) async fn ingest_publications(repo: &DecisionRepository<'_>, path: &Pa
     let mut pending = Pending::default();
     let mut deleted = Vec::new();
     let mut counts = Counts::default();
+    let mut with_entries = HashSet::new();
     while let Some(msg) = rx.recv().await {
         pending.push(msg, &mut deleted, &mut counts);
         if pending.full() {
-            pending.flush(repo, &mut counts).await?;
+            pending.flush(repo, &mut counts, &mut with_entries).await?;
         }
     }
     reader
         .await
         .map_err(|e| anyhow!("jorf publication reader {}: {e}", path.display()))??;
-    pending.flush(repo, &mut counts).await?;
+    pending.flush(repo, &mut counts, &mut with_entries).await?;
     let [issues, texts, sections, articles] = deleted_members(&deleted);
     counts.deleted = repo
         .delete_publication_members(&issues, &texts, &sections, &articles)
         .await?;
     tracing::info!(source = %path.display(), ?counts, "jorf publications");
-    Ok(())
+    Ok(with_entries)
 }
 
-/// Replays every cached JORF archive, stock then increments.
+/// Replays every cached JORF archive, stock then increments, then moves the
+/// unnumbered articles into pieces.
 pub async fn backfill_jorf_publications() -> Result<()> {
     let settings = Settings::from_env()?;
     let paths = lj_sources::dila::cached_dila_tarballs(
@@ -299,8 +304,10 @@ pub async fn backfill_jorf_publications() -> Result<()> {
     for path in &paths {
         ingest_publications(&repo, path).await?;
     }
+    let pieces = super::jorf_pieces::move_pieces(&repo, None).await?;
     tracing::warn!(
         archives = paths.len(),
+        ?pieces,
         seconds = started.elapsed().as_secs(),
         "jorf publications: replayed"
     );

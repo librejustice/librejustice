@@ -12,11 +12,14 @@ use crate::html_strip::decode_entities;
 
 pub const BASE_URL: &str = "https://info.agriculture.gouv.fr/boagri";
 
+/// The search finds no instruction numbered before 2011.
+const FIRST_YEAR: i32 = 2011;
+
 /// A whole year answers 500 since 2024, so each year is asked by number
 /// prefix, `2025-1` holding 2025-1, 2025-10 to 2025-19, 2025-100 to 2025-199…
 pub(super) async fn list(client: &BulletinClient, since_year: i32) -> Result<Vec<BulletinNotice>> {
     let mut found = BTreeMap::new();
-    for year in since_year..=chrono::Utc::now().year() {
+    for year in since_year.max(FIRST_YEAR)..=chrono::Utc::now().year() {
         let mut prefixes: Vec<String> = (1..=9).map(|d| format!("{year}-{d}")).collect();
         while let Some(prefix) = prefixes.pop() {
             let url = format!("{BASE_URL}/recherche/resultat_recherche_numero?numero={prefix}");
@@ -55,14 +58,19 @@ pub fn parse_listing(html: &str) -> Vec<BulletinNotice> {
     let [item, head] = RE.get_or_init(|| {
         [
             Regex::new(r#"(?s)<li data-etat="([^"]*)" data-type="[^"]*">(.*?)</li>"#).expect("valid regex"),
-            Regex::new(r#"(?s)^\s*<i[^>]*></i>\s*(.*?)\s*<a\s+href="([^"]*/instruction-(\d{4}-\d+))">([^<]*)</a>\s*(?:du\s*(\d\d-\d\d-\d{4}))?.*?<p>(.*?)</p>"#)
+            Regex::new(r#"(?s)^\s*<i[^>]*></i>\s*(.*?)\s*<a\s+href="([^"]*/instruction-([A-Z]?\d{4}-\d+))">([^<]*)</a>\s*(?:du\s*(\d\d-\d\d-\d{4}))?.*?<p>(.*?)</p>"#)
                 .expect("valid regex"),
         ]
     });
     item.captures_iter(html)
         .filter_map(|li| {
             let c = head.captures(&li[2])?;
-            let kind = clean(&c[1]);
+            // Until 2013 the number's letter gave the type the item leaves out.
+            let kind = match (clean(&c[1]), c[3].chars().next()) {
+                (k, Some('N')) if k.is_empty() => "Note de service".to_string(),
+                (k, Some('C')) if k.is_empty() => "Circulaire".to_string(),
+                (k, _) => k,
+            };
             let signed = c.get(5).and_then(|d| french_date(d.as_str()));
             let subject = clean(&c[6]);
             let subject = subject.trim_end_matches(['.', ' ']);
@@ -74,6 +82,7 @@ pub fn parse_listing(html: &str) -> Vec<BulletinNotice> {
                 ),
                 None => format!("{kind} {} : {subject}", clean(&c[4])),
             };
+            let title = title.trim().to_string();
             Some(BulletinNotice {
                 site: BulletinSite::Agri,
                 native_id: c[3].to_string(),
@@ -86,7 +95,10 @@ pub fn parse_listing(html: &str) -> Vec<BulletinNotice> {
                 legifrance_uid: None,
                 doctrine: matches!(
                     kind.as_str(),
-                    "Note de service" | "Instruction technique" | "Instruction du Gouvernement"
+                    "Note de service"
+                        | "Instruction technique"
+                        | "Instruction du Gouvernement"
+                        | "Circulaire"
                 ),
                 abrogated: matches!(&li[1], "Abrogee" | "Caduque"),
                 kind,
@@ -161,5 +173,28 @@ mod tests {
         );
         assert!(!notices[1].doctrine);
         assert!(!notices[1].abrogated);
+    }
+
+    #[test]
+    fn an_untyped_instruction_of_2013_takes_its_type_from_its_number() {
+        let html = r##"<li data-etat="EnVigueur" data-type="Instruction">
+                <i class="icon-download-alt"></i>
+                 <a
+                    href="https://info.agriculture.gouv.fr/boagri/instruction-C2013-1505">SG/SAFSL/SDTPS/C2013-1505</a>
+                <span class="badge-EnVigueur"><a href="#"
+                        class="info">En vigueur<span>N'est ni abrogé ni caduc.</span></a></span>
+                <p>mise en œuvre des dérogations aux travaux
+réglementés pour les jeunes </p>
+            </li>"##;
+        let notices = parse_listing(html);
+        assert_eq!(notices.len(), 1);
+        let n = &notices[0];
+        assert_eq!(n.text_uid(), "bo_agri_C2013-1505");
+        assert_eq!(
+            n.title,
+            "Circulaire SG/SAFSL/SDTPS/C2013-1505 : mise en œuvre des dérogations aux travaux réglementés pour les jeunes"
+        );
+        assert_eq!(n.nature(), Some("CIRCULAIRE"));
+        assert!(n.doctrine);
     }
 }

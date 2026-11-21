@@ -105,6 +105,16 @@ enum HomeText<'a> {
     Found(&'a str),
 }
 
+/// A text of another legal order under one of its act numbers.
+#[derive(Debug, Clone)]
+struct NumberedAct {
+    uid: String,
+    /// [`head_act_nature`] of the title; `None` for a `number` alias row, which any nature cites.
+    nature: Option<&'static str>,
+    /// The title's date and `date_texte`: an official title may carry the bill's year.
+    dates: Vec<Date>,
+}
+
 /// Cible d'une occurrence, prête pour `legal_citation`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct LinkTarget {
@@ -112,20 +122,151 @@ pub struct LinkTarget {
     pub ref_num_key: Option<String>,
 }
 
-/// Juridiction ÉMETTRICE de la décision extraite — le contexte qui résout les
-/// instruments nus qu'une cour cite sans les nommer : « de la Convention » dans
-/// un arrêt CEDH désigne la CESDH. Dérivé de `jurisdiction_type` + ECLI
-/// (`EU:C`/`EU:T`/`EU:F`).
+/// The issuing court, which resolves what it cites without naming: « de la Convention » in a CEDH
+/// judgment is the ECHR. Read from the court's type, its ECLI, and the place of a court of
+/// another legal order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Forum {
     Cedh,
     CjueCour,
     CjueTribunal,
     CjueTfp,
+    /// A court of another legal order than France's, at its place: it applies the law of that
+    /// place and of the places above it, never a French text. With the decision's date.
+    Foreign(Place, Option<Date>),
 }
 
+/// A place of the `geo:` vocabulary without its prefix, `CH-VD`, `BE`, `OHADA`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Place {
+    code: [u8; 12],
+    len: u8,
+}
+
+impl Place {
+    /// `None` for a code that is no place of another legal order.
+    pub fn new(place: &str) -> Option<Place> {
+        let place = place.strip_prefix("geo:").unwrap_or(place);
+        let ok = !place.is_empty()
+            && place.len() <= 12
+            && place
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'-')
+            && place != "FR"
+            && !place.starts_with("FR-")
+            && !matches!(place, "EU" | "INTL");
+        ok.then(|| {
+            let mut code = [0u8; 12];
+            code[..place.len()].copy_from_slice(place.as_bytes());
+            Place {
+                code,
+                len: place.len() as u8,
+            }
+        })
+    }
+
+    pub fn as_str(&self) -> &str {
+        std::str::from_utf8(&self.code[..self.len as usize]).expect("a place is ASCII")
+    }
+}
+
+impl std::fmt::Debug for Place {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "Place({})", self.as_str())
+    }
+}
+
+/// The places whose law a court or a text at `territory` reads, nearest first: `CH-VD`, then
+/// `CH`; then the organisations its country is a member of, whose journal is `default` there.
+pub fn territory_chain(territory: &str) -> Vec<String> {
+    let mut chain = vec![territory.to_string()];
+    let mut t = territory;
+    while let Some((up, _)) = t.rsplit_once('-') {
+        chain.push(up.to_string());
+        t = up;
+    }
+    for (org, journal) in ORGANISATIONS {
+        if is_member(journal, t) {
+            chain.push((*org).to_string());
+        }
+    }
+    chain
+}
+
+/// Whether the organisation's journal is `default` in `country`.
+fn is_member(journal: &str, country: &str) -> bool {
+    let place = format!("geo:{country}");
+    lj_norm::journal_rules::rules_of(journal)
+        .iter()
+        .any(|r| r.place == place && r.regime == lj_norm::journal_rules::Regime::Default)
+}
+
+/// The organisations whose own texts their member states apply, by their journal.
+const ORGANISATIONS: &[(&str, &str)] = &[
+    ("OHADA", "JO-OHADA"),
+    ("UEMOA", "JO-UEMOA"),
+    ("CEMAC", "JO-CEMAC"),
+    ("CEDEAO", "JO-CEDEAO"),
+    ("CIMA", "BO-CIMA"),
+];
+
+/// The place a text of another legal order is enacted for: its territory below its order
+/// (`CH-GE`, `BE-WAL`), else its order (`CH`, `SN`).
+fn text_territory(text_uid: &str, jurisdiction: &str) -> String {
+    match lj_norm::jurisdiction_path::territory(text_uid, jurisdiction) {
+        Some(t) => format!("{jurisdiction}-{t}"),
+        None => jurisdiction.to_string(),
+    }
+}
+
+/// The comparison form of an abbreviation: folded, letters and digits only (`Cst.`, `cst`).
+fn abbreviation_key(sigle: &str) -> String {
+    fold(sigle)
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect()
+}
+
+/// The sigles of a treaty or of the Union's law, in the languages courts cite them in.
+const SUPRANATIONAL_SIGLES: &[(&str, &str)] = &[
+    ("CEDH", "INTL/CEDH"),
+    ("CESDH", "INTL/CEDH"),
+    ("EMRK", "INTL/CEDH"),
+    ("CEDU", "INTL/CEDH"),
+    ("EVRM", "INTL/CEDH"),
+    ("ECHR", "INTL/CEDH"),
+    ("TFUE", "EU/TFUE"),
+    ("AEUV", "EU/TFUE"),
+    ("TFEU", "EU/TFUE"),
+    ("VWEU", "EU/TFUE"),
+    ("TUE", "EU/TUE"),
+    ("EUV", "EU/TUE"),
+    ("VEU", "EU/TUE"),
+    ("CAAS", "EU/CAAS"),
+    ("SDÜ", "EU/CAAS"),
+    ("CIDE", "INTL/CIDE"),
+    ("KRK", "INTL/CIDE"),
+    (
+        "ALCP",
+        "INTL/ACCORD-COMMUNAUTE-EUROPEENNE-MEMBRES-CONFEDERATION-1999",
+    ),
+    (
+        "FZA",
+        "INTL/ACCORD-COMMUNAUTE-EUROPEENNE-MEMBRES-CONFEDERATION-1999",
+    ),
+];
+
 impl Forum {
-    pub fn of(jurisdiction_type: Option<&str>, ecli: Option<&str>) -> Option<Forum> {
+    /// `place` is the place of the court, read from the referential.
+    pub fn of(
+        jurisdiction_type: Option<&str>,
+        ecli: Option<&str>,
+        place: Option<&str>,
+        date: Option<&str>,
+    ) -> Option<Forum> {
+        if let Some(place) = place.and_then(Place::new) {
+            return Some(Forum::Foreign(place, date.and_then(|d| d.parse().ok())));
+        }
         match jurisdiction_type? {
             "CEDH" => Some(Forum::Cedh),
             "CJUE" => match ecli?.split(':').nth(2)? {
@@ -190,19 +331,33 @@ pub struct LinkSnapshot {
     treaty_date: HashMap<Date, Vec<(String, String)>>,
     /// Accords bilatéraux : (stem gentilé plié, date) → uid, uniques seulement.
     accords: HashMap<(String, Date), String>,
-    /// (ISO-2, famille de titre sans gentilé) → uids porteurs.
+    /// (territory, title family without gentilé) → carrier uids.
     foreign_title: HashMap<(String, String), Vec<String>>,
-    /// (ISO-2, TÊTE de famille) → uids porteurs — le catalogue nomme un code
-    /// par sa matière complète (« code de procédure civile, commerciale,
-    /// administrative et financière »), le corps le cite par sa tête. Second
-    /// rang : la famille exacte prime.
+    /// (territory, head of a title family) → carrier uids: the catalogue names a code by its
+    /// whole subject (« code de procédure civile, commerciale, administrative et financière »),
+    /// a court cites it by its head. Second rank, after the exact family.
     foreign_head: HashMap<(String, String), Vec<String>>,
     /// uid → identité d'acte daté lue dans le TITRE catalogue (numéro tel
     /// qu'écrit, date de signature).
     act_identity: HashMap<String, (Option<String>, Option<Date>)>,
-    /// uid → ISO-2, pour les seuls textes du référentiel étranger (ni FR, ni
-    /// UE, ni INTL) : le for du corps émetteur.
-    foreign_owner: HashMap<String, String>,
+    /// (territory, [`act_number_key`]) → the texts of another legal order carrying that act
+    /// number in their title's head or a `number` alias row.
+    place_numbers: HashMap<(String, String), Vec<NumberedAct>>,
+    /// uid → territory, for the texts of another legal order (neither FR, nor EU, nor INTL):
+    /// `CH`, `CH-VD`, `BE-WAL`, `OHADA`.
+    territory: HashMap<String, String>,
+    /// uid → folded title key, for the texts of another legal order.
+    foreign_name: HashMap<String, String>,
+    /// territory → the territories below it that carry texts: `CH` → `CH-VD`…
+    below: HashMap<String, Vec<String>>,
+    /// (territory, [`abbreviation_key`]) → carrier uids, from the texts' aliases.
+    abbreviations: HashMap<(String, String), Vec<String>>,
+    /// [`abbreviation_key`] → uid, the treaties' and the Union's sigles in every language.
+    supranational_sigles: HashMap<String, String>,
+    /// Texts with an article in force: a repealed act yields its abbreviation to its successor.
+    in_force: HashSet<String>,
+    /// The Union's texts and the treaties.
+    supranational: HashSet<String>,
     /// Cibles CCN présentes (valide le snap gazetteer).
     kalicont: HashSet<String>,
     /// uid → `num_key` des articles au catalogue (existence).
@@ -307,8 +462,11 @@ impl LinkSnapshot {
         let mut accord_cands: HashMap<(String, Date), Vec<(String, bool)>> = HashMap::new();
         let mut foreign_title: HashMap<(String, String), Vec<String>> = HashMap::new();
         let mut foreign_head: HashMap<(String, String), Vec<String>> = HashMap::new();
+        let mut place_numbers: HashMap<(String, String), Vec<NumberedAct>> = HashMap::new();
         let mut act_identity = HashMap::new();
-        let mut foreign_owner = HashMap::new();
+        let mut territory = HashMap::new();
+        let mut foreign_name = HashMap::new();
+        let mut supranational = HashSet::new();
         let mut kalicont = HashSet::new();
         let mut prefix_agnostic: HashMap<String, HashMap<String, String>> = HashMap::new();
 
@@ -431,15 +589,31 @@ impl LinkSnapshot {
             // suisse) ; la famille nue les réunit. Toutes les familles, pas seulement
             // les codes.
             if let Some(iso) = t.jurisdiction.as_deref() {
+                if matches!(iso, "EU" | "INTL") {
+                    supranational.insert(t.text_uid.clone());
+                }
                 if !matches!(iso, "FR" | "EU" | "INTL") {
-                    foreign_owner.insert(t.text_uid.clone(), iso.to_string());
+                    let place = text_territory(&t.text_uid, iso);
                     let fams = home_families(&folded_tk, iso);
                     for head in family_heads(&fams) {
-                        push_candidate(&mut foreign_head, (iso.to_string(), head), &t.text_uid);
+                        push_candidate(&mut foreign_head, (place.clone(), head), &t.text_uid);
                     }
                     for base in fams {
-                        push_candidate(&mut foreign_title, (iso.to_string(), base), &t.text_uid);
+                        push_candidate(&mut foreign_title, (place.clone(), base), &t.text_uid);
                     }
+                    if let Some((nature, num)) = cited_act_number(&folded_title) {
+                        let dates = first_date(&folded_title).into_iter().chain(t.date_texte);
+                        place_numbers
+                            .entry((place.clone(), num))
+                            .or_default()
+                            .push(NumberedAct {
+                                uid: t.text_uid.clone(),
+                                nature: Some(nature),
+                                dates: dates.collect(),
+                            });
+                    }
+                    territory.insert(t.text_uid.clone(), place);
+                    foreign_name.insert(t.text_uid.clone(), folded_tk.clone());
                 }
             }
 
@@ -520,6 +694,28 @@ impl LinkSnapshot {
             }
         }
 
+        let mut below: HashMap<String, Vec<String>> = HashMap::new();
+        for place in territory.values() {
+            let mut t = place.as_str();
+            while let Some((up, _)) = t.rsplit_once('-') {
+                let subs = below.entry(up.to_string()).or_default();
+                if !subs.iter().any(|s| s == place) {
+                    subs.push(place.clone());
+                }
+                t = up;
+            }
+        }
+        let in_force = texts
+            .iter()
+            .filter(|t| t.n_vigueur > 0)
+            .map(|t| t.text_uid.clone())
+            .collect();
+        let supranational_sigles = SUPRANATIONAL_SIGLES
+            .iter()
+            .filter(|(_, uid)| uids.contains(uid))
+            .map(|(sigle, uid)| (abbreviation_key(sigle), uid.to_string()))
+            .collect();
+
         Self {
             alias_text,
             alias_article,
@@ -536,11 +732,146 @@ impl LinkSnapshot {
             accords,
             foreign_title,
             foreign_head,
+            place_numbers,
             act_identity,
-            foreign_owner,
+            below,
+            territory,
+            foreign_name,
+            abbreviations: HashMap::new(),
+            supranational_sigles,
+            in_force,
+            supranational,
             kalicont,
             articles: article_sets,
             prefix_agnostic,
+        }
+    }
+
+    /// Indexes the names the texts of another legal order are cited by besides their title:
+    /// `(text_uid, kind, lang, value)` rows of `legal_text_alias`. A text the catalogue does
+    /// not hold, or of the French, Union or international order, is left out.
+    pub fn with_aliases(mut self, aliases: Vec<(String, String, String, String)>) -> Self {
+        for (uid, kind, _lang, value) in aliases {
+            let Some(place) = self.territory.get(&uid).cloned() else {
+                continue;
+            };
+            match kind.as_str() {
+                "abbreviation" => {
+                    let cands = self
+                        .abbreviations
+                        .entry((place, abbreviation_key(&value)))
+                        .or_default();
+                    if !cands.contains(&uid) {
+                        cands.push(uid);
+                    }
+                }
+                "title" => {
+                    let country = place.split('-').next().unwrap_or(&place).to_string();
+                    let fams = home_families(&fold(&value), &country);
+                    for head in family_heads(&fams) {
+                        let cands = self.foreign_head.entry((place.clone(), head)).or_default();
+                        if !cands.contains(&uid) {
+                            cands.push(uid.clone());
+                        }
+                    }
+                    for base in fams {
+                        let cands = self.foreign_title.entry((place.clone(), base)).or_default();
+                        if !cands.contains(&uid) {
+                            cands.push(uid.clone());
+                        }
+                    }
+                }
+                "number" => {
+                    let Some(num) = act_number_key(&value) else {
+                        continue;
+                    };
+                    let acts = self.place_numbers.entry((place, num)).or_default();
+                    if !acts.iter().any(|a| a.uid == uid) {
+                        acts.push(NumberedAct {
+                            uid,
+                            nature: None,
+                            dates: Vec::new(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+        }
+        self
+    }
+
+    /// The text an abbreviation cited by a court at `place` names: a treaty's or the Union's
+    /// sigle first, then the nearest place of its chain that carries it, then a single carrier
+    /// among the places below it (a federal court citing a canton's law). Among several
+    /// carriers of one place, the one that has the cited article, else the one in force.
+    pub fn place_abbreviation(
+        &self,
+        place: &str,
+        sigle: &str,
+        article_key: Option<&str>,
+    ) -> Option<&str> {
+        let key = abbreviation_key(sigle);
+        if let Some(uid) = self.supranational_sigles.get(&key) {
+            return Some(uid);
+        }
+        for up in territory_chain(place) {
+            if let Some(uids) = self.abbreviations.get(&(up, key.clone())) {
+                return self.pick_carrier(uids.iter(), article_key);
+            }
+        }
+        let mut below: Vec<&String> = self
+            .below
+            .get(place)
+            .into_iter()
+            .flatten()
+            .filter_map(|sub| self.abbreviations.get(&(sub.clone(), key.clone())))
+            .flatten()
+            .collect();
+        below.sort();
+        below.dedup();
+        self.pick_carrier(below.into_iter(), article_key)
+    }
+
+    /// Whether a text of `place`'s chain, or of a place below it, or a treaty carries `sigle`.
+    pub fn carries_abbreviation(&self, place: &str, sigle: &str) -> bool {
+        let key = abbreviation_key(sigle);
+        self.supranational_sigles.contains_key(&key)
+            || territory_chain(place)
+                .into_iter()
+                .chain(self.below.get(place).into_iter().flatten().cloned())
+                .any(|p| self.abbreviations.contains_key(&(p, key.clone())))
+    }
+
+    /// Whether `uid` is a text of another legal order whose title shares no word of four
+    /// letters or more with `name`.
+    pub fn names_another_law(&self, uid: &str, name: &str) -> bool {
+        let Some(title) = self.foreign_name.get(uid) else {
+            return false;
+        };
+        let name = fold(name);
+        let words: HashSet<&str> = name.split_whitespace().filter(|w| w.len() >= 4).collect();
+        !title.split_whitespace().any(|w| words.contains(w))
+    }
+
+    fn pick_carrier<'a>(
+        &'a self,
+        uids: impl Iterator<Item = &'a String>,
+        article_key: Option<&str>,
+    ) -> Option<&'a str> {
+        let uids: Vec<&String> = uids.collect();
+        if let [uid] = uids[..] {
+            return Some(uid);
+        }
+        if let Some(ak) = article_key {
+            let mut carriers = uids.iter().filter(|u| self.has_article(u, ak));
+            if let (Some(uid), None) = (carriers.next(), carriers.next()) {
+                return Some(uid);
+            }
+        }
+        let mut live = uids.into_iter().filter(|u| self.in_force.contains(*u));
+        match (live.next(), live.next()) {
+            (Some(uid), None) => Some(uid),
+            _ => None,
         }
     }
 
@@ -562,43 +893,113 @@ impl LinkSnapshot {
         )
     }
 
-    /// ISO-2 du texte quand il appartient au référentiel étranger — le for du
-    /// corps émetteur, que le composeur passe au résolveur.
+    /// The territory of a text of another legal order, the forum its body cites from.
     ///
-    /// Les collectivités françaises d'outre-mer en sortent : le code des impôts
-    /// calédonien porte la juridiction `NC` mais l'uid `FR-NC/…`, et le droit
-    /// métropolitain s'y applique — il cite le code civil FRANÇAIS.
-    pub fn foreign_iso(&self, text_uid: &str) -> Option<&str> {
+    /// The French overseas collectivities stay out: New Caledonia's tax code carries the
+    /// jurisdiction `NC` but the uid `FR-NC/…`, and cites the FRENCH civil code.
+    pub fn foreign_territory(&self, text_uid: &str) -> Option<&str> {
         if text_uid.starts_with("FR-") {
             return None;
         }
-        self.foreign_owner.get(text_uid).map(String::as_str)
+        self.territory.get(text_uid).map(String::as_str)
     }
 
-    /// Texte d'un pays donné portant cette famille : famille EXACTE d'abord,
-    /// TÊTE de titre ensuite (« code de procédure civile » pour le « code de
-    /// procédure civile, commerciale, administrative et financière »
-    /// congolais). À plusieurs porteurs, l'article cité tranche.
-    fn home_text(&self, iso: &str, family: &str, article_key: Option<&str>) -> HomeText<'_> {
-        let key = (iso.to_string(), family.to_string());
-        let Some(cands) = self
-            .foreign_title
-            .get(&key)
-            .or_else(|| self.foreign_head.get(&key))
-        else {
-            return HomeText::Absent;
-        };
-        if let [uid] = &cands[..] {
-            return HomeText::Found(uid);
+    /// Whether a court at `place` applies the text: the Union's or a treaty, a text of a place
+    /// of its chain or below it, or, for an organisation's court, a member state's. The rules
+    /// of procedure of a Union court reach a member state's courts alone: elsewhere « the
+    /// Court » of a « règlement de procédure » is the citing court itself.
+    pub fn applies_at(&self, place: &str, text_uid: &str) -> bool {
+        if self.supranational.contains(text_uid) {
+            let country = place.split('-').next().unwrap_or(place);
+            return !text_uid.starts_with("EU/RPROC/") || is_member("JOUE", country);
         }
-        let carrier = article_key.and_then(|ak| {
-            let mut carriers = cands.iter().filter(|u| self.has_article(u, ak));
-            match (carriers.next(), carriers.next()) {
-                (Some(uid), None) => Some(uid.as_str()),
-                _ => None,
+        let Some(territory) = self.foreign_territory(text_uid) else {
+            return false;
+        };
+        let country = territory.split('-').next().unwrap_or(territory);
+        territory_chain(place).iter().any(|p| p == territory)
+            || self
+                .below
+                .get(place)
+                .is_some_and(|subs| subs.iter().any(|p| p == territory))
+            || ORGANISATIONS
+                .iter()
+                .any(|(org, journal)| *org == place && is_member(journal, country))
+    }
+
+    /// A text of the French catalogue, overseas ones included.
+    pub fn is_french(&self, text_uid: &str) -> bool {
+        text_uid.starts_with("FR-")
+            || !(self.territory.contains_key(text_uid) || self.supranational.contains(text_uid))
+    }
+
+    /// The text a family names from `place`: the nearest place of its chain that carries the
+    /// family decides, the EXACT family first, then the HEAD of a title (« code de procédure
+    /// civile » for the Congolese « code de procédure civile, commerciale, administrative et
+    /// financière »). Among several carriers, the cited article decides.
+    fn home_text(&self, place: &str, family: &str, article_key: Option<&str>) -> HomeText<'_> {
+        for place in territory_chain(place) {
+            let key = (place, family.to_string());
+            let Some(cands) = self
+                .foreign_title
+                .get(&key)
+                .or_else(|| self.foreign_head.get(&key))
+            else {
+                continue;
+            };
+            if let [uid] = &cands[..] {
+                return HomeText::Found(uid);
             }
-        });
-        carrier.map_or(HomeText::Abstain, HomeText::Found)
+            let carrier = article_key.and_then(|ak| {
+                let mut carriers = cands.iter().filter(|u| self.has_article(u, ak));
+                match (carriers.next(), carriers.next()) {
+                    (Some(uid), None) => Some(uid.as_str()),
+                    _ => None,
+                }
+            });
+            return carrier.map_or(HomeText::Abstain, HomeText::Found);
+        }
+        HomeText::Absent
+    }
+
+    /// The text a court at `place` names by its title, the cited article deciding between
+    /// carriers, else the treaty or Union act a link alias gives that title.
+    pub fn place_title(&self, place: &str, cited: &str, article_key: Option<&str>) -> Option<&str> {
+        match self.home_text(place, &strip_gentile_words(&fold(cited)), article_key) {
+            HomeText::Found(uid) => Some(uid),
+            HomeText::Abstain => None,
+            HomeText::Absent => self
+                .alias_text
+                .get(&fold(cited))
+                .filter(|uid| self.supranational.contains(*uid) && self.applies_at(place, uid))
+                .map(String::as_str),
+        }
+    }
+
+    /// The act an instrument cited by its number names at `place`: the first place of the
+    /// chain carrying the number in the cited nature, then the one act the cited date fits.
+    fn place_numbered(&self, place: &str, instrument: &str, date: Option<Date>) -> Option<&str> {
+        let (nature, num) = cited_act_number(&fold(instrument))?;
+        for up in territory_chain(place) {
+            let Some(acts) = self.place_numbers.get(&(up, num.clone())) else {
+                continue;
+            };
+            let acts: Vec<&NumberedAct> = acts
+                .iter()
+                .filter(|a| a.nature.is_none_or(|n| n == nature))
+                .collect();
+            if acts.is_empty() {
+                continue;
+            }
+            let mut fit = acts
+                .into_iter()
+                .filter(|a| date.is_none_or(|d| a.dates.is_empty() || a.dates.contains(&d)));
+            return match (fit.next(), fit.next()) {
+                (Some(a), None) => Some(a.uid.as_str()),
+                _ => None,
+            };
+        }
+        None
     }
 
     /// L'acte candidat contredit-il l'identité citée ? Un acte daté s'identifie
@@ -762,21 +1163,21 @@ impl KeyAnalysis {
 
 /// Résout une occurrence : `instrument` = forme brute capturée (porte le
 /// numéro d'acte que `text_key` rabote), `text_key`/`article_key` = clés
-/// canoniques. `owner_iso` = ISO-2 du for du corps émetteur quand il vient du
-/// référentiel étranger, `None` pour une décision. Déterministe, total.
+/// canoniques. `owner_place` = the place of the body's legal order when it is not France's:
+/// a text of the foreign catalogue, or a court of another legal order. Deterministic, total.
 pub fn link_citation(
     snap: &LinkSnapshot,
     instrument: &str,
     text_key: &str,
     article_key: Option<&str>,
-    owner_iso: Option<&str>,
+    owner_place: Option<&str>,
 ) -> LinkTarget {
     link_citation_analyzed(
         snap,
         instrument,
         &KeyAnalysis::new(text_key),
         article_key,
-        owner_iso,
+        owner_place,
     )
 }
 
@@ -786,7 +1187,7 @@ pub fn link_citation_analyzed(
     instrument: &str,
     analysis: &KeyAnalysis,
     article_key: Option<&str>,
-    owner_iso: Option<&str>,
+    owner_place: Option<&str>,
 ) -> LinkTarget {
     let tk = &analysis.lower;
     let folded = &analysis.folded;
@@ -803,16 +1204,32 @@ pub fn link_citation_analyzed(
             };
         }
     }
+    if let Some(uid) =
+        owner_place.and_then(|place| snap.place_numbered(place, instrument, analysis.sig.act_date))
+    {
+        return LinkTarget {
+            ref_text_uid: Some(uid.to_string()),
+            ref_num_key: snap.num_key_for(uid, article_key),
+        };
+    }
     // Le for du texte émetteur prime l'alias de TEXTE : « constitution » est
     // aliasé sur celle du 4 octobre 1958, ce qui est vrai dans un document
     // français et faux dans la constitution ukrainienne.
-    let mut home = owner_iso.map_or(HomeText::Absent, |iso| {
+    let mut home = owner_place.map_or(HomeText::Absent, |iso| {
         snap.home_text(iso, folded, article_key)
     });
     // 2ter. Famille de code NUE que le pays émetteur ne porte pas au
     // catalogue : abstention.
-    if home == HomeText::Absent && owner_iso.is_some() && analysis.sig.nature == KeyNature::Code {
+    if home == HomeText::Absent && owner_place.is_some() && analysis.sig.nature == KeyNature::Code {
         home = HomeText::Abstain;
+    }
+    // A title the place carries names its text even where the capture alone reads as a
+    // fragment: « Nouveau code de procédure civile » in Luxembourg.
+    if let HomeText::Found(uid) = home {
+        return LinkTarget {
+            ref_text_uid: Some(uid.to_string()),
+            ref_num_key: snap.num_key_for(uid, article_key),
+        };
     }
     if home == HomeText::Absent {
         if let Some(uid) = snap.alias_text.get(folded) {
@@ -847,8 +1264,8 @@ pub fn link_citation_analyzed(
         sig.act_num.as_deref(),
         sig.act_date,
         article_key,
-        home,
-        owner_iso,
+        home == HomeText::Abstain,
+        owner_place,
     );
     match uid {
         Some(uid) => {
@@ -869,7 +1286,7 @@ pub fn link_citation_analyzed(
                 &stripped,
                 &KeyAnalysis::new(&stripped),
                 article_key,
-                owner_iso,
+                owner_place,
             ),
             None => LinkTarget::default(),
         },
@@ -937,17 +1354,14 @@ fn linked_text_uid(
     act_num: Option<&str>,
     act_date: Option<Date>,
     article_key: Option<&str>,
-    home: HomeText<'_>,
-    owner_iso: Option<&str>,
+    home_abstains: bool,
+    owner_place: Option<&str>,
 ) -> Option<String> {
-    // 2bis. Texte du pays émetteur : le corps d'un texte étranger qui cite une
-    // famille NUE (« du Code de procédure pénale », « la Constitution ») vise le
-    // texte de son propre pays. Une clé qui NOMME un pays (« code pénal
-    // marocain ») ne coïncide avec aucune famille nue et suit sa route normale.
-    match home {
-        HomeText::Found(uid) => return Some(uid.to_string()),
-        HomeText::Abstain => return None,
-        HomeText::Absent => {}
+    // 2bis. A bare family the citing place carries resolved upstream; one it carries
+    // ambiguously links nothing. A key that names a country (« code pénal marocain »)
+    // matches no bare family and takes the normal route.
+    if home_abstains {
+        return None;
     }
 
     // 3. Acte daté par numéro — prime sur le titre (les frères d'une même date
@@ -958,7 +1372,7 @@ fn linked_text_uid(
     // Composantes d'identité opposables — seulement sous le for d'un texte
     // étranger. Le numéro cité est lu en graphie LIBRE : les numérotations non
     // françaises (« loi n° 5982 » turque) échappent au format `NN-NNN`.
-    let (cited_num, cited_date) = match owner_iso {
+    let (cited_num, cited_date) = match owner_place {
         Some(_) => (raw.as_deref().and_then(head_act_num_loose), act_date),
         None => (None, None),
     };
@@ -1219,6 +1633,43 @@ fn head_act_num_loose(folded: &str) -> Option<String> {
         .map(|c| c[1].to_string())
 }
 
+/// The nature and [`act_number_key`] of an act cited by its number at the head of a folded
+/// string: « loi organique n° 92-25 du 30 mai 1992 », « ordonnance n° 60.048 ».
+fn cited_act_number(folded: &str) -> Option<(&'static str, String)> {
+    let c = RE_CITED_ACT_NUMBER.captures(folded)?;
+    let nature = match &c[1] {
+        "decret" => "decret",
+        "loi" => "loi",
+        "arrete" => "arrete",
+        "ordonnance" => "ordonnance",
+        "decision" => "decision",
+        _ => "deliberation",
+    };
+    Some((nature, act_number_key(&c[2])?))
+}
+
+/// An act number across its spellings: « 2004/004 », « 2004-4 » and « 2004.04 » all read
+/// `2004-4`. `None` for anything but digits and separators.
+fn act_number_key(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    if !raw.starts_with(|c: char| c.is_ascii_digit())
+        || !raw
+            .chars()
+            .all(|c| c.is_ascii_digit() || matches!(c, '-' | '/' | '.' | ' '))
+    {
+        return None;
+    }
+    let parts: Vec<&str> = raw
+        .split(|c: char| !c.is_ascii_digit())
+        .filter(|p| !p.is_empty())
+        .map(|p| match p.trim_start_matches('0') {
+            "" => "0",
+            t => t,
+        })
+        .collect();
+    Some(parts.join("-"))
+}
+
 /// Retire d'une chaîne pliée les mots vérifiant `drop`, en re-joignant par
 /// espaces simples.
 fn strip_word(folded: &str, drop: impl Fn(&str) -> bool) -> String {
@@ -1403,6 +1854,9 @@ static RE_HEAD_ACT_NUM: LazyLock<Regex> = LazyLock::new(|| {
 });
 static RE_HEAD_ACT_NUM_LOOSE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"^\s*(?:le |la |les |l' ?|du |de la |de l' ?)?\s*(?:decret|loi|arrete|ordonnance|decision|deliberation|circulaire)[^0-9]{0,40}n[o°]? ?(\d[\d/-]*)").unwrap()
+});
+static RE_CITED_ACT_NUMBER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?:le |la |les |l' ?|du |de la |de l' ?)?\s*(decret|loi|arrete|ordonnance|decision|deliberation)\b[^0-9]{0,40}?\bn\s*[o°º]?\s*\.?\s*(\d+(?:\s?[./-]\s?\d+)*)").unwrap()
 });
 static RE_SLASHNUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(\d{1,4}/\d{1,4})").unwrap());
 /// Marqueurs d'instrument conventionnel — pour le tie-break traité : un titre
@@ -2238,5 +2692,105 @@ mod tests {
             );
             assert!(!cols[2].is_empty(), "alias sans cible : {line}");
         }
+    }
+
+    fn alias(uid: &str, kind: &str, lang: &str, value: &str) -> (String, String, String, String) {
+        (uid.into(), kind.into(), lang.into(), value.into())
+    }
+
+    fn places() -> LinkSnapshot {
+        LinkSnapshot::build(
+            vec![
+                text(
+                    "LEGITEXT_CC",
+                    "Code civil",
+                    "Code civil",
+                    "CODE",
+                    Some("FR"),
+                    2800,
+                ),
+                text(
+                    "INTL/CEDH",
+                    "Convention européenne des droits de l'homme",
+                    "CEDH",
+                    "TRAITE",
+                    Some("INTL"),
+                    59,
+                ),
+                text(
+                    "EU/RPROC/CJUE",
+                    "Règlement de procédure de la Cour de justice",
+                    "Règlement de procédure de la Cour de justice",
+                    "REGLEMENT",
+                    Some("EU"),
+                    210,
+                ),
+                text(
+                    "CH/101",
+                    "Constitution fédérale (Suisse), Cst., RS 101",
+                    "Constitution fédérale",
+                    "LOI",
+                    Some("CH"),
+                    200,
+                ),
+                text(
+                    "CH/172.021",
+                    "Loi fédérale sur la procédure administrative (Suisse), PA, RS 172.021",
+                    "loi federale procedure administrative",
+                    "LOI",
+                    Some("CH"),
+                    80,
+                ),
+                text(
+                    "CH-GE/E 5 10",
+                    "Loi sur la procédure administrative (Genève)",
+                    "loi procedure administrative",
+                    "LOI",
+                    Some("CH"),
+                    90,
+                ),
+            ],
+            vec![],
+        )
+        .with_aliases(vec![
+            alias("CH/101", "abbreviation", "fr", "Cst."),
+            alias("CH/101", "abbreviation", "de", "BV"),
+            alias("CH/172.021", "abbreviation", "fr", "PA"),
+            alias("CH/172.021", "abbreviation", "de", "VwVG"),
+            alias("CH-GE/E 5 10", "abbreviation", "fr", "LPA"),
+            alias("LEGITEXT_CC", "abbreviation", "fr", "C. civ."),
+        ])
+    }
+
+    #[test]
+    fn an_abbreviation_reads_the_places_of_the_court() {
+        let s = places();
+        assert_eq!(
+            s.place_abbreviation("CH-GE", "LPA", None),
+            Some("CH-GE/E 5 10")
+        );
+        assert_eq!(s.place_abbreviation("CH-GE", "BV", None), Some("CH/101"));
+        assert_eq!(
+            s.place_abbreviation("CH", "LPA", None),
+            Some("CH-GE/E 5 10")
+        );
+        assert_eq!(s.place_abbreviation("CH-VD", "LPA", None), None);
+        assert_eq!(s.place_abbreviation("BE", "Cst", None), None);
+        assert_eq!(s.place_abbreviation("CH", "EMRK", None), Some("INTL/CEDH"));
+        assert_eq!(s.place_abbreviation("BE", "C. civ.", None), None);
+    }
+
+    #[test]
+    fn a_court_applies_the_law_of_its_places() {
+        let s = places();
+        assert!(s.applies_at("CH-GE", "CH/101"));
+        assert!(s.applies_at("CH-GE", "CH-GE/E 5 10"));
+        assert!(s.applies_at("CH", "CH-GE/E 5 10"));
+        assert!(s.applies_at("CH-VD", "INTL/CEDH"));
+        assert!(!s.applies_at("CH-VD", "CH-GE/E 5 10"));
+        assert!(!s.applies_at("CH", "LEGITEXT_CC"));
+        assert!(s.applies_at("BE-WAL", "EU/RPROC/CJUE"));
+        assert!(!s.applies_at("OHADA", "EU/RPROC/CJUE"));
+        assert!(!s.applies_at("CI", "EU/RPROC/CJUE"));
     }
 }

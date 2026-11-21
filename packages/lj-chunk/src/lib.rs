@@ -26,7 +26,7 @@ pub const EMBED_CONTEXT_TOKENS: usize = 10_240;
 /// embeddings are written: `embed-missing --stock` rebuilds the passages of
 /// every decision below it. Bumped on any change of the chunker, the prefix or
 /// the model.
-pub const EMBED_VERSION: i16 = 3;
+pub const EMBED_VERSION: i16 = 4;
 
 /// Separator penalties ρ (lower is better).
 pub const DEFAULT_SEP_PENALTIES: &[(&str, f64)] = &[
@@ -61,6 +61,17 @@ impl Default for ChunkerParams {
     }
 }
 
+impl ChunkerParams {
+    /// The default separators, then markup and spaces, for a body they cannot cut.
+    fn wide() -> Self {
+        let mut params = Self::default();
+        params
+            .sep_penalties
+            .extend([("><".to_string(), 11.0), (" ".to_string(), 13.0)]);
+        params
+    }
+}
+
 /// What every chunk of a decision is embedded behind: its metadata header,
 /// then its summary.
 pub fn embedding_prefix(metadata_header: &str, summary: Option<&str>) -> String {
@@ -73,6 +84,56 @@ pub fn embedding_prefix(metadata_header: &str, summary: Option<&str>) -> String 
         }
     }
     prefix
+}
+
+/// A norm's passage in tokens, past which an article is cut into several.
+pub const NORM_PASSAGE_TOKENS: usize = 4096;
+
+/// What every passage of an article is embedded behind: its text's title, then
+/// its title path.
+pub fn norm_prefix(title: &str, title_path: &str) -> String {
+    embedding_prefix(&format!("{title}\n{title_path}"), None)
+}
+
+/// An article as embedded: its number, then its text; a piece, its text alone.
+pub fn norm_body(num: &str, texte: &str) -> String {
+    match num {
+        "" => texte.to_string(),
+        num => format!("Article {num}\n{texte}"),
+    }
+}
+
+/// The passages of one article version behind [`norm_prefix`], cut past
+/// [`NORM_PASSAGE_TOKENS`] by [`cut_norm`].
+pub fn norm_passages(
+    title: &str,
+    title_path: &str,
+    num: &str,
+    texte: &str,
+    tokenizer: Option<&Tokenizer>,
+) -> Result<Vec<Chunk>> {
+    cut_norm(
+        &norm_body(num, texte),
+        &norm_prefix(title, title_path),
+        NORM_PASSAGE_TOKENS,
+        tokenizer,
+    )
+}
+
+/// `body` cut behind `prefix` as a decision is, in passages of `tokens`: in
+/// exact BPE with `tokenizer`, in char mode without. A body the separators
+/// cannot cut, an HTML table of 29,000 characters, is cut on markup and spaces.
+pub fn cut_norm(
+    body: &str,
+    prefix: &str,
+    tokens: usize,
+    tokenizer: Option<&Tokenizer>,
+) -> Result<Vec<Chunk>> {
+    let cut = |params: Option<&ChunkerParams>| match tokenizer {
+        Some(tokenizer) => chunk_bpe(body, prefix, tokens, tokenizer, params),
+        None => chunk_char(body, "fr", prefix, tokens, params),
+    };
+    cut(None).or_else(|_| cut(Some(&ChunkerParams::wide())))
 }
 
 /// A chunk ready to embed. Its embedding text is assembled on demand, never
@@ -360,22 +421,34 @@ pub fn chunk_bpe(
     Ok(assemble(prefix, &prep, &cuts))
 }
 
-/// Cuts each of `texts`, translations of one decision each with its language,
-/// in the same number of chunks: the fewest every text fits in, each text cut
-/// by the DP for that number, so that chunk `i` covers about the same ground in
-/// every language. In exact BPE mode with `tokenizer`, in char mode without.
+/// Cuts each of `texts`, translations of one decision each with its language
+/// and the prefix its passages are embedded behind, in the same number of
+/// chunks: the fewest every text fits in, each text cut by the DP for that
+/// number, so that chunk `i` covers about the same ground in every language.
+/// In exact BPE mode with `tokenizer`, in char mode without. Without `params`,
+/// texts the separators cannot cut are cut on markup and spaces.
 pub fn chunk_aligned(
-    texts: &[(&str, &str)],
-    prefix: &str,
+    texts: &[(&str, &str, &str)],
     chunk_tokens: usize,
     tokenizer: Option<&Tokenizer>,
     params: Option<&ChunkerParams>,
 ) -> Result<Vec<Vec<Chunk>>> {
-    let default_params = ChunkerParams::default();
-    let params = params.unwrap_or(&default_params);
+    let align = |params: &ChunkerParams| align(texts, chunk_tokens, tokenizer, params);
+    match params {
+        Some(params) => align(params),
+        None => align(&ChunkerParams::default()).or_else(|_| align(&ChunkerParams::wide())),
+    }
+}
+
+fn align(
+    texts: &[(&str, &str, &str)],
+    chunk_tokens: usize,
+    tokenizer: Option<&Tokenizer>,
+    params: &ChunkerParams,
+) -> Result<Vec<Vec<Chunk>>> {
     let preps = texts
         .iter()
-        .map(|(text, lang)| match tokenizer {
+        .map(|(text, lang, prefix)| match tokenizer {
             Some(tokenizer) => prepare_bpe(text, prefix, chunk_tokens, tokenizer, params),
             None => Ok(prepare_char(text, lang, prefix, chunk_tokens, params)),
         })
@@ -404,10 +477,10 @@ pub fn chunk_aligned(
             })?;
         }
     }
-    Ok(preps
+    Ok(texts
         .iter()
-        .zip(&cuts)
-        .map(|(prep, cuts)| assemble(prefix, prep, cuts))
+        .zip(preps.iter().zip(&cuts))
+        .map(|((_, _, prefix), (prep, cuts))| assemble(prefix, prep, cuts))
         .collect())
 }
 
@@ -549,6 +622,19 @@ mod tests {
     use serde::Deserialize;
 
     #[test]
+    fn an_article_is_one_passage_and_a_body_with_spaces_alone_is_cut() {
+        let short = norm_passages("Code civil", "Livre Ier", "9", "Chacun a droit.", None).unwrap();
+        assert_eq!(
+            short.iter().map(Chunk::embedding_text).collect::<Vec<_>>(),
+            ["Code civil\nLivre Ier\n\nArticle 9\nChacun a droit."]
+        );
+        let table = "<td>cellule</td> ".repeat(3_000);
+        let cut = norm_passages("Arrêté", "", "", &table, None).unwrap();
+        assert!(cut.len() > 1);
+        assert!(cut.iter().all(|c| c.prefix == "Arrêté\n\n"));
+    }
+
+    #[test]
     fn empty_text_yields_no_chunks() {
         assert!(chunk_char("", "fr", "", DEFAULT_CHUNK_TOKENS, None)
             .unwrap()
@@ -658,11 +744,10 @@ mod tests {
         };
         let short = text("Phrase numero du corps");
         let long = text("Ein viel laengerer Satz aus dem Hauptteil der Entscheidung");
-        let (prefix, chunk_tokens) = ("HDR\n\n", 200);
+        let (prefix, other_prefix, chunk_tokens) = ("HDR\n\n", "HDR\n\nZusammenfassung.\n\n", 200);
         let alone = chunk_char(&short, "fr", prefix, chunk_tokens, None).unwrap();
         let out = chunk_aligned(
-            &[(&short, "fr"), (&long, "fr")],
-            prefix,
+            &[(&short, "fr", prefix), (&long, "fr", other_prefix)],
             chunk_tokens,
             None,
             None,
@@ -671,7 +756,11 @@ mod tests {
         assert_eq!(out[0].len(), out[1].len());
         assert!(out[0].len() > alone.len());
         let budget = (chunk_tokens as f64 * chars_per_token_safe("fr")) as usize;
-        for (text, chunks) in [&short, &long].into_iter().zip(&out) {
+        for ((text, prefix), chunks) in [(&short, prefix), (&long, other_prefix)]
+            .into_iter()
+            .zip(&out)
+        {
+            assert!(chunks.iter().all(|c| c.prefix == prefix));
             assert_eq!(chunks[0].char_start, 0);
             assert_eq!(chunks.last().unwrap().char_end, text.chars().count());
             for w in chunks.windows(2) {
@@ -691,6 +780,25 @@ mod tests {
                 "cut at {a:.2} of one text, {b:.2} of the other"
             );
         }
+    }
+
+    #[test]
+    fn a_stretch_without_separators_longer_than_a_chunk_is_cut_on_spaces() {
+        let looped: String = (1907..2100).map(|y| format!("de {y}$^{{re}}$ ")).collect();
+        let text = format!("Vu la requête.\n\n{looped}\n\nLe Secrétaire.");
+        let (prefix, chunk_tokens) = ("HDR\n\n", 200);
+        let texts = [(text.as_str(), "fr", prefix)];
+        assert!(align(&texts, chunk_tokens, None, &ChunkerParams::default()).is_err());
+        let chunks = &chunk_aligned(&texts, chunk_tokens, None, None).unwrap()[0];
+        let budget = (chunk_tokens as f64 * chars_per_token_safe("fr")) as usize;
+        assert!(chunks.len() > 1);
+        assert_eq!(chunks.last().unwrap().char_end, text.chars().count());
+        for w in chunks.windows(2) {
+            assert_eq!(w[0].char_end, w[1].char_start);
+        }
+        assert!(chunks
+            .iter()
+            .all(|c| c.embedding_text().chars().count() <= budget));
     }
 
     #[test]

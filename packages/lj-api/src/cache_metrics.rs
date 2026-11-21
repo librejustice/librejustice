@@ -98,10 +98,12 @@ async fn scrape(state: &AppState) {
         usage!("textes", state.textes_cache),
         usage!("rerank", state.rerank_cache),
         usage!("notes_rerank", state.rerank_scores_cache),
-        usage!("annonces", state.annonces_cache),
+        usage!("annonces", state.journals_cache),
         usage!("registre", state.registre_cache),
         usage!("texte_identite", state.text_ref_cache),
         usage!("sommaire_adresses", state.toc_address_cache),
+        usage!("sommaire_versions", state.toc_source_cache),
+        usage!("articles_versions", state.article_versions_cache),
     ];
     let (entries, weight, capacity) = state.embedding_cache.usage().await;
     out.push(Usage {

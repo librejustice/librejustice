@@ -50,7 +50,6 @@ pub async fn move_chronicle(vehicle: &str, exclude: &[String]) -> Result<()> {
     let (moved, dupes, toc) = repo
         .move_chronicle_articles(vehicle, &instrument, &exclusions)
         .await?;
-    let denorm = repo.refresh_article_denorm(None).await?;
     let (ranked_texts, _) = repo.refresh_reading_ranks().await?;
     tracing::info!(
         vehicle,
@@ -58,13 +57,12 @@ pub async fn move_chronicle(vehicle: &str, exclude: &[String]) -> Result<()> {
         moved,
         dupes,
         toc,
-        denorm,
         ranked_texts,
         "move-chronicle"
     );
     println!(
         "move-chronicle : {moved} versions LEGI {vehicle} → {instrument}, \
-         {dupes} doublons purgés, {toc} arêtes TOC ; {denorm} dénormalisés."
+         {dupes} doublons purgés, {toc} arêtes TOC."
     );
     Ok(())
 }

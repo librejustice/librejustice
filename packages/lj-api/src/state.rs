@@ -22,13 +22,15 @@ const ENTRY_OVERHEAD: usize = 128;
 /// Memory cap of the browse cache, in bytes. An entry is a total and an exhaustive
 /// set of facets, the jurisdiction axis its largest part.
 const BROWSE_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
+/// Above the reader jurisdictions the corpus holds, 34 on 19/11/2026.
+const HOME_BROWSE_CACHE_ENTRIES: u64 = 256;
 /// Plafond du cache rerank, en nombre d'entrées.
 const RERANK_CACHE_MAX_ENTRIES: u64 = 50_000;
 /// Plafond du cache de notes de rerank : une entrée par (query, document).
 const RERANK_SCORES_CACHE_MAX_ENTRIES: u64 = 100_000;
 
 /// Plafond du cache des pages d'annonces, en nombre d'entrées.
-const ANNONCES_CACHE_MAX_ENTRIES: u64 = 2_000;
+const JOURNALS_CACHE_MAX_ENTRIES: u64 = 2_000;
 
 /// Plafond du cache registre, en nombre d'entrées.
 const REGISTRE_CACHE_MAX_ENTRIES: u64 = 20_000;
@@ -38,11 +40,19 @@ const TEXT_REF_CACHE_MAX_ENTRIES: u64 = 50_000;
 
 /// Memory cap of the addressed tables of contents, in bytes.
 const TOC_ADDRESS_CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
+/// Memory cap of the texts' trees over all versions, in bytes.
+const TOC_SOURCE_CACHE_MAX_BYTES: u64 = 128 * 1024 * 1024;
+/// Memory cap of the texts' article versions, in bytes.
+const ARTICLE_VERSIONS_CACHE_MAX_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Peak DB connections one search holds at once, whichever engine: the three
 /// legs of `retrieve_hybrid` on decisions, hits and the two facet members on
 /// norms. [`AppState::search_permits`] derives from it.
-const PEAK_CONNS_PER_SEARCH: usize = 3;
+pub(crate) const PEAK_CONNS_PER_SEARCH: usize = 3;
+
+/// One computation holds three connections and ~0.28 s of Postgres CPU (11/11/2026):
+/// four stay under 12 connections and ~2.5 cores.
+const SIMILAR_IN_FLIGHT: usize = 4;
 
 /// État applicatif injecté dans les handlers (`State<AppState>`).
 #[derive(Clone)]
@@ -55,9 +65,11 @@ pub struct AppState {
     /// Total and facets of browse mode, keyed on the filters alone: the costly
     /// part, and the only one that depends on neither the page nor the sort.
     pub browse_cache: TypedCache<Arc<(i64, lj_dtos::SearchFacets)>>,
+    /// A reader jurisdiction's browse without a question, by its code: replaced each day, never evicted.
+    pub home_browse_cache: TypedCache<Arc<(i64, lj_dtos::SearchFacets)>>,
     /// Réponses du moteur textes, clé = requête complète, fenêtre comprise. Accès
     /// via `legi::search_textes`.
-    pub textes_cache: TypedCache<Arc<lj_dtos::ArticleSearchResponse>>,
+    pub textes_cache: TypedCache<Arc<crate::legi::TextesAnswer>>,
     pub rerank_cache: TypedCache<Arc<Vec<i64>>>,
     /// Notes de rerank par `(query, decision_id)`. Elles survivent au changement de
     /// shortlist, là où l'ordre du `rerank_cache` ne survit pas.
@@ -82,15 +94,21 @@ pub struct AppState {
     /// `legi::code_catalogue`.
     pub code_catalogue_cache: TypedCache<Arc<lj_dtos::CodeCatalogueResponse>>,
     /// Cache des pages de `/annonces`, clé = filtre sérialisé. Accès via
-    /// `annonces::search`.
-    pub annonces_cache: TypedCache<Arc<lj_dtos::AnnonceSearchResponse>>,
+    /// `journals::search`.
+    pub journals_cache: TypedCache<Arc<lj_dtos::JournalSearchResponse>>,
     /// Cache mono-entrée du catalogue des annonces.
-    pub annonces_catalogue_cache: TypedCache<Arc<lj_dtos::AnnonceCatalogueResponse>>,
+    pub journals_catalogue_cache: TypedCache<Arc<lj_dtos::AnnonceCatalogueResponse>>,
+    /// Single entry: the JORF acts a journal search leaves out beside those DILA marks
+    /// protected. Read via `journals_jo::page`.
+    pub jo_hidden_cache: TypedCache<Arc<Vec<String>>>,
     /// Borne les recherches qui tapent la DB en même temps à
     /// `pool_max / PEAK_CONNS_PER_SEARCH`, pour que toute recherche admise puisse
     /// acquérir toutes ses connexions. Au-delà, les excédentaires attendent un
     /// permit. Partagé par les deux moteurs, comme le pool.
     pub search_permits: Arc<tokio::sync::Semaphore>,
+    /// Bounds the decisions' similar legs computed at once; the excess waits.
+    pub similar_permits: Arc<tokio::sync::Semaphore>,
+    pub crawler_slots: crate::admission::CrawlerSlots,
     /// Cache du volet registre des fiches entité, une entrée par uid. Accès via
     /// `registre::entity_registre`.
     pub registre_cache: TypedCache<Arc<lj_dtos::EntityRegistreResponse>>,
@@ -100,8 +118,12 @@ pub struct AppState {
     /// aussi. Accès via `legi::resolve_text`.
     pub text_ref_cache: TypedCache<Option<Arc<crate::legi::TextRef>>>,
     /// A text's tree at a date with the address of each node, keyed
-    /// `<text_uid>@<date>`. Access through `legi::toc_addresses`.
+    /// `<text_uid>@<first day of that tree>`. Access through `legi::toc_addresses`.
     pub toc_address_cache: TypedCache<Arc<crate::legi::TocAddresses>>,
+    /// Keyed by `text_uid`.
+    pub toc_source_cache: TypedCache<Arc<crate::legi::TocSource>>,
+    /// Keyed by `text_uid`.
+    pub article_versions_cache: TypedCache<Arc<lj_store::repository::ArticleVersions>>,
     /// Cache de la fraîcheur d'ingest par source. Accès via `legi::ingest_freshness`.
     pub ingest_freshness_cache: TypedCache<Option<chrono::NaiveDate>>,
     /// A reader's place resolved to its ancestors; the vocabulary moves only by
@@ -156,9 +178,10 @@ impl AppState {
             })
             .time_to_live(Duration::from_secs(3600))
             .build();
+        let home_browse_cache = TypedCache::builder(HOME_BROWSE_CACHE_ENTRIES).build();
         let textes_cache = TypedCache::builder(TEXTES_CACHE_MAX_BYTES)
-            .weigher(|k: &str, v: &Arc<lj_dtos::ArticleSearchResponse>| {
-                (k.len() + crate::legi::response_weight(v) + ENTRY_OVERHEAD).min(u32::MAX as usize)
+            .weigher(|k: &str, v: &Arc<crate::legi::TextesAnswer>| {
+                (k.len() + crate::legi::answer_weight(v) + ENTRY_OVERHEAD).min(u32::MAX as usize)
                     as u32
             })
             .time_to_live(Duration::from_secs(3600))
@@ -183,10 +206,13 @@ impl AppState {
         let code_catalogue_cache = TypedCache::builder(2)
             .time_to_live(Duration::from_secs(12 * 3600))
             .build();
-        let annonces_cache = TypedCache::builder(ANNONCES_CACHE_MAX_ENTRIES)
+        let journals_cache = TypedCache::builder(JOURNALS_CACHE_MAX_ENTRIES)
             .time_to_live(Duration::from_secs(15 * 60))
             .build();
-        let annonces_catalogue_cache = TypedCache::builder(1)
+        let journals_catalogue_cache = TypedCache::builder(1)
+            .time_to_live(Duration::from_secs(3600))
+            .build();
+        let jo_hidden_cache = TypedCache::builder(1)
             .time_to_live(Duration::from_secs(3600))
             .build();
         let search_permits = Arc::new(tokio::sync::Semaphore::new(
@@ -211,6 +237,18 @@ impl AppState {
             .build();
         let toc_address_cache = TypedCache::builder(TOC_ADDRESS_CACHE_MAX_BYTES)
             .weigher(|k: &str, v: &Arc<crate::legi::TocAddresses>| {
+                (k.len() + v.weight() + ENTRY_OVERHEAD).min(u32::MAX as usize) as u32
+            })
+            .time_to_live(Duration::from_secs(3600))
+            .build();
+        let toc_source_cache = TypedCache::builder(TOC_SOURCE_CACHE_MAX_BYTES)
+            .weigher(|k: &str, v: &Arc<crate::legi::TocSource>| {
+                (k.len() + v.weight() + ENTRY_OVERHEAD).min(u32::MAX as usize) as u32
+            })
+            .time_to_live(Duration::from_secs(3600))
+            .build();
+        let article_versions_cache = TypedCache::builder(ARTICLE_VERSIONS_CACHE_MAX_BYTES)
+            .weigher(|k: &str, v: &Arc<lj_store::repository::ArticleVersions>| {
                 (k.len() + v.weight() + ENTRY_OVERHEAD).min(u32::MAX as usize) as u32
             })
             .time_to_live(Duration::from_secs(3600))
@@ -241,6 +279,10 @@ impl AppState {
             // série : sans lui, une IP morte mange le budget entier et la seconde
             // n'est jamais tentée — DILA en publie deux.
             .connect_timeout(Duration::from_secs(1))
+            // recherche-entreprises closes an idle connection at 60 s, under reqwest's
+            // 90 s default: a request sent on it as it closes is reset.
+            .pool_idle_timeout(Duration::from_secs(30))
+            .retry(crate::registre::retry_policy())
             .user_agent("librejustice.fr")
             .build()
             .expect("client HTTP registre");
@@ -257,6 +299,7 @@ impl AppState {
             embedding_cache: EmbeddingCache::default(),
             search_cache,
             browse_cache,
+            home_browse_cache,
             textes_cache,
             rerank_cache,
             rerank_scores_cache,
@@ -269,15 +312,20 @@ impl AppState {
             jurisdiction_catalogue_cache,
             norm_catalogue_cache,
             code_catalogue_cache,
-            annonces_cache,
-            annonces_catalogue_cache,
+            journals_cache,
+            journals_catalogue_cache,
+            jo_hidden_cache,
             search_permits,
+            similar_permits: Arc::new(tokio::sync::Semaphore::new(SIMILAR_IN_FLIGHT)),
+            crawler_slots: crate::admission::CrawlerSlots::default(),
             registre_cache,
             registre_http,
             inpi,
             suggest_cache,
             text_ref_cache,
             toc_address_cache,
+            toc_source_cache,
+            article_versions_cache,
             ingest_freshness_cache,
             place_path_cache,
             place_corpus_cache,

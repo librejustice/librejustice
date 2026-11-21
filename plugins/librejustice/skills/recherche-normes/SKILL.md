@@ -1,13 +1,13 @@
 ---
 name: recherche-normes
-description: Find and quote legal texts and administrative guidance with the LibreJustice MCP tools, covering French codes at any date, EU law, treaties and bilateral accords, foreign codes (59 countries), collective agreements, BOFiP and circulaires. Use whenever the user asks what a text says or said at a given date, which version or which text applies to a situation, which laws or decrees were enacted over a period, needs the exact wording of a provision for a brief, or works with foreign or international law in French litigation, even if they never mention LibreJustice.
+description: Find and quote legal texts and administrative guidance with the LibreJustice MCP tools, covering French codes and statutes at any date, the Journal officiel and the ministry bulletins, EU law, treaties and bilateral accords, foreign codes (59 countries), collective agreements, BOFiP, circulaires and the Service-Public practical sheets. Use whenever the user asks what a text says or said at a given date, which version or which text applies to a situation, which laws or decrees were enacted over a period, needs the exact wording of a provision for a brief, or works with foreign or international law in French litigation, even if they never mention LibreJustice.
 ---
 
 # Statutory research (LibreJustice)
 
 The user needs the exact provision, in the version in force at the legally relevant date, linked and quoted verbatim. A paraphrase from memory is not a deliverable: models misremember article numbers and miss amendments; every quoted provision comes from `get_norm`.
 
-The referential goes far beyond French codes: EU law, international treaties (including bilateral accords), the codes of 59 foreign countries, collective agreements, BOFiP. Map and counts: [references/corpus.md](references/corpus.md). Observed failure modes: [references/traps.md](references/traps.md). Foreign and international law: [references/foreign-law.md](references/foreign-law.md).
+The referential goes far beyond French codes: the Journal officiel, EU law, international treaties (including bilateral accords), the codes of 59 foreign countries, collective agreements, BOFiP, the Service-Public practical sheets. Map and counts: [references/corpus.md](references/corpus.md). Observed failure modes: [references/traps.md](references/traps.md). Foreign and international law: [references/foreign-law.md](references/foreign-law.md).
 
 The tools come from the LibreJustice MCP server; if `get_norm` is missing from your session, connect it first: [references/install-mcp.md](references/install-mcp.md).
 
@@ -17,7 +17,7 @@ The tools come from the LibreJustice MCP server; if `get_norm` is missing from y
 2. **Date before text.** Identify the legally relevant date first (the attacked decision, the facts, the contract), pass it as `as_of` (both `get_norm` and `search_norms` take it; the search then matches the versions valid at that date), and say which version you quote (its validity window is in the response). The version in force today is the wrong one for most litigation.
 3. **Name texts by their official name.** The `code` filter resolves slugs and exact official names, not usual names: « CEDH » and « Convention européenne des droits de l'homme » fail where « Convention de sauvegarde des droits de l'homme et des libertés fondamentales » works. When unsure, recover the slug from `facets.code` or from an inline `/norm/` link in a decision.
 
-A `get_norm` response may also carry `commentaries`, doctrine anchored on the article, served inline (`body`) or as outbound links (`url`). Context, never the norm: only the article text quotes as the provision.
+A `get_norm` response may also carry `commentaries`, outbound links (`url`) to doctrine anchored on the article. Context, never the norm: only the article text quotes as the provision.
 
 ## Three access paths, cheapest first
 
@@ -32,6 +32,10 @@ A `get_norm` response may also carry `commentaries`, doctrine anchored on the ar
 `valid_from` is the earliest entry into force of the versions served, which are those in force at `as_of`, else today. A text's publication counts as its first version: a new law falls in the window of its publication and of its entry into force, a code in the window where one of its articles changed. Each hit carries the `valid_from` of the version it serves, and its `valid_to` once that version has ended.
 
 With no `query`, `search_norms` lists whole texts, the most recently changed first: the laws of the last twelve months are `jurisdiction: "FR.LOI"` and `valid_from` a year back. Older laws amended in the window list too: the laws enacted in it are those whose title is dated inside it. A `query` with the same bounds keeps the articles on a subject that changed in the window. Past 20 texts, set `as_of` to the `valid_from` of the last hit and deduplicate by `url`.
+
+## Official journals
+
+`search_notices` with `fund: ["jo"]` runs a keyword search over 24 official journals: the Journal officiel, the French ministries' bulletins, the Swiss Recueil officiel, the regional and community editions of the Moniteur belge. `jurisdiction` narrows it to a country or one journal (`BE`, `FR.JORF`). Individual measures such as appointments are publications: look for them there. `get_notice` returns a publication as printed, visas, articles and signatures included. Its `norm_url` opens the consolidated text in `get_norm`, which is the version to quote for a provision in force.
 
 ## Versions, renumbering, silence
 
@@ -58,6 +62,7 @@ Things to say, not wording to reproduce: say them in the language the user write
 - Cite the provision with the official text name and article number, linking it on the `url` verbatim.
 - Say which version you quote, its validity dates, and why that version governs the case (rule 2).
 - Quote it verbatim, never truncating a sentence in a way that drops a condition or a negation.
+- Give `source_url` when the user wants the official link: the article at its official publisher, Légifrance at the date served for French law.
 - For foreign and aggregated sources, say where the text comes from when reliability matters: each hit carries a `source` field (official publishers like legifrance, eur-lex, fedlex, dri.gouv.sn vs aggregators like jafbase or archive.org, see corpus.md).
 
 ## Don't waste calls

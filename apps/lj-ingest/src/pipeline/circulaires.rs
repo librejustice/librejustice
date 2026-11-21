@@ -1,13 +1,14 @@
 //! Circulaires (fond DILA CIRCULAIRES) : sync du fond complet
 //! (stocks 2009-2014 + abrogations historiques + flux ≥ 2014) → `legal_text`
 //! nature=`CIRCULAIRE`, identité `cir_<ID>`, NOR en cascade, état
-//! V/A en `status`, résumé en `body`.
+//! V/A en `status`, DILA's summary as the provisional `body` piece.
 //!
 //! Bodies ([`sync_circulaires_bodies`]): a separate pass replays the PDF stocks
 //! (`pdf/<année>_pdf.tar.gz`), then the feeds' companion PDFs, through
-//! deterministic `pdftotext` with cache-first Mistral OCR for scans, and sets
-//! `body` to the extracted text. The metadata sync writes DILA's capped summary
-//! as a provisional `body`, which the body pass replaces when a usable PDF exists.
+//! deterministic `pdftotext` with cache-first Mistral OCR for scans, and writes
+//! the extracted text as the text's `body` piece. The metadata sync writes DILA's
+//! capped summary as a provisional piece, which the body pass replaces when a
+//! usable PDF exists.
 //!
 //! Rejeu : stocks (par année) → `abroge_txt.tar` (flips d'état historiques)
 //! → flux en ordre chronologique (last-write-wins par `ID_CIRCULAIRE` —
@@ -15,15 +16,18 @@
 //! ingéré est marqué au manifest (`mark_circulaire_done`) : un crash reprend
 //! où il s'était arrêté. Idempotent : upsert par `text_uid`.
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use anyhow::{anyhow, Result};
 
+use lj_bucket::{key, Bucket};
 use lj_sources::circulaires::{CircKind, Circulaire};
-use lj_store::repository::DecisionRepository;
+use lj_store::repository::{BodyWrite, DecisionRepository};
+use serde_json::Value;
 
 use crate::config::Settings;
-use crate::ocr::Ocr;
+use crate::ocr::{self, Ocr};
 
 /// Sync du fond CIRCULAIRES : planifie (listing + téléchargements), ingère
 /// chaque fichier nouveau dans l'ordre de rejeu, marque le manifest, puis pose
@@ -69,8 +73,6 @@ pub async fn sync_circulaires() -> Result<()> {
         .map_err(|e| anyhow!("mark_circulaire_done {}: {e}", tarball.name))?;
     }
 
-    // Slugs des textes nouveaux — pas de refresh code_title : la famille n'a
-    // pas d'articles.
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
 
     tracing::info!(
@@ -86,12 +88,12 @@ pub async fn sync_circulaires() -> Result<()> {
 
 /// Passe corps du fond CIRCULAIRES : rejoue les tarballs PDF (stocks puis
 /// flux, last-write-wins par id), extrait chaque PDF (`pdftotext` natif, OCR
-/// Mistral cache-first en repli scanné) et pose `legal_text.body`. Un repli OCR
+/// Mistral cache-first en repli scanné) et pose la pièce `body` du texte. Un repli OCR
 /// qui manque (clé absente/épuisée) dépose le PDF en file d'attente
 /// (`ocr-pending/`), drainée en tête de chaque run : le retry coûte
 /// O(fichiers manqués), jamais un re-stream de tarball — le tarball est donc
 /// marqué au manifest inconditionnellement.
-pub async fn sync_circulaires_bodies() -> Result<()> {
+pub async fn sync_circulaires_bodies(ocr_tenant: &str) -> Result<()> {
     let settings = Settings::from_env()?;
     let dir = settings.cache_dir().join("circulaires");
 
@@ -110,13 +112,17 @@ pub async fn sync_circulaires_bodies() -> Result<()> {
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     let repo = DecisionRepository::new(&conn);
 
-    let ocr_client = Ocr::from_pool(&repo).await?;
+    let ocr_client = Ocr::tenants(&repo, ocr_tenant).await?;
+    let scans = Scans {
+        ocr: ocr_client.as_ref(),
+        bucket: settings.bucket()?,
+        dir: dir.clone(),
+    };
 
     let mut total = PdfCounts::default();
-    drain_pending_ocr(&repo, ocr_client.as_ref(), &dir, &mut total).await?;
+    drain_pending_ocr(&repo, &scans, &mut total).await?;
     for tarball in &plan {
-        let counts =
-            ingest_circulaire_pdfs(&repo, ocr_client.as_ref(), &dir, &tarball.path).await?;
+        let counts = ingest_circulaire_pdfs(&repo, &scans, &tarball.path).await?;
         total.add(&counts);
         let (dir, name) = (dir.clone(), tarball.name.clone());
         tokio::task::spawn_blocking(move || {
@@ -134,8 +140,95 @@ pub async fn sync_circulaires_bodies() -> Result<()> {
         ocr_missed = total.ocr_missed,
         missing_row = total.missing_row,
         errors = total.errors,
+        gaps = total.gaps,
         "sync_circulaires_bodies"
     );
+    Ok(())
+}
+
+/// Rewrites the body of every circulaire whose OCR answer the bucket keeps, from that answer.
+pub async fn rebuild_circulaires_ocr() -> Result<()> {
+    let settings = Settings::from_env()?;
+    let bucket = settings.bucket()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    let answers: Vec<String> = bucket
+        .keys("circulaires/")
+        .await?
+        .into_iter()
+        .filter(|k| !k.contains(".ocr/"))
+        .collect();
+    let mut written = 0usize;
+    for answer in &answers {
+        let id = answer
+            .strip_prefix("circulaires/")
+            .and_then(|k| k.strip_suffix(".ocr.json.zst"))
+            .ok_or_else(|| anyhow!("{answer}: not a circulaire's OCR answer"))?;
+        let pages: Vec<Value> = ocr::kept(&bucket, answer)
+            .await?
+            .ok_or_else(|| anyhow!("{answer}: gone from the bucket"))?;
+        let body = lj_parse::clean_ocr_markdown(&ocr::text(&pages));
+        written += repo
+            .write_text_bodies(SOURCE, &[(id.to_string(), body)], BodyWrite::Replace)
+            .await
+            .map_err(|e| anyhow!("write_text_bodies {id}: {e}"))?
+            .len();
+    }
+    tracing::info!(
+        answers = answers.len(),
+        written,
+        "circulaires: bodies rebuilt from the OCR answers"
+    );
+    Ok(())
+}
+
+/// Empties the pages `list` names, `<id> <page>` a line, in the circulaires' kept answers and
+/// rewrites their bodies; their PDFs stay at DILA, so the list was drawn beforehand.
+pub async fn blank_circulaires_ocr(list: &Path, dry_run: bool) -> Result<()> {
+    let settings = Settings::from_env()?;
+    let bucket = settings.bucket()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    let mut listed: BTreeMap<String, BTreeSet<u32>> = BTreeMap::new();
+    for line in std::fs::read_to_string(list)?.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(id), Some(page), None) = (fields.next(), fields.next(), fields.next()) else {
+            anyhow::bail!("{}: not `<id> <page>`: {line:?}", list.display());
+        };
+        listed
+            .entry(id.to_string())
+            .or_default()
+            .insert(page.parse()?);
+    }
+    let mut tally = ocr::Emptied::default();
+    for (id, numbers) in &listed {
+        let answer = key::circulaire_ocr(id);
+        let mut kept = ocr::kept_answer(&bucket, &answer).await?;
+        tally.docs_read += 1;
+        for n in numbers {
+            let page = kept
+                .0
+                .get_mut(n)
+                .ok_or_else(|| anyhow!("{answer}: page {n} not kept"))?;
+            tally.empty(&ocr::markdown(page));
+            *page = ocr::emptied(page);
+        }
+        tally.docs += 1;
+        if dry_run {
+            continue;
+        }
+        ocr::keep_answer(&bucket, &answer, &kept, numbers).await?;
+        let pages: Vec<Value> = kept.0.into_values().collect();
+        let body = lj_parse::clean_ocr_markdown(&ocr::text(&pages));
+        repo.write_text_bodies(SOURCE, &[(id.clone(), body)], BodyWrite::Replace)
+            .await
+            .map_err(|e| anyhow!("write_text_bodies {id}: {e}"))?;
+    }
+    tally.log("circulaires", dry_run);
     Ok(())
 }
 
@@ -145,10 +238,10 @@ pub async fn sync_circulaires_bodies() -> Result<()> {
 /// reste (re-comptée `ocr_missed`).
 async fn drain_pending_ocr(
     repo: &DecisionRepository<'_>,
-    ocr_client: Option<&Ocr>,
-    circ_dir: &Path,
+    scans: &Scans<'_>,
     total: &mut PdfCounts,
 ) -> Result<()> {
+    let circ_dir = scans.dir.as_path();
     let pending = {
         let dir = circ_dir.to_path_buf();
         tokio::task::spawn_blocking(move || {
@@ -162,23 +255,36 @@ async fn drain_pending_ocr(
         return Ok(());
     }
     tracing::info!(pending = pending.len(), "circulaires: drainage ocr-pending");
-    for (id, path) in pending {
-        let bytes = tokio::fs::read(&path).await?;
-        let Some(md) = scanned_ocr_fallback(ocr_client, circ_dir, &id, &bytes).await else {
+    use futures::StreamExt;
+    let read = futures::stream::iter(pending)
+        .map(|(id, path)| async move {
+            let bytes = tokio::fs::read(&path).await?;
+            anyhow::Ok((scans.text(&id, &bytes).await, id))
+        })
+        .buffer_unordered(OCR_CONCURRENCY);
+    let mut read = std::pin::pin!(read);
+    while let Some(outcome) = read.next().await {
+        let (text, id) = outcome?;
+        let Some((md, refused)) = text else {
             total.ocr_missed += 1;
             continue;
         };
         total.ocr += 1;
         let body = lj_parse::clean_ocr_markdown(&md);
-        if repo
-            .set_legal_text_body(&id, &body)
+        if !repo
+            .write_text_bodies(SOURCE, &[(id.clone(), body)], BodyWrite::Replace)
             .await
-            .map_err(|e| anyhow!("set_legal_text_body {id}: {e}"))?
+            .map_err(|e| anyhow!("write_text_bodies {id}: {e}"))?
+            .is_empty()
         {
             total.updated += 1;
         } else {
             tracing::debug!(id = %id, "circulaire: orphan pdf (no legal_text row)");
             total.missing_row += 1;
+        }
+        if !refused.is_empty() {
+            total.gaps += 1;
+            continue;
         }
         if let Err(e) = lj_sources::circulaires::remove_pending_circulaire_pdf(circ_dir, &id) {
             tracing::warn!(id = %id, error = %e, "circulaire: retrait ocr-pending");
@@ -200,6 +306,8 @@ struct PdfCounts {
     missing_row: usize,
     /// PDF illisibles (`pdftotext` en échec : corrompu, chiffré).
     errors: usize,
+    /// Scans written without the pages the OCR invented on twice, left in `ocr-pending`.
+    gaps: usize,
 }
 
 impl PdfCounts {
@@ -209,6 +317,7 @@ impl PdfCounts {
         self.ocr_missed += o.ocr_missed;
         self.missing_row += o.missing_row;
         self.errors += o.errors;
+        self.gaps += o.gaps;
     }
 }
 
@@ -228,10 +337,18 @@ enum PdfMsg {
 /// drain between two calls. [`Ocr`] paces the pages they send.
 const OCR_CONCURRENCY: usize = 8;
 
+/// `legal_article.source` of a circulaire's body.
+const SOURCE: &str = "circulaire";
+
 /// Un membre PDF résolu en corps (ou compté) par le pipeline concurrent.
 enum PdfOutcome {
     /// Corps prêt à poser (`ocr` = passé par le repli OCR, cache compris).
-    Body { id: String, body: String, ocr: bool },
+    Body {
+        id: String,
+        body: String,
+        ocr: bool,
+        gaps: bool,
+    },
     /// Scanné sans OCR possible (pas de clé / échec).
     OcrMissed,
     /// `pdftotext` en échec (corrompu, chiffré).
@@ -244,12 +361,12 @@ enum PdfOutcome {
 /// séquentielles sur la connexion unique.
 async fn ingest_circulaire_pdfs(
     repo: &DecisionRepository<'_>,
-    ocr_client: Option<&Ocr>,
-    circ_dir: &Path,
+    scans: &Scans<'_>,
     path: &Path,
 ) -> Result<PdfCounts> {
     use futures::StreamExt;
 
+    let circ_dir = scans.dir.as_path();
     let (tx, rx) = tokio::sync::mpsc::channel::<PdfMsg>(8);
     let tar_path = path.to_path_buf();
     let reader = tokio::task::spawn_blocking(move || -> Result<()> {
@@ -282,24 +399,33 @@ async fn ingest_circulaire_pdfs(
                 id,
                 body,
                 ocr: false,
+                gaps: false,
             },
-            PdfMsg::Scanned(id, bytes) => {
-                match scanned_ocr_fallback(ocr_client, circ_dir, &id, &bytes).await {
-                    Some(md) => PdfOutcome::Body {
-                        body: lj_parse::clean_ocr_markdown(&md),
-                        id,
-                        ocr: true,
-                    },
-                    None => {
+            PdfMsg::Scanned(id, bytes) => match scans.text(&id, &bytes).await {
+                Some((md, refused)) => {
+                    if !refused.is_empty() {
                         if let Err(e) = lj_sources::circulaires::save_pending_circulaire_pdf(
                             circ_dir, &id, &bytes,
                         ) {
                             tracing::warn!(id = %id, error = %e, "circulaire: ocr-pending drop");
                         }
-                        PdfOutcome::OcrMissed
+                    }
+                    PdfOutcome::Body {
+                        body: lj_parse::clean_ocr_markdown(&md),
+                        id,
+                        ocr: true,
+                        gaps: !refused.is_empty(),
                     }
                 }
-            }
+                None => {
+                    if let Err(e) =
+                        lj_sources::circulaires::save_pending_circulaire_pdf(circ_dir, &id, &bytes)
+                    {
+                        tracing::warn!(id = %id, error = %e, "circulaire: ocr-pending drop");
+                    }
+                    PdfOutcome::OcrMissed
+                }
+            },
             PdfMsg::Unreadable => PdfOutcome::Unreadable,
         }
     })
@@ -309,8 +435,14 @@ async fn ingest_circulaire_pdfs(
     let mut counts = PdfCounts::default();
     while let Some(outcome) = outcomes.next().await {
         let (id, body) = match outcome {
-            PdfOutcome::Body { id, body, ocr } => {
+            PdfOutcome::Body {
+                id,
+                body,
+                ocr,
+                gaps,
+            } => {
                 counts.ocr += usize::from(ocr);
+                counts.gaps += usize::from(gaps);
                 (id, body)
             }
             PdfOutcome::OcrMissed => {
@@ -322,10 +454,11 @@ async fn ingest_circulaire_pdfs(
                 continue;
             }
         };
-        if repo
-            .set_legal_text_body(&id, &body)
+        if !repo
+            .write_text_bodies(SOURCE, &[(id.clone(), body)], BodyWrite::Replace)
             .await
-            .map_err(|e| anyhow!("set_legal_text_body {id}: {e}"))?
+            .map_err(|e| anyhow!("write_text_bodies {id}: {e}"))?
+            .is_empty()
         {
             counts.updated += 1;
         } else {
@@ -364,31 +497,41 @@ pub(crate) fn body_from_text_layer(extracted: &str) -> Option<String> {
     Some(extracted.replace('\x0c', "\n\n").trim().to_string())
 }
 
-/// Repli OCR pour un PDF scanné, cache-first (`<circ_dir>/ocr/<id>.md`) —
-/// zéro appel live si déjà OCR-isé ; sinon OCR Mistral si une clé est
-/// disponible (puis cache). `None` si pas de cache ET pas de clé/échec →
-/// l'appelant compte un `ocr_missed`, le tarball sera rejoué.
-async fn scanned_ocr_fallback(
-    client: Option<&Ocr>,
-    circ_dir: &Path,
-    id: &str,
-    pdf_bytes: &[u8],
-) -> Option<String> {
-    use lj_sources::circulaires::{load_cached_circulaire_ocr, save_cached_circulaire_ocr};
-    if let Ok(Some(md)) = load_cached_circulaire_ocr(circ_dir, id) {
-        return Some(md);
-    }
-    let client = client?;
-    match client.document(pdf_bytes, id).await {
-        Ok(markdown) => {
-            if let Err(e) = save_cached_circulaire_ocr(circ_dir, id, &markdown) {
-                tracing::warn!(id = %id, error = %e, "circulaire ocr cache write");
+/// The OCR fallback of a scanned PDF, and where its reading is kept.
+struct Scans<'a> {
+    ocr: Option<&'a Ocr>,
+    bucket: Bucket,
+    dir: std::path::PathBuf,
+}
+
+impl Scans<'_> {
+    /// The markdown of a scanned PDF: from Mistral's answer the bucket keeps, else from the
+    /// markdown cached before the answer was kept (`<circ_dir>/ocr/<id>.md`), else read by the
+    /// OCR, its answer kept, with the pages it invented on twice. `None` when none of the three
+    /// reads it: the caller counts an `ocr_missed` and queues the PDF.
+    async fn text(&self, id: &str, pdf_bytes: &[u8]) -> Option<(String, Vec<u32>)> {
+        let answer = key::circulaire_ocr(id);
+        match ocr::kept::<Vec<Value>>(&self.bucket, &answer).await {
+            Ok(Some(pages)) => return Some((ocr::text(&pages), Vec::new())),
+            Ok(None) => {}
+            Err(e) => {
+                tracing::warn!(id = %id, error = %e, "circulaire: kept OCR answer unread");
+                return None;
             }
-            Some(markdown)
         }
-        Err(e) => {
-            tracing::warn!(id = %id, error = %e, "circulaire: scanned OCR fallback failed");
-            None
+        if let Ok(Some(md)) = lj_sources::circulaires::load_cached_circulaire_ocr(&self.dir, id) {
+            return Some((md, Vec::new()));
+        }
+        match self
+            .ocr?
+            .document_kept(&self.bucket, &answer, pdf_bytes, id)
+            .await
+        {
+            Ok(reading) => Some((reading.text(), reading.refused)),
+            Err(e) => {
+                tracing::warn!(id = %id, error = %e, "circulaire: scanned OCR fallback failed");
+                None
+            }
         }
     }
 }
@@ -418,7 +561,7 @@ async fn ingest_circulaires_tarball(
         })
     });
 
-    let (mut upserted, mut errors) = (0usize, 0usize);
+    let (mut rewritten, mut errors) = (Vec::new(), 0usize);
     while let Some(msg) = rx.recv().await {
         let c = match msg {
             Ok(c) => c,
@@ -427,15 +570,25 @@ async fn ingest_circulaires_tarball(
                 continue;
             }
         };
-        let row = circulaire_row(*c);
+        let (row, resume) = circulaire_row(*c);
         repo.upsert_legal_text(&row)
             .await
             .map_err(|e| anyhow!("upsert_legal_text {}: {e}", row.text_uid))?;
-        upserted += 1;
+        if let Some(resume) = resume {
+            repo.write_text_bodies(
+                SOURCE,
+                &[(row.text_uid.clone(), resume)],
+                BodyWrite::IfAbsent,
+            )
+            .await
+            .map_err(|e| anyhow!("write_text_bodies {}: {e}", row.text_uid))?;
+        }
+        rewritten.push(row.text_uid);
     }
     reader
         .await
         .map_err(|e| anyhow!("tâche lecture circulaires {}: {e}", path.display()))??;
+    let upserted = rewritten.len();
     tracing::info!(source = %path.display(), upserted, errors, "ingest_circulaires_tarball");
     Ok((upserted, errors))
 }
@@ -473,10 +626,11 @@ async fn apply_abroge_tar(repo: &DecisionRepository<'_>, path: &Path) -> Result<
     Ok(n)
 }
 
-/// Mapping métadonnées → `legal_text`. Dates ISO tolérantes : le fond porte
-/// des valeurs aberrantes réelles (`1190-…`) — `NaiveDate` les accepte ; un
-/// format illisible devient `None` (warn), jamais un abort du fond entier.
-fn circulaire_row(c: Circulaire) -> lj_store::repository::LegalTextRow {
+/// The metadata as a `legal_text` row, and DILA's summary, the provisional body.
+/// Dates are read leniently: the fond carries real aberrant values (`1190-…`),
+/// which `NaiveDate` accepts; an unreadable format becomes `None` with a warning,
+/// never an abort of the whole fond.
+fn circulaire_row(c: Circulaire) -> (lj_store::repository::LegalTextRow, Option<String>) {
     let date = |s: Option<&str>| -> Option<chrono::NaiveDate> {
         let s = s?;
         match chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d") {
@@ -499,7 +653,7 @@ fn circulaire_row(c: Circulaire) -> lj_store::repository::LegalTextRow {
         }
     }
     .to_string();
-    lj_store::repository::LegalTextRow {
+    let row = lj_store::repository::LegalTextRow {
         text_uid: c.id,
         jurisdiction: "FR".to_string(),
         title: c.titre,
@@ -513,9 +667,9 @@ fn circulaire_row(c: Circulaire) -> lj_store::repository::LegalTextRow {
         eli: None,
         nor: c.nor,
         instrument_key: None,
-        body: c.resume,
         status: Some(status),
-    }
+    };
+    (row, c.resume)
 }
 
 #[cfg(test)]

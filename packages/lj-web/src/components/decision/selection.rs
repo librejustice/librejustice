@@ -65,6 +65,7 @@ pub fn SelectionToolbar(
     selection_state: RwSignal<Option<SelState>>,
 ) -> impl IntoView {
     let _ = selection_state;
+    let ui = &crate::i18n::use_ui().decision;
     let toolbar_ref = NodeRef::<leptos::html::Div>::new();
     let pose: RwSignal<Option<(f64, f64)>> = RwSignal::new(None);
 
@@ -115,6 +116,7 @@ pub fn SelectionToolbar(
     let on_search = {
         let _text = state.text.clone();
         let _card_view = expect_context::<CardViewPref>();
+        let _scope = crate::jurisdiction::use_reader_scope();
         move |_| {
             #[cfg(feature = "hydrate")]
             {
@@ -132,7 +134,7 @@ pub fn SelectionToolbar(
                 _card_view.pin(q, CardView::Snippet);
                 let navigate = leptos_router::hooks::use_navigate();
                 navigate(
-                    &format!("/decision-search?q={query}"),
+                    &_scope.path_untracked(&format!("/decision-search?q={query}")),
                     leptos_router::NavigateOptions::default(),
                 );
                 clear_selection();
@@ -171,7 +173,7 @@ pub fn SelectionToolbar(
             }
         };
         view! { <ToolbarButton
-            label="Copier + référence"
+            label=ui.copy_with_reference
             usage=UiAction::DecisionSelectionCopyReference
             on_click=on_copy_ref
         /> }
@@ -183,8 +185,8 @@ pub fn SelectionToolbar(
             class="fixed z-50 flex w-max -translate-x-1/2 -translate-y-full items-center overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] shadow-lg print:hidden"
             style=style
         >
-            <ToolbarButton label="Rechercher" usage=UiAction::DecisionSelectionSearch on_click=on_search />
-            <ToolbarButton label="Copier" usage=UiAction::DecisionSelectionCopy on_click=on_copy />
+            <ToolbarButton label=ui.search_selection usage=UiAction::DecisionSelectionSearch on_click=on_search />
+            <ToolbarButton label=ui.copy usage=UiAction::DecisionSelectionCopy on_click=on_copy />
             {copy_ref_view}
         </div>
     }

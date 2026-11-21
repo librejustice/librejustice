@@ -6,15 +6,16 @@
 //! 1. **Rattachement au conteneur** : le `CONTEXTE` porte un `<TEXTE>` (base ou
 //!    avenant) ET un `<CONTENEUR cid="KALICONT…">`. Le `text_uid` s'ancre sur le
 //!    conteneur : c'est la convention qu'on cite, pas l'avenant.
-//! 2. **Articles sans numéro** : `<NUM/>` vide est fréquent. Le parseur les rend
-//!    (`num_key` vide) — les sauter est une décision du consommateur.
+//! 2. **Articles with no number**: an empty `<NUM/>` is frequent, and such an
+//!    article takes its own key, as in LEGI.
 //!
 //! Les `ETAT` étendus (`VIGUEUR_ETEN`, `VIGUEUR_NON_ETEN`) sont **repliés sur
 //! `VIGUEUR`** : ils doivent compter pour le pick « texte vivant » et l'index
 //! partiel `status='VIGUEUR'`.
 
 use crate::legi::{
-    clean_contenu, collect_liens, collect_titre_tm, date_or_none, find_anywhere, LegiLien,
+    clean_contenu, collect_liens, collect_titre_tm, date_or_none, find_anywhere, unnumbered_key,
+    LegiLien,
 };
 use lj_core::error::CoreError;
 use lj_parse::{build_tree, node_text};
@@ -35,7 +36,7 @@ pub struct KaliArticle {
     /// Ouvriers ». Tête du fil d'Ariane, faute de quoi rien ne dit de quel
     /// instrument du recueil l'article vient.
     pub kalitext_titre: Option<String>,
-    /// Vide pour les articles non numérotés (sections titrées) ; idem `num_key`.
+    /// Vide pour les articles non numérotés (sections titrées).
     pub num: String,
     pub num_key: String,
     pub titre_text: Option<String>,
@@ -77,9 +78,7 @@ fn canon_etat(raw: &str) -> String {
 
 /// Parse un `KALIARTI*.xml` (racine `<ARTICLE>`) en [`KaliArticle`].
 ///
-/// Un article **sans numéro** (`<NUM/>` vide, section titrée) est rendu avec
-/// `num_key` vide — au consommateur de le sauter (référentiel citable) ou de le
-/// consommer (corps des TI). `Err` ([`CoreError::Xml`]) si
+/// `Err` ([`CoreError::Xml`]) si
 /// `ID`/`DATE_DEBUT`/`CONTENEUR@cid` manquent — frontière de validation source.
 pub fn parse_kali_article(raw: &[u8]) -> Result<KaliArticle, CoreError> {
     let root =
@@ -88,10 +87,11 @@ pub fn parse_kali_article(raw: &[u8]) -> Result<KaliArticle, CoreError> {
     let kaliarti = node_text(find_anywhere(&root, "META_COMMUN/ID"))
         .ok_or_else(|| CoreError::Xml("ARTICLE KALI: META_COMMUN/ID manquant".into()))?;
 
-    // NUM souvent vide en KALI (articles organisés par titre de section) :
-    // num/num_key vides, rendus quand même (cf. doc).
     let num = node_text(find_anywhere(&root, "META_ARTICLE/NUM")).unwrap_or_default();
-    let num_key = lj_norm::article_key::identity_key(&num);
+    let num_key = match lj_norm::article_key::identity_key(&num) {
+        k if k.is_empty() => unnumbered_key(&root, &kaliarti),
+        k => k,
+    };
 
     // Présence obligatoire, valeur gardée brute : sur `DATE_DEBUT` la sentinelle
     // marque l'absence de fenêtre de validité, pas un début inconnu (cf.
@@ -245,17 +245,15 @@ mod tests {
     }
 
     #[test]
-    fn parse_arti_empty_num_is_returned_with_empty_key() {
+    fn parse_arti_empty_num_takes_its_own_key() {
         let xml = br#"<ARTICLE>
   <META_COMMUN><ID>KALIARTI000000000001</ID></META_COMMUN>
   <META_ARTICLE><NUM/><ETAT>VIGUEUR</ETAT><DATE_DEBUT>2000-09-01</DATE_DEBUT></META_ARTICLE>
   <CONTEXTE><CONTENEUR cid="KALICONT000005635082"/></CONTEXTE>
   <BLOC_TEXTUEL><CONTENU>Sans numero.</CONTENU></BLOC_TEXTUEL>
 </ARTICLE>"#;
-        // NUM vide → article rendu quand même, num_key vide (le skip citable
-        // appartient au consommateur) ; TEXTE absent → kalitext None.
         let a = parse_kali_article(xml).expect("ok");
-        assert!(a.num_key.is_empty());
+        assert_eq!(a.num_key, "kaliarti000000000001");
         assert_eq!(a.kalitext, None);
         assert_eq!(a.kalitext_titre, None);
         assert_eq!(a.texte.as_deref(), Some("Sans numero."));

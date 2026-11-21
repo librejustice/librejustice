@@ -14,7 +14,7 @@ use lj_dtos::{FacetTag, SearchHit, UiAction};
 
 use crate::components::decision_bar::{carry_seed, search_origin, ResultNav, ResultNavSeed};
 use crate::components::ui::{shown_summary, SummaryBadge, SummaryFold};
-use crate::helpers::{format_decision_jurisdiction, format_iso_date};
+use crate::helpers::{format_decision_jurisdiction, format_iso_date, renamed, retitle};
 
 use super::compact_search::highlight::Highlighted;
 use super::view_prefs::CardView;
@@ -31,9 +31,6 @@ fn result_seed(hit_paths: &[String], highlight: Option<String>) -> ResultNavSeed
         from_search: Some(search_origin(highlight)),
     }
 }
-
-/// About six lines of a card: past it, the card folds its summary.
-const CARD_SUMMARY_FOLD_AT: usize = 600;
 
 #[component]
 pub fn ResultCard(
@@ -55,6 +52,8 @@ pub fn ResultCard(
     #[prop(optional_no_strip)]
     highlight: Option<String>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
+    let dates = &crate::i18n::use_ui().dates;
     // Dérogation locale, effacée dès que la bascule d'en-tête bouge : sans ça
     // une carte dérogée resterait sourde à une commande d'ensemble.
     let local = RwSignal::new(None::<CardView>);
@@ -90,16 +89,24 @@ pub fn ResultCard(
         }
     };
 
-    // Titre : `title_html` sinon fallback construit (juridiction, date, n° rôle).
-    let title_html = if hit.title_html.is_empty() {
-        let parts: Vec<String> = [
-            Some(format_decision_jurisdiction(
+    let named = hit
+        .court_names
+        .get(crate::i18n::use_reader_lang().get().code())
+        .cloned();
+    // A court named in the reader's language composes its title anew, the API's being French.
+    let title_html = if hit.title_html.is_empty() || named.is_some() {
+        let jurisdiction = match &named {
+            Some(named) => named.name.clone(),
+            None => format_decision_jurisdiction(
                 hit.jurisdiction_type,
                 hit.jurisdiction_name.as_deref(),
-            )),
+            ),
+        };
+        let parts: Vec<String> = [
+            Some(jurisdiction),
             hit.date_lecture
                 .as_deref()
-                .map(|d| format_iso_date(Some(d))),
+                .map(|d| format_iso_date(dates, Some(d))),
             hit.docket_numbers.as_ref().and_then(|d| d.first().cloned()),
         ]
         .into_iter()
@@ -108,12 +115,17 @@ pub fn ResultCard(
         .collect();
         parts.join(", ")
     } else {
-        hit.title_html.clone()
+        retitle(dates, &hit.title_html, hit.date_lecture.as_deref())
     };
 
-    // Siège (chambre · formation/office) hors du titre — rendu à gauche de la
-    // ligne méta, en regard des badges référentiels alignés à droite.
-    let seat = hit.seat.clone().filter(|s| !s.trim().is_empty());
+    let seat = crate::i18n::use_ui()
+        .referential
+        .named_seat(hit.seat.clone(), hit.seat_parts.as_ref())
+        .filter(|s| !s.trim().is_empty())
+        .map(|seat| match &named {
+            Some(named) => renamed(named, &seat, None),
+            None => seat,
+        });
     let matched_docket = hit.matched_docket.clone();
 
     // Extrait et résumé sont tous deux dans le payload : rendu direct.
@@ -156,11 +168,7 @@ pub fn ResultCard(
             Some(shown) => view! {
                 <SummaryFold
                     text=shown.text
-                    court=shown.court
-                    fold_at=CARD_SUMMARY_FOLD_AT
-                    clamp="line-clamp-6"
                     class="text-[0.95rem] leading-relaxed text-[var(--color-ink-muted)]"
-                    unfold="Lire la suite"
                 >
                     <SummaryBadge jurisdiction_type court=shown.court class="mr-2 align-middle" />
                 </SummaryFold>
@@ -218,7 +226,7 @@ pub fn ResultCard(
                         .map(|n| {
                             view! {
                                 <p class="text-sm text-[var(--color-ink-subtle)]">
-                                    "aussi n° "
+                                    {ui.also_docket}
                                     <span class="font-medium text-[var(--color-ink)]">{n}</span>
                                 </p>
                             }
@@ -246,14 +254,14 @@ pub fn ResultCard(
                             on:click=move |_| local.set(Some(CardView::Snippet))
                             class=move || toggle_class(CardView::Snippet)
                         >
-                            "Extrait"
+                            {ui.excerpt}
                         </button>
                         <button
                             type="button"
                             on:click=move |_| local.set(Some(CardView::Summary))
                             class=move || toggle_class(CardView::Summary)
                         >
-                            "Résumé"
+                            {ui.summary}
                         </button>
                     </div>
                     <A
@@ -261,7 +269,7 @@ pub fn ResultCard(
                         on:click=on_navigate_footer
                         attr:class="inline-flex items-center gap-1 text-sm font-medium text-[var(--color-ink)] no-underline transition-colors group-hover:text-[var(--color-accent)]"
                     >
-                        "Consulter la décision"
+                        {ui.open_decision}
                         <span
                             aria-hidden="true"
                             class="transition-transform group-hover:translate-x-0.5"
@@ -283,8 +291,11 @@ fn ResultMetaBadges(solution: Option<FacetTag>, publication_codes: Vec<String>) 
     use crate::components::ui::{Badge, BadgeTone};
     use crate::pages::decision_page::labels::publication_badge;
 
-    let solution_badge = solution.filter(|t| t.key != "AUTRE").map(|t| t.label);
-    let publication = publication_badge(&publication_codes);
+    let ui = crate::i18n::use_ui();
+    let solution_badge = solution
+        .filter(|t| t.key != "AUTRE")
+        .map(|t| crate::i18n::ReferentialUi::label(ui.referential.solution, &t));
+    let publication = publication_badge(&publication_codes, &ui.decision);
 
     view! {
         {solution_badge

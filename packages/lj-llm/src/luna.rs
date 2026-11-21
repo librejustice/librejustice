@@ -21,8 +21,8 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_tracing::{SpanBackendWithUrl, TracingMiddleware};
 use serde_json::{json, Value};
 
-use crate::oauth;
 use crate::ratelimit::{now_unix, Ledger, Quota, Reservation};
+use crate::{codex, oauth};
 
 const BASE: &str = "https://chatgpt.com/backend-api/codex/responses";
 
@@ -43,6 +43,10 @@ const SEED_TOKENS_PER_MIN: u32 = 2_000_000;
 /// quoted in the Codex issues asked for.
 const THROTTLE_PARK_S: f64 = 60.0;
 
+/// Between two reads of a capped seat's windows, and the park of one whose windows
+/// could not be read.
+const CAP_CHECK_S: f64 = 30.0;
+
 /// What the store hands over for one seat.
 #[derive(Debug, Clone)]
 pub struct LunaSeat {
@@ -50,6 +54,8 @@ pub struct LunaSeat {
     pub account_id: String,
     pub access_token: String,
     pub refresh_token: String,
+    /// Share of each window the seat may fill, its owner keeping the rest.
+    pub cap_percent: Option<f64>,
 }
 
 /// A refreshed seat, for the caller to persist: OpenAI rotates the refresh token
@@ -108,6 +114,10 @@ pub struct LunaClient {
     /// and never a value, so a seat's cost is knowable only by counting it here.
     served: Vec<AtomicU64>,
     spent: Vec<[AtomicU64; 4]>,
+    /// Same index as `fingerprints`.
+    caps: Vec<Option<f64>>,
+    /// Same index as `fingerprints`: unix instant of the last read of a capped seat.
+    cap_checked_at: Mutex<Vec<f64>>,
 }
 
 /// Tokens of one answer, split the way the public price splits them: `cached` is
@@ -159,6 +169,8 @@ impl LunaClient {
             rotations: Mutex::new(Vec::new()),
             served: (0..n).map(|_| AtomicU64::new(0)).collect(),
             spent: (0..n).map(|_| Default::default()).collect(),
+            caps: seats.iter().map(|s| s.cap_percent).collect(),
+            cap_checked_at: Mutex::new(vec![f64::MIN; n]),
         })
     }
 
@@ -239,6 +251,60 @@ impl LunaClient {
         (order, soonest)
     }
 
+    /// Parks every capped seat whose window has reached its cap, until that window
+    /// resets, each read at most once per [`CAP_CHECK_S`].
+    async fn hold_caps(&self) {
+        for seat in 0..self.caps.len() {
+            let Some(cap) = self.caps[seat] else {
+                continue;
+            };
+            {
+                let now = now_unix();
+                let mut checked = self
+                    .cap_checked_at
+                    .lock()
+                    .expect("mutex plafonds non empoisonné");
+                if now - checked[seat] < CAP_CHECK_S {
+                    continue;
+                }
+                checked[seat] = now;
+            }
+            let usage = match self.usage(seat).await {
+                Ok(usage) => usage,
+                Err(e) => {
+                    let _ = self.refresh(seat).await;
+                    match self.usage(seat).await {
+                        Ok(usage) => usage,
+                        Err(_) => {
+                            tracing::warn!(seat = %self.fingerprints[seat], error = %e, "luna_cap_unread");
+                            self.park(seat, CAP_CHECK_S);
+                            continue;
+                        }
+                    }
+                }
+            };
+            let full = usage
+                .windows()
+                .into_iter()
+                .filter(|w| w.used_percent >= cap)
+                .map(|w| w.reset_after_seconds.unwrap_or(w.limit_window_seconds))
+                .max();
+            if let Some(reset_s) = full {
+                tracing::warn!(seat = %self.fingerprints[seat], cap, reset_s, "luna_seat_at_cap");
+                self.park(seat, reset_s as f64);
+            }
+        }
+    }
+
+    async fn usage(&self, seat: usize) -> anyhow::Result<codex::Usage> {
+        let access = self.tokens[seat]
+            .lock()
+            .expect("mutex jetons non empoisonné")
+            .access
+            .clone();
+        codex::usage(&self.plain, &access, &self.accounts[seat]).await
+    }
+
     fn park(&self, seat: usize, delay_s: f64) {
         self.parked_until
             .lock()
@@ -272,6 +338,7 @@ impl LunaClient {
         instructions: &str,
         user: &str,
     ) -> Result<String, LunaError> {
+        self.hold_caps().await;
         let now = now_unix();
         let (order, soonest) = self.live_order(now);
         if order.is_empty() {

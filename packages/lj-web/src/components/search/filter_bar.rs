@@ -1,7 +1,7 @@
 //! `DecisionsFilterBar`: horizontal filter bar under the search bar,
-//! `Date ▾ · Juridiction ▾ · Publication ▾ · Solution ▾ · Plus de filtres`.
+//! `Date ▾ · Juridiction ▾ · Formation ▾ · Publication ▾ · Solution ▾ · Plus de filtres`.
 //! « Plus de filtres » extends the bar in place with the Matière, Textes cités
-//! and Formation dropdowns (no modal).
+//! and Chercher dans dropdowns (no modal).
 //!
 //! Sync bidirectionnelle facettes ↔ query params, mutations via `query_state`
 //! (replace=true, drop `page`).
@@ -21,6 +21,7 @@ use crate::components::ui::DateRangePicker;
 
 #[component]
 pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
     let query_map = use_query_map();
     let nav = Nav::new();
     // Un seul dropdown ouvert à la fois dans la barre.
@@ -144,11 +145,11 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
     let formation_count = Signal::derive(move || formations.get().len());
     let publication_count = Signal::derive(move || pubs.get().len());
     let part_count = Signal::derive(move || {
-        let n = parts.get().len();
-        if n == query_state::PARTS.len() {
+        let searched = parts.get();
+        if searched == query_state::DECISION_PARTS {
             0
         } else {
-            n
+            searched.len()
         }
     });
     let more_expanded = RwSignal::new(false);
@@ -159,10 +160,10 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
         // enchaîner les coches).
         <div
             role="toolbar"
-            aria-label="Filtres de recherche"
+            aria-label=ui.filters
             class="flex flex-wrap items-center gap-2 pb-1"
         >
-            <FilterDropdown id="date" label="Date" active_count=dates_count>
+            <FilterDropdown id="date" label=ui.filter_date active_count=dates_count>
                 <DateRangePicker
                     from=date_from
                     to=date_to
@@ -170,8 +171,8 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                 />
             </FilterDropdown>
 
-            <FilterDropdown id="juridiction" label="Juridiction" active_count=jur_count>
-                <FilterSearchInput value=jur_filter placeholder="Filtrer (ex. Lyon…)" />
+            <FilterDropdown id="juridiction" label=ui.filter_jurisdiction active_count=jur_count>
+                <FilterSearchInput value=jur_filter placeholder=ui.filter_jurisdiction_placeholder />
                 <div
                     class="filter-scroll flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-contain"
                 >
@@ -223,7 +224,22 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                 </div>
             </FilterDropdown>
 
-            <FilterDropdown id="publication" label="Publication" active_count=publication_count>
+            <Show when=move || {
+                !formation_choices.get().is_empty() || formation_count.get() > 0
+            }>
+            <FilterDropdown id="formation" label=ui.filter_formation active_count=formation_count>
+                <FacetTree
+                    choices=formation_choices
+                    selected=formations
+                    on_toggle=Callback::new(move |value: String| toggle(
+                        "formation".to_string(),
+                        value,
+                    ))
+                />
+            </FilterDropdown>
+            </Show>
+
+            <FilterDropdown id="publication" label=ui.filter_publication active_count=publication_count>
                 <FacetChecklist
                     choices=publication_choices
                     selected=pubs
@@ -234,7 +250,7 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                 />
             </FilterDropdown>
 
-            <FilterDropdown id="solution" label="Solution" active_count=solution_count>
+            <FilterDropdown id="solution" label=ui.filter_solution active_count=solution_count>
                 <FacetChecklist
                     choices=solution_choices
                     selected=solutions
@@ -245,33 +261,12 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                 />
             </FilterDropdown>
 
-            <Show when=move || has_query.get()>
-                <FilterDropdown id="searchIn" label="Chercher dans" active_count=part_count>
-                    {query_state::PARTS
-                        .into_iter()
-                        .map(|(value, label, hint)| {
-                            view! {
-                                <CheckboxOption
-                                    label=label.to_string()
-                                    hint=Signal::derive(move || hint.map(str::to_string))
-                                    count=Signal::derive(|| 0)
-                                    selected=Signal::derive(move || parts.get().contains(&value))
-                                    on_toggle=Callback::new(move |_| {
-                                        nav.go(query_state::toggle_part(&effective_map(), value))
-                                    })
-                                />
-                            }
-                        })
-                        .collect_view()}
-                </FilterDropdown>
-            </Show>
-
             <Show when=move || more_expanded.get()>
                 // The legal domain covers part of the corpus only, so the facet can be empty.
                 <Show when=move || {
                     !domaine_choices.get().is_empty() || domaine_count.get() > 0
                 }>
-                <FilterDropdown id="legalDomain" label="Matière" active_count=domaine_count>
+                <FilterDropdown id="legalDomain" label=ui.filter_domain active_count=domaine_count>
                     <FacetTree
                         choices=domaine_choices
                         selected=domaines
@@ -287,7 +282,7 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                     facets.get().is_some_and(|f| !f.legal_instrument.is_empty())
                         || textes_count.get() > 0
                 }>
-                <FilterDropdown id="textes" label="Textes cités" active_count=textes_count>
+                <FilterDropdown id="textes" label=ui.filter_cited_texts active_count=textes_count>
                     <LegalInstrumentPanel
                         facets=facets
                         selected_instruments=lis
@@ -304,21 +299,27 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
                 </FilterDropdown>
                 </Show>
 
-                <Show when=move || {
-                    !formation_choices.get().is_empty() || formation_count.get() > 0
-                }>
-                <FilterDropdown id="formation" label="Formation" active_count=formation_count>
-                    <FacetTree
-                        choices=formation_choices
-                        selected=formations
-                        on_toggle=Callback::new(move |value: String| toggle(
-                            "formation".to_string(),
-                            value,
-                        ))
-                    />
-                </FilterDropdown>
+                <Show when=move || has_query.get()>
+                    <FilterDropdown id="searchIn" label=ui.filter_search_in active_count=part_count>
+                        {query_state::PARTS
+                            .into_iter()
+                            .map(|value| {
+                                let (label, hint) = query_state::part_copy(value, ui);
+                                view! {
+                                    <CheckboxOption
+                                        label=label.to_string()
+                                        hint=Signal::derive(move || hint.map(str::to_string))
+                                        count=Signal::derive(|| 0)
+                                        selected=Signal::derive(move || parts.get().contains(&value))
+                                        on_toggle=Callback::new(move |_| {
+                                            nav.go(query_state::toggle_part(&effective_map(), value))
+                                        })
+                                    />
+                                }
+                            })
+                            .collect_view()}
+                    </FilterDropdown>
                 </Show>
-
             </Show>
 
             <button
@@ -328,7 +329,7 @@ pub fn DecisionsFilterBar(#[prop(into)] facets: Signal<Option<SearchFacets>>) ->
             >
                 <span class="whitespace-nowrap">
                     {move || {
-                        if more_expanded.get() { "Moins de filtres" } else { "Plus de filtres" }
+                        if more_expanded.get() { ui.fewer_filters } else { ui.more_filters }
                     }}
                 </span>
             </button>

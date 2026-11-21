@@ -15,36 +15,37 @@ pub fn ConfirmPage() -> impl IntoView {
     let token = move || query.with(|q| q.get("token").unwrap_or_default());
     let next = move || query.with(|q| q.get("next").unwrap_or_default());
     let error = move || query.with(|q| q.get("error"));
+    let ui = &crate::i18n::use_ui().account;
 
     view! {
-        <Title text="Confirmation - LibreJustice" />
+        <Title text=ui.confirm_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex max-w-sm flex-col gap-4 px-4 py-16">
-            <h1 class="font-sans text-2xl text-[var(--color-ink)]">"Confirmation"</h1>
+            <h1 class="font-sans text-2xl text-[var(--color-ink)]">{ui.confirmation}</h1>
             <Show
                 when=move || error().is_none() && !token().is_empty()
                 fallback=move || {
                     view! {
                         <p class="text-sm text-red-600">
                             {move || match error() {
-                                Some(code) => translate_auth_error(Some(&code)),
-                                None => "Lien incomplet ou invalide.".to_string(),
+                                Some(code) => translate_auth_error(ui, Some(&code)),
+                                None => ui.link_invalid.to_string(),
                             }}
                         </p>
                         <p class="text-sm text-[var(--color-ink-muted)]">
-                            "Ce lien a peut-être expiré ou déjà été utilisé. "
+                            {ui.link_spent}
                             <A
                                 href="/login"
                                 attr:class="text-[var(--color-accent)] underline hover:opacity-80"
                             >
-                                "Demander un nouveau lien"
+                                {ui.new_link}
                             </A>
                         </p>
                     }
                 }
             >
                 <p class="text-sm text-[var(--color-ink-muted)]">
-                    "Confirmez votre adresse pour activer votre compte et ouvrir votre session."
+                    {ui.confirm_intro}
                 </p>
                 <form method="post" action="/internal/auth/confirm" class="flex flex-col gap-3">
                     <input type="hidden" name="token" value=token />
@@ -53,7 +54,7 @@ pub fn ConfirmPage() -> impl IntoView {
                         type="submit"
                         class="rounded-md bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                     >
-                        "Confirmer mon adresse"
+                        {ui.confirm_address}
                     </button>
                 </form>
             </Show>

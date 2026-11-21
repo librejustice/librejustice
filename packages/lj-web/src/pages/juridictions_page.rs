@@ -7,7 +7,7 @@
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use lj_dtos::{
@@ -15,15 +15,17 @@ use lj_dtos::{
     JurisdictionTypeGroup, JurisdictionYearResponse,
 };
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, Failure};
 use crate::components::own_page_description;
 use crate::helpers::decisions_href;
+use crate::helpers::group_thousands;
+use crate::i18n::HubsUi;
 use crate::pages::law_page::data::{sendable, PageError};
 
-fn not_found() -> PageError {
+fn not_found(ui: &HubsUi) -> PageError {
     PageError {
         status: 404,
-        message: "Juridiction inconnue".to_string(),
+        failure: Failure::Said(ui.unknown_jurisdiction.to_string()),
     }
 }
 
@@ -35,19 +37,6 @@ fn in_jurisdiction(jurisdiction_type: &str, code: &str, juris: &str) -> bool {
 
 pub(crate) const DEEP_LINK: &str =
     "w-fit text-sm text-[var(--color-accent)] underline-offset-4 hover:underline";
-
-/// Nombre avec séparateur de milliers FR (espace fine insécable).
-pub(crate) fn fmt_count(n: i64) -> String {
-    let digits = n.to_string();
-    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i).is_multiple_of(3) {
-            out.push('\u{202f}');
-        }
-        out.push(c);
-    }
-    out
-}
 
 /// JSON-LD `BreadcrumbList` schema.org d'un fil d'Ariane (label, url absolue).
 /// Partagé avec la page décision.
@@ -97,14 +86,15 @@ pub(crate) fn set_cache_control(_status: u16) {}
 
 #[component]
 pub(crate) fn HubError(err: PageError) -> impl IntoView {
+    let all = crate::i18n::use_ui();
     view! {
-        <Title text="Page introuvable - LibreJustice" />
+        <Title text=all.hubs.not_found_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                "Erreur"
+                {all.shell.error}
             </p>
-            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.message}</h1>
+            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.failure.text(&crate::i18n::use_ui().shell)}</h1>
         </div>
     }
 }
@@ -121,27 +111,21 @@ pub(crate) fn HubSkeleton() -> impl IntoView {
     }
 }
 
-/// Fil d'Ariane visible des pages hub.
+/// The visible breadcrumb of a hub page, after the home page of the reader's jurisdiction.
 #[component]
 pub(crate) fn HubBreadcrumb(items: Vec<(String, Option<String>)>) -> impl IntoView {
+    let shell = &crate::i18n::use_ui().shell;
+    let home = crate::jurisdiction::use_reader_scope().href("/");
     view! {
-        <nav aria-label="Fil d'Ariane" class="flex flex-wrap items-center gap-1.5 text-sm text-[var(--color-ink-subtle)]">
+        <nav aria-label=shell.breadcrumb class="flex flex-wrap items-center gap-1.5 text-sm text-[var(--color-ink-subtle)]">
+            <A href=home attr:class="hover:text-[var(--color-accent)]">
+                {shell.home}
+            </A>
             {items
                 .into_iter()
-                .enumerate()
-                .map(|(i, (label, href))| {
-                    // Le séparateur est TOUJOURS dans le DOM, masqué au premier
-                    // item par une classe. Un `Option` en tête de fragment répété
-                    // n'émet son marqueur d'hydratation que dans la branche `None`
-                    // une fois `debug_assertions` coupé : le curseur de nœuds du
-                    // client se désynchronise dès le 2e item et tachys panique
-                    // (`failed_to_cast_marker_node`), tuant l'hydratation de toute
-                    // la page.
-                    let separator_class = if i > 0 { "" } else { "hidden" };
+                .map(|(label, href)| {
                     view! {
-                        <span aria-hidden="true" class=separator_class>
-                            "›"
-                        </span>
+                        <span aria-hidden="true">"›"</span>
                         {match href {
                             Some(href) => Either::Left(
                                 view! {
@@ -171,10 +155,11 @@ pub fn JuridictionsPage() -> impl IntoView {
     // on la declare ici, synchroniquement, sinon la generique du shell sort aussi.
     own_page_description();
 
+    let ui = &crate::i18n::use_ui().hubs;
     let params = use_params_map();
     let catalogue = Resource::new_blocking(
         move || params.get().get("juris").unwrap_or_default(),
-        |juris| {
+        move |juris| {
             sendable(async move {
                 let mut catalogue = ApiClient::from_context()
                     .fetch_juridictions()
@@ -188,7 +173,7 @@ pub fn JuridictionsPage() -> impl IntoView {
                 }
                 catalogue.groups.retain(|g| !g.jurisdictions.is_empty());
                 if catalogue.groups.is_empty() {
-                    return Err(not_found());
+                    return Err(not_found(ui));
                 }
                 Ok((juris, catalogue))
             })
@@ -215,33 +200,30 @@ pub fn JuridictionsPage() -> impl IntoView {
 
 #[component]
 fn JuridictionsLoaded(juris: String, response: JurisdictionCatalogueResponse) -> impl IntoView {
-    let title = "Juridictions - LibreJustice";
-    let description = "Toutes les juridictions du corpus — Conseil d'État, Cour de cassation, \
-         cours d'appel, tribunaux administratifs et judiciaires, cours européennes — avec \
-         leurs décisions par année.";
+    let all = crate::i18n::use_ui();
+    let ui = &all.hubs;
+    let title = ui.jurisdictions_title;
+    let description = ui.jurisdictions_description;
     let url = format!("https://librejustice.fr/decision-index/{juris}");
     let jsonld = breadcrumb_jsonld(&[
-        ("Accueil", "https://librejustice.fr/".to_string()),
-        ("Juridictions", url.clone()),
+        (all.shell.home, "https://librejustice.fr/".to_string()),
+        (ui.jurisdictions, url.clone()),
     ]);
 
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-2">
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Jurisprudence"
+                    {ui.case_law}
                 </p>
-                <h1 class="font-sans text-3xl text-[var(--color-ink)]">"Juridictions"</h1>
-                <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    "Parcourez les décisions du corpus par juridiction, puis par année. "
-                    "Chaque juridiction ouvre la liste complète de ses décisions."
-                </p>
-                <A href="/decision-search" attr:class=DEEP_LINK>"Rechercher dans ces décisions"</A>
+                <h1 class="font-sans text-3xl text-[var(--color-ink)]">{ui.jurisdictions}</h1>
+                <p class="max-w-prose text-[var(--color-ink-muted)]">{ui.jurisdictions_intro}</p>
+                <A href=crate::jurisdiction::use_reader_scope().href("/decision-search") attr:class=DEEP_LINK>{ui.search_decisions}</A>
             </header>
 
             {response
@@ -255,10 +237,15 @@ fn JuridictionsLoaded(juris: String, response: JurisdictionCatalogueResponse) ->
 
 #[component]
 fn JuridictionGroup(juris: String, group: JurisdictionTypeGroup) -> impl IntoView {
+    let lang = crate::i18n::use_reader_lang().get();
+    let numbers = &lang.ui().numbers;
+    let ui = &lang.ui().hubs;
+    let heading = (lang.ui().referential.jurisdiction_type)(&group.jurisdiction_type)
+        .map_or(group.label, str::to_string);
     view! {
         <section class="flex flex-col gap-3">
             <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                {group.label}
+                {heading}
             </h2>
             <ul class="flex flex-col divide-y divide-[var(--color-rule)]">
                 {group
@@ -266,11 +253,11 @@ fn JuridictionGroup(juris: String, group: JurisdictionTypeGroup) -> impl IntoVie
                     .into_iter()
                     .map(|j| {
                         let href = format!("/decision-index/{juris}/{}", j.code);
-                        let count = format!(
-                            "{} décision{}",
-                            fmt_count(j.decision_count),
-                            if j.decision_count > 1 { "s" } else { "" },
-                        );
+                        let label = j
+                            .court_names
+                            .get(lang.code())
+                            .map_or(j.label, |named| named.name.clone());
+                        let count = (ui.n_decisions)(&group_thousands(numbers, j.decision_count), j.decision_count);
                         view! {
                             <li class="py-2.5">
                                 <A
@@ -278,7 +265,7 @@ fn JuridictionGroup(juris: String, group: JurisdictionTypeGroup) -> impl IntoVie
                                     attr:class="group flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"
                                 >
                                     <span class="text-base text-[var(--color-ink)] group-hover:text-[var(--color-accent)]">
-                                        {j.label}
+                                        {label}
                                     </span>
                                     <span class="tabular-nums text-sm text-[var(--color-ink-subtle)]">
                                         {count}
@@ -304,6 +291,8 @@ pub fn JuridictionHubPage() -> impl IntoView {
     own_page_description();
 
     let params = use_params_map();
+    let scope = crate::jurisdiction::use_reader_scope();
+    let known = scope.known_resource();
     let hub = Resource::new_blocking(
         move || params.get().get("code").unwrap_or_default(),
         |code| {
@@ -319,12 +308,13 @@ pub fn JuridictionHubPage() -> impl IntoView {
     view! {
         <Suspense fallback=HubSkeleton>
             {move || Suspend::new(async move {
-                match hub.await {
-                    Ok(r) => {
+                match (hub.await, known.await) {
+                    (Ok(r), Ok(list)) => {
+                        scope.keep_known(list);
                         set_cache_control(200);
                         Either::Left(view! { <JuridictionHubLoaded hub=r /> })
                     }
-                    Err(err) => {
+                    (Err(err), _) | (_, Err(err)) => {
                         set_cache_control(err.status);
                         Either::Right(view! { <HubError err=err /> })
                     }
@@ -335,13 +325,20 @@ pub fn JuridictionHubPage() -> impl IntoView {
 }
 
 #[component]
-fn JuridictionHubLoaded(hub: JurisdictionHubResponse) -> impl IntoView {
-    let title = format!("{} : décisions - LibreJustice", hub.label);
-    let description = format!(
-        "Les {} décisions de la juridiction « {} », par année, en texte intégral.",
-        fmt_count(hub.decision_count),
-        hub.label,
-    );
+fn JuridictionHubLoaded(mut hub: JurisdictionHubResponse) -> impl IntoView {
+    let lang = crate::i18n::use_reader_lang().get();
+    let all = lang.ui();
+    let numbers = &all.numbers;
+    if let Some(named) = hub.court_names.get(lang.code()) {
+        hub.label = named.name.clone();
+    }
+    if let Some(label) = (all.referential.jurisdiction_type)(&hub.jurisdiction_type) {
+        hub.type_label = label.to_string();
+    }
+    let ui = &all.hubs;
+    let title = (ui.court_title)(&hub.label);
+    let description =
+        (ui.court_description)(&group_thousands(numbers, hub.decision_count), &hub.label);
     let index = format!(
         "/decision-index/{}",
         JurisdictionType::from_code(&hub.jurisdiction_type)
@@ -351,23 +348,25 @@ fn JuridictionHubLoaded(hub: JurisdictionHubResponse) -> impl IntoView {
     let hub_href = format!("{index}/{}", hub.code);
     let url = format!("https://librejustice.fr{hub_href}");
     let jsonld = breadcrumb_jsonld(&[
-        ("Accueil", "https://librejustice.fr/".to_string()),
-        ("Juridictions", format!("https://librejustice.fr{index}")),
+        (all.shell.home, "https://librejustice.fr/".to_string()),
+        (ui.jurisdictions, format!("https://librejustice.fr{index}")),
         (&hub.label, url.clone()),
     ]);
-    let search_href = decisions_href([("seat", hub.seat_path.clone())]);
+    let search_href = crate::jurisdiction::use_reader_scope().seat_href(
+        hub.seat_path.clone(),
+        decisions_href([("seat", hub.seat_path.clone())]),
+    );
 
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-3">
                 <HubBreadcrumb items=vec![
-                    ("Accueil".to_string(), Some("/".to_string())),
-                    ("Juridictions".to_string(), Some(index.clone())),
+                    (ui.jurisdictions.to_string(), Some(index.clone())),
                     (hub.label.clone(), None),
                 ] />
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
@@ -375,19 +374,18 @@ fn JuridictionHubLoaded(hub: JurisdictionHubResponse) -> impl IntoView {
                 </p>
                 <h1 class="font-sans text-3xl text-[var(--color-ink)]">{hub.label.clone()}</h1>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    {format!(
-                        "{} décisions en texte intégral, de {} à {}.",
-                        fmt_count(hub.decision_count),
+                    {(ui.court_intro)(
+                        &group_thousands(numbers, hub.decision_count),
                         hub.years.last().map(|y| y.year).unwrap_or_default(),
                         hub.years.first().map(|y| y.year).unwrap_or_default(),
                     )}
                 </p>
-                <A href=search_href attr:class=DEEP_LINK>"Rechercher dans ces décisions"</A>
+                <A href=search_href attr:class=DEEP_LINK>{ui.search_decisions}</A>
             </header>
 
             <section class="flex flex-col gap-3">
                 <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "Décisions par année"
+                    {ui.decisions_by_year}
                 </h2>
                 <ul class="flex flex-col divide-y divide-[var(--color-rule)]">
                     {hub
@@ -395,11 +393,7 @@ fn JuridictionHubLoaded(hub: JurisdictionHubResponse) -> impl IntoView {
                         .into_iter()
                         .map(|y| {
                             let href = format!("{hub_href}/{}", y.year);
-                            let count = format!(
-                                "{} décision{}",
-                                fmt_count(y.count),
-                                if y.count > 1 { "s" } else { "" },
-                            );
+                            let count = (ui.n_decisions)(&group_thousands(numbers, y.count), y.count);
                             view! {
                                 <li class="py-2.5">
                                     <A
@@ -435,6 +429,9 @@ pub fn JuridictionYearPage() -> impl IntoView {
 
     let params = use_params_map();
     let query = use_query_map();
+    let scope = crate::jurisdiction::use_reader_scope();
+    let known = scope.known_resource();
+    let ui = &crate::i18n::use_ui().hubs;
     let page_data = Resource::new_blocking(
         move || {
             (
@@ -447,11 +444,11 @@ pub fn JuridictionYearPage() -> impl IntoView {
                     .unwrap_or(1),
             )
         },
-        |(code, annee, page)| {
+        move |(code, annee, page)| {
             sendable(async move {
                 let year: i32 = annee.parse().map_err(|_| PageError {
                     status: 404,
-                    message: "Année invalide".to_string(),
+                    failure: Failure::Said(ui.invalid_year.to_string()),
                 })?;
                 ApiClient::from_context()
                     .fetch_juridiction_year(&code, year, page)
@@ -464,12 +461,13 @@ pub fn JuridictionYearPage() -> impl IntoView {
     view! {
         <Suspense fallback=HubSkeleton>
             {move || Suspend::new(async move {
-                match page_data.await {
-                    Ok(r) => {
+                match (page_data.await, known.await) {
+                    (Ok(r), Ok(list)) => {
+                        scope.keep_known(list);
                         set_cache_control(200);
                         Either::Left(view! { <JuridictionYearLoaded page=r /> })
                     }
-                    Err(err) => {
+                    (Err(err), _) | (_, Err(err)) => {
                         set_cache_control(err.status);
                         Either::Right(view! { <HubError err=err /> })
                     }
@@ -480,24 +478,26 @@ pub fn JuridictionYearPage() -> impl IntoView {
 }
 
 #[component]
-fn JuridictionYearLoaded(page: JurisdictionYearResponse) -> impl IntoView {
+fn JuridictionYearLoaded(mut page: JurisdictionYearResponse) -> impl IntoView {
+    let lang = crate::i18n::use_reader_lang().get();
+    let numbers = &lang.ui().numbers;
+    for d in &mut page.decisions {
+        d.title = crate::helpers::retitle(&lang.ui().dates, &d.title, Some(&d.date_lecture));
+    }
+    if let Some(named) = page.court_names.get(lang.code()) {
+        for d in &mut page.decisions {
+            d.title = crate::helpers::renamed(named, &d.title, Some(&page.label));
+        }
+        page.label = named.name.clone();
+    }
     let jurisdiction_type = page.jurisdiction_type;
     let page_size = i64::from(page.page_size);
     let page_count = ((page.total + page_size - 1) / page_size).max(1) as u32;
-    let title = if page.page > 1 {
-        format!(
-            "{} : décisions {} (page {}) - LibreJustice",
-            page.label, page.year, page.page,
-        )
-    } else {
-        format!("{} : décisions {} - LibreJustice", page.label, page.year)
-    };
-    let description = format!(
-        "Les {} décisions rendues en {} par « {} », en texte intégral.",
-        fmt_count(page.total),
-        page.year,
-        page.label,
-    );
+    let all = lang.ui();
+    let ui = &all.hubs;
+    let title = (ui.court_year_title)(&page.label, page.year, page.page);
+    let total = group_thousands(numbers, page.total);
+    let description = (ui.court_year_description)(&total, page.year, &page.label);
     let index = format!(
         "/decision-index/{}",
         jurisdiction_type.url_segment(Some(&page.code))
@@ -513,43 +513,41 @@ fn JuridictionYearLoaded(page: JurisdictionYearResponse) -> impl IntoView {
         base_url.clone()
     };
     let jsonld = breadcrumb_jsonld(&[
-        ("Accueil", "https://librejustice.fr/".to_string()),
-        ("Juridictions", format!("https://librejustice.fr{index}")),
+        (all.shell.home, "https://librejustice.fr/".to_string()),
+        (ui.jurisdictions, format!("https://librejustice.fr{index}")),
         (&page.label, format!("https://librejustice.fr{hub_href}")),
         (&page.year.to_string(), base_url.clone()),
     ]);
-    let search_href = decisions_href([
-        ("seat", page.seat_path.clone()),
-        ("dateFrom", format!("{}-01-01", page.year)),
-        ("dateTo", format!("{}-12-31", page.year)),
-    ]);
+    let search_href = crate::jurisdiction::use_reader_scope().seat_href(
+        page.seat_path.clone(),
+        decisions_href([
+            ("seat", page.seat_path.clone()),
+            ("dateFrom", format!("{}-01-01", page.year)),
+            ("dateTo", format!("{}-12-31", page.year)),
+        ]),
+    );
 
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=canonical />
+        <crate::seo::Canonical href=canonical />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-3">
                 <HubBreadcrumb items=vec![
-                    ("Accueil".to_string(), Some("/".to_string())),
-                    ("Juridictions".to_string(), Some(index.clone())),
+                    (ui.jurisdictions.to_string(), Some(index.clone())),
                     (page.label.clone(), Some(hub_href.clone())),
                     (page.year.to_string(), None),
                 ] />
                 <h1 class="font-sans text-3xl text-[var(--color-ink)]">
-                    {format!("{} — décisions {}", page.label, page.year)}
+                    {(ui.court_year_heading)(&page.label, page.year)}
                 </h1>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    {format!(
-                        "{} décisions rendues en {}, de la plus récente à la plus ancienne.",
-                        fmt_count(page.total),
-                        page.year,
-                    )}
+                    {(ui.court_year_intro)(&total, page.year)}
                 </p>
                 <A href=search_href attr:class=DEEP_LINK>
-                    {format!("Rechercher dans les décisions de {}", page.year)}
+                    {(ui.search_year_decisions)(page.year)}
                 </A>
             </header>
 
@@ -590,6 +588,7 @@ fn JuridictionYearLoaded(page: JurisdictionYearResponse) -> impl IntoView {
 /// dernière, avec la position courante.
 #[component]
 pub(crate) fn YearPagination(base: String, page: u32, page_count: u32) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().hubs;
     let href = move |p: u32| {
         if p <= 1 {
             base.clone()
@@ -604,22 +603,22 @@ pub(crate) fn YearPagination(base: String, page: u32, page_count: u32) -> impl I
         {(page_count > 1)
             .then(|| {
                 view! {
-                    <nav aria-label="Pagination" class="flex flex-wrap items-center gap-2">
+                    <nav aria-label=ui.pagination class="flex flex-wrap items-center gap-2">
                         {(page > 1)
                             .then(|| {
                                 view! {
-                                    <A href=href(1) attr:class=link_class>"Première"</A>
-                                    <A href=href(page - 1) attr:class=link_class>"Précédente"</A>
+                                    <A href=href(1) attr:class=link_class>{ui.first}</A>
+                                    <A href=href(page - 1) attr:class=link_class>{ui.previous}</A>
                                 }
                             })}
                         <span class="px-2 text-sm tabular-nums text-[var(--color-ink-subtle)]">
-                            {format!("Page {page} / {page_count}")}
+                            {(ui.page_of)(page, page_count)}
                         </span>
                         {(page < page_count)
                             .then(|| {
                                 view! {
-                                    <A href=href(page + 1) attr:class=link_class>"Suivante"</A>
-                                    <A href=href(page_count) attr:class=link_class>"Dernière"</A>
+                                    <A href=href(page + 1) attr:class=link_class>{ui.next}</A>
+                                    <A href=href(page_count) attr:class=link_class>{ui.last}</A>
                                 }
                             })}
                     </nav>

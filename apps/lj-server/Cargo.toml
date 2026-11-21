@@ -34,6 +34,7 @@ axum-tracing-opentelemetry = { workspace = true }
 http-body = { workspace = true }
 tower-http = { workspace = true }
 tokio = { workspace = true }
+tokio-util = { workspace = true, features = ["rt"] }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 tracing = { workspace = true }

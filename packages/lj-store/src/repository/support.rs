@@ -29,6 +29,7 @@ pub const REEXTRACTABLE_FIELDS: &[&str] = &[
     "decision_links",
     "case_citations",
     "parties",
+    "kind",
 ];
 
 /// Champ ré-extractible routé vers `replace_citations` (pas une colonne JSONB sur
@@ -72,7 +73,7 @@ pub(super) fn extracted_column_type(field: &str) -> &'static str {
         "date_lecture" => "date",
         "date_audience" => "date",
         "docket_numbers" | "publication_codes" | "seat_paths" | "formation_paths" => "text[]",
-        "search_title" => "text",
+        "search_title" | "kind" => "text",
         "seat" => "jsonb",
         "solution_uid" | "procedure_uid" | "office_uid" | "legal_domain_uid"
         | "jurisdiction_code" | "formation_uid" => "text",
@@ -106,6 +107,7 @@ pub(super) fn extracted_field_value(
         // ici.
         "jurisdiction_code" => unreachable!("jurisdiction_code se résout via ensure_jurisdictions"),
         "themes" => Box::new(extracted.themes.clone()),
+        "kind" => Box::new(extracted.kind.as_str()),
         other => panic!("colonne ré-extractible inconnue: {other}"),
     }
 }
@@ -163,20 +165,72 @@ pub fn source_from_source_uid(source_uid: &str) -> &'static str {
         "cnda"
     } else if source_uid.starts_with("ddd/") {
         "ddd"
+    } else if source_uid.starts_with("ddd-jurisprudence/") {
+        "ddd-jurisprudence"
     } else if source_uid.starts_with("adlc/") {
         "adlc"
     } else if source_uid.starts_with("comeu/") {
         "comeu"
+    } else if source_uid.starts_with("amf/") {
+        "amf"
     } else if source_uid.starts_with("ariane-dce/") {
         "ariane-dce"
     } else if source_uid.starts_with("ariane-web/") {
         "ariane-web"
     } else if source_uid.starts_with("juricaf/") {
         "juricaf"
+    } else if source_uid.starts_with("entscheidsuche/") {
+        "entscheidsuche"
+    } else if source_uid.starts_with("legalis/") {
+        "legalis"
+    } else if source_uid.starts_with("legimonaco/") {
+        "legimonaco"
+    } else if source_uid.starts_with("justice-lu/") {
+        "justice-lu"
+    } else if source_uid.starts_with("scc-csc/") {
+        "scc-csc"
+    } else if source_uid.starts_with("cce/") {
+        "cce"
+    } else if source_uid.starts_with("opencaselaw/") {
+        "opencaselaw"
+    } else if source_uid.starts_with("a2aj/") {
+        "a2aj"
+    } else if source_uid.starts_with("juportal/") {
+        "juportal"
+    } else if source_uid.starts_with("rechtspraak/") {
+        "rechtspraak"
+    } else if source_uid.starts_with("juradm-site/") {
+        "juradm-site"
+    } else if source_uid.starts_with("cc-site/") {
+        "cc-site"
+    } else if source_uid.starts_with("consiliaweb/") {
+        "consiliaweb"
     } else if source_uid.starts_with("hal/") {
         "hal"
     } else if source_uid.starts_with("doctrine-oai/") {
         "doctrine-oai"
+    } else if source_uid.starts_with("african-court/") {
+        "african-court"
+    } else if source_uid.starts_with("cc-bj/") {
+        "cc-bj"
+    } else if source_uid.starts_with("cc-ci/") {
+        "cc-ci"
+    } else if source_uid.starts_with("cc-dj/") {
+        "cc-dj"
+    } else if source_uid.starts_with("cc-ma/") {
+        "cc-ma"
+    } else if source_uid.starts_with("ccja/") {
+        "ccja"
+    } else if source_uid.starts_with("cassation-ci/") {
+        "cassation-ci"
+    } else if source_uid.starts_with("cndj-ci/") {
+        "cndj-ci"
+    } else if source_uid.starts_with("hcc-mg/") {
+        "hcc-mg"
+    } else if source_uid.starts_with("jurisprudence-mg/") {
+        "jurisprudence-mg"
+    } else if source_uid.starts_with("journalofficiel-dj/") {
+        "journalofficiel-dj"
     } else if source_uid.starts_with("contribution/") {
         "contribution"
     } else {
@@ -276,7 +330,7 @@ mod tests {
             .filter_map(|l| l.split('\'').next())
             .filter(|s| *s != "opendata")
             .collect::<Vec<_>>();
-        assert_eq!(ranked.len(), 15);
+        assert_eq!(ranked.len(), 42);
         for source in ranked {
             assert_eq!(source_from_source_uid(&format!("{source}/x")), source);
         }

@@ -56,6 +56,14 @@ pub enum Cost {
     Annuaire,
     /// A decision file submitted for review.
     Contribution,
+    /// A page rendered by the origin, on the account or on the address.
+    Page,
+    /// The same render, on the address's block.
+    PageBlock,
+    /// A corpus read a hydrated page makes over `/internal`, on the address or the account.
+    PageData,
+    /// A page rendered for a link preview, from one bucket every sender of its UA shares.
+    Preview,
 }
 
 impl Cost {
@@ -74,6 +82,10 @@ impl Cost {
             Cost::Signalement => "signalement",
             Cost::Annuaire => "annuaire",
             Cost::Contribution => "contribution",
+            Cost::Page => "page",
+            Cost::PageBlock => "page-block",
+            Cost::PageData => "page-data",
+            Cost::Preview => "preview",
         }
     }
 
@@ -103,6 +115,16 @@ pub const SIGNALEMENTS_PER_MIN: u32 = 3;
 // directory, 25 rows at a time, past hours on one nameable account.
 pub const ANNUAIRE_PER_MIN: u32 = 20;
 pub const CONTRIBUTIONS_PER_MIN: u32 = 5;
+// Pages, measured 4-11/11/2026: a human address's busiest minute rendered 11 pages at
+// p99.9 and 18 at most, which 9/min already admits; 30 is 3.3x that. No human block
+// outran its busiest address: 60 is 6.7x, and refuses 100 addresses at 15/min in a /24.
+pub const PAGES_PER_MIN: u32 = 30;
+pub const BLOCK_PAGES_PER_MIN: u32 = 60;
+// Page data, measured 4-11/11/2026 over 1,172 reader addresses: 58 reads in the busiest
+// minute, and 29/min the smallest rate that refuses none of them; 60 is 2x that.
+pub const PAGE_DATA_PER_MIN: u32 = 60;
+// Previews, measured 11-15/11/2026: ~450 a day, 20 in the busiest minute; 120 is 6x that.
+pub const PREVIEWS_PER_MIN: u32 = 120;
 
 /// Burst tolerated, in minutes of allowance: only the sustained regime meets the refill.
 const BURST_FACTOR: f64 = 2.0;
@@ -137,6 +159,10 @@ impl CallerKey {
     fn kind(&self) -> &'static str {
         if self.0.starts_with("u:") {
             "account"
+        } else if self.0.starts_with("b:") {
+            "block"
+        } else if self.0.starts_with("p:") {
+            "previews"
         } else {
             "network"
         }
@@ -165,6 +191,16 @@ pub fn key_of(id: &Identity) -> Option<CallerKey> {
     }
 }
 
+/// The key of the client's block, for [`Cost::PageBlock`].
+pub fn block_key(headers: &HeaderMap) -> Option<CallerKey> {
+    lj_identity::client_block(headers).map(|block| CallerKey(format!("b:{block}")))
+}
+
+/// The one key of [`Cost::Preview`].
+pub fn previews_key() -> CallerKey {
+    CallerKey("p:".to_string())
+}
+
 /// Seau à jetons d'un appelant.
 struct Bucket {
     tokens: f64,
@@ -187,6 +223,10 @@ pub struct Budgets {
     signalement: Budget,
     annuaire: Budget,
     contribution: Budget,
+    page: Budget,
+    page_block: Budget,
+    page_data: Budget,
+    preview: Budget,
 }
 
 impl Budgets {
@@ -206,12 +246,27 @@ impl Budgets {
             signalement: budget(Cost::Signalement, SIGNALEMENTS_PER_MIN),
             annuaire: budget(Cost::Annuaire, ANNUAIRE_PER_MIN),
             contribution: budget(Cost::Contribution, CONTRIBUTIONS_PER_MIN),
+            page: budget(Cost::Page, PAGES_PER_MIN),
+            page_block: budget(Cost::PageBlock, BLOCK_PAGES_PER_MIN),
+            page_data: budget(Cost::PageData, PAGE_DATA_PER_MIN),
+            preview: budget(Cost::Preview, PREVIEWS_PER_MIN),
         }
     }
 
     /// Takes the weight of `cost` from its bucket for `key`. `None`, the in-process SSR
     /// render, is not counted.
     pub async fn take(&self, cost: Cost, key: Option<&CallerKey>) -> Verdict {
+        self.take_at(cost, key, Instant::now()).await
+    }
+
+    /// [`Budgets::take`] at the instant of the request, which a caller spending several
+    /// budgets for one request reads once.
+    pub(crate) async fn take_at(
+        &self,
+        cost: Cost,
+        key: Option<&CallerKey>,
+        now: Instant,
+    ) -> Verdict {
         let budget = match cost {
             Cost::Search | Cost::Reference => &self.search,
             Cost::Rerank => &self.rerank,
@@ -226,8 +281,12 @@ impl Budgets {
             Cost::Signalement => &self.signalement,
             Cost::Annuaire => &self.annuaire,
             Cost::Contribution => &self.contribution,
+            Cost::Page => &self.page,
+            Cost::PageBlock => &self.page_block,
+            Cost::PageData => &self.page_data,
+            Cost::Preview => &self.preview,
         };
-        budget.take(key, cost.weight()).await
+        budget.take_at(key, cost.weight(), now).await
     }
 }
 
@@ -254,11 +313,6 @@ impl Budget {
         }
     }
 
-    async fn take(&self, key: Option<&CallerKey>, weight: f64) -> Verdict {
-        self.take_at(key, weight, Instant::now()).await
-    }
-
-    /// [`Budget::take`] à instant imposé — les tests pilotent le temps.
     async fn take_at(&self, key: Option<&CallerKey>, weight: f64, now: Instant) -> Verdict {
         let Some(key) = key else {
             return Verdict::Allowed;

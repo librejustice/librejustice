@@ -13,11 +13,12 @@
 
 use crate::error::{Result, SourceError};
 use crate::html_strip::strip_html;
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_tracing::TracingMiddleware;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::time::Duration;
@@ -63,6 +64,10 @@ AND (kpdate:[{year}-01-01T00:00:00.0Z TO {year}-12-31T23:59:59.0Z])"
     )
 }
 
+/// The cases communicated to France, in French, every year.
+const COMMUNICATED_FRANCE_QUERY: &str =
+    "contentsitename=ECHR AND doctype=HFCOM AND respondent=\"FRA\"";
+
 /// 429 et 5xx de passerelle : ce que HUDOC rend sous charge et qui repasse au
 /// retry. Tout autre statut est structurel.
 fn is_transient(status: u16) -> bool {
@@ -81,18 +86,31 @@ pub struct CedhClient {
 }
 
 impl CedhClient {
-    /// Client de production (base [`BASE_URL`]).
-    pub fn new() -> Self {
-        Self::with_base_url(BASE_URL)
+    /// Production client (base [`BASE_URL`]), through the egress gateway.
+    pub fn new(proxy: &str) -> Result<Self> {
+        if proxy.is_empty() {
+            return Err(SourceError::Invalid(
+                "HUDOC is read through LIBREJUSTICE_EGRESS_PROXY, which is empty".into(),
+            ));
+        }
+        Ok(Self::build(BASE_URL, Some(reqwest::Proxy::all(proxy)?)))
     }
 
     /// Client sur une base donnée (`base_url` normalisée, trailing `/` retiré).
     pub fn with_base_url(base_url: impl Into<String>) -> Self {
+        Self::build(base_url, None)
+    }
+
+    fn build(base_url: impl Into<String>, proxy: Option<reqwest::Proxy>) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         // No User-Agent. Cloudflare in front of HUDOC waves through what reads as an
         // HTTP library and challenges the rest.
+        let mut http = reqwest::Client::builder();
+        if let Some(proxy) = proxy {
+            http = http.proxy(proxy);
+        }
         let client = ClientBuilder::new(
-            reqwest::Client::builder()
+            http
                 // Unbounded, a connection HUDOC accepts and never honours parks
                 // `send().await`. Past the bound the request errors and the retry departs.
                 .connect_timeout(Duration::from_secs(15))
@@ -143,6 +161,12 @@ impl CedhClient {
     /// A page of the legal summaries of a year, in the shape of [`Self::results_page`].
     pub async fn legal_summaries_page(&self, year: i32, start: usize) -> Result<Value> {
         self.query_page(legal_summaries_query(year), start).await
+    }
+
+    /// A page of the cases communicated to France, in the shape of [`Self::results_page`].
+    pub async fn communicated_france_page(&self, start: usize) -> Result<Value> {
+        self.query_page(COMMUNICATED_FRANCE_QUERY.to_string(), start)
+            .await
     }
 
     /// `sort` is mandatory: HUDOC answers 404 without it.
@@ -290,12 +314,6 @@ impl CedhClient {
     }
 }
 
-impl Default for CedhClient {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 /// Une ligne `results` extraite : `itemid` (PK, jamais vide) + colonnes brutes.
 /// `language` = `languageisocode` projeté (`"FRE"`/`"ENG"`, vide si absent) — clé
 /// du choix FR-prioritaire au regroupement par affaire.
@@ -353,6 +371,9 @@ pub struct CedhManifest {
     pub last_year_done: Option<i32>,
     #[serde(default)]
     pub fetched_at: Option<String>,
+    /// The rows HUDOC served no body for, by the day they were last asked.
+    #[serde(default)]
+    pub stubs: BTreeMap<String, NaiveDate>,
 }
 
 impl CedhManifest {

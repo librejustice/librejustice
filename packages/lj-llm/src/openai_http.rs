@@ -17,6 +17,11 @@ const QUERY_TIMEOUT_S: f64 = 5.0;
 /// a fraction of it.
 const CONNECT_TIMEOUT_S: f64 = 2.0;
 const DEFAULT_MODEL: &str = "Qwen/Qwen3-Embedding-0.6B";
+/// A priority scheduler serves the lowest value first, a request carrying none at
+/// 0: a passage waits behind every query.
+const PASSAGE_PRIORITY: i64 = 10;
+pub const NORM_PASSAGE_PRIORITY: i64 = 20;
+const RESEND_AFTER: std::time::Duration = std::time::Duration::from_secs(5);
 
 /// Phrases présentes dans les réponses d'erreur des APIs compatibles OpenAI
 /// quand le contexte est dépassé.
@@ -31,6 +36,7 @@ pub struct OpenAIHttpEmbedder {
     pub model: String,
     dim: usize,
     timeout_s: f64,
+    pub passage_priority: i64,
     // ClientWithMiddleware : TracingMiddleware emet un span HTTP par appel
     // (url.full inclus).
     client: ClientWithMiddleware,
@@ -57,6 +63,7 @@ impl OpenAIHttpEmbedder {
             model,
             dim: EMBEDDING_DIM,
             timeout_s: DEFAULT_TIMEOUT_S,
+            passage_priority: PASSAGE_PRIORITY,
             client: ClientBuilder::new(
                 reqwest::Client::builder()
                     .connect_timeout(std::time::Duration::from_secs_f64(CONNECT_TIMEOUT_S))
@@ -72,12 +79,12 @@ impl OpenAIHttpEmbedder {
     }
 
     /// POST des textes, parse + L2-normalise par lignes.
-    async fn post(&self, texts: &[String], timeout_s: f64) -> Result<Array2<f32>> {
+    async fn post(&self, body: &Value, timeout_s: f64) -> Result<Array2<f32>> {
         let mut req = self
             .client
             .post(&self.url)
             .timeout(std::time::Duration::from_secs_f64(timeout_s))
-            .json(&serde_json::json!({ "model": self.model, "input": texts }));
+            .json(body);
         if let Some(key) = &self.api_key {
             req = req.bearer_auth(key);
         }
@@ -132,6 +139,15 @@ impl OpenAIHttpEmbedder {
     }
 }
 
+fn resendable(err: &EmbedError) -> bool {
+    let (unsent, status) = match err {
+        EmbedError::Middleware(e) => (e.is_request() && !e.is_timeout(), e.status()),
+        EmbedError::Http(e) => (e.is_request() && !e.is_timeout(), e.status()),
+        _ => return false,
+    };
+    unsent || status.is_some_and(|s| s.is_server_error())
+}
+
 /// L2-normalisation par ligne avec plancher `1e-12`.
 fn normalize_batch(arr: &mut Array2<f32>) {
     for mut row in arr.rows_mut() {
@@ -142,7 +158,19 @@ fn normalize_batch(arr: &mut Array2<f32>) {
 
 impl Embedder for OpenAIHttpEmbedder {
     async fn embed_passages(&self, texts: &[String]) -> Result<Array2<f32>> {
-        self.post(texts, self.timeout_s).await
+        let body = serde_json::json!({
+            "model": self.model,
+            "input": texts,
+            "priority": self.passage_priority,
+        });
+        match self.post(&body, self.timeout_s).await {
+            Err(err) if resendable(&err) => {
+                tracing::warn!(error = ?err, url = %self.url, "embedding request failed, sent once more");
+                tokio::time::sleep(RESEND_AFTER).await;
+                self.post(&body, self.timeout_s).await
+            }
+            out => out,
+        }
     }
 
     async fn embed_query(&self, texts: &[String]) -> Result<Array2<f32>> {
@@ -150,7 +178,8 @@ impl Embedder for OpenAIHttpEmbedder {
             .iter()
             .map(|t| format_query(t, LEGAL_QUERY_INSTRUCTION))
             .collect();
-        self.post(&prefixed, QUERY_TIMEOUT_S).await
+        let body = serde_json::json!({ "model": self.model, "input": prefixed });
+        self.post(&body, QUERY_TIMEOUT_S).await
     }
 }
 

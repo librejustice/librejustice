@@ -18,10 +18,11 @@ pub struct DecisionReferenceParts {
 /// - `heading` = `[juridiction complète, date FR, n°]` sans siège ;
 /// - `short` = `[juridiction abrégée, date FR, n° dossier]`.
 pub fn build_decision_references(detail: &DecisionDetail) -> DecisionReferenceParts {
+    let dates = &crate::i18n::use_ui().dates;
     let date = detail
         .date_lecture
         .as_deref()
-        .map(|d| format_iso_date(Some(d)));
+        .map(|d| format_iso_date(dates, Some(d)));
     let docket = detail
         .docket_numbers
         .as_ref()

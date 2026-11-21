@@ -93,14 +93,15 @@ pub fn Pagination(
     // `Callback` ; SyncStorage la rend lisible partout.
     let nav: StoredValue<NavFn> = StoredValue::new(Box::new(use_navigate()) as NavFn);
     // Helper Copy (capture seulement `nav` + `query_map`, deux handles Copy).
+    let ui = &crate::i18n::use_ui().search;
     let go_to = move |page: u32| navigate_to_page(nav, query_map, page);
 
     view! {
         <Show when=move || { total_pages.get() > 1 }>
-            <nav aria-label="Pagination" class="flex items-center justify-center gap-1 pt-4">
+            <nav aria-label=ui.pagination class="flex items-center justify-center gap-1 pt-4">
                 <PageButton
                     label="←"
-                    aria_label="Page précédente"
+                    aria_label=ui.previous_page
                     disabled=Signal::derive(move || current_page.get() == 1)
                     active=Signal::derive(|| false)
                     on_click=Callback::new(move |_| go_to(current_page.get() - 1))
@@ -125,7 +126,7 @@ pub fn Pagination(
                                 view! {
                                     <PageButton
                                         label=p.to_string()
-                                        aria_label=format!("Page {p}")
+                                        aria_label=(ui.page_n)(p)
                                         disabled=Signal::derive(|| false)
                                         active=Signal::derive(move || current_page.get() == p)
                                         on_click=Callback::new(move |_| go_to(p))
@@ -138,7 +139,7 @@ pub fn Pagination(
                 }}
                 <PageButton
                     label="→"
-                    aria_label="Page suivante"
+                    aria_label=ui.next_page
                     disabled=Signal::derive(move || { current_page.get() == total_pages.get() })
                     active=Signal::derive(|| false)
                     on_click=Callback::new(move |_| go_to(current_page.get() + 1))

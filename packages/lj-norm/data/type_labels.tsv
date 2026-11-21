@@ -1,6 +1,7 @@
 jurisdiction	type	label
 FR	ACCORD	Accord
 FR	ACCORD_FONCTION_PUBLIQUE	Accord de la fonction publique
+FR	ACPR	Instructions et recommandations de l'ACPR
 FR	ANNONCES	Annonces judiciaires et légales
 FR	ARRANGEMENT	Arrangement
 FR	ARRET	Arrêt
@@ -11,9 +12,11 @@ FR	AVENANT	Avenant
 FR	AVIS	Avis
 FR	AVISEURO	Avis européen
 FR	BOFIP	BOFiP (doctrine fiscale)
+FR	BOSS	BOSS (doctrine sociale)
 FR	CHARTE	Charte
 FR	CIRCULAIRE	Circulaire
 FR	CITATION	Citation
+FR	CNIL	Référentiels et recommandations de la CNIL
 FR	CODE	Code
 FR	COMMUNIQUE	Communiqué
 FR	CONSTITUTION	Constitution
@@ -49,6 +52,8 @@ FR	MEMOIRE	Mémoire
 FR	OBSERVATION	Observations
 FR	ORDONNANCE	Ordonnance
 FR	PROTOCOLE	Protocole
+FR	QUESTION_ECRITE	Question écrite et réponse ministérielle
+FR	QUESTION_ORALE	Question orale et réponse
 FR	RAPPORT	Rapport
 FR	RECOMMANDATION	Recommandation
 FR	REGLEMENT	Règlement
@@ -101,3 +106,10 @@ INTL	TREATY	Traité
 *	DECREE	Décret
 *	LAW	Loi
 *	ORDINANCE	Ordonnance
+*	ORDER	Arrêté
+*	REGULATION	Règlement
+*	CIRCULAR	Circulaire
+*	TREATY	Traité
+*	AGREEMENT	Accord
+*	CONVENTION	Convention
+*	PROTOCOL	Protocole

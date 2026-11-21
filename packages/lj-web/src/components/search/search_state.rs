@@ -43,6 +43,10 @@ pub struct SearchKey {
     /// Mode demandé : `auto` (défaut) laisse le résolveur lire la requête.
     pub mode: String,
     pub ai_mode: bool,
+    /// The jurisdiction the search is held within, from the route.
+    pub home: String,
+    /// The reader's language, the one the summaries are served in.
+    pub lang: String,
 }
 
 impl SearchKey {
@@ -89,7 +93,7 @@ pub fn parse_page(map: &ParamsMap) -> u32 {
     }
 }
 
-pub fn key_from_map(map: &ParamsMap) -> SearchKey {
+pub fn key_from_map(map: &ParamsMap, home: String, lang: &str) -> SearchKey {
     let date = |k: &str| map.get(k).filter(|v| is_iso_date(v));
     SearchKey {
         query: map
@@ -112,6 +116,8 @@ pub fn key_from_map(map: &ParamsMap) -> SearchKey {
         sort: parse_sort(map.get("sort").as_deref()),
         mode: parse_mode(map.get("mode").as_deref()),
         ai_mode: super::ai_mode::ai_mode_from_param(map.get("aiMode").as_deref()),
+        home,
+        lang: lang.to_owned(),
     }
 }
 
@@ -168,6 +174,7 @@ pub fn request_from_key(key: &SearchKey) -> SearchRequest {
         legal_domain: parse_enum_all::<Domain>(&key.legal_domain),
         jurisdiction_code: non_empty(&key.jurisdiction_code),
         seat: non_empty(&key.seat),
+        home: Some(key.home.clone()),
         formation: non_empty(&key.formation),
         legal_instrument: non_empty(&key.legal_instrument),
         legal_article: non_empty(&key.legal_article),
@@ -185,6 +192,7 @@ pub fn request_from_key(key: &SearchKey) -> SearchRequest {
         limit: SEARCH_PAGE_SIZE,
         offset,
         ai_mode: key.ai_mode,
+        lang: Some(key.lang.clone()),
     }
 }
 
@@ -194,7 +202,7 @@ mod tests {
 
     #[test]
     fn count_key_follows_the_set_not_the_page() {
-        let page1 = key_from_map(&ParamsMap::new());
+        let page1 = key_from_map(&ParamsMap::new(), "fr".to_string(), "fr");
         let mut page3 = page1.clone();
         page3.page = 3;
         page3.ai_mode = true;
@@ -209,7 +217,7 @@ mod tests {
         assert_eq!(recent.count_key(), oldest.count_key());
 
         let mut filtre = page1.clone();
-        filtre.solution = vec!["solution:cassation".to_string()];
+        filtre.solution = vec!["solution:GRANTED".to_string()];
         assert_ne!(page1.count_key(), filtre.count_key());
     }
 }

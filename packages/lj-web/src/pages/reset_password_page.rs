@@ -12,21 +12,19 @@ use leptos_router::components::A;
 
 use super::login_page::auth_errors::translate_auth_error;
 
-const PASSWORD_HINT: &str =
-    "Au moins 8 caractères, dont une minuscule, une majuscule et un chiffre.";
-
 #[component]
 pub fn ResetPasswordPage() -> impl IntoView {
     let query = leptos_router::hooks::use_query_map();
     let token = move || query.with(|q| q.get("token").unwrap_or_default());
     let error = move || query.with(|q| q.get("error"));
+    let ui = &crate::i18n::use_ui().account;
 
     view! {
-        <Title text="Réinitialiser le mot de passe - LibreJustice" />
+        <Title text=ui.reset_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex max-w-sm flex-col gap-8 px-4 py-16">
             <h1 class="font-sans text-2xl text-[var(--color-ink)]">
-                "Réinitialiser le mot de passe"
+                {ui.reset_heading}
             </h1>
             <Show
                 when=move || !token().is_empty()
@@ -35,11 +33,8 @@ pub fn ResetPasswordPage() -> impl IntoView {
                         <div class="flex flex-col gap-3">
                             <p class="text-sm text-red-600">
                                 {move || match error() {
-                                    Some(code) => translate_auth_error(Some(&code)),
-                                    None => {
-                                        "Lien incomplet : ouvrez celui reçu par courriel."
-                                            .to_string()
-                                    }
+                                    Some(code) => translate_auth_error(ui, Some(&code)),
+                                    None => ui.link_incomplete.to_string(),
                                 }}
                             </p>
                             <p class="text-sm text-[var(--color-ink-muted)]">
@@ -47,7 +42,7 @@ pub fn ResetPasswordPage() -> impl IntoView {
                                     href="/login"
                                     attr:class="text-[var(--color-accent)] underline hover:opacity-80"
                                 >
-                                    "Demander un nouveau lien"
+                                    {ui.new_link}
                                 </A>
                             </p>
                         </div>
@@ -58,7 +53,7 @@ pub fn ResetPasswordPage() -> impl IntoView {
                     <input type="hidden" name="token" value=token />
                     <div class="flex flex-col gap-1.5">
                         <label for="password" class="text-sm text-[var(--color-ink-muted)]">
-                            "Nouveau mot de passe"
+                            {ui.new_password}
                         </label>
                         <input
                             id="password"
@@ -69,11 +64,11 @@ pub fn ResetPasswordPage() -> impl IntoView {
                             minlength="8"
                             class="rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 py-2 text-sm text-[var(--color-ink)] outline-none focus:border-[var(--color-accent)]"
                         />
-                        <p class="text-xs text-[var(--color-ink-subtle)]">{PASSWORD_HINT}</p>
+                        <p class="text-xs text-[var(--color-ink-subtle)]">{ui.password_hint}</p>
                     </div>
                     <div class="flex flex-col gap-1.5">
                         <label for="confirm" class="text-sm text-[var(--color-ink-muted)]">
-                            "Confirmer le mot de passe"
+                            {ui.confirm_password}
                         </label>
                         <input
                             id="confirm"
@@ -87,14 +82,14 @@ pub fn ResetPasswordPage() -> impl IntoView {
                     </div>
                     <Show when=move || error().is_some()>
                         <p class="text-sm text-red-600">
-                            {move || translate_auth_error(error().as_deref())}
+                            {move || translate_auth_error(ui, error().as_deref())}
                         </p>
                     </Show>
                     <button
                         type="submit"
                         class="rounded-md bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                     >
-                        "Mettre à jour"
+                        {ui.update}
                     </button>
                 </form>
             </Show>

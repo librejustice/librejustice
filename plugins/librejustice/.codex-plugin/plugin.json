@@ -1,7 +1,7 @@
 {
   "name": "librejustice",
-  "version": "1.19.0",
-  "description": "Free and open source, LibreJustice gives your agent ~3.9 million French-language and European decisions and ~2.1 million legal articles in force and ~1.8 million historical versions, readable as they stood on any date and linked article by article. Four MCP tools over OAuth, two research skills.",
+  "version": "1.20.0",
+  "description": "Free and open source, LibreJustice gives your agent ~5 million decisions from French, European, Swiss, Belgian, Luxembourg, Dutch and African courts, linked article by article to ~2.1 million legal articles and their ~1.8 million past versions. It also searches 24 official journals. The plugin carries six MCP tools over OAuth and two research skills.",
   "author": {
     "name": "LibreJustice"
   },
@@ -19,7 +19,7 @@
   "interface": {
     "displayName": "LibreJustice",
     "shortDescription": "French case law and legislation.",
-    "longDescription": "The only legal research connector your agent needs for French law: ~3.9 million decisions from France's administrative and judicial courts and from the European courts, linked article by article to ~2.1 million legal articles in force and ~1.8 million historical versions, readable as they stood on any date, plus EU law, treaties, collective agreements, BOFiP and the codes of 59 foreign countries.",
+    "longDescription": "One legal research connector for French law and beyond: ~5 million decisions from the French administrative and judicial courts, the European courts and the Swiss, Belgian, Luxembourg, Dutch and African courts. They link article by article to ~2.1 million articles in force and ~1.8 million past versions, each readable as it stood on any date. The texts also cover EU law, treaties, collective agreements, Swiss federal and cantonal law, Belgian regional and community law and codes from 59 countries. The official journals are searchable too.",
     "developerName": "LibreJustice",
     "category": "Productivity",
     "capabilities": [

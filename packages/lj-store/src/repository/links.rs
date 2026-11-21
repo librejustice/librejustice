@@ -15,6 +15,35 @@ use super::types::DecisionLinkRow;
 use super::DecisionRepository;
 use crate::error::Result;
 
+/// Which pending CEDH links the resolver reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CedhVisit {
+    /// Those it never read.
+    Unread,
+    /// Those it never read, and those whose court and day hold a decision
+    /// updated since it last read them.
+    Changed,
+}
+
+/// A pending `REQUETE_CEDH_CONTRE` link: the CEDH document that writes it, and
+/// the court and day of the French ruling it aims at.
+pub struct PendingCedhLink {
+    pub id: i64,
+    pub decision_id: i64,
+    pub court: String,
+    pub date: NaiveDate,
+}
+
+/// A decision of the court and day a CEDH link aims at.
+pub struct CedhCandidateRow {
+    pub id: i64,
+    pub solution_uid: Option<String>,
+    pub dockets: Vec<String>,
+    /// `(date, court code)` its `POURVOI_CONTRE` and `APPEL_DE` links aim at.
+    pub attacked: Vec<(NaiveDate, String)>,
+    pub text: String,
+}
+
 /// Item d'écriture bulk : `(decision_id, liens)`. `None` = extraction sans
 /// couche chronologie (écrit un set vide).
 pub type DecisionLinkWriteItem = (i64, Option<Vec<DecisionLinkRow>>);
@@ -183,6 +212,109 @@ impl DecisionRepository<'_> {
     }
 }
 
+impl DecisionRepository<'_> {
+    pub async fn pending_cedh_links(&self, visit: CedhVisit) -> Result<Vec<PendingCedhLink>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT l.id, l.decision_id, l.target_court, l.target_date
+                 FROM decision_links l
+                 WHERE l.link_type = 'REQUETE_CEDH_CONTRE'
+                   AND l.target_decision_id IS NULL
+                   AND l.target_court IS NOT NULL AND l.target_date IS NOT NULL
+                   AND (l.visited_at IS NULL
+                        OR ($1 AND EXISTS (
+                            SELECT 1 FROM decisions c
+                            WHERE c.jurisdiction_code = l.target_court
+                              AND c.date_lecture = l.target_date
+                              AND c.updated_at > l.visited_at)))",
+                &[&(visit == CedhVisit::Changed)],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| PendingCedhLink {
+                id: r.get(0),
+                decision_id: r.get(1),
+                court: r.get(2),
+                date: r.get(3),
+            })
+            .collect())
+    }
+
+    /// The date and French text of an active CEDH document.
+    pub async fn cedh_text(&self, decision_id: i64) -> Result<Option<(NaiveDate, String)>> {
+        let row = self
+            .conn
+            .query_opt(
+                "SELECT d.date_lecture, x.full_text
+                 FROM decisions d
+                 JOIN decision_text x
+                   ON x.decision_id = d.id AND x.lang = 'fr' AND x.deleted_at IS NULL
+                 WHERE d.id = $1 AND d.deleted_at IS NULL AND d.date_lecture IS NOT NULL",
+                &[&decision_id],
+            )
+            .await?;
+        Ok(row.map(|r| (r.get(0), r.get(1))))
+    }
+
+    pub async fn cedh_candidates(
+        &self,
+        court: &str,
+        date: NaiveDate,
+    ) -> Result<Vec<CedhCandidateRow>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT d.id, d.solution_uid, coalesce(d.docket_numbers, '{}'),
+                        ARRAY(SELECT l.target_date FROM decision_links l
+                              WHERE l.decision_id = d.id
+                                AND l.link_type IN ('POURVOI_CONTRE', 'APPEL_DE')
+                                AND l.target_court IS NOT NULL AND l.target_date IS NOT NULL
+                              ORDER BY l.id),
+                        ARRAY(SELECT l.target_court FROM decision_links l
+                              WHERE l.decision_id = d.id
+                                AND l.link_type IN ('POURVOI_CONTRE', 'APPEL_DE')
+                                AND l.target_court IS NOT NULL AND l.target_date IS NOT NULL
+                              ORDER BY l.id),
+                        x.full_text
+                 FROM decisions d
+                 JOIN decision_text x
+                   ON x.decision_id = d.id AND x.lang = 'fr' AND x.deleted_at IS NULL
+                 WHERE d.jurisdiction_code = $1 AND d.date_lecture = $2
+                   AND d.deleted_at IS NULL",
+                &[&court, &date],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| {
+                let dates: Vec<NaiveDate> = r.get(3);
+                let courts: Vec<String> = r.get(4);
+                CedhCandidateRow {
+                    id: r.get(0),
+                    solution_uid: r.get(1),
+                    dockets: r.get(2),
+                    attacked: dates.into_iter().zip(courts).collect(),
+                    text: r.get(5),
+                }
+            })
+            .collect())
+    }
+
+    /// Records a read of a pending CEDH link, and its target when it settled.
+    pub async fn visit_cedh_link(&self, id: i64, target: Option<i64>) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE decision_links SET target_decision_id = $2, visited_at = now()
+                 WHERE id = $1",
+                &[&id, &target],
+            )
+            .await?;
+        Ok(())
+    }
+}
+
 /// The links of one decision, deduplicated by (type, address).
 fn link_set(links: &[DecisionLinkRow]) -> HashSet<LinkFingerprint> {
     links
@@ -215,6 +347,7 @@ fn resolve_parties_sql(scope: &str) -> String {
              FROM decision_links dl
              WHERE dl.target_decision_id IS NULL
                AND dl.target_docket IS NULL
+               AND dl.link_type <> 'REQUETE_CEDH_CONTRE'
                AND dl.target_court IS NOT NULL
                AND dl.target_date IS NOT NULL{scope}
          ), candidat AS (

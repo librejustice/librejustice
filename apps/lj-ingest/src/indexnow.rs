@@ -24,7 +24,10 @@ pub fn decision_url(path: &str) -> String {
 }
 
 pub fn notice_url(uid: &str) -> String {
-    format!("https://{INDEXNOW_HOST}{}", lj_vocab::notice_path(uid))
+    format!(
+        "https://{INDEXNOW_HOST}{}",
+        lj_vocab::notice_path("FR", uid)
+    )
 }
 
 /// JSON body of an IndexNow submission, at most [`MAX_URLS_PER_REQUEST`] URLs.

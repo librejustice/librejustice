@@ -5,7 +5,7 @@
 
 use leptos::prelude::*;
 
-use super::state::{Hit, Mode, PageWord, Session, TextBlock, View, ERASED};
+use super::state::{Hit, Mode, PageWord, Session, TextBlock, View};
 
 #[cfg(feature = "hydrate")]
 use super::engine;
@@ -114,6 +114,7 @@ pub fn Viewer(session: Session) -> impl IntoView {
 
 #[component]
 fn Page(session: Session, index: usize) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let host = NodeRef::<leptos::html::Div>::new();
     let canvas = NodeRef::<leptos::html::Canvas>::new();
     let sheet = NodeRef::<leptos::html::Div>::new();
@@ -288,7 +289,7 @@ fn Page(session: Session, index: usize) -> impl IntoView {
                     line.max(pixels * 1.25)
                 );
                 let (face, words) = match label.is_empty() {
-                    true => ("italic", ERASED.to_string()),
+                    true => ("italic", ui.erased.to_string()),
                     false => ("", label),
                 };
                 Some(view! {
@@ -356,8 +357,8 @@ fn Page(session: Session, index: usize) -> impl IntoView {
         Some(view! {
             <button
                 type="button"
-                aria-label="Retirer ce rectangle"
-                title="Retirer (Suppr)"
+                aria-label=ui.remove_rect
+                title=ui.remove_rect_key
                 class="absolute z-10 flex h-6 w-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full bg-white text-sm leading-none text-[var(--color-ink)] shadow ring-1 ring-[var(--color-rule)] hover:text-[var(--color-accent)]"
                 style=style
                 on:pointerdown=|event| event.stop_propagation()

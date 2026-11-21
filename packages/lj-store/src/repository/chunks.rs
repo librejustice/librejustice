@@ -43,22 +43,18 @@ impl DecisionRepository<'_> {
 
         let jur_type = &decision.jurisdiction_type;
 
-        // Sous-requêtes dénormalisées (pre-filter). `$1` factorise le decision_id. Les
-        // quatre colonnes sont **recopiées de la ligne `decisions`**, seul porteur
-        // canonique : les arrays légaux y sont écrits par `sync_citation_facet_arrays`
-        // dans l'upsert, donc AVANT ce `replace_chunks`, avec l'expansion des familles
-        // « et suivants » et l'ordre `COLLATE "C"` des fonctions
-        // `_sync_*_legal_instruments_for`. `search_title` n'est porté que par le chunk 0
-        // (un doc-titre par décision dans `chunks_bm25`).
+        // Copied from the `decisions` row, whose legal arrays the upsert's
+        // `sync_citation_facet_arrays` writes before `replace_chunks`; chunk 0 alone carries `search_title`.
         const DENORM: &str = "\
             (SELECT publication_codes FROM decisions WHERE id=(SELECT did FROM did_cte)),\
             (SELECT date_lecture FROM decisions WHERE id=(SELECT did FROM did_cte)),\
             (SELECT legal_instruments FROM decisions WHERE id=(SELECT did FROM did_cte)),\
-            (SELECT legal_article_composite FROM decisions WHERE id=(SELECT did FROM did_cte))";
+            (SELECT legal_article_composite FROM decisions WHERE id=(SELECT did FROM did_cte)),\
+            (SELECT kind FROM decisions WHERE id=(SELECT did FROM did_cte))";
 
         let cols = "decision_id, chunk_index, jurisdiction_type, char_start, char_end, \
                     embedding, publication_codes, date_lecture, \
-                    legal_instruments, legal_article_composite, search_title, zones";
+                    legal_instruments, legal_article_composite, kind, search_title, zones";
 
         // Positional params: $1 = decision_id (CTE), then 7 per chunk.
         let mut params: Vec<Box<dyn ToSql + Sync>> = Vec::with_capacity(1 + chunks.len() * 7);

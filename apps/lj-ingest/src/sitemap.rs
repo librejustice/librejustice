@@ -85,7 +85,7 @@ pub trait SitemapSource {
 
     /// Itère `(uid, lastmod)` pour les fiches de consultation (`/notice/fr/{uid}`)
     /// et `(code département)` pour leurs pages de catalogue
-    /// (`/notice-index/fr/{code}`).
+    /// (`/journal-index/fr/{code}`).
     fn iter_annonces_for_sitemap(&self) -> Result<AnnoncesSitemap>;
 }
 
@@ -96,15 +96,15 @@ pub trait SitemapSource {
 /// absent**: it pages through lawyers (natural persons), the same SEO exclusion
 /// as their profiles.
 const STATIC_PATHS: &[&str] = &[
-    "/",
-    "/decision-search",
-    "/norm-search",
+    "/fr",
+    "/fr/decision-search",
+    "/fr/norm-search",
     "/sources",
     "/decision-index/fr",
     "/decision-index/eu",
     "/decision-index/intl",
-    "/notice-search",
-    "/notice-index/fr",
+    "/fr/journal-search",
+    "/journal-index/fr",
     "/norm-index/fr/codes",
     "/norm-index/fr/in-force",
     "/entity-search",
@@ -439,11 +439,11 @@ pub fn build_sitemaps<S: SitemapSource>(repo: &S, today: NaiveDate) -> Result<Ve
     let (annonces, departements) = repo.iter_annonces_for_sitemap()?;
     let mut section = SectionWriter::new("annonces", today);
     for code in departements {
-        section.push(&format!("{BASE_URL}/notice-index/fr/{code}"), Some(today))?;
+        section.push(&format!("{BASE_URL}/journal-index/fr/{code}"), Some(today))?;
     }
     for (uid, lastmod) in annonces {
         section.push(
-            &format!("{BASE_URL}{}", lj_vocab::notice_path(&uid)),
+            &format!("{BASE_URL}{}", lj_vocab::notice_path("FR", &uid)),
             lastmod,
         )?;
     }
@@ -949,8 +949,8 @@ mod tests {
             .iter()
             .any(|f| f.filename == "sitemap-annonces-1.xml.gz"));
         let body = decompress_subs(&files);
-        assert!(body.contains("<loc>https://librejustice.fr/notice-index/fr/44</loc>"));
-        assert!(body.contains("<loc>https://librejustice.fr/notice-index/fr/2A</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/journal-index/fr/44</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/journal-index/fr/2A</loc>"));
         assert!(body.contains("<loc>https://librejustice.fr/notice/fr/boamp-25-1234</loc>"));
         assert!(body.contains("<lastmod>2026-07-20</lastmod>"));
         assert!(body.contains("<loc>https://librejustice.fr/notice/fr/boamp-25-1235</loc>"));
@@ -991,7 +991,7 @@ mod tests {
         let files = build_sitemaps(&source, d("2026-05-01")).unwrap();
         let body = decompress_subs(&files);
 
-        assert!(body.contains("<loc>https://librejustice.fr/</loc>"));
+        assert!(body.contains("<loc>https://librejustice.fr/fr</loc>"));
         assert!(body.contains("https://librejustice.fr/entity-index/fr/entreprises"));
         assert!(body.contains("https://librejustice.fr/legal-notice"));
         assert!(body.contains("https://librejustice.fr/norm/fr/code-civil<"));

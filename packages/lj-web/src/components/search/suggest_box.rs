@@ -234,7 +234,7 @@ pub fn SuggestPanel(ctrl: SuggestController) -> impl IntoView {
     view! {
             <ul
                 role="listbox"
-                aria-label="Suggestions"
+                aria-label=crate::i18n::use_ui().search.suggestions
                 data-open=move || ctrl.open.get().then_some("true")
                 class="lj-panel absolute inset-x-0 top-full z-30 mt-1 overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] py-1 shadow-lg"
             >

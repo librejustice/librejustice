@@ -1,12 +1,15 @@
 //! A text's path on the jurisdiction axis: its legal order, then its type of act
 //! (`FR.LOI`, `FR.LOI.ORGANIQUE`, `EU.DIRECTIVE`, `INTL.TREATY`), from the closed
-//! table of each order in `data/text_types.tsv`, in its official publisher's terms.
+//! table of each order in `data/text_types.tsv`, in its official publisher's terms;
+//! then, for a text enacted below its order, its territory and its type under it
+//! (`CH.GE`, `CH.GE.LAW`), from the places of `data/territories.tsv`.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::LazyLock;
 
 const TEXT_TYPES_TSV: &str = include_str!("../data/text_types.tsv");
 const TYPE_LABELS_TSV: &str = include_str!("../data/type_labels.tsv");
+const TERRITORIES_TSV: &str = include_str!("../data/territories.tsv");
 
 struct TypeTable {
     orders: HashSet<&'static str>,
@@ -55,6 +58,41 @@ static LABELS: LazyLock<HashMap<(&'static str, &'static str), &'static str>> =
         }
         labels
     });
+
+/// The territories below an order, `(CH, GE)` for `geo:CH-GE`, with their label.
+static TERRITORIES: LazyLock<HashMap<(&'static str, &'static str), &'static str>> =
+    LazyLock::new(|| {
+        let mut territories = HashMap::new();
+        for line in TERRITORIES_TSV.lines().skip(1) {
+            let parsed = line.split_once('\t').and_then(|(place, label)| {
+                let (order, code) = place.strip_prefix("geo:")?.split_once('-')?;
+                Some((order, code, label))
+            });
+            let Some((order, code, label)) = parsed else {
+                panic!("territories.tsv: malformed row {line:?}");
+            };
+            let previous = territories.insert((order, code), label);
+            assert!(previous.is_none(), "territories.tsv: {order}-{code} twice");
+        }
+        territories
+    });
+
+/// The territory below its order a text is enacted for: the one place the `*`
+/// default lines of its journal name, when that place is a territory (`GE` for
+/// the journal of Geneva, `None` for the Recueil officiel, whose place is `CH`).
+pub fn territory(text_uid: &str, jurisdiction: &str) -> Option<&'static str> {
+    let journal = crate::applicability::journal_code(text_uid, jurisdiction);
+    let mut places = crate::journal_rules::rules_of(&journal)
+        .iter()
+        .filter(|r| r.matter.is_none() && r.regime == crate::journal_rules::Regime::Default)
+        .map(|r| r.place);
+    let (Some(place), None) = (places.next(), places.next()) else {
+        return None;
+    };
+    let (order, code) = place.strip_prefix("geo:")?.split_once('-')?;
+    let ((_, code), _) = TERRITORIES.get_key_value(&(order, code))?;
+    (order == jurisdiction).then_some(*code)
+}
 
 /// The order whose table types a text: its own, else its parent's (`FR-PF`
 /// reads `FR`), else `*`.
@@ -108,21 +146,31 @@ pub fn table_types(jurisdiction: &str) -> Vec<&'static str> {
     types
 }
 
-/// The French label of a path: its order's name, or its type's label in its
-/// order's table (`FR.LOI.ORGANIQUE` → « Loi organique »).
+/// The French label of a path: its order's name, its territory's, or its type's
+/// label in its order's table (`FR.LOI.ORGANIQUE` → « Loi organique »,
+/// `CH.GE` → « Genève », `CH.GE.LAW` → « Loi »).
 pub fn path_label(path: &str) -> Option<&'static str> {
-    match path.split_once('.') {
-        None => crate::referential_labels::jurisdiction_label(path),
-        Some((jurisdiction, kind)) => LABELS.get(&(table_order(jurisdiction), kind)).copied(),
+    let Some((jurisdiction, rest)) = path.split_once('.') else {
+        return crate::referential_labels::jurisdiction_label(path);
+    };
+    let (head, kind) = rest.split_once('.').unwrap_or((rest, ""));
+    match (TERRITORIES.get(&(jurisdiction, head)), kind) {
+        (Some(label), "") => Some(label),
+        (Some(_), kind) => LABELS.get(&(table_order(jurisdiction), kind)).copied(),
+        (None, _) => LABELS.get(&(table_order(jurisdiction), rest)).copied(),
     }
 }
 
-/// The paths a text sits on: its order, then each level of its type under it.
-pub fn jurisdiction_paths(jurisdiction: &str, nature: &str) -> Vec<String> {
-    let mut paths = vec![jurisdiction.to_string()];
-    if let Some(kind) = text_type(jurisdiction, nature) {
-        let mut path = jurisdiction.to_string();
-        for level in kind.split('.') {
+/// The paths a text sits on: its order, then each level of its type under it;
+/// then its territory, when it has one, and each level of its type under that.
+pub fn jurisdiction_paths(text_uid: &str, jurisdiction: &str, nature: &str) -> Vec<String> {
+    let kind = text_type(jurisdiction, nature);
+    let territory = territory(text_uid, jurisdiction).map(|t| format!("{jurisdiction}.{t}"));
+    let mut paths = Vec::new();
+    for root in std::iter::once(jurisdiction.to_string()).chain(territory) {
+        let mut path = root;
+        paths.push(path.clone());
+        for level in kind.iter().flat_map(|k| k.split('.')) {
             path = format!("{path}.{level}");
             paths.push(path.clone());
         }
@@ -200,50 +248,105 @@ mod tests {
 
     #[test]
     fn france_keeps_the_dila_codes_with_the_laws_under_loi() {
-        assert_eq!(jurisdiction_paths("FR", "LOI"), ["FR", "FR.LOI"]);
+        assert_eq!(jurisdiction_paths("", "FR", "LOI"), ["FR", "FR.LOI"]);
         assert_eq!(
-            jurisdiction_paths("FR", "LOI_ORGANIQUE"),
+            jurisdiction_paths("", "FR", "LOI_ORGANIQUE"),
             ["FR", "FR.LOI", "FR.LOI.ORGANIQUE"]
         );
-        assert_eq!(jurisdiction_paths("FR", "bofip"), ["FR", "FR.BOFIP"]);
+        assert_eq!(jurisdiction_paths("", "FR", "bofip"), ["FR", "FR.BOFIP"]);
     }
 
     #[test]
     fn a_nature_outside_its_table_names_no_type() {
-        assert_eq!(jurisdiction_paths("FR", ""), ["FR"]);
-        assert_eq!(jurisdiction_paths("FR", "DEUXIEME"), ["FR"]);
-        assert_eq!(jurisdiction_paths("TD", "RAPPORT"), ["TD"]);
+        assert_eq!(jurisdiction_paths("", "FR", ""), ["FR"]);
+        assert_eq!(jurisdiction_paths("", "FR", "DEUXIEME"), ["FR"]);
+        assert_eq!(jurisdiction_paths("", "TD", "RAPPORT"), ["TD"]);
     }
 
     #[test]
     fn an_order_without_a_table_reads_its_parent_then_the_default() {
-        assert_eq!(jurisdiction_paths("FR-PF", "CODE"), ["FR-PF", "FR-PF.CODE"]);
-        assert_eq!(jurisdiction_paths("SN", "code_famille"), ["SN", "SN.CODE"]);
-        assert_eq!(jurisdiction_paths("CH", "LOI"), ["CH", "CH.LAW"]);
-        assert_eq!(jurisdiction_paths("TD", "etat_civil"), ["TD", "TD.LAW"]);
+        assert_eq!(
+            jurisdiction_paths("", "FR-PF", "CODE"),
+            ["FR-PF", "FR-PF.CODE"]
+        );
+        assert_eq!(
+            jurisdiction_paths("", "SN", "code_famille"),
+            ["SN", "SN.CODE"]
+        );
+        assert_eq!(jurisdiction_paths("CH/210", "CH", "LOI"), ["CH", "CH.LAW"]);
+        assert_eq!(jurisdiction_paths("", "TD", "etat_civil"), ["TD", "TD.LAW"]);
     }
 
     #[test]
     fn the_union_and_the_treaties_take_english() {
         assert_eq!(
-            jurisdiction_paths("EU", "REGLEMENT"),
+            jurisdiction_paths("", "EU", "REGLEMENT"),
             ["EU", "EU.REGULATION"]
         );
         assert_eq!(
-            jurisdiction_paths("EU", "DIRECTIVE_EURO"),
+            jurisdiction_paths("", "EU", "DIRECTIVE_EURO"),
             ["EU", "EU.DIRECTIVE"]
         );
         assert_eq!(
-            jurisdiction_paths("INTL", "TRAITE"),
+            jurisdiction_paths("", "INTL", "TRAITE"),
             ["INTL", "INTL.TREATY"]
         );
         assert_eq!(
-            jurisdiction_paths("INTL", "ECHANGE-LETTRES"),
+            jurisdiction_paths("", "INTL", "ECHANGE-LETTRES"),
             ["INTL", "INTL.EXCHANGE_OF_LETTERS"]
         );
         assert_eq!(
-            jurisdiction_paths("INTL", "AVENANT"),
+            jurisdiction_paths("", "INTL", "AVENANT"),
             ["INTL", "INTL.AMENDMENT"]
         );
+    }
+
+    #[test]
+    fn a_text_enacted_below_its_order_sits_on_its_territory_too() {
+        assert_eq!(
+            jurisdiction_paths("CH-GE/E 2 05", "CH", "loi"),
+            ["CH", "CH.LAW", "CH.GE", "CH.GE.LAW"]
+        );
+        assert_eq!(
+            jurisdiction_paths("BE-WAL/3565", "BE", "ARRETE"),
+            ["BE", "BE.ORDER", "BE.WAL", "BE.WAL.ORDER"]
+        );
+        assert_eq!(
+            jurisdiction_paths("CH-BS/731.150.031", "CH", "acte"),
+            ["CH", "CH.BS"]
+        );
+        assert_eq!(
+            jurisdiction_paths("BE/CODE-CIVIL", "BE", "code_civil"),
+            ["BE", "BE.CODE"]
+        );
+        for (order, code) in TERRITORIES.keys() {
+            assert!(
+                !table_types(order).contains(code),
+                "{order}.{code} is a type"
+            );
+        }
+        assert_eq!(path_label("CH.GE"), Some("Genève"));
+        assert_eq!(path_label("BE.WAL.ORDER"), Some("Arrêté"));
+    }
+
+    #[test]
+    fn every_journal_published_below_an_order_names_a_territory() {
+        for journal in crate::applicability::journals() {
+            let mut places = crate::journal_rules::rules_of(journal.code)
+                .iter()
+                .filter(|r| r.matter.is_none() && r.regime == crate::journal_rules::Regime::Default)
+                .map(|r| r.place);
+            let (Some(place), None) = (places.next(), places.next()) else {
+                continue;
+            };
+            if let Some((order, code)) = place.trim_start_matches("geo:").split_once('-') {
+                assert!(
+                    crate::referential_labels::jurisdiction_label(order).is_none()
+                        || TERRITORIES.contains_key(&(order, code)),
+                    "{} {place}",
+                    journal.code
+                );
+            }
+        }
     }
 }

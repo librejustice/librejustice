@@ -10,6 +10,56 @@ use super::*;
 // `Decision`).
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// The Dutch and German names of the CJUE, the CEDH and the Commission's five instruments, as
+/// their editions in those languages print them.
+pub fn europe_names() -> Vec<(&'static str, Value)> {
+    let named = |code: &'static str, nl: &str, de: &str| {
+        (
+            code,
+            serde_json::json!({ "nl": { "name": nl }, "de": { "name": de } }),
+        )
+    };
+    let mut names = vec![
+        named(
+            "cjue",
+            "Hof van Justitie van de Europese Unie",
+            "Gerichtshof der Europäischen Union",
+        ),
+        named(
+            "cedh",
+            "Europees Hof voor de Rechten van de Mens",
+            "Europäischer Gerichtshof für Menschenrechte",
+        ),
+    ];
+    names.extend(crate::comeu::COMEU_COURTS.iter().map(|(_, code, _)| {
+        let (nl, de) = match *code {
+            "comeu_at" => (
+                "Europese Commissie, kartels en misbruik van machtspositie",
+                "Europäische Kommission, Kartelle und Missbrauch einer marktbeherrschenden Stellung",
+            ),
+            "comeu_m" => (
+                "Europese Commissie, concentraties",
+                "Europäische Kommission, Zusammenschlüsse",
+            ),
+            "comeu_sa" => (
+                "Europese Commissie, staatssteun",
+                "Europäische Kommission, staatliche Beihilfen",
+            ),
+            "comeu_dma" => (
+                "Europese Commissie, digitale markten",
+                "Europäische Kommission, digitale Märkte",
+            ),
+            "comeu_fs" => (
+                "Europese Commissie, buitenlandse subsidies",
+                "Europäische Kommission, drittstaatliche Subventionen",
+            ),
+            other => panic!("no Dutch or German name for {other}"),
+        };
+        named(code, nl, de)
+    }));
+    names
+}
+
 /// Lit une chaîne non-vide d'une clé d'un objet JSON (`columns`/`predicates`).
 fn json_str_nonempty<'a>(obj: &'a Value, key: &str) -> Option<&'a str> {
     obj.get(key)
@@ -265,10 +315,14 @@ fn cjue_sections(cleaned_text: &str, celex: &str, lang: &str) -> Vec<DecisionSec
 }
 
 /// An advocate general's opinion or view: `CC`/`CP` in the CELEX, a bare `C`
-/// before the number in the older ones (`61990C0090`).
-fn celex_is_opinion(celex: &str) -> bool {
+/// before the number in the older ones (`61990C0090`), `TC` at the General Court.
+pub fn celex_is_opinion(celex: &str) -> bool {
     let b = celex.as_bytes();
-    b.get(5) == Some(&b'C') && matches!(b.get(6), Some(b'C' | b'P' | b'0'..=b'9'))
+    match b.get(5) {
+        Some(b'C') => matches!(b.get(6), Some(b'C' | b'P' | b'0'..=b'9')),
+        Some(b'T') => b.get(6) == Some(&b'C'),
+        _ => false,
+    }
 }
 
 /// Values of a CDM predicate, whose builder emits a scalar on a single value and
@@ -299,18 +353,14 @@ fn cedh_judgementdate_to_iso(judgementdate: &str) -> Option<String> {
     Some(d.strftime("%Y-%m-%d").to_string())
 }
 
-/// Parse un arrêt CEDH (HUDOC) en [`Decision`]. `body_text` est le corps déjà
-/// converti HTML→texte au bord (`lj-sources`) ; `columns` est le bloc
-/// `results[].columns` désérialisé ; `itemid` est la PK HUDOC (`001-…`).
+/// A CEDH judgment or decision (HUDOC) as a [`Decision`]. `body_text` is the body
+/// already converted to text at the edge (`lj-sources`), `columns` the
+/// `results[].columns` block, `itemid` HUDOC's key (`001-…`). `ecli` is read
+/// verbatim, `numero_dossiers` splits `appno` on `;`, `date_lecture` is `kpdate`
+/// in ISO (else `judgementdate`), `solution` is HUDOC's `conclusion` label; every
+/// other column stays in `source_fields`.
 ///
-/// `jurisdiction_type` = `"CEDH"` (posé explicitement). `ecli` lu verbatim de
-/// `columns["ecli"]` (arrêts seulement, `None` sinon) — jamais dérivé.
-/// `numero_dossiers` = `columns["appno"]` (`;`-séparé → liste). `date_lecture` =
-/// `columns["kpdate"]` normalisé ISO `YYYY-MM-DD` (repli `judgementdate`
-/// `DD/MM/YYYY`), car la frontière store ne parse que `%Y-%m-%d`. Le titre
-/// (`docname`) et toutes les autres colonnes restent en `source_fields`.
-///
-/// Erreur franche [`CoreError::Xml`] si `itemid` ou `body_text` est vide.
+/// [`CoreError::Xml`] when `itemid` or `body_text` is empty.
 pub fn parse_cedh(
     body_text: &str,
     columns: &Value,
@@ -365,7 +415,7 @@ pub fn parse_cedh(
         formation: None,
         type_decision: None,
         type_recours: None,
-        solution: None,
+        solution: json_str_nonempty(columns, "conclusion").map(str::to_string),
         publication_codes: Vec::new(),
         avocat_requerant: None,
         listed_counsel: Vec::new(),
@@ -624,6 +674,24 @@ pub fn cjue_title_case_name(title: &str) -> Option<String> {
     names_a_party(name).then(|| name.to_string())
 }
 
+static ADVOCATE_GENERAL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(avocate?\s+générale?)\s+(?:M\.\s*|Mme\s+)*([^,#]+?),?\s+présentée?s?\b")
+        .expect("advocate general regex")
+});
+
+/// The Advocate General a CELLAR French title names, after the role as it writes it,
+/// « l'avocat général Szpunar » or « l'avocate générale Kokott ».
+pub fn cjue_advocate_general(title: &str) -> Option<(String, String)> {
+    let c = ADVOCATE_GENERAL.captures(title)?;
+    let name = c[2].trim();
+    let role = c[1]
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase();
+    (!name.is_empty()).then(|| (format!("l'{role}"), name.to_string()))
+}
+
 /// The heading a regulation or a directive opens on, whatever its case and accents.
 static ACT_HEADING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^\s*(?:r[eéè]glement|directive)\b").expect("act heading regex")
@@ -770,6 +838,8 @@ mod tests {
         assert!(celex_is_opinion("61990C0090"));
         assert!(celex_is_opinion("62010CC0342"));
         assert!(!celex_is_opinion("62004TJ0162"));
+        assert!(celex_is_opinion("61990TC0051"));
+        assert!(!celex_is_opinion("62019TO0110"));
         assert!(!celex_is_opinion("62011CO0348"));
         assert!(!celex_is_opinion("61999B0073"));
     }
@@ -1258,5 +1328,31 @@ mod tests {
         let untitled =
             "Journal officiel des Communautés européennes\nLE CONSEIL DES COMMUNAUTÉS EUROPÉENNES,";
         assert_eq!(eurlex_act_text(untitled), untitled);
+    }
+
+    #[test]
+    fn the_advocate_general_is_read_from_the_french_title() {
+        let read = |title: &str| {
+            cjue_advocate_general(title).map(|(role, name)| format!("{role} | {name}"))
+        };
+        assert_eq!(
+            read("Conclusions de l'avocat général Roemer présentées le 1 juin 1965. # Chambre syndicale").as_deref(),
+            Some("l'avocat général | Roemer")
+        );
+        assert_eq!(
+            read("Conclusions de l'avocat général M. Campos Sánchez-Bordona, présentées le 4 juin 2020").as_deref(),
+            Some("l'avocat général | Campos Sánchez-Bordona")
+        );
+        assert_eq!(
+            read("Prise de position de l'avocate générale Mme Kokott présentée le 3 mars 2015")
+                .as_deref(),
+            Some("l'avocate générale | Kokott")
+        );
+        assert_eq!(
+            read("Conclusions de l'avocat général M. M. Szpunar, présentées le 3 septembre 2020")
+                .as_deref(),
+            Some("l'avocat général | Szpunar")
+        );
+        assert_eq!(read("Arrêt de la Cour du 4 juin 2020"), None);
     }
 }

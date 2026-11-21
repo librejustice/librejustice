@@ -28,6 +28,7 @@ lj-bucket = { workspace = true }
 tokio = { workspace = true }
 futures = { workspace = true }
 axum = { workspace = true }
+http-body = { workspace = true }
 tower = { workspace = true }
 tower-http = { workspace = true }
 serde = { workspace = true }

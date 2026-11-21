@@ -34,6 +34,7 @@ use lj_core::error::Result;
 /// stable `extract::EXTRACT_VERSION`.
 pub use lj_versions::EXTRACT_VERSION;
 
+mod cjue_formation;
 mod dockets;
 mod formation_label;
 mod jurisdiction_names;
@@ -69,7 +70,7 @@ fn is_admin(d: &Decision) -> bool {
 pub fn is_judiciaire(d: &Decision) -> bool {
     matches!(
         d.jurisdiction_type.as_deref(),
-        Some("CC") | Some("CA") | Some("TJ") | Some("TCOM") | Some("CPH")
+        Some("CC" | "CA" | "TJ" | "TCOM" | "CPH" | "ASSISES" | "CCD")
     )
 }
 
@@ -80,8 +81,9 @@ pub fn is_judiciaire(d: &Decision) -> bool {
 pub fn routed(decision: &Decision) -> Result<()> {
     match decision.jurisdiction_type.as_deref() {
         Some(
-            "TA" | "CAA" | "CE" | "CC" | "CA" | "TJ" | "TCOM" | "CPH" | "CONSTIT" | "TC" | "CEDH"
-            | "CJUE" | "CNDA" | "CNIL" | "DDD" | "ADLC" | "COMEU",
+            "TA" | "CAA" | "CE" | "CC" | "CA" | "TJ" | "TCOM" | "CPH" | "ASSISES" | "CCD"
+            | "CONSTIT" | "TC" | "CEDH" | "CJUE" | "CNDA" | "CNIL" | "DDD" | "ADLC" | "AMF"
+            | "COMEU",
         ) => Ok(()),
         _ => Err(lj_core::error::CoreError::UnknownJuridiction(
             decision.jurisdiction_type.clone(),
@@ -169,8 +171,15 @@ pub fn formation_axes_scanned(
     let jt = d.jurisdiction_type.as_deref();
     let mut axes = if is_admin(d) {
         crate::formation::parse_formation(jt, None, None, None, d.formation.as_deref())
+    } else if jt == Some("CJUE") {
+        return cjue_formation::cjue_formation(&d.texte_integral_clean, &d.source_uid);
     } else if !is_judiciaire(d) {
         return crate::formation::FormationAxes::default();
+    } else if matches!(jt, Some("ASSISES" | "CCD")) {
+        crate::formation::FormationAxes {
+            formation_uid: crate::formation::criminal_formation(jt, d.formation.as_deref()),
+            ..Default::default()
+        }
     } else if jt == Some("CC") {
         let mut axes = crate::formation::parse_formation(
             jt,
@@ -208,7 +217,7 @@ pub fn formation_axes_scanned(
     // juridiction ATTAQUÉE : seule l'adresse à SON juge des référés compte (« au
     // juge des référés du Conseil d'État », « juge des référés de la cour »).
     let first_instance = matches!(jt, Some("TA") | Some("TJ") | Some("TCOM") | Some("CPH"));
-    if axes.formation_uid.is_none() {
+    if axes.formation_uid.is_none() && axes.chamber.solemn != Some(lj_core::chamber::Solemn::Avis) {
         if let Some(s) = scan {
             let sig = s.procedure_signals();
             let member = d.source_uid.rsplit('/').next().unwrap_or("").to_uppercase();
@@ -291,7 +300,7 @@ pub fn jurisdiction_name_scanned(
     }
     if matches!(
         d.jurisdiction_type.as_deref(),
-        Some("DDD" | "ADLC" | "COMEU")
+        Some("DDD" | "ADLC" | "AMF" | "COMEU")
     ) {
         return d.jurisdiction_name.clone();
     }
@@ -312,13 +321,12 @@ fn solution_from_label(low: &str) -> Option<&'static str> {
         "cassation" | "annulation" => Some("SATISFACTION_TOTALE"),
         "cassation_partielle" => Some("SATISFACTION_PARTIELLE"),
         "irrecevabilite" | "irrecevabilité" => Some("IRRECEVABILITE"),
-        "non-admission" | "non admission" => Some("IRRECEVABILITE"),
+        "non-admission" | "non admission" => Some("NON_ADMISSION"),
+        "décheance" | "decheance" => Some("DECHEANCE"),
         "non-lieu" | "nonlieu" => Some("NON_LIEU_A_STATUER"),
         "qpc_non-lieu" => Some("NON_LIEU_A_STATUER"),
         "désistement" | "desistement" => Some("DESISTEMENT"),
-        "designation" | "décheance" | "decheance" | "qpc_renvoi" | "qpc" | "renvoi" => {
-            Some("AUTRE")
-        }
+        "designation" | "qpc_renvoi" | "qpc" | "renvoi" => Some("AUTRE"),
         _ => None,
     } {
         return Some(k);
@@ -462,6 +470,47 @@ fn constit_solution(low: &str) -> &'static str {
         .map_or("AUTRE", |(_, key)| key)
 }
 
+/// The CEDH's ruling, read from HUDOC's `conclusion`: one `;`-separated finding
+/// per item, in French or in English.
+fn cedh_solution(low: &str) -> &'static str {
+    let items: Vec<&str> = low
+        .split(';')
+        .map(|item| {
+            let item = item.trim();
+            ["partiellement ", "partly ", "remainder "]
+                .iter()
+                .find_map(|p| item.strip_prefix(p))
+                .unwrap_or(item)
+        })
+        .collect();
+    let starts = |heads: &[&str]| items.iter().any(|i| heads.iter().any(|h| i.starts_with(h)));
+    let contains = |words: &[&str]| items.iter().any(|i| words.iter().any(|w| i.contains(w)));
+    if starts(&["violation"]) {
+        "VIOLATION"
+    } else if starts(&["non-violation", "no violation"]) {
+        "NON_VIOLATION"
+    } else if starts(&["recevable", "admissible"]) {
+        "RECEVABLE"
+    } else if starts(&[
+        "irrecevable",
+        "inadmissible",
+        "inadmisible",
+        "exception préliminaire retenue",
+        "exceptions préliminaires retenues",
+        "preliminary objection allowed",
+        "preliminary objections allowed",
+        "incompétence",
+    ]) {
+        "IRRECEVABILITE"
+    } else if contains(&["règlement amiable", "friendly settlement"]) {
+        "REGLEMENT_AMIABLE"
+    } else if contains(&["radiation", "struck out"]) {
+        "RADIATION"
+    } else {
+        "AUTRE"
+    }
+}
+
 fn solution_uid(key: &str) -> String {
     format!("solution:{key}")
 }
@@ -479,6 +528,10 @@ pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Op
     let raw = d.solution.as_deref().unwrap_or("").trim().to_lowercase();
     if d.jurisdiction_type.as_deref() == Some("CONSTIT") && !raw.is_empty() {
         return Some(solution_uid(constit_solution(&raw)));
+    }
+    // The generic scan reads Strasbourg's operative part as a French one: HUDOC's label alone decides.
+    if d.jurisdiction_type.as_deref() == Some("CEDH") {
+        return (!raw.is_empty()).then(|| solution_uid(cedh_solution(&raw)));
     }
     let text = scan.and_then(|s| s.outcome());
     // vocabulaire cassation : la juridiction (métadonnée) fait foi, le gabarit texte
@@ -506,7 +559,7 @@ pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Op
                 Some(("NON_LIEU_A_STATUER", _)) => "NON_LIEU_A_STATUER",
                 Some(("SATISFACTION_TOTALE", _)) => "SATISFACTION_TOTALE",
                 Some(("REJET", _)) => "REJET",
-                _ => "IRRECEVABILITE",
+                _ => "NON_ADMISSION",
             }));
         }
         if let Some(key) = solution_from_label(&raw) {
@@ -541,15 +594,14 @@ pub fn solution_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> Op
                     other => other,
                 }
             } else if admin {
-                // Ordre administratif : le dispositif se lit VERBATIM — un
-                // label d'annulation (totale OU partielle) = ANNULATION (sauf
-                // dispositif « réformé ») ; le label greffe ambigu
-                // (« satisfaction totale ou partielle », « irrecevabilité » sur
-                // dispositif « rejetée ») s'arbitre au dispositif.
+                // Administrative order: an annulment label gives ANNULATION, or
+                // ANNULATION_PARTIELLE when partial, unless the operative part reforms;
+                // an ambiguous label is settled by the operative part.
                 match key {
                     "SATISFACTION_TOTALE" | "SATISFACTION_PARTIELLE" if raw.contains("annul") => {
                         match text {
                             Some(("REFORMATION", _)) => "REFORMATION",
+                            _ if raw.contains("annulation partielle") => "ANNULATION_PARTIELLE",
                             _ => "ANNULATION",
                         }
                     }
@@ -936,7 +988,12 @@ pub fn procedure_scanned(d: &Decision, scan: Option<&crate::scan::DocScan>) -> P
             None
         };
     }
-    out.procedure_uid = voie.map(|k| format!("procedure:{k}"));
+    // An opinion speaks of procedures and judges without following one or being signed by one.
+    if crate::formation::consultative(d) {
+        out.office_uid = None;
+    } else {
+        out.procedure_uid = voie.map(|k| format!("procedure:{k}"));
+    }
     out
 }
 

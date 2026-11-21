@@ -30,6 +30,7 @@ lj-store = { workspace = true }
 lj-pg = { workspace = true }
 lj-sources = { workspace = true }
 lj-sources-annonces = { workspace = true }
+lj-office = { workspace = true }
 lj-llm = { workspace = true }
 lj-summary = { workspace = true }
 lj-suggest = { workspace = true }
@@ -46,6 +47,7 @@ futures = { workspace = true }
 flate2 = { workspace = true }
 csv = { workspace = true }
 xxhash-rust = { workspace = true }
+zstd = { workspace = true }
 regex = { workspace = true }
 chrono = { workspace = true }
 # Jour courant en Europe/Paris pour la moisson d'annonces.

@@ -20,7 +20,8 @@ use lj_llm::codex;
 use lj_llm::gemini::{GeminiClient, GeminiError};
 use lj_llm::luna::{LunaClient, LunaError, LunaSeat};
 use lj_store::repository::{
-    CollageRow, Credential, DecisionRepository, MissingSummaryRow, StoredSummary, SummaryContext,
+    CollageRow, Credential, DecisionRepository, MissingSummaryRow, PickedText, StoredSummary,
+    SummaryContext,
 };
 use lj_summary::{
     analysis_resumes, assemble_collage, assemble_rewrite, body_text_from_full_text, clean_summary,
@@ -96,20 +97,24 @@ impl Model {
             collage: None,
         };
         match self {
-            Self::Gemini31FlashLite => rewrite(SummaryEngine::Gemini31BlockV11),
-            Self::Gemini35FlashLite => rewrite(SummaryEngine::Gemini35BlockV11),
+            Self::Gemini31FlashLite => rewrite(SummaryEngine::Gemini31BlockV12),
+            Self::Gemini35FlashLite => rewrite(SummaryEngine::Gemini35BlockV12),
             Self::Gpt6Luna => Engines {
-                rewrite: Some(SummaryEngine::Luna6BlockV11),
-                collage: Some(SummaryEngine::Luna6CollageHeadedV11),
+                rewrite: Some(SummaryEngine::Luna6BlockV12),
+                collage: Some(COLLAGE),
             },
         }
     }
 }
 
+/// The engine that pastes a court's commentary. A collage stays at the generation that
+/// wrote it, and a text in a language it does not write is rewritten instead.
+const COLLAGE: SummaryEngine = SummaryEngine::Luna6CollageHeadedV12;
+
 /// The same door, serving the catch-up alone, which has nothing to rewrite.
 const LUNA_COLLAGE_ONLY: Engines = Engines {
     rewrite: None,
-    collage: Some(SummaryEngine::Luna6CollageHeadedV11),
+    collage: Some(COLLAGE),
 };
 
 /// Sleep floor of a driver whose pool cannot pay: the quota says how long to wait,
@@ -131,10 +136,17 @@ const DRIVER_MARGIN: f64 = 2.0;
 /// when the court published none, and nothing when no door of the run can paste.
 /// A rewrite reads worse than the court's words, and the row would then be
 /// written twice.
-fn work_for(header: Header, commentary: Option<String>, can_collage: bool) -> Option<Work> {
+fn work_for(
+    header: Header,
+    commentary: Option<String>,
+    can_collage: bool,
+    lang: &str,
+) -> Option<Work> {
     match commentary {
-        Some(commentary) => can_collage.then_some(Work::Collage { header, commentary }),
-        None => Some(Work::Rewrite { header }),
+        Some(commentary) if COLLAGE.writes(lang) => {
+            can_collage.then_some(Work::Collage { header, commentary })
+        }
+        _ => Some(Work::Rewrite { header }),
     }
 }
 
@@ -283,9 +295,12 @@ impl Pool {
     /// already cut its rate, so the job goes back to the queue and pays nothing.
     async fn summarise(&self, job: &Job, engine: SummaryEngine) -> Attempt {
         let input = job.work.input(&job.body);
+        let prompt = engine
+            .system_prompt(job.reader.as_deref().unwrap_or(&job.lang))
+            .expect("a job is in a language its engines write");
         match self {
             Pool::Gemini(client, _) => match client
-                .generate_now(engine.prompt(), &input, GEMINI_MAX_OUTPUT_TOKENS)
+                .generate_now(&prompt, &input, GEMINI_MAX_OUTPUT_TOKENS)
                 .await
             {
                 Ok(raw) => job.work.finish(&raw),
@@ -296,7 +311,7 @@ impl Pool {
                 Err(err) => Attempt::Failed(err.to_string()),
             },
             Pool::Luna(client, _) => match client
-                .generate_now(engine.model(), luna_effort(engine), engine.prompt(), &input)
+                .generate_now(engine.model(), luna_effort(engine), &prompt, &input)
                 .await
             {
                 Ok(raw) => job.work.finish(&raw),
@@ -372,6 +387,9 @@ impl Work {
 /// A decision to summarise, and the passes it has already cost.
 struct Job {
     decision_id: i64,
+    lang: String,
+    /// The language of a reader summary, `None` for the text's own.
+    reader: Option<String>,
     body: String,
     work: Work,
     attempts: u32,
@@ -424,6 +442,8 @@ impl Files {
 /// A summary written, on its way to the store.
 struct Done {
     decision_id: i64,
+    lang: String,
+    reader: Option<String>,
     quote: Option<std::ops::Range<usize>>,
     written: Written,
     engine: SummaryEngine,
@@ -487,6 +507,10 @@ pub enum Doors {
     All,
 }
 
+fn past(stop_at: Option<std::time::Instant>) -> bool {
+    stop_at.is_some_and(|at| std::time::Instant::now() >= at)
+}
+
 /// Pulls from the shared queue as fast as its own quota allows, and no faster, once
 /// no better ranked door is left to take the job.
 async fn drive(
@@ -495,6 +519,7 @@ async fn drive(
     tx: tokio::sync::mpsc::Sender<Done>,
     ahead: Ahead,
     doors: Doors,
+    stop_at: Option<std::time::Instant>,
 ) {
     use std::sync::atomic::Ordering::Relaxed;
     if doors == Doors::ByRank && pool.rank() > 0 {
@@ -502,7 +527,7 @@ async fn drive(
             tokio::time::sleep(std::time::Duration::from_secs_f64(AHEAD_POLL_S)).await;
         }
     }
-    pull(&pool, &queue, &tx).await;
+    pull(&pool, &queue, &tx, stop_at).await;
     if pool.rank() == 0 {
         ahead.fetch_sub(1, Relaxed);
     }
@@ -510,9 +535,14 @@ async fn drive(
 
 /// The job is taken for the length of one call: a pool that cannot pay hands it
 /// straight back, where a worker holding it would park it behind a bucket.
-async fn pull(pool: &Arc<Pool>, queue: &Queue, tx: &tokio::sync::mpsc::Sender<Done>) {
+async fn pull(
+    pool: &Arc<Pool>,
+    queue: &Queue,
+    tx: &tokio::sync::mpsc::Sender<Done>,
+    stop_at: Option<std::time::Instant>,
+) {
     let take = || {
-        if STOPPING.load(Ordering::Relaxed) {
+        if STOPPING.load(Ordering::Relaxed) || past(stop_at) {
             return None;
         }
         queue.lock().expect("file non empoisonnée").take(pool)
@@ -525,6 +555,8 @@ async fn pull(pool: &Arc<Pool>, queue: &Queue, tx: &tokio::sync::mpsc::Sender<Do
             Attempt::Written(written) => {
                 let done = Done {
                     decision_id: job.decision_id,
+                    lang: job.lang.clone(),
+                    reader: job.reader.clone(),
                     quote: job.work.quote(&written),
                     written,
                     engine,
@@ -621,7 +653,8 @@ pub enum Order {
     },
 }
 
-/// Fills `decisions.summary` up to `summary_prompt_version >= target_version`.
+/// Fills the summary of every text a decision's passages are cut from, each in its
+/// own language, up to `summary_prompt_version >= target_version`.
 ///
 /// Reads and writes on two connections of the pool. No rate is set here: each quota
 /// bucket admits what it can pay for, the drivers pull from one shared queue, and
@@ -637,7 +670,13 @@ pub async fn backfill_summaries(
     doors: Doors,
     models: &[Model],
     accounts: &[String],
+    caps: &[(String, f64)],
+    langs: &[String],
+    reader: Option<&str>,
+    stop_after: Option<std::time::Duration>,
 ) -> Result<()> {
+    let stop_at = stop_after.map(|after| std::time::Instant::now() + after);
+    let langs: Vec<&str> = langs.iter().map(String::as_str).collect();
     let _run = Run::start();
     let settings = Settings::from_env()?;
     let pool =
@@ -697,7 +736,7 @@ pub async fn backfill_summaries(
                 gemini.push((Arc::new(client), engines));
             }
             Model::Gpt6Luna => {
-                luna = luna_client(&fetch_repo, &picked)
+                luna = luna_client(&fetch_repo, &picked, caps)
                     .await?
                     .map(|client| (client, engines));
             }
@@ -748,7 +787,7 @@ pub async fn backfill_summaries(
     let mut par_moteur: std::collections::BTreeMap<&'static str, usize> = Default::default();
     let mut left_to_collage: usize = 0;
 
-    let batches = match &order {
+    let own = match &order {
         Order::Sweep => {
             fetch_repo
                 .iter_decisions_missing_summary(
@@ -758,6 +797,7 @@ pub async fn backfill_summaries(
                     start_id,
                     shuffle,
                     refresh_stale,
+                    &langs,
                 )
                 .await?
         }
@@ -772,6 +812,7 @@ pub async fn backfill_summaries(
                     *min,
                     &only,
                     *named,
+                    &langs,
                 )
                 .await?
         }
@@ -793,6 +834,7 @@ pub async fn backfill_summaries(
                     *reverse,
                     &only,
                     *named,
+                    &langs,
                 )
                 .await?
         }
@@ -802,57 +844,95 @@ pub async fn backfill_summaries(
                 .await?
         }
     };
-    tracing::info!(
-        order = ?order,
-        decisions = batches.iter().map(Vec::len).sum::<usize>(),
-        "summary_backfill_queue"
-    );
+    let readers = match reader {
+        Some(reader) => {
+            let (types, tiers): (Vec<&str>, Vec<i32>) = JURISDICTION_TIERS.iter().copied().unzip();
+            fetch_repo
+                .iter_reader_summaries(
+                    reader,
+                    target_version,
+                    batch_size,
+                    limit,
+                    refresh_stale,
+                    &types,
+                    &tiers,
+                )
+                .await?
+        }
+        None => Vec::new(),
+    };
+    let texts: usize = own.iter().map(Vec::len).sum();
+    let reader_texts: usize = readers.iter().map(Vec::len).sum();
+    let queued = texts + reader_texts;
+    tracing::info!(order = ?order, texts, readers = reader_texts, reader, "summary_backfill_queue");
+    let batches = own
+        .into_iter()
+        .map(|batch| (None, batch))
+        .chain(readers.into_iter().map(|batch| (reader, batch)));
 
-    for batch in batches {
+    for (reader, batch) in batches {
         let ids: Vec<i64> = batch.iter().map(|row| row.decision_id).collect();
-        let mut full_texts: std::collections::HashMap<i64, String> = fetch_repo
-            .fetch_full_texts(&ids)
+        let keys: Vec<(i64, &str)> = batch
+            .iter()
+            .map(|row| (row.decision_id, row.lang.as_str()))
+            .collect();
+        let mut full_texts: std::collections::HashMap<(i64, String), PickedText> = fetch_repo
+            .fetch_texts(&keys)
             .await?
             .into_iter()
+            .map(|text| ((text.decision_id, text.lang.clone()), text))
             .collect();
-        // What each decision carries decides its shape, one indexed lookup on the
+        // What each read text carries decides its shape, one indexed lookup on the
         // batch's ids: a court that published its own commentary is not rewritten,
         // its words are pasted, which beats a rewrite.
-        let mut commentaries: std::collections::HashMap<i64, String> = fetch_repo
-            .fetch_collage_rows(&ids, COLLAGE_PROSE_MIN as i32)
-            .await?
-            .into_iter()
-            .filter_map(|row| {
-                court_commentary(&row.commentary, row.analysis)
-                    .map(|commentary| (row.decision_id, commentary))
-            })
-            .collect();
+        let mut commentaries: std::collections::HashMap<i64, String> = match reader {
+            Some(_) => Default::default(),
+            None => fetch_repo
+                .fetch_collage_rows(&ids, COLLAGE_PROSE_MIN as i32)
+                .await?
+                .into_iter()
+                .filter_map(|row| {
+                    court_commentary(&row.commentary, row.analysis)
+                        .map(|commentary| (row.decision_id, commentary))
+                })
+                .collect(),
+        };
 
-        let mut headers = headers(&fetch_repo, &batch).await?;
+        let headers = headers(&fetch_repo, &batch).await?;
 
         let queue: Queue = Arc::new(std::sync::Mutex::new(Files::default()));
         for row in &batch {
-            let body = full_texts
-                .remove(&row.decision_id)
-                .and_then(|ft| body_text_from_full_text(&ft));
-            let Some(body) = body else {
+            let picked = full_texts
+                .remove(&(row.decision_id, row.lang.clone()))
+                .and_then(|text| {
+                    let body = body_text_from_full_text(&text.full_text)?;
+                    Some((text.lang, body))
+                });
+            let Some((lang, body)) = picked else {
                 tracing::warn!(
                     public_id = %row.public_id,
                     decision_id = row.decision_id,
+                    lang = %row.lang,
                     "summary_no_body"
                 );
                 continue;
             };
             let header = headers
-                .remove(&row.decision_id)
-                .expect("one header per row of the batch");
-            let Some(work) = work_for(header, commentaries.remove(&row.decision_id), can_collage)
-            else {
+                .get(&row.decision_id)
+                .cloned()
+                .expect("one header per decision of the batch");
+            let commentary = row
+                .read
+                .then(|| commentaries.remove(&row.decision_id))
+                .flatten();
+            let Some(work) = work_for(header, commentary, can_collage, &lang) else {
                 left_to_collage += 1;
                 continue;
             };
             queue.lock().expect("file non empoisonnée").push_back(Job {
                 decision_id: row.decision_id,
+                lang,
+                reader: reader.map(str::to_owned),
                 body,
                 work,
                 attempts: 0,
@@ -878,6 +958,7 @@ pub async fn backfill_summaries(
                     tx.clone(),
                     Arc::clone(&ahead),
                     doors,
+                    stop_at,
                 )));
             }
         }
@@ -886,17 +967,35 @@ pub async fn backfill_summaries(
 
         processed += batch.len();
         while let Some(done) = rx.recv().await {
-            write_repo
-                .set_summary(
-                    done.decision_id,
-                    &done.written.summary,
-                    Some(done.written.body),
-                    done.quote,
-                    done.engine.prompt_version(),
-                    done.engine.code(),
-                )
-                .await
-                .map_err(|e| anyhow!("set_summary id={}: {e}", done.decision_id))?;
+            match &done.reader {
+                Some(reader) => {
+                    write_repo
+                        .set_reader_summary(
+                            done.decision_id,
+                            &done.lang,
+                            reader,
+                            &done.written.summary,
+                            Some(done.written.body),
+                            done.engine.prompt_version(),
+                            done.engine.code(),
+                        )
+                        .await
+                }
+                None => {
+                    write_repo
+                        .set_summary(
+                            done.decision_id,
+                            &done.lang,
+                            &done.written.summary,
+                            Some(done.written.body),
+                            done.quote,
+                            done.engine.prompt_version(),
+                            done.engine.code(),
+                        )
+                        .await
+                }
+            }
+            .map_err(|e| anyhow!("set_summary id={}: {e}", done.decision_id))?;
             persisted += 1;
             *par_moteur.entry(done.engine.model()).or_default() += 1;
         }
@@ -929,6 +1028,10 @@ pub async fn backfill_summaries(
         log_luna_seats(luna.as_ref().map(|(client, _)| client));
         if STOPPING.load(Ordering::Relaxed) {
             tracing::warn!(left, "summary_stopped");
+            break;
+        }
+        if past(stop_at) {
+            tracing::info!(left = queued - processed, "summary_deadline");
             break;
         }
         if left > 0 {
@@ -996,16 +1099,26 @@ async fn by_expiry(seats: Vec<LunaSeat>) -> Vec<LunaSeat> {
 }
 
 /// The seats of the subscription door, or `None` when the base holds no live one.
+///
+/// A seat in `caps`, by tenant or fingerprint, fills each window up to its share
+/// only, and serves even when parked by hand.
 async fn luna_client(
     repo: &DecisionRepository<'_>,
     picked: &impl Fn(&Credential) -> bool,
+    caps: &[(String, f64)],
 ) -> Result<Option<Arc<LunaClient>>> {
+    let cap_of = |c: &Credential| {
+        caps.iter()
+            .find(|(seat, _)| *seat == c.tenant || *seat == c.fingerprint)
+            .map(|(_, cap)| *cap)
+    };
     let seat_of = |c: &Credential| {
         Some(LunaSeat {
             fingerprint: c.fingerprint.clone(),
             account_id: c.account.clone()?,
             access_token: c.access_token()?.to_string(),
             refresh_token: c.refresh_token()?.to_string(),
+            cap_percent: cap_of(c),
         })
     };
     let now = chrono::Utc::now();
@@ -1019,6 +1132,9 @@ async fn luna_client(
     {
         let Some(seat) = seat_of(c) else { continue };
         match c.disabled_until {
+            Some(_) if crate::credential::parked_until_enabled(c) && seat.cap_percent.is_some() => {
+                seats.push(seat)
+            }
             Some(until) if until > now => {
                 if !crate::credential::parked_until_enabled(c) {
                     quota_parked.push(seat);
@@ -1074,6 +1190,37 @@ fn luna_effort(engine: SummaryEngine) -> &'static str {
 /// Identifiers per pass of the re-cleaning. The whole stock is read, and only what
 /// the cleaning changes is written back.
 const RECLEAN_BATCH: i64 = 50_000;
+
+/// Moves the summaries generations 8 to 11 wrote in French on texts in another
+/// language to those texts' French reader summary, one transaction per batch.
+pub async fn move_reader_summaries(batch: i64) -> Result<()> {
+    let settings = Settings::from_env()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    conn.batch_execute(
+        "SET statement_timeout = '300s'; SET application_name = 'lj-move-reader-summaries'",
+    )
+    .await
+    .map_err(|e| anyhow!("set session: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    let (mut moved, mut requeued) = (0i64, 0i64);
+    loop {
+        let (texts, decisions) = repo
+            .move_reader_summaries(
+                lj_summary::FRENCH_SUMMARY_GENERATION,
+                lj_chunk::EMBED_VERSION,
+                batch,
+            )
+            .await?;
+        moved += texts;
+        requeued += decisions;
+        tracing::info!(moved, requeued, "reader_summaries_moved");
+        if texts < batch {
+            return Ok(());
+        }
+    }
+}
 
 /// Replays [`clean_summary`] over the stored summaries and writes back the ones it
 /// changes, without touching the engine that wrote them. A collage gets back where
@@ -1232,7 +1379,7 @@ pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>)
     let fetch_repo = DecisionRepository::new(&fetch_conn);
     let write_repo = DecisionRepository::new(&write_conn);
 
-    let luna = luna_client(&fetch_repo, &|_: &Credential| true)
+    let luna = luna_client(&fetch_repo, &|_: &Credential| true, &[])
         .await?
         .ok_or_else(|| anyhow!("aucun siège luna dans llm_credential : porte inutilisable"))?;
     let pools: Vec<Arc<Pool>> = vec![Arc::new(Pool::Luna(Arc::clone(&luna), LUNA_COLLAGE_ONLY))];
@@ -1267,7 +1414,7 @@ pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>)
         let mut headers = headers(&fetch_repo, &fetch_repo.summary_rows(chunk).await?).await?;
 
         let queue: Queue = Arc::new(std::sync::Mutex::new(Files::default()));
-        for row in &page {
+        for row in page.iter().filter(|row| COLLAGE.writes(&row.lang)) {
             let Some(commentary) = court_commentary(&row.commentary, row.analysis) else {
                 tracing::warn!(decision_id = row.decision_id, "collage_no_resume");
                 continue;
@@ -1279,6 +1426,8 @@ pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>)
             match body_text_from_full_text(&row.full_text) {
                 Some(body) => queue.lock().expect("file non empoisonnée").push_back(Job {
                     decision_id: row.decision_id,
+                    lang: row.lang.clone(),
+                    reader: None,
                     body,
                     work: Work::Collage { header, commentary },
                     attempts: 0,
@@ -1306,6 +1455,7 @@ pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>)
                     tx.clone(),
                     Arc::clone(&ahead),
                     doors,
+                    None,
                 )));
             }
         }
@@ -1316,6 +1466,7 @@ pub async fn upgrade_summaries_commentaries(batch_size: i64, limit: Option<i64>)
             write_repo
                 .set_summary(
                     done.decision_id,
+                    &done.lang,
                     &done.written.summary,
                     Some(done.written.body),
                     done.quote,
@@ -1479,8 +1630,12 @@ pub async fn export_inputs(bench: &std::path::Path, out: &std::path::Path) -> Re
     let repo = DecisionRepository::new(&conn);
     let rows = repo.summary_rows(&ids).await?;
     let mut headers = headers(&repo, &rows).await?;
-    let full_texts: std::collections::HashMap<i64, String> =
-        repo.fetch_full_texts(&ids).await?.into_iter().collect();
+    let full_texts: std::collections::HashMap<i64, PickedText> = repo
+        .fetch_full_texts(&ids)
+        .await?
+        .into_iter()
+        .map(|text| (text.decision_id, text))
+        .collect();
     let commentaries: std::collections::HashMap<i64, String> = repo
         .fetch_collage_rows(&ids, COLLAGE_PROSE_MIN as i32)
         .await?
@@ -1492,10 +1647,10 @@ pub async fn export_inputs(bench: &std::path::Path, out: &std::path::Path) -> Re
         .collect();
     let mut inputs = serde_json::Map::new();
     for row in &rows {
-        let Some(body) = full_texts
-            .get(&row.decision_id)
-            .and_then(|full_text| body_text_from_full_text(full_text))
-        else {
+        let Some((text, body)) = full_texts.get(&row.decision_id).and_then(|text| {
+            let body = body_text_from_full_text(&text.full_text)?;
+            Some((text, body))
+        }) else {
             continue;
         };
         let header = headers
@@ -1512,6 +1667,7 @@ pub async fn export_inputs(bench: &std::path::Path, out: &std::path::Path) -> Re
         inputs.insert(
             row.decision_id.to_string(),
             serde_json::json!({
+                "lang": text.lang,
                 "title": header.title,
                 "case_name": header.case_name,
                 "classification": header.classification,
@@ -1646,6 +1802,8 @@ mod tests {
         };
         let collage = || Job {
             decision_id: 1,
+            lang: "fr".into(),
+            reader: None,
             body: body(),
             work: Work::Collage {
                 header: header(),
@@ -1656,6 +1814,8 @@ mod tests {
         };
         let rewrite = || Job {
             decision_id: 2,
+            lang: "fr".into(),
+            reader: None,
             body: body(),
             work: Work::Rewrite { header: header() },
             attempts: 0,

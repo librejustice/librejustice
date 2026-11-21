@@ -472,6 +472,12 @@ const MARKERS: &[(&str, Mk)] = &[
     ("contre l'ordonnance", Mk::Contre), ("contre la decision", Mk::Contre),
     ("contre un arret", Mk::Contre), ("contre un jugement", Mk::Contre),
     ("contre une ordonnance", Mk::Contre), ("contre deux arrets", Mk::Contre),
+    // A numbered list of joined pourvois; a paragraph break leaves two spaces.
+    ("contre : 1) l'arret", Mk::Contre), ("contre :  1) l'arret", Mk::Contre),
+    ("contre : 1 ) l'arret", Mk::Contre), ("contre :  1 ) l'arret", Mk::Contre),
+    ("contre: 1 ) l'arret", Mk::Contre), ("contre:  1 ) l'arret", Mk::Contre),
+    ("contre : 1° l'arret", Mk::Contre), ("contre :  1° l'arret", Mk::Contre),
+    ("contre  1) l'arret", Mk::Contre),
     // gabarit ancien : « …, en cassation d'un arrêt rendu …, au profit de … »
     ("en cassation d'", Mk::Contre),
     ("defendeur a la cassation", Mk::DefEnd), ("defendeurs a la cassation", Mk::DefEnd),
@@ -2246,7 +2252,92 @@ impl DocScan {
             .map(|t| t.s)
             .or_else(|| self.capital_verb_line())
             .or_else(|| self.abstract_closing().map(|(s, _)| s))
+            .or_else(|| self.article_one_line())
             .unwrap_or(self.len())
+    }
+
+    /// The « Article 1er : » of the last third that opens an old administrative operative
+    /// part with no « décide », on the subject of a ruling or numbered up to its notification.
+    fn article_one_line(&self) -> Option<usize> {
+        const SUBJECTS: &[&str] = &[
+            "la requete",
+            "les requetes",
+            "le recours",
+            "les recours",
+            "le pourvoi",
+            "les pourvois",
+            "le jugement",
+            "les jugements",
+            "la decision",
+            "les decisions",
+            "l'arret",
+            "les arrets",
+            "l'ordonnance",
+            "les ordonnances",
+            "les conclusions",
+            "la demande",
+            "les demandes",
+            "l'intervention",
+            "les interventions",
+            "la question",
+            "la deliberation",
+            "il n'y a pas lieu",
+            "il n'y a plus lieu",
+            "il est donne acte",
+            "il est sursis",
+            "il est accorde",
+        ];
+        let chars = &self.norm.chars;
+        let n = self.len();
+        let from = n - n / 3;
+        let base = self.norm.char2byte[from];
+        let lines: Vec<usize> = self
+            .folded_slice(from, n)
+            .match_indices("article")
+            .map(|(b, _)| self.norm.byte2char[base + b])
+            .filter(|&i| {
+                chars[i] == 'A'
+                    && (0..i).rev().find(|&j| chars[j] != ' ').is_none_or(|j| {
+                        matches!(chars[j], ';' | '.' | '-')
+                            || self.norm.breaks[j + 1..i].contains(&true)
+                    })
+            })
+            .collect();
+        let first_article = |i: usize| {
+            let rest = self.folded_slice(i + 7, (i + 80).min(n)).trim_start();
+            ["1er", "ler", "premier", "1"]
+                .iter()
+                .find_map(|p| rest.strip_prefix(p))
+                .and_then(|r| r.trim_start().strip_prefix([':', '-', '\u{2013}']))
+                .map(|r| r.trim_start().to_owned())
+        };
+        // A text quoted in the motifs meets the operative part's own « Article 1er » first.
+        let closes_on_notification = |k: usize| {
+            lines[k + 1..]
+                .iter()
+                .take_while(|&&j| first_article(j).is_none())
+                .any(|&j| {
+                    let article = self.folded_slice(j, (j + 200).min(n));
+                    article.contains("notifi")
+                        && [
+                            "presente decision",
+                            "present arret",
+                            "presente ordonnance",
+                            "present jugement",
+                        ]
+                        .iter()
+                        .any(|own| article.contains(own))
+                })
+        };
+        lines
+            .iter()
+            .enumerate()
+            .find(|&(k, &i)| {
+                first_article(i).is_some_and(|r| {
+                    SUBJECTS.iter().any(|s| r.starts_with(s)) || closes_on_notification(k)
+                })
+            })
+            .map(|(_, &i)| i)
     }
 
     /// A line of the second half opening on a ruling verb in capitals
@@ -2625,12 +2716,24 @@ impl DocScan {
     /// où se nomme la décision attaquée. Une fenêtre par token, sans fusion :
     /// l'appelant ancre sa regex sur la surface.
     pub fn contre_windows(&self) -> Vec<String> {
+        self.contre_toks()
+            .map(|t| self.text_slice(t.s, (t.e + 300).min(self.len())))
+            .collect()
+    }
+
+    /// The `n` chars before the `i`-th contre window, where « contre l'arrêt de ladite cour »
+    /// finds the court it refers to.
+    pub fn contre_lead(&self, i: usize, n: usize) -> Option<String> {
+        self.contre_toks()
+            .nth(i)
+            .map(|t| self.text_slice(t.s.saturating_sub(n), t.s))
+    }
+
+    fn contre_toks(&self) -> impl Iterator<Item = &PTok> {
         let fin = self.motifs_start().min(4_000);
         self.toks
             .iter()
-            .filter(|t| t.kind == Mk::Contre && t.s < fin)
-            .map(|t| self.text_slice(t.s, (t.e + 300).min(self.len())))
-            .collect()
+            .filter(move |t| t.kind == Mk::Contre && t.s < fin)
     }
 
     /// Fenêtres autour des ancres « sous le(s) n°/numéro(s) » (AdminReq) du récit
@@ -2829,7 +2932,7 @@ impl DocScan {
             }
         });
         if non_admis {
-            return Some(("IRRECEVABILITE", true));
+            return Some(("NON_ADMISSION", true));
         }
         let from = self.dispositif_start();
         if from >= self.len() {
@@ -3056,9 +3159,45 @@ impl DocScan {
                 if self.disp_has(from, Mk::OutNeutral) {
                     return Some(("AUTRE", false));
                 }
-                None
+                self.admin_procedural(from).map(|key| (key, false))
             }
         }
+    }
+
+    /// An administrative operative part with no ruling verb: a requête not admitted, a
+    /// non-lieu missing its « pas », or a case sent to another court or stayed.
+    fn admin_procedural(&self, from: usize) -> Option<&'static str> {
+        let disp = self.folded_slice(from, self.dispositif_end(from).min(from + 600));
+        if disp.contains("question prioritaire") || disp.contains("conseil constitutionnel") {
+            return None;
+        }
+        if let Some(at) = disp.find("pas admis") {
+            let clause = disp[..at].rsplit(':').next().unwrap_or_default();
+            if (clause.contains("requete") || clause.contains("pourvoi"))
+                && !clause.contains("intervention")
+            {
+                return Some("NON_ADMISSION");
+            }
+        }
+        const NON_LIEU: &[&str] = &[
+            "il n'y a lieu de statuer",
+            "il n'y pas lieu de statuer",
+            "il n'y a pas lieu, en l'etat, de statuer",
+        ];
+        if NON_LIEU.iter().any(|p| disp.contains(p)) {
+            return Some("NON_LIEU_A_STATUER");
+        }
+        const ELSEWHERE: &[&str] = &[
+            "est attribue",
+            "est renvoye",
+            "est transmis",
+            "sursis a statuer",
+            "avant de statuer",
+        ];
+        ELSEWHERE
+            .iter()
+            .any(|p| disp.contains(p))
+            .then_some("AUTRE")
     }
 
     /// Irrecevabilité prononcée : un token d'irrecevabilité et un token de rejet
@@ -5782,6 +5921,47 @@ mod ecole_solution_formation {
         assert_eq!(sc.outcome(), Some(("IRRECEVABILITE", false)));
         let sc = scan("La créance dont se prévaut le requérant étant prescrite, ses conclusions indemnitaires ne peuvent donc qu'être rejetées.\nO R D O N N E :\nArticle 1er : La requête est rejetée.");
         assert_eq!(sc.outcome(), Some(("REJET", false)));
+    }
+
+    #[test]
+    fn old_admin_operative_part_opens_on_article_one() {
+        let sc = scan("Vu la requête enregistrée le 18 février 1985 au secrétariat du Contentieux du Conseil d'Etat, présentée par M. X..., demeurant ... ; Considérant que M. X... n'apporte aucun élément de nature à remettre en cause la solution retenue par les premiers juges ; que, dès lors, il y a lieu de rejeter sa requête ; Article 1er : La requête de M. X... est rejetée. Article 2 : La présente décision sera notifiée à M. X... et au ministre de l'intérieur.");
+        assert_eq!(sc.outcome(), Some(("REJET", false)));
+        let sc = scan("Vu la requête enregistrée le 6 janvier 1986 au secrétariat du Contentieux du Conseil d'Etat, présentée par le ministre de l'intérieur ; Considérant qu'il ressort des pièces du dossier que M. X... est entré en France en 1982 sous couvert d'un visa de court séjour et s'y est maintenu après l'expiration de ce visa ; qu'il n'établit ni l'ancienneté de sa résidence, ni l'intensité de ses liens personnels et familiaux en France ; que, dès lors, en prenant l'arrêté attaqué, le préfet n'a pas commis d'erreur manifeste dans l'appréciation de ses conséquences sur la situation de l'intéressé ; Considérant qu'il résulte de ce qui précède que c'est à tort que le tribunal administratif a annulé l'arrêté du préfet ; Article 1er : Le jugement du tribunal administratif de Cayenne en date du 6 novembre 1985 est annulé. Article 2 : La demande présentée par M. X... devant le tribunal administratif de Cayenne est rejetée. Article 3 : La présente décision sera notifiée à M. X... et au ministre de l'intérieur.");
+        assert_eq!(sc.outcome(), Some(("ANNULATION", false)));
+    }
+
+    #[test]
+    fn old_admin_operative_part_reads_its_hyphen_and_its_numbering() {
+        let sc = scan("Vu la requête enregistrée le 12 mars 1987 au greffe de la cour, présentée pour M. X..., demeurant à Rouen ; Considérant qu'il ressort des pièces du dossier que M. X... a été assujetti à des cotisations supplémentaires d'impôt sur le revenu au titre des années 1980 et 1981 ; que l'administration a régulièrement suivi la procédure de redressement contradictoire ; Considérant qu'il résulte de ce qui précède que M. X... n'est pas fondé à soutenir que c'est à tort que le tribunal administratif a rejeté sa demande ;\nArticle 1er - La requête de M. X... est rejetée.\nArticle 2 - Le présent arrêt sera notifié à M. X... et au ministre délégué au budget.");
+        assert_eq!(sc.outcome(), Some(("REJET", false)));
+        let sc = scan("Vu la requête enregistrée le 12 mars 1987 au greffe de la cour, présentée pour M. X..., demeurant à Rouen ; Considérant qu'il résulte de l'instruction que l'accident dont M. X... a été victime le 3 juin 1982 sur la voie publique est imputable au défaut d'entretien normal de l'ouvrage ; que l'Etat n'établit pas que la victime aurait commis une imprudence de nature à atténuer sa responsabilité ; Considérant que M. X... a subi une incapacité temporaire totale de six mois et conserve une incapacité permanente partielle de 15 % ; qu'il a supporté des souffrances physiques évaluées à 3 sur une échelle de 7 ; qu'il sera fait une juste appréciation de l'ensemble de ses préjudices en les fixant à 50 000 F ; Considérant qu'il résulte de ce qui précède que M. X... est fondé à demander que la somme que le tribunal administratif lui a allouée soit portée à ce montant ;\nArticle 1er : La somme que l'Etat a été condamné à verser à M. X... par le jugement attaqué est portée à 50 000 F.\nArticle 2 : Le jugement du tribunal administratif de Rouen est réformé en ce qu'il a de contraire à la présente décision.\nArticle 3 : La présente décision sera notifiée à M. X... et au ministre de l'intérieur.");
+        assert_eq!(sc.outcome(), Some(("REFORMATION", false)));
+    }
+
+    #[test]
+    fn a_quoted_decree_numbered_up_to_its_notification_does_not_open_the_operative_part() {
+        let sc = scan("Vu la requête enregistrée le 12 mars 1987, présentée pour M. X... ; Considérant que M. X... soutient que l'arrêté du préfet est illégal ; que cet arrêté dispose :\nArticle 1er : Les tarifs de stationnement sont fixés à 5 F.\nArticle 2 : Le présent arrêté sera notifié aux intéressés ;\nConsidérant qu'il ressort des pièces du dossier que les tarifs ont été régulièrement fixés ;");
+        assert_eq!(sc.dispositif_start(), sc.text_len());
+    }
+
+    #[test]
+    fn old_admin_operative_part_sends_the_case_elsewhere_or_does_not_admit_it() {
+        let sc = scan("Vu la requête enregistrée le 12 mars 1987 au greffe de la cour, présentée pour M. X..., demeurant à Rouen ; Considérant qu'il ressort des pièces du dossier que M. X... a été assujetti à des cotisations supplémentaires d'impôt sur le revenu au titre des années 1980 et 1981 ; que l'administration a régulièrement suivi la procédure de redressement contradictoire ; Considérant qu'il résulte de ce qui précède que M. X... n'est pas fondé à soutenir que c'est à tort que le tribunal administratif a rejeté sa demande ;\nArticle 1er : Le jugement de la requête de M. X... est attribué à la cour administrative d'appel de Nancy.\nArticle 2 : La présente décision sera notifiée à M. X... et au ministre de l'intérieur.");
+        assert_eq!(sc.outcome(), Some(("AUTRE", false)));
+        let sc = scan("Vu la requête enregistrée le 12 mars 1987 au greffe de la cour, présentée pour M. X..., demeurant à Rouen ; Considérant qu'il ressort des pièces du dossier que M. X... a été assujetti à des cotisations supplémentaires d'impôt sur le revenu au titre des années 1980 et 1981 ; que l'administration a régulièrement suivi la procédure de redressement contradictoire ; Considérant qu'il résulte de ce qui précède que M. X... n'est pas fondé à soutenir que c'est à tort que le tribunal administratif a rejeté sa demande ;\nArticle 1er : Il est sursis à statuer sur la requête de M. X... jusqu'à ce que la Cour de justice se soit prononcée.\nArticle 2 : La présente décision sera notifiée à M. X... et au ministre de l'intérieur.");
+        assert_eq!(sc.outcome(), Some(("AUTRE", false)));
+        let sc = scan("Vu la requête enregistrée le 12 mars 1987 au greffe de la cour, présentée pour M. X..., demeurant à Rouen ; Considérant qu'il ressort des pièces du dossier que M. X... a été assujetti à des cotisations supplémentaires d'impôt sur le revenu au titre des années 1980 et 1981 ; que l'administration a régulièrement suivi la procédure de redressement contradictoire ; Considérant qu'il résulte de ce qui précède que M. X... n'est pas fondé à soutenir que c'est à tort que le tribunal administratif a rejeté sa demande ;\nArticle 1er : La requête de M. Y... n'est pas admise.\nArticle 2 : La présente décision sera notifiée à M. Y... et au ministre de l'économie.");
+        assert_eq!(sc.outcome(), Some(("NON_ADMISSION", false)));
+        let sc = scan("Vu la requête enregistrée le 12 mars 1987 au greffe de la cour, présentée pour M. X..., demeurant à Rouen ; Considérant qu'il ressort des pièces du dossier que M. X... a été assujetti à des cotisations supplémentaires d'impôt sur le revenu au titre des années 1980 et 1981 ; que l'administration a régulièrement suivi la procédure de redressement contradictoire ; Considérant qu'il résulte de ce qui précède que M. X... n'est pas fondé à soutenir que c'est à tort que le tribunal administratif a rejeté sa demande ;\nArticle 1er : Il n'y pas lieu de statuer sur la requête de M. X....\nArticle 2 : La présente décision sera notifiée à M. X... et au ministre de l'intérieur.");
+        assert_eq!(sc.outcome(), Some(("NON_LIEU_A_STATUER", false)));
+    }
+
+    #[test]
+    fn a_quoted_article_one_does_not_open_the_operative_part() {
+        let sc = scan("Vu la requête enregistrée le 18 février 1985 au secrétariat du Contentieux du Conseil d'Etat, présentée par M. X... ; Considérant que le décret du 5 mai 1980 dispose : « Article 1er : La décision de retrait est rejetée par l'autorité de tutelle » ; qu'aux termes de l'article 1er : La requête du maire est transmise au préfet ; que M. X... soutient que ce décret a été méconnu");
+        assert_eq!(sc.dispositif_start(), sc.text_len());
+        assert_eq!(sc.outcome(), None);
     }
 
     #[test]

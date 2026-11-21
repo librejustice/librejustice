@@ -7,6 +7,7 @@ use leptos::prelude::*;
 use super::panel::{dismiss, Dismiss};
 use super::{DropdownSelect, SelectOption};
 use crate::helpers::cn;
+use crate::i18n::DatesUi;
 
 // ── Date civile minimale ─────────────────────────────────────────────────────
 
@@ -18,27 +19,6 @@ struct Civil {
     d: u32,
 }
 
-const MONTHS_FR: [&str; 12] = [
-    "Janvier",
-    "Février",
-    "Mars",
-    "Avril",
-    "Mai",
-    "Juin",
-    "Juillet",
-    "Août",
-    "Septembre",
-    "Octobre",
-    "Novembre",
-    "Décembre",
-];
-const MONTHS_FR_SHORT: [&str; 12] = [
-    "janv.", "févr.", "mars", "avr.", "mai", "juin", "juil.", "août", "sept.", "oct.", "nov.",
-    "déc.",
-];
-/// Jours de semaine FR (lundi-first), abrégés 2 lettres (tient en largeur dans
-/// le rail étroit ; capitalisés par CSS `uppercase`).
-const WEEKDAYS_FR: [&str; 7] = ["lu", "ma", "me", "je", "ve", "sa", "di"];
 const START_YEAR: i32 = 1965;
 
 fn is_leap(y: i32) -> bool {
@@ -105,14 +85,14 @@ fn fold_month(s: &str) -> String {
 
 /// Mois nommé, sur les seules formes que nous affichons. Un préfixe partiel ne
 /// compte pas : « jui » n'a pas de réponse.
-fn month_from_name(token: &str) -> Option<u32> {
+fn month_from_name(ui: &DatesUi, token: &str) -> Option<u32> {
     let t = fold_month(token);
     if t.len() < 3 {
         return None;
     }
-    MONTHS_FR
+    ui.months
         .iter()
-        .chain(MONTHS_FR_SHORT.iter())
+        .chain(ui.months_short.iter())
         .position(|m| fold_month(m) == t)
         .map(|i| (i % 12) as u32 + 1)
 }
@@ -152,8 +132,8 @@ fn year_token(t: &str) -> Option<i32> {
     t.parse().ok()
 }
 
-fn month_token(t: &str) -> Option<u32> {
-    if let Some(m) = month_from_name(t) {
+fn month_token(ui: &DatesUi, t: &str) -> Option<u32> {
+    if let Some(m) = month_from_name(ui, t) {
         return Some(m);
     }
     if t.len() > 2 || !t.bytes().all(|b| b.is_ascii_digit()) {
@@ -166,7 +146,7 @@ fn month_token(t: &str) -> Option<u32> {
 /// `2024-03-12`, and the form the field displays, `12 mars 2024`. A month alone
 /// (`03/2024`, `mars 2024`) or a year alone (`2024`) designates its whole span.
 /// Anything else yields `None`, and the entry stays as typed.
-fn parse_typed(s: &str) -> Option<Typed> {
+fn parse_typed(ui: &DatesUi, s: &str) -> Option<Typed> {
     let tokens: Vec<&str> = s
         .split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
@@ -178,13 +158,16 @@ fn parse_typed(s: &str) -> Option<Typed> {
             }
         }
         [m, y] => {
-            if let (Some(m), Some(y)) = (month_token(m), year_token(y)) {
+            if let (Some(m), Some(y)) = (month_token(ui, m), year_token(y)) {
                 return Some(Typed::Month { y, m });
             }
         }
         [d, name, y] => {
-            if let (Some(m), Some(y)) = (month_from_name(name), year_token(y)) {
-                let d = d.parse::<u32>().ok()?;
+            if let (Some(m), Some(y)) = (month_from_name(ui, name), year_token(y)) {
+                let d = match d {
+                    "1er" => 1,
+                    d => d.parse::<u32>().ok()?,
+                };
                 return (1..=days_in_month(y, m))
                     .contains(&d)
                     .then_some(Typed::Day(Civil { y, m, d }));
@@ -227,8 +210,8 @@ fn range_with(bound: Focus, iso: &str, from: &str, to: &str) -> Option<(String, 
     }
 }
 
-fn format_short(c: Civil) -> String {
-    format!("{} {} {}", c.d, MONTHS_FR_SHORT[(c.m - 1) as usize], c.y)
+fn format_short(ui: &DatesUi, c: Civil) -> String {
+    (ui.short_date)(c.y, c.m, c.d)
 }
 
 /// Mois suivant.
@@ -326,6 +309,7 @@ pub fn DateRangePicker(
     #[prop(into)] to: Signal<String>,
     #[prop(into)] on_change: Callback<(String, String)>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().dates;
     let from_date = Signal::derive(move || parse_iso(&from.get()));
     let to_date = Signal::derive(move || parse_iso(&to.get()));
 
@@ -398,7 +382,7 @@ pub fn DateRangePicker(
                 return;
             }
             draft.set(Some(raw.clone()));
-            if let Some(c) = parse_typed(&raw).map(|t| t.resolve(this)) {
+            if let Some(c) = parse_typed(ui, &raw).map(|t| t.resolve(this)) {
                 let iso = to_iso(c);
                 if iso != value.get_untracked() {
                     view_month.set((c.y, c.m));
@@ -423,7 +407,7 @@ pub fn DateRangePicker(
         let shown = move || match draft.get() {
             Some(text) => text,
             None => parse_iso(&value.get())
-                .map(format_short)
+                .map(|c| format_short(ui, c))
                 .unwrap_or_default(),
         };
         // `min-w-0` : sans lui la largeur minimale du champ est celle que
@@ -444,8 +428,8 @@ pub fn DateRangePicker(
                     type="text"
                     inputmode="numeric"
                     autocomplete="off"
-                    aria-label=format!("{label} (jour/mois/année)")
-                    placeholder=format!("{label} jj/mm/aaaa")
+                    aria-label=(ui.typed_label)(label)
+                    placeholder=format!("{label} {}", ui.date_format)
                     prop:value=shown
                     on:focus=on_activate
                     on:input=on_input
@@ -456,7 +440,7 @@ pub fn DateRangePicker(
                 <Show when=move || !value.get().is_empty()>
                     <button
                         type="button"
-                        aria-label=format!("Effacer {label}")
+                        aria-label=(ui.clear)(label)
                         on:click=on_clear
                         class="shrink-0 opacity-60 hover:opacity-100"
                     >
@@ -470,10 +454,10 @@ pub fn DateRangePicker(
     view! {
         <div class="flex flex-col gap-2">
             <div class="flex gap-1.5">
-                {field("Du", from, Focus::From)} {field("Au", to, Focus::To)}
+                {field(ui.from, from, Focus::From)} {field(ui.to, to, Focus::To)}
             </div>
             <Show when=move || calendar_open.get()>
-                {calendar(view_month, (START_YEAR, end_year), from_date, to_date, select_day)}
+                {calendar(ui, view_month, (START_YEAR, end_year), from_date, to_date, select_day)}
             </Show>
         </div>
     }
@@ -489,6 +473,7 @@ pub fn DatePicker(
     first_year: i32,
     years_ahead: i32,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().dates;
     let open = RwSignal::new(false);
     let picked = Signal::derive(move || parse_iso(&value.get()));
     let pending = RwSignal::new(None::<Civil>);
@@ -561,7 +546,7 @@ pub fn DatePicker(
 
     let on_input = move |ev: leptos::ev::Event| {
         let raw = event_target_value(&ev);
-        let typed = parse_typed(&raw).map(|t| t.resolve(Focus::From));
+        let typed = parse_typed(ui, &raw).map(|t| t.resolve(Focus::From));
         draft.set(Some(raw));
         pending.set(typed);
         if let Some(c) = typed {
@@ -577,9 +562,12 @@ pub fn DatePicker(
         }
     };
     let field_text = move || {
-        draft
-            .get()
-            .unwrap_or_else(|| picked.get().map(format_short).unwrap_or_default())
+        draft.get().unwrap_or_else(|| {
+            picked
+                .get()
+                .map(|c| format_short(ui, c))
+                .unwrap_or_default()
+        })
     };
 
     let panel_style = move || match coords.get() {
@@ -600,7 +588,7 @@ pub fn DatePicker(
                 on:click=on_toggle
                 class="flex min-h-9 items-center gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 py-1.5 text-left text-sm text-[var(--color-ink)] transition-colors hover:border-[var(--color-ink)]"
             >
-                <span>{move || picked.get().map(format_short).unwrap_or_default()}</span>
+                <span>{move || picked.get().map(|c| format_short(ui, c)).unwrap_or_default()}</span>
                 <svg
                     viewBox="0 0 12 8"
                     class=move || {
@@ -632,14 +620,14 @@ pub fn DatePicker(
                         type="text"
                         inputmode="numeric"
                         autocomplete="off"
-                        aria-label="Date (jour/mois/année)"
-                        placeholder="jj/mm/aaaa"
+                        aria-label=(ui.typed_label)(ui.date)
+                        placeholder=ui.date_format
                         prop:value=field_text
                         on:input=on_input
                         on:keydown=on_key
                         class="w-full rounded border border-[var(--color-rule)] bg-transparent px-2 py-1.5 text-xs text-[var(--color-ink)] outline-none transition-colors placeholder:text-[var(--color-ink-muted)] placeholder:opacity-50 focus:border-[var(--color-accent)]"
                     />
-                    {calendar(view_month, (first_year, last_year), shown, shown, commit)}
+                    {calendar(ui, view_month, (first_year, last_year), shown, shown, commit)}
                 </Show>
             </div>
         </div>
@@ -649,6 +637,7 @@ pub fn DatePicker(
 /// Arrows and month and year menus over the grid of `view_month`, which they
 /// move within `years`.
 fn calendar(
+    ui: &'static DatesUi,
     view_month: RwSignal<(i32, u32)>,
     years: (i32, i32),
     from_date: Signal<Option<Civil>>,
@@ -678,7 +667,7 @@ fn calendar(
     let at_end = move || view_month.get() >= (last_year, 12);
 
     let month_options = Signal::derive(|| {
-        MONTHS_FR
+        ui.months
             .iter()
             .enumerate()
             .map(|(i, name)| SelectOption {
@@ -718,13 +707,13 @@ fn calendar(
                         value=month_value
                         on_change=Callback::new(on_pick_month)
                         options=month_options
-                        aria_label="Mois"
+                        aria_label=ui.month
                     />
                     <DropdownSelect
                         value=year_value
                         on_change=Callback::new(on_pick_year)
                         options=year_options
-                        aria_label="Année"
+                        aria_label=ui.year
                     />
                 </div>
                 <NavBtn direction="next" disabled=Signal::derive(at_end) on_click=go_next />
@@ -732,7 +721,7 @@ fn calendar(
             <div>
                 {move || {
                     let (y, m) = view_month.get();
-                    month_view(y, m, from_date, to_date, select_day)
+                    month_view(ui, y, m, from_date, to_date, select_day)
                 }}
             </div>
         </div>
@@ -741,6 +730,7 @@ fn calendar(
 
 /// Rend une grille mensuelle (en-têtes + jours), modifiers range appliqués.
 fn month_view(
+    ui: &DatesUi,
     y: i32,
     m: u32,
     from_date: Signal<Option<Civil>>,
@@ -752,7 +742,8 @@ fn month_view(
         <table class="w-full border-collapse">
             <thead>
                 <tr>
-                    {WEEKDAYS_FR
+                    {ui
+                        .weekdays
                         .iter()
                         .map(|wd| {
                             view! {
@@ -870,6 +861,15 @@ fn NavBtn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Lang;
+
+    fn parse_typed(s: &str) -> Option<Typed> {
+        super::parse_typed(&Lang::Fr.ui().dates, s)
+    }
+
+    fn format_short(c: Civil) -> String {
+        super::format_short(&Lang::Fr.ui().dates, c)
+    }
 
     #[test]
     fn typed_date_accepts_the_forms_a_reader_writes() {
@@ -906,14 +906,16 @@ mod tests {
     /// Le champ doit relire ce qu'il écrit, sinon retaper ce qu'on voit échoue.
     #[test]
     fn typed_date_reads_back_what_the_field_displays() {
-        for (m, day) in (1u32..=12).zip([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]) {
-            let c = Civil { y: 2019, m, d: day };
-            assert_eq!(
-                parse_typed(&format_short(c)),
-                Some(Typed::Day(c)),
-                "{}",
-                format_short(c)
-            );
+        for (m, last) in (1u32..=12).zip([31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]) {
+            for d in [1, last] {
+                let c = Civil { y: 2019, m, d };
+                assert_eq!(
+                    parse_typed(&format_short(c)),
+                    Some(Typed::Day(c)),
+                    "{}",
+                    format_short(c)
+                );
+            }
         }
         assert_eq!(
             parse_typed("5 juin 2019"),

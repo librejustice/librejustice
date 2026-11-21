@@ -224,7 +224,7 @@ async fn delete(
     RequiredUser(sub): RequiredUser,
     Form(req): Form<DeleteForm>,
 ) -> Result<Response> {
-    if req.confirm.trim() != "SUPPRIMER" {
+    if !lj_dtos::ACCOUNT_DELETE_WORDS.contains(&req.confirm.trim()) {
         return Ok(retour_profil("error", "confirmation_suppression"));
     }
     me::delete_me(&state, &sub).await?;

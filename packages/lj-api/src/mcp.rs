@@ -10,20 +10,17 @@ use axum::{
     routing::post,
     Extension, Json, Router,
 };
-use lj_mcp_tools::{
-    enum_values, negotiate_protocol_version, nullable, read_only_annotations, SERVER_INSTRUCTIONS,
-};
+use lj_mcp_tools::{negotiate_protocol_version, SERVER_INSTRUCTIONS};
 use lj_vocab::ZONE_SANS;
 use opentelemetry::KeyValue;
 use serde_json::{json, Value};
 use std::time::Duration;
 use tracing::Instrument;
 
-use crate::annonces::FONDS;
 use crate::error::ApiError;
 use crate::mcp_presenters::{
-    present_annonce_search, present_decision_detail, present_law_article, present_law_search,
-    present_law_text, present_search_response,
+    present_decision_detail, present_journal_search, present_law_article, present_law_search,
+    present_law_text, present_publication_notice, present_search_response, present_tender_notice,
 };
 use crate::state::AppState;
 
@@ -94,10 +91,9 @@ fn mcp_unauthorized(challenge: &str, error: &str) -> Response {
 /// [`mcp_auth`] and read back by the queue log ([`crate::routes`]).
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct McpPhases {
-    /// Both `pool.get()` of the middleware, summed.
     pub pool: Duration,
     pub lookup: Duration,
-    /// `UPDATE users.last_seen_at`.
+    /// `UPDATE users.last_seen_at`, zero within [`LAST_SEEN_REFRESH_MINUTES`].
     pub bump: Duration,
     /// Everything past auth: JSON-RPC layer and tool.
     pub dispatch: Duration,
@@ -110,6 +106,9 @@ pub(crate) struct McpPhases {
 #[derive(Debug, Clone, Copy)]
 struct CalledTool(Option<&'static str>);
 
+/// The token is read on every call: `users.last_seen_at` is rewritten once in this delay.
+const LAST_SEEN_REFRESH_MINUTES: i32 = 60;
+
 /// `None` when the token is absent from the table or expired. The comparison is
 /// on the SHA-256 digest: the database no longer holds enough to impersonate a
 /// bearer.
@@ -120,38 +119,39 @@ async fn lookup_mcp_user(
 ) -> Result<Option<String>, ApiError> {
     let digest = crate::oauth::sha256(token.as_bytes());
     let digest: &[u8] = &digest;
-    let (conn, waited) = lj_pg::db::get_timed(&state.pool)
-        .await
-        .map_err(|e| ApiError::Internal(format!("pool: {e}")))?;
-    phases.pool += waited;
+    let (conn, waited) = lj_pg::db::get_timed(&state.pool).await?;
+    phases.pool = waited;
     let t = std::time::Instant::now();
     let row = conn
         .query_opt(
-            "SELECT user_id FROM mcp_tokens WHERE access_token_sha256 = $1 AND expires_at > now()",
-            &[&digest],
+            "SELECT t.user_id, \
+                    u.last_seen_at IS NULL \
+                 OR u.last_seen_at < now() - make_interval(mins => $2::int) \
+               FROM mcp_tokens t JOIN users u ON u.sub = t.user_id \
+              WHERE t.access_token_sha256 = $1 AND t.expires_at > now()",
+            &[&digest, &LAST_SEEN_REFRESH_MINUTES],
         )
         .await
         .map_err(|e| ApiError::Internal(format!("mcp token lookup: {e}")))?;
     phases.lookup = t.elapsed();
-    Ok(row.map(|r| r.get::<_, String>(0)))
-}
-
-async fn bump_last_seen(state: &AppState, user_id: &str, phases: &mut McpPhases) {
-    let Ok((conn, waited)) = lj_pg::db::get_timed(&state.pool).await else {
-        return;
+    let Some(row) = row else {
+        return Ok(None);
     };
-    phases.pool += waited;
-    let t = std::time::Instant::now();
-    if let Err(e) = conn
-        .execute(
-            "UPDATE users SET last_seen_at = now() WHERE sub = $1",
-            &[&user_id],
-        )
-        .await
-    {
-        tracing::warn!("bump last_seen (mcp) failed: {e}");
+    let user_id: String = row.get(0);
+    if row.get::<_, bool>(1) {
+        let t = std::time::Instant::now();
+        if let Err(e) = conn
+            .execute(
+                "UPDATE users SET last_seen_at = now() WHERE sub = $1",
+                &[&user_id],
+            )
+            .await
+        {
+            tracing::warn!("bump last_seen (mcp) failed: {e}");
+        }
+        phases.bump = t.elapsed();
     }
-    phases.bump = t.elapsed();
+    Ok(Some(user_id))
 }
 
 async fn mcp_auth(State(state): State<AppState>, mut req: Request, next: Next) -> Response {
@@ -181,10 +181,7 @@ async fn mcp_auth(State(state): State<AppState>, mut req: Request, next: Next) -
             return mcp_unauthorized(&challenge, "auth_required");
         };
         match lookup_mcp_user(&state, token, &mut phases).await {
-            Ok(Some(uid)) => {
-                bump_last_seen(&state, &uid, &mut phases).await;
-                user = Some(uid);
-            }
+            Ok(Some(uid)) => user = Some(uid),
             Ok(None) => {
                 tracing::warn!(
                     mcp_token_rejete = "invalid_token",
@@ -392,7 +389,7 @@ async fn dispatch(
         "initialize" => Ok(initialize_result(&params)),
         "notifications/initialized" => Ok(Value::Null),
         "ping" => Ok(json!({})),
-        "tools/list" => Ok(json!({ "tools": tool_definitions() })),
+        "tools/list" => Ok(json!({ "tools": lj_mcp_tools::tool_definitions() })),
         "tools/call" => call_tool(state, params, user, session, prov, outil).await,
         other => Err(RpcError::method_not_found(other)),
     }
@@ -476,10 +473,11 @@ async fn call_tool(
                 "search_norms",
                 tool_search_norms(state, arguments, user, prov).await,
             ),
-            "search_annonces" if PUBLISH_SEARCH_ANNONCES => (
-                "search_annonces",
-                tool_search_annonces(state, arguments, user).await,
+            "search_notices" => (
+                "search_notices",
+                tool_search_notices(state, arguments, user).await,
             ),
+            "get_notice" => ("get_notice", tool_get_notice(state, arguments, user).await),
             removed if lj_mcp_tools::REMOVED_NAMES.contains(&removed) => (
                 "removed",
                 Err(RpcError::invalid_params(format!("{removed} was removed."))),
@@ -715,7 +713,7 @@ async fn tool_get_decision(
         .filter(|s| !s.is_empty())
         .ok_or_else(|| RpcError::invalid_params(format!("not a decision url: {url}")))?;
     let id = juritext_public_id(state, id).await?;
-    let detail = crate::decisions::get_decision(state, &id)
+    let detail = crate::decisions::get_decision(state, &id, None)
         .await
         .map_err(|e| match e {
             ApiError::NotFound => RpcError::not_found(format!("no decision at url={url}"))
@@ -816,6 +814,9 @@ async fn read_legal_text(state: &AppState, args: Value) -> Result<(String, Value
         }
         LawTarget::SourceUid(uid) => {
             let (code, num) = resolve_source_uid(state, &uid).await?;
+            if num.is_empty() {
+                return tool_get_legal_root(state, &code, None).await;
+            }
             (None, code, num)
         }
         LawTarget::TextUid(uid) => {
@@ -941,9 +942,10 @@ async fn tool_search_norms(
         ));
     }
     let jurisdictions: Vec<String> = opt("jurisdiction")
-        .map(str::to_uppercase)
+        .map(|j| lj_norm::jurisdictions::union_as_eu(j.to_uppercase()))
         .into_iter()
         .collect();
+    let scope = opt("scope");
     let caller = mcp_caller(user, prov, state.pseudonymiser.as_ref());
     let budget_key = crate::ratelimit::caller_key(user, &axum::http::HeaderMap::new());
 
@@ -953,6 +955,7 @@ async fn tool_search_norms(
                 state,
                 code.as_deref(),
                 &jurisdictions,
+                scope,
                 valid_from,
                 at,
                 limit,
@@ -963,7 +966,7 @@ async fn tool_search_norms(
             .await
         }
         query => {
-            crate::legi::search_textes(
+            crate::legi::search_textes_counted(
                 state,
                 query,
                 code.as_deref(),
@@ -972,7 +975,7 @@ async fn tool_search_norms(
                 &[],
                 &jurisdictions,
                 None,
-                None,
+                scope,
                 at,
                 valid_from,
                 limit,
@@ -1002,7 +1005,7 @@ async fn tool_search_norms(
 
 /// Facets only: this pot has neither BM25 nor embeddings, and `query` is a word
 /// filter.
-async fn tool_search_annonces(
+async fn tool_search_notices(
     state: &AppState,
     args: Value,
     user: Option<&str>,
@@ -1042,53 +1045,139 @@ async fn tool_search_annonces(
     let famille = strings("nature");
     if let Some(bad) = famille
         .iter()
-        .find(|f| !NATURES_MARCHE.contains(&f.as_str()))
+        .find(|f| !lj_mcp_tools::TENDER_NATURES.contains(&f.as_str()))
     {
         return Err(RpcError::invalid_params(format!(
-            "nature: {bad:?} is not one of {NATURES_MARCHE:?}"
+            "nature: {bad:?} is not one of {:?}",
+            lj_mcp_tools::TENDER_NATURES
         )));
     }
-    let fond: Vec<String> = args
-        .get("fund")
-        .and_then(Value::as_array)
-        .map(|a| {
-            a.iter()
-                .filter_map(Value::as_str)
-                .map(str::to_lowercase)
-                .collect()
-        })
-        .unwrap_or_else(|| FONDS.iter().map(|f| f.to_string()).collect());
-    if let Some(bad) = fond.iter().find(|f| !FONDS.contains(&f.as_str())) {
-        return Err(RpcError::invalid_params(format!(
-            "fund: {bad:?} is not one of {FONDS:?}"
-        )));
-    }
-    let req = lj_dtos::AnnonceSearchRequest {
-        q: args
-            .get("query")
-            .and_then(Value::as_str)
-            .filter(|s| !s.trim().is_empty())
-            .map(str::to_string),
+    let q = args
+        .get("query")
+        .and_then(Value::as_str)
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string);
+    let cpv = strings("cpv");
+    let echeance_jours = args
+        .get("closing_within_days")
+        .and_then(Value::as_u64)
+        .map(|j| j as u32);
+    let fond = notice_funds(
+        args.get("fund").and_then(Value::as_array),
+        q.is_some(),
+        !famille.is_empty() || !cpv.is_empty() || echeance_jours.is_some(),
+    )?;
+    let jurisdiction = args
+        .get("jurisdiction")
+        .and_then(Value::as_str)
+        .filter(|j| !j.trim().is_empty())
+        .map(str::to_string);
+    let req = lj_dtos::JournalSearchRequest {
+        q,
         fond,
         zone,
         famille,
-        cpv: strings("cpv"),
-        echeance_jours: args
-            .get("closing_within_days")
-            .and_then(Value::as_u64)
-            .map(|j| j as u32),
-        sort: lj_dtos::AnnonceSort::Echeance,
+        cpv,
+        echeance_jours,
+        jurisdiction,
+        sort: lj_dtos::JournalSort::Echeance,
         limit: limit as u32,
-        ..lj_dtos::AnnonceSearchRequest::default()
+        ..lj_dtos::JournalSearchRequest::default()
     };
-    let response = crate::annonces::search(state, &req)
+    let response = crate::journals::search(state, &req)
         .await
-        .map_err(|e| RpcError::tool_error(e.to_string()))?;
+        .map_err(|e| match e {
+            ApiError::Unprocessable(v) => RpcError::invalid_params(format!(
+                "jurisdiction: {}",
+                v["msg"].as_str().unwrap_or_default()
+            )),
+            other => RpcError::tool_error(other.to_string()),
+        })?;
 
-    tool_ok(&present_annonce_search(
+    tool_ok(&present_journal_search(
         &response,
         &state.settings.web_base_url,
     ))
+}
+
+/// The journals a `search_notices` call reads. Without `fund`, the Journal officiel
+/// answers a question only, its newest acts naming persons, and a filter only
+/// procurement runs reads procurement alone.
+fn notice_funds(
+    fund: Option<&Vec<Value>>,
+    question: bool,
+    procurement_filter: bool,
+) -> Result<Vec<String>, RpcError> {
+    let Some(fund) = fund else {
+        return Ok(match procurement_filter {
+            true => vec![lj_vocab::JOURNAL_FOND_MARCHE.to_string()],
+            false => lj_mcp_tools::NOTICE_FUNDS
+                .iter()
+                .filter(|f| question || **f != lj_vocab::JOURNAL_FOND_JO)
+                .map(|f| f.to_string())
+                .collect(),
+        });
+    };
+    let fund: Vec<String> = fund
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_lowercase)
+        .collect();
+    match fund
+        .iter()
+        .find(|f| !lj_mcp_tools::NOTICE_FUNDS.contains(&f.as_str()))
+    {
+        Some(bad) => Err(RpcError::invalid_params(format!(
+            "fund: {bad:?} is not one of {:?}",
+            lj_mcp_tools::NOTICE_FUNDS
+        ))),
+        None => Ok(fund),
+    }
+}
+
+/// One notice read whole, from its `/notice/{place}/{uid}` url.
+async fn tool_get_notice(
+    state: &AppState,
+    args: Value,
+    user: Option<&str>,
+) -> Result<(String, Value), RpcError> {
+    lecture(state, user).await?;
+    let url = required_str(&args, "url")?;
+    let uid = notice_uid(&url).ok_or_else(|| {
+        RpcError::invalid_params(format!(
+            "not a notice url (expected …/notice/{{place}}/{{uid}}): {url}"
+        ))
+    })?;
+    let not_found = |e: ApiError| match e {
+        ApiError::NotFound => RpcError::not_found(format!("no notice at url={url}")).with_hint(
+            "Notice urls cannot be composed or guessed: take the url verbatim from a \
+             search_notices hit.",
+        ),
+        other => RpcError::tool_error(other.to_string()),
+    };
+    let base = &state.settings.web_base_url;
+    match uid.starts_with("marche:") {
+        true => tool_ok(&present_tender_notice(
+            &crate::journals::detail(state, uid)
+                .await
+                .map_err(not_found)?,
+            base,
+        )),
+        false => tool_ok(&present_publication_notice(
+            &crate::notices::notice(state, uid)
+                .await
+                .map_err(not_found)?,
+            base,
+        )),
+    }
+}
+
+/// The uid a notice url names: everything after its place, slashes included.
+fn notice_uid(url: &str) -> Option<&str> {
+    let (_, tail) = url.split_once("/notice/")?;
+    let (_, uid) = tail.split_once('/')?;
+    let uid = uid.split(['?', '#']).next()?.trim_end_matches('/');
+    (!uid.is_empty()).then_some(uid)
 }
 
 /// Folds the retired `chamber` into `seat`, the court coming from the call.
@@ -1483,6 +1572,12 @@ fn is_iso_date(s: &str) -> bool {
 fn read_kind(tool: &str, args: &Value) -> Option<lj_dtos::ReadKind> {
     match tool {
         "get_decision" => Some(lj_dtos::ReadKind::Decision),
+        "get_notice" => args
+            .get("url")
+            .and_then(Value::as_str)
+            .and_then(notice_uid)
+            .filter(|uid| uid.starts_with("marche:"))
+            .map(|_| lj_dtos::ReadKind::Annonce),
         "get_norm" => match law_target(args).ok()? {
             LawTarget::Article { .. } | LawTarget::SourceUid(_) => Some(lj_dtos::ReadKind::Article),
             LawTarget::Section { .. } | LawTarget::SectionOf { .. } | LawTarget::SectionCid(_) => {
@@ -1831,6 +1926,7 @@ fn build_search_request(args: &Value) -> Result<lj_dtos::SearchRequest, RpcError
         legal_domain: deser_list(args, "legal_domain")?,
         jurisdiction_code: deser_list(args, "jurisdiction_code")?,
         seat: deser_list(args, "seat")?,
+        home: None,
         formation: deser_list(args, "formation")?,
         legal_instrument: deser_list(args, "legal_instrument")?,
         legal_article: deser_list(args, "legal_article")?,
@@ -1843,6 +1939,7 @@ fn build_search_request(args: &Value) -> Result<lj_dtos::SearchRequest, RpcError
         limit: limit as u32,
         offset: 0,
         ai_mode: deser_field(args, "ai_rerank")?.unwrap_or(true),
+        lang: None,
     })
 }
 
@@ -1981,147 +2078,13 @@ fn deser_field<T: serde::de::DeserializeOwned>(
         .map_err(|e| RpcError::invalid_params(format!("invalid argument {key}: {e}")))
 }
 
-// ── Tools: the annonces fund, not published ──────────────────────────────────
-
-/// The five published tools carry one definition, in `lj_mcp_tools`.
-fn tool_definitions() -> Vec<Value> {
-    let mut tools = lj_mcp_tools::tool_definitions();
-    if PUBLISH_SEARCH_ANNONCES {
-        tools.push(json!({
-            "name": "search_annonces",
-            "title": "Search Legal Notices",
-            "description": SEARCH_ANNONCES_DESC,
-            "inputSchema": search_annonces_schema(),
-            "outputSchema": search_annonces_output_schema(),
-            "annotations": read_only_annotations(),
-        }));
-    }
-    tools
-}
-
-/// `search_annonces` is neither declared nor reachable. The constant holds both
-/// doors, `tools/list` and the `tools/call` routing, so that a client guessing
-/// the name does not reach it; the handler and the schemas stay in place.
-///
-/// Republishing also means fixing the annotations: the live BODACC and JOAFE
-/// proxies take the tool outside the indexed corpus, so it cannot inherit the
-/// `openWorldHint: false` of the five others.
-const PUBLISH_SEARCH_ANNONCES: bool = false;
-
-/// Suffixes of the `nature_marche:*` uids.
-const NATURES_MARCHE: [&str; 4] = ["TRAVAUX", "SERVICES", "FOURNITURES", "AUTRES"];
-
-fn search_annonces_schema() -> Value {
-    json!({
-        "type": "object",
-        "additionalProperties": false,
-        "required": [],
-        "properties": {
-            "query": nullable(
-                json!({"type": "string", "maxLength": lj_dtos::QUERY_MAX_CHARS}),
-                json!({"description": "Word filter over the tender subject and the buyer name (substring, case-insensitive) — not a semantic search. Omit it and rely on the filters when you want a whole department or a whole CPV division."}),
-            ),
-            "fund": {
-                "type": "array",
-                "items": enum_values(&FONDS),
-                "description": "Which body of public notices to search. \"marche\": open public tenders, aggregated from the BOAMP and 8 buyer platforms, with a bid deadline. \"bodacc\": BODACC company notices (insolvency proceedings, incorporations, sales, filings) served live from the official API — no deadline. \"joafe\": Journal officiel des associations notices (creations, modifications, dissolutions), live too — no deadline. Omit to search all three, returned in separate groups.",
-            },
-            "zone": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "Where the market applies: a département code (\"75\", \"2A\", \"973\"), \"fr\" nationwide, \"eu\" Europe-wide. Several are OR'd.",
-            },
-            "nature": {
-                "type": "array",
-                "items": enum_values(&NATURES_MARCHE),
-                "description": "Kind of contract: TRAVAUX (works), SERVICES, FOURNITURES (supplies), AUTRES.",
-            },
-            "cpv": {
-                "type": "array",
-                "items": {"type": "string"},
-                "description": "CPV divisions, two digits (\"45\" construction works, \"72\" IT services, \"85\" health).",
-            },
-            "closing_within_days": nullable(
-                json!({"type": "integer", "minimum": 1, "maximum": 365}),
-                json!({"description": "Keep only tenders whose bid deadline falls within N days. Tenders with no known deadline are excluded by this filter."}),
-            ),
-            "limit": {
-                "type": "integer",
-                "minimum": 1,
-                "maximum": 20,
-                "default": 10,
-                "description": "Maximum number of results (default 10), ordered by bid deadline, soonest first.",
-            },
-        },
-    })
-}
-
-fn search_annonces_output_schema() -> Value {
-    json!({
-        "additionalProperties": false,
-        "type": "object",
-        "required": ["total", "hits", "facets"],
-        "properties": {
-            "total": {"type": "integer"},
-            "hits": {
-                "type": "array",
-                "items": {
-                    "additionalProperties": false,
-                    "type": "object",
-                    "required": ["title", "fund", "actor", "actor_role", "url", "platform_url", "published", "channels"],
-                    "properties": {
-                        "title": {"type": "string"},
-                        "description": nullable(json!({"type": "string"}), json!({})),
-                        "fund": {"type": "string", "description": "Body this notice comes from: \"marche\" or \"bodacc\"."},
-                        "actor": {"type": "string", "description": "Who the notice is about: the buyer of a tender, the company of a BODACC notice."},
-                        "actor_role": {"type": "string", "description": "What that body calls this actor (\"Acheteur\", \"Entreprise\")."},
-                        "url": {"type": "string", "description": "Page to hand to the user: the LibreJustice tender page (/notice/fr/…), or the official notice page for bodies served live."},
-                        "platform_url": {"type": "string", "description": "Buyer's platform page: where the dossier is downloaded and the bid is filed. Not openable by an MCP tool."},
-                        "zones": {"type": "array", "items": {"type": "string"}},
-                        "nature": nullable(json!({"type": "string"}), json!({})),
-                        "cpv": nullable(json!({"type": "string"}), json!({})),
-                        "deadline": nullable(json!({"type": "string"}), json!({"description": "Bid deadline, RFC 3339. Absent = no source publishes one."})),
-                        "published": {"type": "string"},
-                        "reference": nullable(json!({"type": "string"}), json!({})),
-                        "channels": {"type": "array", "items": {"type": "string"}},
-                    },
-                },
-            },
-            "facets": {
-                "type": "object",
-                "description": "Per axis key, a map of filter value to notice count under the current filters. The axes present are those the searched bodies can execute — `fond` always, the body's own axes once a single `fund` is selected. Reuse keys verbatim as filter values; each axis is capped to its top counts.",
-                "additionalProperties": true,
-            },
-        },
-    })
-}
-
-const SEARCH_ANNONCES_DESC: &str =
-    "Search French legal notices — the events in progress that publicity law \
-requires to be published. Three bodies, picked with `fund`, returned in \
-separate groups when several are searched: `marche`, public procurement \
-notices open for bids (soonest deadline first), covering the BOAMP AND the \
-buyer platforms that carry the below-threshold ones (MAPA) the BOAMP never \
-publishes — that half exists nowhere else as a searchable list; `bodacc`, \
-company notices (insolvency proceedings, incorporations, sales, account \
-filings) served live from the official register, newest first; and `joafe`, \
-association notices from the Journal officiel (creations, modifications, \
-dissolutions), served live too, newest first. `query` is a plain word filter, \
-not a semantic search, so prefer the filters. The `facets` block gives the axes \
-the searched bodies can actually execute, with their counts: reuse those keys \
-verbatim to refine — filtering on one `fund` unlocks that body's own axes. A \
-tender hit gives `platform_url` (where the dossier is downloaded and the bid is \
-filed — hand it to the user, no tool opens it) and `deadline`. Closed tenders \
-are not returned, and awards are not in the corpus yet: this answers « what is \
-open », not « who won ».";
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn tool_list_exposes_all_tools() {
-        let tools = tool_definitions();
+        let tools = lj_mcp_tools::tool_definitions();
         let names: Vec<&str> = tools.iter().map(|t| t["name"].as_str().unwrap()).collect();
         assert_eq!(
             names,
@@ -2130,7 +2093,48 @@ mod tests {
                 "get_decision",
                 "get_norm",
                 "search_norms",
+                "search_notices",
+                "get_notice",
             ]
+        );
+    }
+
+    #[test]
+    fn the_journal_officiel_answers_a_question_and_procurement_filters_read_procurement() {
+        let funds = |fund: Option<Value>, question, procurement| {
+            notice_funds(
+                fund.as_ref().and_then(Value::as_array),
+                question,
+                procurement,
+            )
+        };
+        assert_eq!(
+            funds(None, false, false).unwrap(),
+            ["marche", "bodacc", "joafe"]
+        );
+        assert_eq!(
+            funds(None, true, false).unwrap(),
+            ["marche", "bodacc", "joafe", "jo"]
+        );
+        assert_eq!(funds(None, true, true).unwrap(), ["marche"]);
+        assert_eq!(funds(Some(json!(["JO"])), false, false).unwrap(), ["jo"]);
+        assert!(funds(Some(json!(["raa"])), true, false).is_err());
+    }
+
+    #[test]
+    fn a_notice_url_names_its_uid_slashes_included() {
+        assert_eq!(
+            notice_uid("https://librejustice.fr/notice/dj/jo-dj:DJ/ACCORD-0"),
+            Some("jo-dj:DJ/ACCORD-0")
+        );
+        assert_eq!(
+            notice_uid("/notice/fr/bodacc:A20260001?from=search#top"),
+            Some("bodacc:A20260001")
+        );
+        assert_eq!(notice_uid("https://librejustice.fr/notice/fr/"), None);
+        assert_eq!(
+            notice_uid("https://librejustice.fr/norm/fr/code-civil"),
+            None
         );
     }
 
@@ -2140,7 +2144,7 @@ mod tests {
             "query": "bail commercial",
             "publication": ["PUBLIE_BULLETIN"],
             "jurisdiction_type": ["CC", "CA"],
-            "solution": ["REJET", "CASSATION"],
+            "solution": ["DISMISSED", "GRANTED"],
             "legal_domain": ["CIVIL_DROIT_LOCATIF"],
             "jurisdiction_code": ["ca_paris"],
             "ai_rerank": false,
@@ -2151,7 +2155,10 @@ mod tests {
         assert_eq!(req.publication, Some(vec!["PUBLIE_BULLETIN".to_string()]));
         assert_eq!(
             req.solution,
-            Some(vec![lj_dtos::Solution::Rejet, lj_dtos::Solution::Cassation])
+            Some(vec![
+                lj_dtos::Solution::Dismissed,
+                lj_dtos::Solution::Granted
+            ])
         );
         assert_eq!(
             req.legal_domain,
@@ -2586,7 +2593,7 @@ mod tests {
     /// no error and no trace.
     #[test]
     fn input_schemas_carry_no_root_combinator() {
-        for tool in tool_definitions() {
+        for tool in lj_mcp_tools::tool_definitions() {
             for combinateur in ["anyOf", "oneOf", "allOf", "not"] {
                 assert!(
                     tool["inputSchema"].get(combinateur).is_none(),
@@ -2608,7 +2615,7 @@ mod tests {
         assert!(build_search_request(&json!({"query": "x", "mode": "lexical"})).is_ok());
         assert!(build_search_request(&json!({
             "query": "x",
-            "solution": ["ANNULATION", "REJET"],
+            "solution": ["GRANTED", "DISMISSED"],
         }))
         .is_ok());
     }
@@ -2691,6 +2698,6 @@ mod tests {
         assert!(res["instructions"]
             .as_str()
             .unwrap()
-            .contains("French and European case law"));
+            .contains("European, Swiss and Belgian case law"));
     }
 }

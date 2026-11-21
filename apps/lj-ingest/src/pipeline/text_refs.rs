@@ -1,12 +1,8 @@
-//! Renvois et citations des corps du référentiel : UNE passe `doc_extract` sur
-//! les corps ingérés — `legal_text.body` et toutes les versions
-//! `legal_article` à corps — alimente `text_case_citation` (norme→décision) et
-//! `text_legal_citation` (norme→article, spans résolus, jamais l'auto-renvoi).
-//! Écriture par remplacement au grain `owner_text_uid` (corps + articles d'un
-//! texte fusionnés au flush) ; résolution des clés cases pendantes en fin de
-//! passe.
-
-use std::collections::HashMap;
+//! Cross-references and citations of the referential: one `doc_extract` pass
+//! over every `legal_article` version feeds `text_case_citation` (norm to
+//! decision) and `text_legal_citation` (norm to article, resolved spans, never
+//! a self-reference). Written by replacement per `owner_text_uid`; pending
+//! case keys are resolved at the end of the pass.
 
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
@@ -19,8 +15,8 @@ use lj_extract_rows::{build_declared, owner_rows, Declared, OwnerRows};
 /// Versions d'articles par page keyset. Le CPU d'une page part en rayon.
 const PAGE: i64 = 2_000;
 
-/// Une extraction complète : corps monolithiques + versions d'articles →
-/// `text_case_citation` + `text_legal_citation`.
+/// One full extraction: article versions to `text_case_citation` and
+/// `text_legal_citation`.
 pub async fn extract_text_refs() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
@@ -52,35 +48,7 @@ pub async fn extract_text_refs() -> Result<()> {
         "declared cross-reference oracle loaded"
     );
 
-    // 1. Corps monolithiques, bufferisés par texte : un texte peut émettre
-    // depuis son corps ET ses articles (BOFiP : préambule + §§) — le writer
-    // remplaçant au grain `owner_text_uid`, les deux flux se fusionnent au
-    // flush du texte.
-    let bodies = repo.legal_text_bodies().await?;
-    let n_bodies = bodies.len();
-    let mut body_rows: HashMap<String, OwnerRows> = tokio::task::spawn_blocking(move || {
-        use rayon::prelude::*;
-        bodies
-            .into_par_iter()
-            .map(|(text_uid, body)| {
-                let rows = owner_rows(
-                    &body,
-                    &text_uid,
-                    None,
-                    None,
-                    &ctx.link,
-                    &ctx.vocab,
-                    &ctx.chrono,
-                    declared,
-                );
-                (text_uid, rows)
-            })
-            .collect()
-    })
-    .await
-    .map_err(|e| anyhow!("join extract bodies: {e}"))?;
-
-    // 2. Versions d'articles, pages keyset groupées par `text_uid` : flush
+    // Versions d'articles, pages keyset groupées par `text_uid` : flush
     // d'un texte quand la page suivante passe au suivant.
     // Sentinelle basse de la keyset (le `text_uid` vide domine la
     // comparaison de tuple ; `NaiveDate::MIN` déborde du DATE Postgres).
@@ -131,7 +99,7 @@ pub async fn extract_text_refs() -> Result<()> {
                 }
                 _ => {
                     if let Some((uid, acc)) = current.take() {
-                        spans = flush_owner(&repo, &uid, acc, &mut body_rows, spans).await?;
+                        spans = write_owner(&repo, &uid, acc, spans).await?;
                         texts += 1;
                     }
                     current = Some((text_uid, rows));
@@ -143,11 +111,6 @@ pub async fn extract_text_refs() -> Result<()> {
         }
     }
     if let Some((uid, acc)) = current.take() {
-        spans = flush_owner(&repo, &uid, acc, &mut body_rows, spans).await?;
-        texts += 1;
-    }
-    // Textes à corps sans articles (circulaires…) : restés dans le buffer.
-    for (uid, acc) in body_rows.drain() {
         spans = write_owner(&repo, &uid, acc, spans).await?;
         texts += 1;
     }
@@ -158,7 +121,6 @@ pub async fn extract_text_refs() -> Result<()> {
         .map_err(|e| anyhow!("resolve_pending_text_case_citations: {e}"))?;
 
     tracing::info!(
-        bodies = n_bodies,
         versions,
         texts,
         case_spans = spans.0,
@@ -167,22 +129,6 @@ pub async fn extract_text_refs() -> Result<()> {
         "extract_text_refs"
     );
     Ok(())
-}
-
-/// Flush d'un texte émetteur : fusionne ses éventuels spans de corps
-/// (préambule) puis écrit les deux tables.
-async fn flush_owner(
-    repo: &DecisionRepository<'_>,
-    text_uid: &str,
-    mut acc: OwnerRows,
-    body_rows: &mut HashMap<String, OwnerRows>,
-    spans: (usize, usize),
-) -> Result<(usize, usize)> {
-    if let Some(body) = body_rows.remove(text_uid) {
-        acc.cases.extend(body.cases);
-        acc.cites.extend(body.cites);
-    }
-    write_owner(repo, text_uid, acc, spans).await
 }
 
 async fn write_owner(

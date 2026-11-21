@@ -11,11 +11,12 @@ pub mod redact;
 pub mod rpc;
 
 pub const SERVER_INSTRUCTIONS: &str =
-    "Search French and European case law: all French courts plus, among \
+    "Search French, European, Swiss and Belgian case law: all French courts plus, among \
 others, the CNDA, the Conseil constitutionnel, the CNIL, the \
 Défenseur des droits, the CEDH and the CJUE; and read legal texts at any date: codes, laws, \
 Journal officiel, collective agreements, EU law, treaties, foreign \
-codes. The engine understands meaning, not just keywords: \
+codes, Service-Public sheets; and search the official journals: Journal officiel, \
+ministry bulletins, foreign journals, public procurement, BODACC, JOAFE. The engine understands meaning, not just keywords: \
 phrase the query as a natural question or a list of descriptive terms; \
 synonyms and reformulations are handled. Typical workflow: \
 search_decisions for a shortlist, then get_decision to read candidates \
@@ -23,7 +24,7 @@ in full. Previews, facets and chronologies are machine-made and only \
 orient: never judge relevance, quote, or state what a decision holds \
 from them. Iterate by refining the \
 query or filters. Open any `url` with the matching tool: /decision/ \
-links with get_decision, /norm/ links with get_norm. When \
+links with get_decision, /norm/ links with get_norm, /notice/ links with get_notice. When \
 mentioning a decision, hyperlink its `title` (or a conventional \
 citation) to its `url`.";
 
@@ -78,8 +79,35 @@ pub fn tool_definitions() -> Vec<Value> {
             "outputSchema": search_norms_output_schema(),
             "annotations": read_only_annotations(),
         }),
+        json!({
+            "name": "search_notices",
+            "title": "Search Notices",
+            "description": SEARCH_NOTICES_DESC,
+            "inputSchema": search_notices_schema(),
+            "outputSchema": search_notices_output_schema(),
+            "annotations": read_only_annotations(),
+        }),
+        json!({
+            "name": "get_notice",
+            "title": "Get Notice",
+            "description": GET_NOTICE_DESC,
+            "inputSchema": get_notice_schema(),
+            "outputSchema": get_notice_output_schema(),
+            "annotations": read_only_annotations(),
+        }),
     ]
 }
+
+/// The journals `search_notices` offers, a subset of the Journaux search's fonds.
+pub const NOTICE_FUNDS: [&str; 4] = [
+    lj_vocab::JOURNAL_FOND_MARCHE,
+    lj_vocab::JOURNAL_FOND_BODACC,
+    lj_vocab::JOURNAL_FOND_JOAFE,
+    lj_vocab::JOURNAL_FOND_JO,
+];
+
+/// Suffixes of the `nature_marche:*` uids.
+pub const TENDER_NATURES: [&str; 4] = ["TRAVAUX", "SERVICES", "FOURNITURES", "AUTRES"];
 
 /// Names an MCP client may still call a tool by, with the tool each now names.
 /// A client freezes the tool list when the connector is installed and the model
@@ -155,7 +183,7 @@ fn search_decisions_schema() -> Value {
             },
             "solution": nullable(
                 json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::Solution::ALL)}}),
-                json!({"description": "Filter by the ruling of the operative part (référentiel solution). REJET / IRRECEVABILITE / DESISTEMENT / NON_LIEU_A_STATUER are procedural or negative endings; CONFIRMATION / INFIRMATION* / REFORMATION are appeal outcomes; CASSATION* is cassation-specific; ANNULATION covers administrative annulment; SATISFACTION_TOTALE / SATISFACTION_PARTIELLE cover first-instance civil rulings granting the claim."}),
+                json!({"description": "Filter by what became of the claim, whatever the court (référentiel solution). INADMISSIBLE: not examined; CLOSED: withdrawn, settled or moot. Each decision's `ruling` gives the court's own word (Cassation, Non-violation…)."}),
             ),
             "legal_domain": nullable(
                 json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&Domain::ALL)}}),
@@ -191,7 +219,7 @@ fn search_decisions_schema() -> Value {
             ),
             "search_in": nullable(
                 json!({"type": "array", "items": {"type": "string", "enum": facet_enum_codes(&lj_dtos::DecisionPart::ALL)}}),
-                json!({"description": "Parts searched, all when absent: headnote (the court's sommaire or analyse), judgment (the decision without its annexes), annexes (the moyens annexés of Cour de cassation judgments)."}),
+                json!({"description": "Parts searched, a decision's three when absent: headnote (the court's sommaire or analyse), judgment (the decision without its annexes), annexes (the moyens annexés of Cour de cassation judgments), conclusions (an Advocate General's or a rapporteur public's opinion, which decides nothing)."}),
             ),
             "mode": {
                 "type": "string",
@@ -286,6 +314,10 @@ fn search_norms_schema() -> Value {
                 json!({"type": "string"}),
                 json!({"description": "Filter by country/legal order, as an ISO 3166 alpha-2 country code: \"FR\" (France, the bulk of the corpus) or a foreign code (\"SN\", \"DZ\", \"MA\", \"VN\", \"PE\", …); plus \"EU\" for EU law and \"INTL\" for treaties/international law. A dotted path narrows to a type of text: \"FR.LOI\", \"FR.DECRET\", \"EU.DIRECTIVE\", \"INTL.TREATY\", as in facets.jurisdiction."}),
             ),
+            "scope": nullable(
+                json!({"type": "string", "enum": enum_values(&lj_vocab::NORM_CATEGORIES)}),
+                json!({"description": "Omitted: every category but travaux_parlementaires (parliamentary questions and their answers), which facets.scope counts."}),
+            ),
             "valid_from": nullable(
                 json!({"type": "string"}),
                 json!({"description": "Earliest entry into force (YYYY-MM-DD) of the versions served, which are those in force at `as_of`, else today. A text's publication counts as its first version."}),
@@ -328,12 +360,14 @@ pub fn search_output_schema() -> Value {
                         "official_url": nullable(json!({"type": "string"}), json!({})),
                         "ai_summary": nullable(json!({"type": "string"}), json!({})),
                         "court_summary": nullable(json!({"type": "string"}), json!({})),
+                        "court_summary_kind": nullable(json!({"type": "string"}), json!({})),
                         "snippet": nullable(json!({"type": "string"}), json!({})),
                         "chars": {"type": "integer"},
                         "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
                         "docket_numbers": nullable(json!({"items": {"type": "string"}, "type": "array"}), json!({})),
                         "seat": nullable(json!({"type": "string"}), json!({})),
                         "solution": nullable(json!({"type": "string"}), json!({})),
+                        "ruling": nullable(json!({"type": "string"}), json!({})),
                         "formation": {"type": "array", "items": {"type": "string"}},
                         "legal_domain": nullable(json!({"type": "string"}), json!({})),
                         "publication": {"type": "array", "items": {"type": "string"}},
@@ -366,7 +400,7 @@ pub fn get_decision_output_schema() -> Value {
     json!({
         "additionalProperties": false,
         "type": "object",
-        "required": ["title", "url", "jurisdiction_type", "text"],
+        "required": ["title", "url", "jurisdiction_type", "standing", "text"],
         "properties": {
             "title": {"type": "string"},
             "url": {"type": "string"},
@@ -377,9 +411,13 @@ pub fn get_decision_output_schema() -> Value {
             "jurisdiction_code": nullable(json!({"type": "string"}), json!({})),
             "seat": nullable(json!({"type": "string"}), json!({})),
             "solution": nullable(json!({"type": "string"}), json!({})),
+            "ruling": nullable(json!({"type": "string"}), json!({})),
             "formation": {"type": "array", "items": {"type": "string"}},
             "legal_domain": nullable(json!({"type": "string"}), json!({})),
             "publication": {"type": "array", "items": {"type": "string"}},
+            "court_summary": nullable(json!({"type": "string"}), json!({})),
+            "court_summary_kind": nullable(json!({"type": "string"}), json!({})),
+            "standing": {"type": "string", "enum": ["QUASHED", "UPHELD", "FINAL", "NO_KNOWN_REVIEW"]},
             "case_chronology": {
                 "type": "array",
                 "items": {
@@ -391,6 +429,7 @@ pub fn get_decision_output_schema() -> Value {
                         "url": nullable(json!({"type": "string"}), json!({})),
                         "current": {"type": "boolean"},
                         "solution": nullable(json!({"type": "string"}), json!({})),
+                        "ruling": nullable(json!({"type": "string"}), json!({})),
                         "link_to_next": nullable(json!({"type": "string"}), json!({})),
                     },
                 },
@@ -412,7 +451,7 @@ fn commentaire_schema() -> Value {
         "type": "object",
         "required": ["kind"],
         "properties": {
-            "kind": {"type": "string", "enum": ["summary", "conclusions", "note"]},
+            "kind": {"type": "string", "enum": ["conclusions", "note"]},
             "author": nullable(json!({"type": "string"}), json!({})),
             "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
             "title": nullable(json!({"type": "string"}), json!({})),
@@ -421,7 +460,6 @@ fn commentaire_schema() -> Value {
             "issue": nullable(json!({"type": "string"}), json!({})),
             "pages": nullable(json!({"type": "string"}), json!({})),
             "url": nullable(json!({"type": "string"}), json!({})),
-            "body": nullable(json!({"type": "string"}), json!({})),
         },
     })
 }
@@ -560,6 +598,190 @@ pub fn search_norms_output_schema() -> Value {
     })
 }
 
+fn search_notices_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": [],
+        "properties": {
+            "query": nullable(
+                json!({"type": "string", "maxLength": lj_dtos::QUERY_MAX_CHARS}),
+                json!({"description": "Words the notice must contain, not a semantic search. A SIREN or SIRET finds a company's BODACC notices, an RNA an association's JOAFE notices. Without it, `jo` answers only when `fund` names it."}),
+            ),
+            "fund": {
+                "type": "array",
+                "items": enum_values(&NOTICE_FUNDS),
+                "description": "jo: official journals and bulletins; marche: public procurement; bodacc: companies; joafe: associations. All when absent.",
+            },
+            "zone": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Département code (\"75\", \"2A\", \"973\"); \"fr\" and \"eu\" for nationwide and Europe-wide tenders. Not `jo`.",
+            },
+            "jurisdiction": nullable(
+                json!({"type": "string"}),
+                json!({"description": "Country of the journal, ISO 3166 alpha-2 (\"FR\", \"BE\", \"CH\"); a dotted path narrows to one journal: \"FR.JORF\", \"FR.BO-INTERIEUR\", \"BE.MB-VLG\". Procurement, BODACC and JOAFE are FR's. All when absent."}),
+            ),
+            "nature": {
+                "type": "array",
+                "items": enum_values(&TENDER_NATURES),
+                "description": "Kind of contract, procurement only: TRAVAUX (works), SERVICES, FOURNITURES (supplies), AUTRES.",
+            },
+            "cpv": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "CPV divisions, two digits (\"45\" construction works, \"72\" IT services, \"85\" health). Procurement only.",
+            },
+            "closing_within_days": nullable(
+                json!({"type": "integer", "minimum": 1, "maximum": 365}),
+                json!({"description": "Only tenders whose bid deadline falls within N days; tenders with no known deadline are left out."}),
+            ),
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20,
+                "default": 10,
+                "description": "Maximum number of results when one journal is searched (default 10); several journals give 5 each.",
+            },
+        },
+    })
+}
+
+/// Mirrors `McpJournalSearchResponse`.
+pub fn search_notices_output_schema() -> Value {
+    json!({
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["total", "hits"],
+        "properties": {
+            "total": {"type": "integer"},
+            "hits": {
+                "type": "array",
+                "items": {
+                    "additionalProperties": false,
+                    "type": "object",
+                    "required": ["title", "fund", "actor", "actor_role", "url", "published", "channels"],
+                    "properties": {
+                        "title": {"type": "string"},
+                        "description": nullable(json!({"type": "string"}), json!({})),
+                        "fund": {"type": "string"},
+                        "journal": nullable(json!({"type": "string"}), json!({})),
+                        "actor": {"type": "string"},
+                        "actor_role": {"type": "string"},
+                        "url": {"type": "string", "description": "LibreJustice page of the notice; open it with get_notice."},
+                        "platform_url": nullable(json!({"type": "string"}), json!({"description": "Buyer's platform page, where the dossier is downloaded and the bid filed. No tool opens it."})),
+                        "zones": {"type": "array", "items": {"type": "string"}},
+                        "nature": nullable(json!({"type": "string"}), json!({})),
+                        "cpv": nullable(json!({"type": "string"}), json!({})),
+                        "deadline": nullable(json!({"type": "string"}), json!({})),
+                        "published": {"type": "string"},
+                        "reference": nullable(json!({"type": "string"}), json!({})),
+                        "channels": {"type": "array", "items": {"type": "string"}},
+                    },
+                },
+            },
+        },
+    })
+}
+
+fn get_notice_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["url"],
+        "properties": {
+            "url": {
+                "type": "string",
+                "minLength": 1,
+                "description": "A librejustice.fr /notice/ URL.",
+            },
+        },
+    })
+}
+
+/// Mirrors `McpNotice`: a publication fills its text, a register notice its
+/// fields, a tender its buyer, deadline and lots.
+pub fn get_notice_output_schema() -> Value {
+    let text = || nullable(json!({"type": "string"}), json!({}));
+    let entity = json!({
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["name", "url"],
+        "properties": {
+            "name": {"type": "string"},
+            "url": {"type": "string"},
+        },
+    });
+    let field = json!({
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["label", "value"],
+        "properties": {
+            "part": text(),
+            "label": {"type": "string"},
+            "value": {"type": "string"},
+            "url": text(),
+        },
+    });
+    let article = json!({
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["text"],
+        "properties": {
+            "number": text(),
+            "text": {"type": "string"},
+        },
+    });
+    let lot = json!({
+        "additionalProperties": false,
+        "type": "object",
+        "properties": {
+            "name": text(),
+            "description": text(),
+            "cpv": text(),
+        },
+    });
+    json!({
+        "additionalProperties": false,
+        "type": "object",
+        "required": ["title", "url", "journal"],
+        "properties": {
+            "title": {"type": "string"},
+            "url": {"type": "string"},
+            "journal": {"type": "string"},
+            "issue": text(),
+            "published": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "date": nullable(json!({"type": "string"}), json!({"format": "date"})),
+            "nature": text(),
+            "nor": text(),
+            "issuer": text(),
+            "official_url": text(),
+            "norm_url": text(),
+            "entity": nullable(entity, json!({})),
+            "fields": {"type": "array", "items": field},
+            "explanatory_note": text(),
+            "summary": text(),
+            "visas": text(),
+            "articles": {"type": "array", "items": article},
+            "body": text(),
+            "signatories": text(),
+            "corrigendum": text(),
+            "repeal": text(),
+            "buyer": text(),
+            "platform_url": text(),
+            "deadline": text(),
+            "zones": {"type": "array", "items": {"type": "string"}},
+            "cpv": text(),
+            "procedure": text(),
+            "reference": text(),
+            "lots": {"type": "array", "items": lot},
+            "criteria": {"type": "array", "items": {"type": "string"}},
+            "estimated_amount": nullable(json!({"type": "number"}), json!({})),
+            "currency": text(),
+        },
+    })
+}
+
 // ── Enum codes, aligned on the lj-core serde renames ─────────────────────────
 
 /// Suffixes of the `publication:*` uids, in menu order.
@@ -597,9 +819,10 @@ get_norm) and cited decisions (/decision/, open with \
 get_decision); a citation spanning several articles (« articles 3 à 6 \
 », « et suivants ») links its first article and appends the others as \
 labelled links right after the span. `case_chronology` lists the prior AND \
-subsequent decisions of the same case (appeal, pourvoi, renvoi), each \
-with its solution. `commentaries` lists documents around the decision \
-(the court's summary, conclusions, reports…). `official_url` is the \
+subsequent decisions of the same case, international courts included, each \
+with its solution. `standing` reads that chain: NO_KNOWN_REVIEW means \
+no known later step settles it, not that the decision is final. `commentaries` lists documents around the decision \
+(conclusions, reports…). `official_url` is the \
 decision at its official publisher, proof of its authenticity.";
 
 const GET_NORM_DESC: &str = "Fetch a legal text, or one of its articles, as it stood on a given \
@@ -620,10 +843,19 @@ snippets and the exact `total`. Query in French, descriptive terms (« \
 délai de recours contentieux refus implicite »); put the code in the \
 `code` filter (slug or exact name), keep the query for the subject. \
 With no `query`, hits are whole texts, the most recently changed first. \
-The response carries a `facets` block (`code`, `jurisdiction`): per \
+The response carries a `facets` block (`code`, `jurisdiction`, `scope`): per \
 filter name, a map of filter value to article count, reuse those keys \
 verbatim to refine. Chain a hit into get_norm with its \
 `url`, plus `as_of` when the dispute is governed by an earlier version.";
+
+const SEARCH_NOTICES_DESC: &str = "Search the official journals: the Journal officiel (JORF), \
+ministry bulletins and foreign journals, public procurement notices open for bids (BOAMP, TED, buyer platforms), company notices (BODACC) \
+and association notices (JOAFE). Open a hit's `url` with get_notice.";
+
+const GET_NOTICE_DESC: &str =
+    "Read one notice as its journal printed it: an official journal's text \
+with its visas, articles and signatures, a tender with its lots and deadline, a BODACC or JOAFE \
+notice with the company or association it names.";
 
 const LAW_URL_DESC: &str = "A librejustice.fr article URL \
 `/norm/{jurisdiction}/{code}/{article}`: take it from a search_norms hit \

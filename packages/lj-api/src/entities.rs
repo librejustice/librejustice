@@ -160,7 +160,7 @@ pub async fn entity_decisions(
         .into_iter()
         .map(|r| (r.decision_id, (r.quality, r.side)))
         .collect();
-    let hits = crate::search::hits_for_decision_ids(&conn, &ids, "", &refs).await?;
+    let hits = crate::search::hits_for_decision_ids(&conn, &ids, "", &refs, "fr").await?;
     let items = hits
         .into_iter()
         .map(|(decision_id, hit)| {

@@ -5,7 +5,8 @@ use leptos::either::Either;
 use leptos::prelude::*;
 
 use super::outlet::{Handover, Outlets};
-use super::state::{Check, Eye, Reading, Session, Verdict, ERASED, FAMILIES};
+use super::state::{Check, Eye, Reading, Session, Verdict, FAMILIES};
+use crate::i18n::RedactUi;
 
 #[cfg(feature = "hydrate")]
 use super::engine;
@@ -37,6 +38,7 @@ fn Cross() -> impl IntoView {
 
 #[component]
 fn NeedleRow(session: Session, text: String) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let key = text.clone();
     let checked = {
         let key = key.clone();
@@ -97,14 +99,14 @@ fn NeedleRow(session: Session, text: String) -> impl IntoView {
             <input
                 type="checkbox"
                 class="h-4 w-4 shrink-0 cursor-pointer accent-[var(--color-accent)]"
-                aria-label="Inclure dans l'anonymisation"
+                aria-label=ui.include
                 prop:checked=checked
                 on:change=toggle
             />
             <button
                 type="button"
                 class="min-w-0 flex-1 truncate text-left text-sm text-[var(--color-ink)] hover:underline"
-                title=format!("{title} : aller à l'occurrence suivante")
+                title=(ui.next_occurrence)(&title)
                 on:click=next
             >
                 {text}
@@ -116,7 +118,7 @@ fn NeedleRow(session: Session, text: String) -> impl IntoView {
             <button
                 type="button"
                 class="shrink-0 rounded-sm p-1 text-[var(--color-ink-subtle)] hover:text-[var(--color-accent)]"
-                aria-label="Retirer de la liste"
+                aria-label=ui.remove_from_list
                 on:click=remove
             >
                 <Cross />
@@ -131,6 +133,7 @@ const TAG: &str = "max-w-32 shrink-0 truncate rounded-sm border bg-[var(--color-
 /// label erases the string.
 #[component]
 fn Tag(session: Session, text: String) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let editing = RwSignal::new(false);
     let draft = RwSignal::new(String::new());
     let field = NodeRef::<leptos::html::Input>::new();
@@ -192,14 +195,14 @@ fn Tag(session: Session, text: String) -> impl IntoView {
             false => "border-[var(--color-rule)] text-[var(--color-ink-muted)]",
         };
         let (face, words) = match label.is_empty() {
-            true => ("italic", ERASED.to_string()),
+            true => ("italic", ui.erased.to_string()),
             false => ("", label),
         };
         view! {
             <button
                 type="button"
                 class=format!("{TAG} {tone} {face}")
-                title="Modifier l'étiquette"
+                title=ui.edit_label
                 on:click=open
             >
                 {words}
@@ -228,11 +231,11 @@ fn Tag(session: Session, text: String) -> impl IntoView {
                 <button
                     type="button"
                     class="shrink-0 text-xs text-[var(--color-accent)] hover:underline"
-                    title="Revenir à l'étiquette proposée"
+                    title=ui.reset_label
                     on:mousedown=|event| event.prevent_default()
                     on:click=reset
                 >
-                    "auto"
+                    {ui.auto_label}
                 </button>
             }
         })
@@ -243,7 +246,7 @@ fn Tag(session: Session, text: String) -> impl IntoView {
             <input
                 node_ref=field
                 type="text"
-                aria-label="Étiquette"
+                aria-label=ui.label
                 class="h-5 w-28 shrink-0 rounded-sm border border-[var(--color-rule)] bg-[var(--color-parchment)] px-1.5 font-mono text-xs text-[var(--color-ink)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
                 prop:value=move || draft.get()
                 on:input=move |event| draft.set(event_target_value(&event))
@@ -285,26 +288,26 @@ fn Family(session: Session, kind: &'static str, label: &'static str) -> impl Int
 }
 
 /// Where the text reader is, in the words the reader is shown.
-fn stage(reading: Option<Reading>) -> Option<String> {
+fn stage(ui: &RedactUi, reading: Option<Reading>) -> Option<String> {
     let Some(Reading::Stage(stage, at)) = reading else {
         return None;
     };
     let named = match stage.as_str() {
-        "loading tesseract core" | "initializing tesseract" => "chargement du lecteur",
-        "loading language traineddata" | "initializing api" | "initialized api" => {
-            "chargement du français"
-        }
-        "loading models" => "chargement du lecteur",
-        "recognizing text" => "lecture des pages",
+        "starting" => ui.reading_starts,
+        "loading tesseract core" | "initializing tesseract" => ui.ocr_loading,
+        "loading language traineddata" | "initializing api" | "initialized api" => ui.ocr_language,
+        "loading models" => ui.ocr_loading,
+        "recognizing text" => ui.ocr_reading,
         other => other,
     };
-    Some(format!("{named} {} %", (at * 100.0).round()))
+    Some(format!("{named} {}", (ui.percent)((at * 100.0).round())))
 }
 
 /// Offered only when the file yields no text of its own, which is what a scan
 /// looks like from here.
 #[component]
 fn Reader(session: Session) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let read = move |eye: Eye| {
         move |_| {
             #[cfg(feature = "hydrate")]
@@ -313,7 +316,7 @@ fn Reader(session: Session) -> impl IntoView {
             let _ = eye;
         }
     };
-    let running = move || stage(session.reading.get());
+    let running = move || stage(ui, session.reading.get());
     let failed = move || match session.reading.get() {
         Some(Reading::Failed(why)) => Some(why),
         _ => None,
@@ -323,11 +326,11 @@ fn Reader(session: Session) -> impl IntoView {
     view! {
         <div class="flex flex-col gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)] p-2">
             <p class="px-1 text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                "Utiliser la reconnaissance de caractères :"
+                {ui.use_ocr}
             </p>
             {move || failed().map(|why| view! {
                 <p class="px-1 text-sm leading-relaxed text-[var(--color-accent)]">
-                    {format!("La lecture s'est arrêtée : {why}")}
+                    {(ui.reading_stopped)(&(ui.fault)(&why))}
                 </p>
             })}
             <Show
@@ -343,19 +346,19 @@ fn Reader(session: Session) -> impl IntoView {
                         type="button"
                         class=button
                         disabled=move || session.busy.get()
-                        title="1,4 Mo"
+                        title=ui.ocr_fast_title
                         on:click=read(Eye::Fast)
                     >
-                        "Rapide"
+                        {ui.ocr_fast}
                     </button>
                     <button
                         type="button"
                         class=button
                         disabled=move || session.busy.get()
-                        title="Lit aussi l'écriture à la main, 13 Mo"
+                        title=ui.ocr_slow_title
                         on:click=read(Eye::Slow)
                     >
-                        "Performant"
+                        {ui.ocr_slow}
                     </button>
                 </div>
             </Show>
@@ -365,6 +368,7 @@ fn Reader(session: Session) -> impl IntoView {
 
 #[component]
 pub fn Sidebar(session: Session) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let draft = RwSignal::new(String::new());
     let ticked = move || session.active().len();
     let drawn = move || session.rects.with(Vec::len);
@@ -416,9 +420,9 @@ pub fn Sidebar(session: Session) -> impl IntoView {
         outlets.with_value(|list| {
             list.iter().find_map(|outlet| match outlet.state.get() {
                 Handover::Idle => None,
-                Handover::Busy => Some((false, "Un instant...".to_string())),
+                Handover::Busy => Some((false, ui.one_moment.to_string())),
                 Handover::Done(said) => Some((false, said.to_string())),
-                Handover::Failed(why) => Some((true, format!("L'envoi s'est arrêté : {why}"))),
+                Handover::Failed(why) => Some((true, (ui.send_stopped)(&(ui.fault)(&why)))),
             })
         })
     };
@@ -437,8 +441,8 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                 <form class="flex gap-2" on:submit=on_submit>
                     <input
                         type="text"
-                        placeholder="Un nom, une adresse, un numéro"
-                        aria-label="Ajouter un texte à retirer"
+                        placeholder=ui.add_placeholder
+                        aria-label=ui.add_label
                         class="h-9 min-w-0 flex-1 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-2 text-sm text-[var(--color-ink)] placeholder:text-[var(--color-ink-subtle)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
                         prop:value=move || draft.get()
                         on:input=move |event| draft.set(event_target_value(&event))
@@ -447,7 +451,7 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                         type="submit"
                         class="h-9 shrink-0 rounded-md border border-[var(--color-rule)] px-3 text-sm text-[var(--color-ink)] hover:bg-[var(--color-vellum)]"
                     >
-                        "Ajouter"
+                        {ui.add}
                     </button>
                 </form>
             </div>
@@ -464,8 +468,8 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                         view! {
                             <p class="p-2 text-sm leading-relaxed text-[var(--color-ink-muted)]">
                                 {move || match session.format.get().has_pixels() {
-                                    true => "Rien à retirer pour l'instant. Tapez ce qui doit disparaître, ou tracez un rectangle sur la page.",
-                                    false => "Rien à retirer pour l'instant. Tapez ce qui doit disparaître.",
+                                    true => ui.nothing_yet_draw,
+                                    false => ui.nothing_yet,
                                 }}
                             </p>
                         }
@@ -474,8 +478,9 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                     <div class="flex flex-col gap-4">
                         {FAMILIES
                             .iter()
+                            .zip(ui.families)
                             .map(|(kind, label)| {
-                                view! { <Family session=session kind=*kind label=*label /> }
+                                view! { <Family session=session kind=*kind label=label /> }
                             })
                             .collect_view()}
                     </div>
@@ -484,17 +489,17 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                 <Show when=move || { drawn() > 0 }>
                     <div class="mt-4 flex flex-col gap-1 border-t border-[var(--color-rule)] pt-3">
                         <div class="flex items-center justify-between">
-                            <p class=SECTION>"Rectangles"</p>
+                            <p class=SECTION>{ui.rectangles}</p>
                             <button
                                 type="button"
                                 class="text-xs text-[var(--color-accent)] hover:underline"
                                 on:click=move |_| session.rects.set(Vec::new())
                             >
-                                "Tout effacer"
+                                {ui.clear_all}
                             </button>
                         </div>
                         <p class="text-sm text-[var(--color-ink-muted)]">
-                            {move || format!("{} tracé(s). Les pixels dessous partent aussi.", drawn())}
+                            {move || (ui.drawn)(drawn())}
                         </p>
                     </div>
                 </Show>
@@ -505,9 +510,7 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                     session.verdict.get().map(|verdict| view! { <Panel verdict=verdict /> })
                 }}
                 <p class="text-xs text-[var(--color-ink-subtle)]">
-                    {move || {
-                        format!("{} chaîne(s) cochée(s), {} rectangle(s)", ticked(), drawn())
-                    }}
+                    {move || (ui.tally)(ticked(), drawn())}
                 </p>
                 <div class="flex gap-2 md:flex-col-reverse md:gap-3">
                     <button
@@ -518,11 +521,11 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                     >
                         {move || match session.busy.get() {
                             true => {
-                                stage(session.reading.get())
-                                    .map(|at| format!("Vérification : {at}"))
-                                    .unwrap_or_else(|| "Retrait en cours...".to_string())
+                                stage(ui, session.reading.get())
+                                    .map(|at| (ui.checking)(&at))
+                                    .unwrap_or_else(|| ui.removing.to_string())
                             }
-                            false => "Anonymiser".to_string(),
+                            false => ui.anonymise.to_string(),
                         }}
                     </button>
                     {move || {
@@ -580,10 +583,10 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                         on:click=|event| event.stop_propagation()
                     >
                         <p id="redact-stale-title" class="font-sans text-base font-medium text-[var(--color-ink)]">
-                            "Ce fichier ne contient pas vos dernières modifications"
+                            {ui.stale_title}
                         </p>
                         <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                            "Anonymisez à nouveau pour y inclure les rectangles et les cases cochées depuis."
+                            {ui.stale_body}
                         </p>
                         <div class="mt-2 flex flex-wrap justify-end gap-2">
                             <button
@@ -596,7 +599,7 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                                         .get()
                                         .and_then(|at| outlets.with_value(|list| list.get(at).map(|o| o.label)))
                                         .unwrap_or_default();
-                                    format!("{label} quand même")
+                                    (ui.anyway)(label)
                                 }}
                             </button>
                             <button
@@ -605,7 +608,7 @@ pub fn Sidebar(session: Session) -> impl IntoView {
                                 disabled=move || session.busy.get() || !ready()
                                 on:click=on_apply_again
                             >
-                                "Anonymiser à nouveau"
+                                {ui.apply_again}
                             </button>
                         </div>
                     </div>
@@ -619,20 +622,21 @@ pub fn Sidebar(session: Session) -> impl IntoView {
 /// still being read again.
 #[component]
 fn Panel(verdict: Verdict) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let withheld = match (&verdict.check, verdict.leaks.is_empty()) {
-        (_, false) => Some(format!("Encore lisible : {}", verdict.leaks.join(", "))),
-        (Check::Failed(why), _) => Some(format!("La relecture des pages s'est arrêtée : {why}")),
+        (_, false) => Some((ui.still_readable)(&verdict.leaks)),
+        (Check::Failed(why), _) => Some((ui.recheck_stopped)(&(ui.fault)(why))),
         _ => None,
     };
     match (withheld, verdict.check) {
         (Some(detail), _) => Either::Left(view! {
             <div class="flex flex-col gap-1 rounded-md border border-[var(--color-accent)] bg-[var(--color-accent-soft)] p-3 text-sm text-[var(--color-accent)]">
-                <p class="font-medium">"Le fichier anonymisé n'est pas téléchargeable."</p>
+                <p class="font-medium">{ui.not_downloadable}</p>
                 <p class="leading-relaxed">{detail}</p>
             </div>
         }),
         (None, Check::Running) => Either::Right(Some(view! {
-            <p class="text-xs text-[var(--color-ink-subtle)]">"Vérification des pages..."</p>
+            <p class="text-xs text-[var(--color-ink-subtle)]">{ui.checking_pages}</p>
         })),
         (None, _) => Either::Right(None),
     }

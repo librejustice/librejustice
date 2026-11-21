@@ -8,6 +8,7 @@ use serde::Deserialize;
 
 use crate::error::{Result, SourceError};
 use crate::hal::USER_AGENT;
+use crate::publisher::{PacedClient, Refusal};
 
 const ATTRAP_SEARCH: &str = "https://attrap.fr/api/v1/search";
 const PAGE_SIZE: usize = 50;
@@ -31,16 +32,17 @@ struct SearchPage {
 
 pub enum Fetched {
     Pdf(Vec<u8>),
-    /// 404 or 410: the prefecture no longer serves the file.
+    /// 401, 404 or 410: the prefecture no longer serves the file to the public.
     Gone,
-    /// 403, 429 or 503 from a host outside the gateway.
-    Refused(u16),
+    /// 403, 429, 503 or a refusal on the connection, from a host outside the gateway.
+    Refused(Refusal),
 }
 
 /// Hosts read through the page gateway.
 const GATEWAY_HOSTS: &[&str] = &["www.prefecturedepolice.interieur.gouv.fr"];
 
 pub struct RaaClient {
+    attrap: PacedClient,
     http: reqwest::Client,
     /// The gateway sits beside the proxy, never behind it.
     local: reqwest::Client,
@@ -57,6 +59,7 @@ impl RaaClient {
                 .timeout(Duration::from_secs(300))
         };
         Ok(Self {
+            attrap: PacedClient::new(proxy, "attrap")?,
             http: client().proxy(reqwest::Proxy::all(proxy)?).build()?,
             local: client().no_proxy().build()?,
             page_gateway,
@@ -68,21 +71,21 @@ impl RaaClient {
         let (from, to) = (from.to_string(), to.to_string());
         let mut listed = Vec::new();
         for page in 1.. {
-            let response = self
-                .http
-                .get(ATTRAP_SEARCH)
-                .query(&[
-                    ("s", "*"),
-                    ("start_date", &from),
-                    ("end_date", &to),
-                    ("sort", "asc"),
-                    ("size", &PAGE_SIZE.to_string()),
-                    ("page", &page.to_string()),
-                ])
-                .send()
-                .await?
-                .error_for_status()?;
-            let body: SearchPage = response.json().await?;
+            let bytes = self
+                .attrap
+                .send(|| {
+                    self.attrap.http.get(ATTRAP_SEARCH).query(&[
+                        ("s", "*"),
+                        ("start_date", &from),
+                        ("end_date", &to),
+                        ("sort", "asc"),
+                        ("size", &PAGE_SIZE.to_string()),
+                        ("page", &page.to_string()),
+                    ])
+                })
+                .await?;
+            let body: SearchPage = serde_json::from_slice(&bytes)
+                .map_err(|e| SourceError::Invalid(format!("attrap page {page}: {e}")))?;
             if body.total >= WINDOW_CAP {
                 return Err(SourceError::Invalid(format!(
                     "attrap: {} hits from {from} to {to}, past the {WINDOW_CAP} it serves",
@@ -94,7 +97,6 @@ impl RaaClient {
             if done {
                 break;
             }
-            tokio::time::sleep(Duration::from_secs(1)).await;
         }
         Ok(listed)
     }
@@ -116,7 +118,15 @@ impl RaaClient {
                 .send()
                 .await?
         } else {
-            self.http.get(url).send().await?
+            match self.http.get(url).send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    return match Refusal::on_transport(&e) {
+                        Some(refusal) => Ok(Fetched::Refused(refusal)),
+                        None => Err(e.into()),
+                    }
+                }
+            }
         };
         let status = response.status().as_u16();
         match status {
@@ -127,8 +137,9 @@ impl RaaClient {
                 }
                 Ok(Fetched::Pdf(bytes))
             }
-            404 | 410 => Ok(Fetched::Gone),
-            403 | 429 | 503 if !gated => Ok(Fetched::Refused(status)),
+            // Some prefectures answer 401 for the nominative recueils they take down.
+            401 | 404 | 410 => Ok(Fetched::Gone),
+            403 | 429 | 503 if !gated => Ok(Fetched::Refused(Refusal::Status(status))),
             _ => Err(SourceError::Invalid(format!("raa {url}: status {status}"))),
         }
     }

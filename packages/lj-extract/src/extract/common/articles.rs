@@ -42,7 +42,7 @@ static RE_ART_PREFIX_NUM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^[
 // consommer les chiffres permet aux collapses adjacents de s'enchaîner
 // (« 600-4 -1 » → « 600-4-1 »).
 static RE_ART_NORM_DASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*-\s*").unwrap());
-static RE_ART_NORM_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*\.\s*").unwrap());
+static RE_ART_NORM_DOT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s*\.\s*|:").unwrap());
 static RE_ART_NORM_SPACE_DASH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
 static RE_ART_NORM_TRAILING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)\s+(?:précit[eé]e?s?|susvis[éè]e?s?|modifi[ée]e?s?)$").unwrap()

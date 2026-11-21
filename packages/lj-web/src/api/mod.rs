@@ -4,4 +4,4 @@ pub mod client;
 
 #[cfg(feature = "ssr")]
 pub use client::Backend;
-pub use client::{ApiClient, ApiError, ApiResult, PageParams, TextesFilters};
+pub use client::{ApiClient, ApiError, ApiResult, Failure, Missing, PageParams, TextesFilters};

@@ -17,26 +17,34 @@ mod assertions;
 mod bench;
 mod case_names;
 mod cases;
+mod cedh_application;
 mod chunks;
 mod citations;
 mod cluster;
+mod conclusions;
 mod corpus_counts;
 mod court_summaries;
 mod decision_text;
 mod decisions;
 mod disposable_domains;
 mod entities;
+mod expiry;
 mod gazette;
 mod identity;
 mod instrument_move;
 mod journal;
+mod journal_move;
 mod jurisdiction_hubs;
+mod language_texts;
 mod legal_links;
 mod legal_toc;
 mod links;
 mod llm_keys;
 pub use llm_keys::{Credential, NewCredential};
 mod norm_hubs;
+mod norm_passages;
+mod norm_visit;
+mod parliament;
 mod parties;
 pub mod pick;
 mod quantum;
@@ -45,6 +53,7 @@ mod referential;
 mod rekey;
 mod renvois;
 mod scopes;
+mod similar;
 mod submissions;
 mod suggest;
 mod summary_batch;
@@ -70,55 +79,73 @@ pub use assertions::{
     PlaceCorpusRow, VersionForCompile, VersionKeyRow,
 };
 pub use bench::{
-    Courts, EmbedInput, EmbedText, ManualFields, ManualUpsert, StoredSummary, SummaryContext,
+    Courts, DocTexts, EmbedInput, EmbedScope, EmbedText, ManualFields, ManualUpsert,
+    NormBenchArticle, StoredSummary, SummaryContext,
 };
 pub use case_names::{DayHead, NamedCaseRow};
 pub use cases::{CaseCitationWriteItem, ChronoCoverageRow};
+pub use cedh_application::{
+    CedhApplicationRow, CommunicatedStep, HeldCedhRuling, PendingCedhApplication,
+};
 pub use citations::CitationWriteItem;
-pub use decision_text::{CapitalText, DecisionTextDrift, DecisionTextRead, StoredText};
+pub use conclusions::{ConclusionsPage, ConclusionsRow, ConclusionsWrite};
+pub use decision_text::{DecisionTextDrift, DecisionTextRead, RepairText, StoredText};
 pub use decisions::canonical_jurisdiction_code;
 pub use entities::{
     AffiliationEdge, CnbEntityState, CnbEntityUpdate, EntityHistoryWriteItem, EntityWriteItem,
 };
-pub use gazette::{BodaccNoticeRow, GazetteAxis, GazetteFilter, GazetteQuery, JoafeNoticeRow};
-pub use identity::{JoinderPair, JudilibreProvenance, ProvenanceToResolve, WebNoteHead};
-pub use instrument_move::TextRenameCounts;
-pub use journal::{
-    IssuePlacement, IssueRef, JournalIssueRow, PublicationFacts, PublicationRow,
-    TextPublicationRow, TreatyCutCandidate,
+pub use gazette::{BodaccNoticeRow, GazetteFacets, GazetteFilter, GazetteQuery, JoafeNoticeRow};
+pub use identity::{
+    JoinderPair, JudilibreProvenance, ProvenanceToResolve, WebNoteHead, SOURCE_TWIN_CONTAINMENT,
 };
-pub use links::DecisionLinkWriteItem;
+pub use instrument_move::{TextRenameCounts, TextVersionMerge};
+pub use journal::{
+    Edition, IssuePlacement, IssueRef, JoActRow, JorfPiece, JournalIssueRow, NoticePublicationRow,
+    PieceSource, PublicationFacts, PublicationRow, TextPublicationRow, TreatyCutCandidate,
+};
+pub use journal_move::{JournalMoveCandidate, JournalMoveCounts};
+pub use language_texts::{ArticleLanguageText, ArticleLanguageWrite};
+pub use legal_toc::TocEdges;
+pub use links::{CedhCandidateRow, CedhVisit, DecisionLinkWriteItem, PendingCedhLink};
+pub use norm_passages::{NormPassageInput, NormPassageWrite};
+pub use norm_visit::{NormVisit, StoredArticleVersion};
+pub use parliament::ParliamentDocumentRow;
 pub use parties::DecisionActorWriteItem;
 pub use quantum::{QuantumObservationRow, QuantumWriteItem};
-pub use raa::{RaaListedRow, RaaQueued, RaaRead};
-pub use referential::{merge_article_facets, TransitRecueil};
+pub use raa::{RaaHitRow, RaaListedRow, RaaNotice, RaaQueued, RaaRead, RaaScanned};
+pub use referential::{merge_article_facets, ArticleVersions, TransitRecueil};
 pub use rekey::StarConflict;
 pub use renvois::{
     CaseNameMatch, ElectedCaseName, NamedDecision, Renvoi, RenvoiNomme, TitleInputs,
 };
 pub use scopes::{ArticleScopeRow, CompteurArticleRow};
+pub use similar::{
+    assemble_principe, similar_espece_gated, similar_principe_gated, SimilarGraph, SimilarLegs,
+    SimilarPanels, SimilarSourceMeta,
+};
 pub use submissions::PendingSubmission;
 pub use suggest::SUGGEST_FST_KEY;
 pub use summary_batch::SummaryBatchRow;
 pub use support::source_from_source_uid;
-pub use text_rewrite::{ArticleTextDrift, ArticleTextRead, ArticleTextWrite, BodyTextWrite};
+pub use text_rewrite::{ArticleTextDrift, ArticleTextRead, ArticleTextWrite};
 pub use types::{
     ArticleBrowseFilters, ArticleCandidate, ArticleCitationSpanRow, ArticleDesignation,
-    ArticleFacetMember, ArticleNeighborRow, ArticleRankHit, ArticleRrf, ArticleSearchRow,
-    ArticleSearchStats, ArticleTitleMode, BulkDecisionWrite, CaseCitationRow, ChunkWrite,
-    CitationOccurrenceRow, CitingDecisionRow, CitingText, CoCitedArticleRow, CollageRow,
-    DecisionLinkRow, DecisionPartyReadRow, DecisionPartyRow, DisplayInput, EntityContentieuxCounts,
-    EntityDecisionRow, EntityDenominationReadRow, EntityDirectoryRow, EntityHeaderRow,
-    EntityJurisdictionCountRow, EntityYearCountRow, EuTwin, ExistingDecisionState, ExtractedFields,
-    FacetCount, FacetValueRow, Fraicheur, GtDoc, HubDecisionRow, Identity, InstrumentCandidate,
-    InstrumentResolution, JurisdictionHubPages, JurisdictionHubRow, JurisdictionRow,
-    LawCodeSummaryRow, LawVersionRow, LegalArticleRow, LegalLinkOwner, LegalLinkRow,
-    LegalTextCatalogRow, LegalTextMeta, LegalTextRow, MissingSummaryRow, NamedText, NormHubPages,
-    NormTextRow, PassageInputs, PlaceFilter, PlaceReading, PlacedElsewhere, ReferentialRef,
-    ResolvedLegalLink, SectionArticle, SectionArticles, SectionCitingTextRow, SeededJurisdiction,
-    SitemapArticle, SitemapDecision, SitemapRow, SlugSourceRow, SummaryStamp, TextCaseCitationRow,
-    TextLegalCitationRow, TextListRow, TocArticleRow, TocEdgeRow, TocOwner, TocReadingRow,
-    TocTreeRow, UpsertResult, UpsertStatus,
+    ArticleFacetMember, ArticleLegHit, ArticleNeighborRow, ArticleRankHit, ArticleRrf,
+    ArticleSearchRow, ArticleSearchStats, ArticleTitleMode, BodyWrite, BulkDecisionWrite,
+    CaseCitationRow, ChunkWrite, CitationOccurrenceRow, CitingDecisionRow, CitingText,
+    CoCitedArticleRow, CollageRow, DecisionLinkRow, DecisionPartyReadRow, DecisionPartyRow,
+    DisplayInput, EntityContentieuxCounts, EntityDecisionRow, EntityDenominationReadRow,
+    EntityDirectoryRow, EntityHeaderRow, EntityJurisdictionCountRow, EntityYearCountRow, EuTwin,
+    ExistingDecisionState, ExtractedFields, FacetCount, FacetValueRow, Fraicheur, GtDoc,
+    HubDecisionRow, Identity, InstrumentCandidate, InstrumentResolution, JurisdictionHubPages,
+    JurisdictionHubRow, JurisdictionRow, LawCodeSummaryRow, LawVersionRow, LegalArticleRow,
+    LegalLinkOwner, LegalLinkRow, LegalTextCatalogRow, LegalTextMeta, LegalTextRow,
+    MissingSummaryRow, NamedText, NormHubPages, NormTextRow, PassageInputs, PickedText,
+    PlaceFilter, PlaceReading, PlacedElsewhere, ReferentialRef, ResolvedLegalLink, SectionArticle,
+    SectionArticles, SectionCitingTextRow, SeededJurisdiction, SitemapArticle, SitemapDecision,
+    SitemapRow, SlugSourceRow, SummaryStamp, TextCaseCitationRow, TextLegalCitationRow,
+    TextListRow, TocArticleRow, TocEdgeRow, TocOwner, TocReadingRow, TocTreeRow, TreatyTitle,
+    UpsertResult, UpsertStatus,
 };
 
 pub use support::REEXTRACTABLE_FIELDS;

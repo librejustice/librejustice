@@ -161,7 +161,8 @@ impl DecisionRepository<'_> {
                  FROM legal_link l \
                  LEFT JOIN legal_text tt ON tt.text_uid = l.target_text_uid \
                  LEFT JOIN LATERAL ( \
-                     SELECT a.num_key, a.text_uid FROM legal_article a \
+                     SELECT CASE WHEN a.num = '' THEN NULL ELSE a.num_key END AS num_key, \
+                            a.text_uid FROM legal_article a \
                      WHERE l.target_kind = 'article' \
                        AND ((l.target_uid IS NOT NULL AND a.source_uid = l.target_uid) \
                          OR (l.target_uid IS NULL AND l.target_num_key IS NOT NULL \
@@ -243,7 +244,7 @@ impl DecisionRepository<'_> {
             .conn
             .query(
                 "SELECT DISTINCT ON (source_uid) source_uid, text_uid, num, num_key \
-                 FROM legal_article WHERE source_uid = ANY($1) \
+                 FROM legal_article WHERE source_uid = ANY($1) AND num <> '' \
                  ORDER BY source_uid, date_debut DESC NULLS LAST",
                 &[&source_uids],
             )

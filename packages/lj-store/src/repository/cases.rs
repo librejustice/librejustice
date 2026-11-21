@@ -379,6 +379,7 @@ impl DecisionRepository<'_> {
         decision_id: i64,
         exclues: &[i64],
         limite: i64,
+        lang: &str,
     ) -> Result<(i64, Vec<CitingDecisionRow>)> {
         let rank = super::support::authority_rank_sql("d.publication_codes");
         let rows = self
@@ -395,33 +396,40 @@ impl DecisionRepository<'_> {
                      SELECT d.id, d.public_id, d.jurisdiction_type, j.label, \
                             d.date_lecture::text, d.docket_numbers, \
                             d.publication_codes, {summary}, count(*) OVER (), \
-                            d.jurisdiction_code \
+                            d.jurisdiction_code, {bounds} AS summary_bounds \
                      FROM citantes ci \
                      JOIN decisions d ON d.id = ci.id AND d.deleted_at IS NULL \
                      LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code \
                      WHERE NOT (d.id = ANY($2)) \
                      ORDER BY {rank}, d.date_lecture::text DESC NULLS LAST, d.id \
                      LIMIT $3",
-                    summary = super::pick::text("p.summary", "d")
+                    summary = super::pick::summary("d", "$4"),
+                    bounds = super::pick::summary_bounds("d", "$4")
                 ),
-                &[&decision_id, &exclues, &limite],
+                &[&decision_id, &exclues, &limite, &lang],
             )
             .await?;
         let total = rows.first().map_or(0, |r| r.get(8));
         Ok((
             total,
             rows.iter()
-                .map(|r| CitingDecisionRow {
-                    id: r.get(0),
-                    public_id: r.get(1),
-                    jurisdiction_type: r.get(2),
-                    jurisdiction_name: r.get(3),
-                    jurisdiction_code: r.get("jurisdiction_code"),
-                    date_lecture: r.get(4),
-                    docket_numbers: r.get(5),
-                    publication_codes: r.get(6),
-                    summary: r.get(7),
-                    cited_num_keys: Vec::new(),
+                .map(|r| {
+                    let (summary_quote, summary_body) =
+                        super::pick::bounds(r.get("summary_bounds"));
+                    CitingDecisionRow {
+                        id: r.get(0),
+                        public_id: r.get(1),
+                        jurisdiction_type: r.get(2),
+                        jurisdiction_name: r.get(3),
+                        jurisdiction_code: r.get("jurisdiction_code"),
+                        date_lecture: r.get(4),
+                        docket_numbers: r.get(5),
+                        publication_codes: r.get(6),
+                        summary: r.get(7),
+                        summary_quote,
+                        summary_body,
+                        cited_num_keys: Vec::new(),
+                    }
                 })
                 .collect(),
         ))
@@ -580,7 +588,7 @@ pub(super) fn resolve_case_address_sqls(table: &str, scope: ResolveScope) -> Vec
                                  WHERE s.decision_id = t.decision_id \
                                    AND s.source_uid LIKE 'cjue/6____' || r.court || 'J%') AS is_arret \
                              FROM decision_text t \
-                             WHERE t.deleted_at IS NULL AND t.lead \
+                             WHERE t.deleted_at IS NULL AND t.counted AND t.kind = 'decision' \
                                AND t.id @@@ paradedb.term_set('docket_keys', r.dockets) \
                                AND t.jurisdiction_type = 'CJUE') c \
                       ) AS tid \
@@ -650,7 +658,8 @@ const CITED_KEY: &str = "lj_docket_keys(ARRAY[p.target_docket])";
 /// The docket drives, the court and the date filter, and an absent component
 /// drops its conjunct instead of making the address inert. Nothing is posed
 /// until a single bearer answers: a canonisation collision returns two bearers,
-/// so a refusal, never a wrong target.
+/// so a refusal, never a wrong target. An address without a date never resolves
+/// to a consultative opinion of the Conseil d'État, whose number an older judgment may carry.
 ///
 /// `OFFSET 0` fences the docket probe from the other two: joined, the planner
 /// drives on the jurisdiction and reads a whole court per address.
@@ -660,12 +669,14 @@ fn resolve_unique(table: &str, bounded: bool) -> String {
         "), resolved AS{fence} ( \
        SELECT r.target_court, r.target_docket, r.target_date, \
               (SELECT min(x.id) FROM \
-                 (SELECT d.id, d.jurisdiction_code, d.date_lecture FROM decisions d \
-                  WHERE d.deleted_at IS NULL \
+                 (SELECT d.id, d.jurisdiction_code, d.date_lecture, d.seat_paths FROM decisions d \
+                  WHERE d.deleted_at IS NULL AND d.kind = 'decision' \
                     AND lj_docket_keys(d.docket_numbers) && r.dockets \
                   OFFSET 0) x \
                WHERE (r.target_court IS NULL OR x.jurisdiction_code = r.target_court) \
                  AND (r.target_date IS NULL OR x.date_lecture = r.target_date) \
+                 AND (r.target_date IS NOT NULL \
+                      OR NOT coalesce('FR.CE.AVIS' = ANY(x.seat_paths), false)) \
                HAVING count(*) = 1) AS tid \
        FROM keys r)"
     ) + &resolve_tail(table, bounded)

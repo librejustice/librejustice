@@ -54,6 +54,8 @@ pub fn SearchRail(
     #[prop(into)] facets: Signal<Option<SearchFacets>>,
     #[prop(into)] loading: Signal<bool>,
 ) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
+    let ui = &crate::i18n::use_ui().search;
     let query_map = use_query_map();
     let nav = Nav::new();
     let draft = use_context::<DraftQuery>().map(|d| d.0);
@@ -72,7 +74,7 @@ pub fn SearchRail(
         // Une barre EST son compte : sa hauteur ment comme mentirait le nombre.
         if stale.get() {
             return skeleton_block(
-                "Années",
+                ui.rail_years,
                 view! { <Skeleton class="h-10 w-full" /> }.into_any(),
             );
         }
@@ -112,7 +114,7 @@ pub fn SearchRail(
                         type="button"
                         class=bar_class
                         style=format!("height:{height}px")
-                        title=format!("{year} · {}", group_thousands(count))
+                        title=format!("{year} · {}", group_thousands(numbers, count))
                         on:click=move |_| {
                             let map = effective_map(query_map.get_untracked(), draft);
                             let qs = if active {
@@ -132,7 +134,7 @@ pub fn SearchRail(
                 data-usage=UiAction::SearchRailYears.as_str()
             >
                 <p class="pb-1 text-[11px] uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "Années"
+                    {ui.rail_years}
                 </p>
                 <div class="flex h-10 items-end gap-px">{bars}</div>
                 <div class="flex justify-between font-mono text-[10px] text-[var(--color-ink-subtle)]">
@@ -165,7 +167,7 @@ pub fn SearchRail(
             .collect();
         rail_list(
             stale,
-            "Articles les plus cités",
+            ui.rail_articles,
             "legalArticle",
             UiAction::SearchRailArticles,
             rows,
@@ -200,7 +202,7 @@ pub fn SearchRail(
             .collect();
         rail_list(
             stale,
-            "Juridictions",
+            ui.rail_courts,
             "seat",
             UiAction::SearchRailSeats,
             rows,
@@ -227,7 +229,7 @@ pub fn SearchRail(
             .collect();
         rail_list(
             stale,
-            "Solution",
+            ui.rail_solution,
             "solution",
             UiAction::SearchRailSolutions,
             rows,
@@ -254,12 +256,13 @@ pub fn SearchRail(
 /// Rail en attente : mêmes titres, même gabarit, lignes muettes le temps que la
 /// nouvelle question réponde.
 fn rail_skeleton() -> AnyView {
+    let ui = &crate::i18n::use_ui().search;
     view! {
         <div class=RAIL_COLUMN>
-            {skeleton_block("Années", view! { <Skeleton class="h-10 w-full" /> }.into_any())}
-            {skeleton_block("Articles les plus cités", skeleton_rows(ROWS))}
-            {skeleton_block("Juridictions", skeleton_rows(ROWS))}
-            {skeleton_block("Solution", skeleton_rows(ROWS))}
+            {skeleton_block(ui.rail_years, view! { <Skeleton class="h-10 w-full" /> }.into_any())}
+            {skeleton_block(ui.rail_articles, skeleton_rows(ROWS))}
+            {skeleton_block(ui.rail_courts, skeleton_rows(ROWS))}
+            {skeleton_block(ui.rail_solution, skeleton_rows(ROWS))}
         </div>
     }
     .into_any()
@@ -309,6 +312,7 @@ fn rail_list(
     rows: Vec<RailRow>,
     toggle: Callback<(&'static str, String)>,
 ) -> AnyView {
+    let numbers = &crate::i18n::use_ui().numbers;
     if rows.is_empty() {
         return ().into_any();
     }
@@ -332,7 +336,7 @@ fn rail_list(
                     <span class=label_class>{row.label.clone()}</span>
                     <Show when=move || !stale.get()>
                         <span class="shrink-0 font-mono text-[11px] tabular-nums text-[var(--color-ink-subtle)]">
-                            {group_thousands(count)}
+                            {group_thousands(numbers, count)}
                         </span>
                     </Show>
                 </button>

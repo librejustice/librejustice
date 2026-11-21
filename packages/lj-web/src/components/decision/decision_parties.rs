@@ -47,6 +47,7 @@ pub fn DecisionParties(
         return ().into_any();
     }
 
+    let ui = &crate::i18n::use_ui().decision;
     let of_side = |side: Option<&str>, counsel: bool| -> Vec<DecisionPartyDto> {
         shown
             .iter()
@@ -56,23 +57,23 @@ pub fn DecisionParties(
     };
 
     view! {
-        <section aria-label="Parties" class=format!("flex flex-col gap-3 print:hidden {class}")>
+        <section aria-label=ui.parties class=format!("flex flex-col gap-3 print:hidden {class}")>
             <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                "Parties"
+                {ui.parties}
             </h2>
             <div class="flex flex-col gap-4">
                 {side_card(
-                    "Demandeurs",
+                    ui.applicants,
                     of_side(Some("applicant"), false),
                     of_side(Some("applicant"), true),
                 )}
                 {side_card(
-                    "Défendeurs",
+                    ui.defendants,
                     of_side(Some("defendant"), false),
                     of_side(Some("defendant"), true),
                 )}
-                {side_card("Parties", of_side(None, false), Vec::new())}
-                {side_card("Conseils", Vec::new(), of_side(None, true))}
+                {side_card(ui.parties, of_side(None, false), Vec::new())}
+                {side_card(ui.counsels, Vec::new(), of_side(None, true))}
             </div>
         </section>
     }
@@ -133,10 +134,11 @@ fn counsel_line(conseils: Vec<DecisionPartyDto>) -> Option<AnyView> {
     if conseils.is_empty() {
         return None;
     }
+    let ui = &crate::i18n::use_ui().decision;
     let label = if conseils.len() > 1 {
-        "Conseils : "
+        ui.counsel_many
     } else {
-        "Conseil : "
+        ui.counsel_one
     };
     let links = conseils
         .into_iter()

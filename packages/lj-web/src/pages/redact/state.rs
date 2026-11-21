@@ -5,6 +5,9 @@ use std::collections::HashMap;
 
 use leptos::prelude::*;
 
+pub use super::fault::Fault;
+use crate::i18n::RedactUi;
+
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Format {
     Pdf,
@@ -15,16 +18,6 @@ pub enum Format {
 }
 
 impl Format {
-    /// What the chip in the toolbar says.
-    pub fn label(self) -> &'static str {
-        match self {
-            Format::Pdf => "PDF",
-            Format::Word => "Document Word",
-            Format::OpenDocument => "OpenDocument",
-            Format::Image => "Image",
-        }
-    }
-
     /// Laid out by the office module, whose pages carry their own text.
     pub fn laid_out(self) -> bool {
         matches!(self, Format::Word | Format::OpenDocument)
@@ -55,7 +48,7 @@ pub enum Status {
     Empty,
     Loading,
     Ready,
-    Failed(String),
+    Failed(Fault),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -82,7 +75,7 @@ pub enum Eye {
 #[derive(Clone, PartialEq, Debug)]
 pub enum Reading {
     Stage(String, f64),
-    Failed(String),
+    Failed(Fault),
 }
 
 /// Whether every file the tool may need is held in the page, so the network
@@ -93,7 +86,7 @@ pub enum Offline {
     Online,
     Loading(f64),
     Ready,
-    Failed(String),
+    Failed(Fault),
 }
 
 /// One string to remove. `kind` is where it came from: a rule, or the user.
@@ -165,7 +158,7 @@ pub struct Verdict {
 pub enum Check {
     Done,
     Running,
-    Failed(String),
+    Failed(Fault),
 }
 
 /// Where a string took its labels in an anonymisation already applied: the
@@ -229,17 +222,14 @@ pub struct Session {
     /// document open and says so in place of the button.
     pub reading: RwSignal<Option<Reading>>,
     pub offline: RwSignal<Offline>,
-}
-
-impl Default for Session {
-    fn default() -> Self {
-        Self::new()
-    }
+    /// The copy the files it writes are named in.
+    pub ui: &'static RedactUi,
 }
 
 impl Session {
-    pub fn new() -> Self {
+    pub fn new(ui: &'static RedactUi) -> Self {
         Self {
+            ui,
             status: RwSignal::new(Status::Empty),
             name: RwSignal::new(String::new()),
             format: RwSignal::new(Format::Pdf),
@@ -461,18 +451,15 @@ impl Session {
     }
 }
 
-/// What a label says of a string replaced by nothing.
-pub const ERASED: &str = "effacé";
-
-/// French heading for a rule family, and the order families are shown in.
-pub const FAMILIES: [(&str, &str); 9] = [
-    ("manual", "Ajoutés"),
-    ("person", "Noms"),
-    ("address", "Adresses"),
-    ("email", "Courriels"),
-    ("phone", "Téléphones"),
-    ("identifier", "Identifiants"),
-    ("docket", "Numéros de dossier"),
-    ("birth-date", "Dates de naissance"),
-    ("birth-place", "Lieux de naissance"),
+/// The rule families, in the order they are shown.
+pub const FAMILIES: [&str; 9] = [
+    "manual",
+    "person",
+    "address",
+    "email",
+    "phone",
+    "identifier",
+    "docket",
+    "birth-date",
+    "birth-place",
 ];

@@ -54,11 +54,11 @@ uv run pytest mcp -q
 [tasks.ensure-pg]
 description = "Prépare l'état Postgres de state_dir : propriétaire de pgdata (uid 999 rootless) et conf montée en /etc/postgresql."
 run = """
-mkdir -p "$LIBREJUSTICE_STATE_DIR/pgdata"
+mkdir -p "$LIBREJUSTICE_STATE_DIR/pgdata" "$LIBREJUSTICE_STATE_DIR/pgwal" "$LIBREJUSTICE_STATE_DIR/pgtext"
 # Rootless : postgres tourne en uid 999 dans le conteneur ; le dossier hôte doit
 # appartenir au subuid mappé, sinon `mkdir /var/lib/postgresql/18` est refusé au
 # tout premier démarrage. Idempotent (no-op une fois la base initialisée).
-podman unshare chown 999:999 "$LIBREJUSTICE_STATE_DIR/pgdata"
+podman unshare chown 999:999 "$LIBREJUSTICE_STATE_DIR/pgdata" "$LIBREJUSTICE_STATE_DIR/pgwal" "$LIBREJUSTICE_STATE_DIR/pgtext"
 
 pgconf="${LIBREJUSTICE_PG_CONF_DIR:-infra/pg-conf}"
 mkdir -p "$LIBREJUSTICE_STATE_DIR/pg-conf"
@@ -78,7 +78,7 @@ podman compose -f infra/docker-compose.yml up -d --no-recreate postgres
 # `LIBREJUSTICE_DB_URL` : aucun Postgres local requis.
 [tasks.dev]
 description = "lj-server fusionné (API + MCP + SSR Leptos, :3000), compilé une fois et arrêté au bout de 2 h ; DB = LIBREJUSTICE_DB_URL (.env → prod)"
-env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "dev", LIBREJUSTICE_API_PUBLIC_BASE_URL = "http://localhost:3000" }
+env = { LIBREJUSTICE_API_DEPLOYMENT_ENVIRONMENT = "dev", LIBREJUSTICE_API_PUBLIC_BASE_URL = "http://localhost:3000", LIBREJUSTICE_API_WEB_BASE_URL = "http://localhost:3000" }
 depends = ["build-skill-zips"]
 # No watch, and a lifetime: two watchers left behind ran 2 and 4 days on the
 # prod host, rebuilding on every neighbour's edit.
@@ -777,7 +777,7 @@ hurl --variable base=${LIBREJUSTICE_CONTRACT_BASE_URL:-https://librejustice.fr} 
   tests/contract/texte-juridiction.hurl \
   tests/contract/resolution.hurl \
   tests/contract/entities.hurl \
-  tests/contract/annonces.hurl \
+  tests/contract/journals.hurl \
   tests/contract/oauth.hurl \
   tests/contract/me.hurl \
   tests/contract/auth.hurl \

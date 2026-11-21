@@ -1,21 +1,16 @@
-//! Corps des fiches JORF sans articles (`TRAITE`, `AVIS`, `DECISION`,
-//! `ACCORD_FONCTION_PUBLIQUE`) et accords interprofessionnels (`TI`, KALI)
-//! depuis les blocs sans numéro des stocks bulk locaux.
+//! Bodies of the JORF texts with no article (`TRAITE`, `AVIS`, `DECISION`,
+//! `ACCORD_FONCTION_PUBLIQUE`), of the `INTL/` treaties read under the JORF text
+//! that published them, and of the interprofessional agreements (`TI`, KALI),
+//! from the unnumbered blocks of the cached `Freemium_*_global` stocks, written
+//! as the text's `body` piece. Never creates a text.
 //!
-//! Cibles : fiches sans `legal_article` ni corps réel (`empty_legal_text_uids`).
-//! Le contenu est déjà sur le disque (stocks `Freemium_*_global` du cache) : la
-//! passe streame les stocks, assemble chaque texte dans l'ordre du document et
-//! pose `legal_text.body`. UPDATE ciblé, jamais de création.
-//!
-//! - **JORF** : ordre = `STRUCT/LIEN_ART` du `texte/struct` (les ids `JORFARTI`
-//!   ne suivent pas l'ordre de lecture) ; blocs = `BLOC_TEXTUEL` des articles
-//!   du cid. Les labels (« Art. 1er. - », « A N N E X E I ») vivent dans le
-//!   texte même. Un texte à STRUCT vide est pré-numérisation (contenu en
-//!   fac-similé JO seulement) : compté `no_content`.
-//! - **KALI** : ordre = `LIEN_TXT` du conteneur (texte de base puis attachés)
-//!   puis id `KALIARTI` croissant — les ids d'un même texte suivent le
-//!   document. Le titre de section (`TM`) est préposé à chaque changement :
-//!   c'est le seul endroit où vit le libellé (« Préambule », « Chapitre Ier »…).
+//! - **JORF**: order from `STRUCT/LIEN_ART` of `texte/struct` (the `JORFARTI`
+//!   ids do not follow the reading order), blocks from the `BLOC_TEXTUEL` of
+//!   the cid's articles. A text with an empty STRUCT predates digitisation, its
+//!   content a JO facsimile only: counted `no_content`.
+//! - **KALI**: order from the container's `LIEN_TXT` (base text, then attached
+//!   ones), then ascending `KALIARTI` id. The section title (`TM`) is prepended
+//!   at each change, the only place its label lives.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -24,7 +19,7 @@ use std::sync::Arc;
 use anyhow::{anyhow, Result};
 
 use lj_sources::dila::DilaFond;
-use lj_store::repository::DecisionRepository;
+use lj_store::repository::{BodyWrite, DecisionRepository};
 
 use crate::config::Settings;
 
@@ -35,7 +30,7 @@ struct BodyCounts {
     no_content: usize,
 }
 
-/// Passe complète : cibles en base → stocks du cache → `legal_text.body`.
+/// Full pass: targets in the base, then the cached stocks, then each text's `body` piece.
 pub async fn backfill_treaty_bodies() -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
@@ -50,13 +45,22 @@ pub async fn backfill_treaty_bodies() -> Result<()> {
     // `TYPE=AUTONOME` sans `NUM` que l'ingest saute (AVIS, DECISION,
     // ACCORD_FONCTION_PUBLIQUE). Même assemblage : le parseur JORF rend tous les
     // blocs, numérotés ou non.
-    let mut jorf_targets: HashSet<String> = HashSet::new();
+    let mut jorf_targets: HashMap<String, String> = HashMap::new();
     for nature in ["TRAITE", "AVIS", "DECISION", "ACCORD_FONCTION_PUBLIQUE"] {
         jorf_targets.extend(
             repo.empty_legal_text_uids(nature)
                 .await
-                .map_err(|e| anyhow!("empty_legal_text_uids {nature}: {e}"))?,
+                .map_err(|e| anyhow!("empty_legal_text_uids {nature}: {e}"))?
+                .into_iter()
+                .map(|uid| (uid.clone(), uid)),
         );
+    }
+    for (uid, cid) in repo
+        .intl_treaty_vehicles()
+        .await
+        .map_err(|e| anyhow!("intl_treaty_vehicles: {e}"))?
+    {
+        jorf_targets.entry(cid).or_insert(uid);
     }
     let kali_targets: HashSet<String> = repo
         .empty_legal_text_uids("TI")
@@ -122,15 +126,16 @@ struct JorfHarvest {
     blocks: HashMap<String, Vec<(String, String)>>,
 }
 
+/// `targets` maps a JORF cid of the stock to the text its body is written on.
 async fn backfill_jorf(
     repo: &DecisionRepository<'_>,
     stock: &Path,
-    targets: &HashSet<String>,
+    targets: &HashMap<String, String>,
 ) -> Result<BodyCounts> {
     if targets.is_empty() {
         return Ok(BodyCounts::default());
     }
-    let shared = Arc::new(targets.clone());
+    let shared: Arc<HashSet<String>> = Arc::new(targets.keys().cloned().collect());
     let stock_path = stock.to_path_buf();
     let harvest = tokio::task::spawn_blocking(move || -> Result<JorfHarvest> {
         let mut h = JorfHarvest::default();
@@ -177,20 +182,21 @@ async fn backfill_jorf(
     .map_err(|e| anyhow!("tâche lecture stock JORF: {e}"))??;
 
     let mut counts = BodyCounts::default();
-    for uid in targets {
-        let Some(blocks) = harvest.blocks.get(uid) else {
+    for (cid, uid) in targets {
+        let Some(blocks) = harvest.blocks.get(cid) else {
             counts.no_content += 1;
             continue;
         };
-        let body = assemble_ordered(harvest.orders.get(uid).map(Vec::as_slice), blocks);
+        let body = assemble_ordered(harvest.orders.get(cid).map(Vec::as_slice), blocks);
         if body.is_empty() {
             counts.no_content += 1;
             continue;
         }
-        if repo
-            .set_legal_text_body(uid, &body)
+        if !repo
+            .write_text_bodies("jorf", &[(uid.clone(), body)], BodyWrite::Replace)
             .await
-            .map_err(|e| anyhow!("set_legal_text_body {uid}: {e}"))?
+            .map_err(|e| anyhow!("write_text_bodies {uid}: {e}"))?
+            .is_empty()
         {
             counts.updated += 1;
         }
@@ -200,7 +206,7 @@ async fn backfill_jorf(
 
 /// Concatène les blocs dans l'ordre du `struct` ; les blocs hors struct suivent,
 /// par id croissant (stable).
-pub(super) fn assemble_ordered(order: Option<&[String]>, blocks: &[(String, String)]) -> String {
+fn assemble_ordered(order: Option<&[String]>, blocks: &[(String, String)]) -> String {
     let by_id: HashMap<&str, &str> = blocks
         .iter()
         .map(|(id, t)| (id.as_str(), t.as_str()))
@@ -315,10 +321,11 @@ async fn backfill_kali(
             counts.no_content += 1;
             continue;
         }
-        if repo
-            .set_legal_text_body(uid, &body)
+        if !repo
+            .write_text_bodies("kali", &[(uid.clone(), body)], BodyWrite::Replace)
             .await
-            .map_err(|e| anyhow!("set_legal_text_body {uid}: {e}"))?
+            .map_err(|e| anyhow!("write_text_bodies {uid}: {e}"))?
+            .is_empty()
         {
             counts.updated += 1;
         }

@@ -17,12 +17,17 @@ use crate::{pipeline, AssertionsCommand, Command, DbCommand};
 /// Plancher du délai d'une étape. En dessous, une journée simplement lente
 /// (amont chargé, file plus grosse que d'habitude) se ferait couper.
 const PLANCHER_SECS: u64 = 900;
+/// A fetch took 0.1 to 0.4 s on 15/11/2026, its pace 0.5 s: 300 hold within the floor watchdog.
+const CE_CONCLUSIONS_PER_RUN: usize = 300;
 
 /// Une étape de chaîne et son délai de watchdog.
 struct Step {
     command: Command,
     watchdog_secs: u64,
 }
+
+/// What a summary step leaves its calls in flight before its watchdog: one luna call's timeout.
+const SUMMARY_DRAIN_SECS: u64 = 600;
 
 /// Étape et son délai, calé sur ~3× le maximum observé au cron et jamais sous
 /// [`PLANCHER_SECS`] : le watchdog vise l'amont pendu, pas la journée lente.
@@ -37,6 +42,8 @@ fn step(command: Command, watchdog_secs: u64) -> Step {
 
 /// Branches running at once.
 const BRANCHES_AT_ONCE: usize = 4;
+/// The main thread's stack, which every step ran on: a pool thread's 2 MiB is too small for some.
+const BRANCH_STACK: usize = 8 << 20;
 const LOCK_POLL: Duration = Duration::from_secs(60);
 
 /// Steps run in order, once the branches named in `after` have ended.
@@ -44,10 +51,29 @@ struct Branch {
     name: &'static str,
     after: &'static [&'static str],
     steps: Vec<Step>,
+    /// Runs no step on the weekly night, whose turn takes its time; the next day's run catches
+    /// up what it left.
+    daily_only: bool,
 }
 
 fn branch(name: &'static str, after: &'static [&'static str], steps: Vec<Step>) -> Branch {
-    Branch { name, after, steps }
+    Branch {
+        name,
+        after,
+        steps,
+        daily_only: false,
+    }
+}
+
+fn daily_only_branch(
+    name: &'static str,
+    after: &'static [&'static str],
+    steps: Vec<Step>,
+) -> Branch {
+    Branch {
+        daily_only: true,
+        ..branch(name, after, steps)
+    }
 }
 
 fn gazette(source: lj_gazette::Source) -> Command {
@@ -58,6 +84,19 @@ fn gazette(source: lj_gazette::Source) -> Command {
         dry_run: false,
         verify: false,
         reclass: false,
+        recount: false,
+    }
+}
+
+fn norms(country: pipeline::NormsCountry, minutes: Option<u64>) -> Command {
+    Command::SyncNorms {
+        country,
+        scan: pipeline::NormsScan::Daily,
+        only: None,
+        limit: None,
+        fresh: false,
+        minutes,
+        dry_run: false,
     }
 }
 
@@ -85,7 +124,7 @@ impl ChainKind {
 }
 
 /// The branches writing decisions, which the summaries wait for.
-const DECISION_SOURCES: [&str; 7] = [
+const DECISION_SOURCES: [&str; 21] = [
     "judilibre",
     "dila",
     "cedh",
@@ -93,6 +132,20 @@ const DECISION_SOURCES: [&str; 7] = [
     "cnda",
     "ddd",
     "juricaf",
+    "entscheidsuche",
+    "legimonaco",
+    "juportal",
+    "rechtspraak",
+    "justice-lu",
+    "cce",
+    "scc-csc",
+    "legalis",
+    "amf",
+    "juradm-site",
+    "cc-site",
+    "consiliaweb",
+    "adlc",
+    "comeu",
 ];
 
 /// Sources du jour + publication. Aucune étape ne dépend du **succès** de la
@@ -159,9 +212,20 @@ fn daily() -> Vec<Branch> {
                     },
                     PLANCHER_SECS,
                 ),
+                // The conclusions the bundles just named; the stock before the step runs by hand.
+                step(
+                    Command::SyncCeConclusions {
+                        limit: Some(CE_CONCLUSIONS_PER_RUN),
+                    },
+                    PLANCHER_SECS,
+                ),
             ],
         ),
-        branch("cedh", &[], vec![step(Command::SyncCedh, PLANCHER_SECS)]),
+        branch(
+            "cedh",
+            &[],
+            vec![step(Command::SyncCedh { stubs: false }, PLANCHER_SECS)],
+        ),
         // The procurement fonds, written by this step alone: channels, life cycle, new notices, awards.
         branch(
             "annonces",
@@ -183,10 +247,14 @@ fn daily() -> Vec<Branch> {
                 step(Command::SyncLegi, PLANCHER_SECS),
                 step(Command::SyncKali, PLANCHER_SECS),
                 step(Command::SyncJorf, PLANCHER_SECS),
+                step(Command::TreatyParties, PLANCHER_SECS),
                 step(gazette(lj_gazette::Source::Bodacc), PLANCHER_SECS),
                 step(gazette(lj_gazette::Source::Joafe), PLANCHER_SECS),
                 step(Command::SyncCirculaires, PLANCHER_SECS),
-                step(Command::SyncCirculairesBodies, PLANCHER_SECS),
+                step(
+                    Command::SyncCirculairesBodies { ocr_tenant: None },
+                    PLANCHER_SECS,
+                ),
                 step(Command::StampFreshness, PLANCHER_SECS),
             ],
         ),
@@ -196,22 +264,188 @@ fn daily() -> Vec<Branch> {
             &[],
             vec![step(
                 Command::SyncJuricaf {
-                    prefixes: Vec::new(),
+                    countries: Vec::new(),
                     full: false,
                     list: false,
                 },
                 2_400,
             )],
         ),
-        // 3 requests, then 2 per new decision, 30 s apart: past 13 new ones, the
-        // next day carries on from the cache.
+        // No page starts past 1 200 s.
+        branch(
+            "entscheidsuche",
+            &[],
+            vec![step(
+                Command::SyncEntscheidsuche {
+                    full: false,
+                    limit: None,
+                    courts: Vec::new(),
+                    missing: false,
+                    rewrite: false,
+                },
+                2_400,
+            )],
+        ),
+        // No page starts past 1 200 s.
+        branch(
+            "legimonaco",
+            &[],
+            vec![step(
+                Command::SyncLegimonaco {
+                    full: false,
+                    limit: None,
+                    dry_run: false,
+                },
+                2_400,
+            )],
+        ),
+        // One feed, then a page per new decision 2 s apart; no batch of 100 starts past 1 200 s.
+        branch(
+            "juportal",
+            &[],
+            vec![step(
+                Command::SyncJuportal {
+                    full: false,
+                    limit: None,
+                    dry_run: false,
+                },
+                2_400,
+            )],
+        ),
+        // The documents modified since the last run, 1 s apart, about 450 a day; no batch of 100
+        // starts past 600 s, the rest left to the next night.
+        branch(
+            "rechtspraak",
+            &[],
+            vec![step(
+                Command::SyncRechtspraak {
+                    full: false,
+                    month: None,
+                    limit: None,
+                    dry_run: false,
+                },
+                PLANCHER_SECS,
+            )],
+        ),
+        // No archive starts past 1 200 s.
+        branch(
+            "justice-lu",
+            &[],
+            vec![step(
+                Command::SyncJusticeLu {
+                    full: false,
+                    datasets: Vec::new(),
+                    list: false,
+                },
+                2_400,
+            )],
+        ),
+        // One request every 10 s, none past 1 200 s: the counts, the months whose count moved, then
+        // each new PDF.
+        branch(
+            "cce",
+            &[],
+            vec![step(
+                Command::SyncCce {
+                    full: false,
+                    limit: None,
+                    dry_run: false,
+                    only: Vec::new(),
+                },
+                1_800,
+            )],
+        ),
+        // One request every 30 s, none past 600 s: the newest listing page, then each new judgment.
+        branch(
+            "scc-csc",
+            &[],
+            vec![step(
+                Command::SyncSccCsc {
+                    full: false,
+                    limit: None,
+                    dry_run: false,
+                },
+                PLANCHER_SECS,
+            )],
+        ),
+        // 3 requests a run, then one per page new or modified, 3 s apart, none past 600 s.
+        branch(
+            "legalis",
+            &[],
+            vec![step(
+                Command::SyncLegalis {
+                    full: false,
+                    limit: None,
+                    dry_run: false,
+                },
+                PLANCHER_SECS,
+            )],
+        ),
+        // 3 requests per list, then 2 per new notice, 30 s apart: past 12 new ones,
+        // the next day carries on from the cache.
         branch(
             "ddd",
             &[],
             vec![step(Command::SyncDdd { full: false }, PLANCHER_SECS)],
         ),
+        branch(
+            "amf",
+            &[],
+            vec![
+                step(Command::SyncAmf { full: false }, PLANCHER_SECS),
+                step(Command::ExpireNamed, PLANCHER_SECS),
+            ],
+        ),
+        // About 180 listing pages a second apart, then two requests per new item.
+        branch(
+            "juradm-site",
+            &[],
+            vec![step(
+                Command::SyncJuradmSite {
+                    full: false,
+                    courts: Vec::new(),
+                    minutes: Some(10),
+                },
+                PLANCHER_SECS,
+            )],
+        ),
+        branch(
+            "cc-site",
+            &[],
+            vec![step(Command::SyncCcSite, PLANCHER_SECS)],
+        ),
+        branch(
+            "consiliaweb",
+            &[],
+            vec![step(
+                Command::SyncConsiliaweb {
+                    full: false,
+                    from_base: false,
+                },
+                PLANCHER_SECS,
+            )],
+        ),
         branch("cjue", &[], vec![step(Command::SyncCjue, PLANCHER_SECS)]),
         branch("cnda", &[], vec![step(Command::SyncCnda, PLANCHER_SECS)]),
+        // One request on the days the file holds still, 601 s at most to 20/11/2026 on a new one.
+        branch(
+            "adlc",
+            &[],
+            vec![step(
+                Command::SyncAdlc {
+                    mode: pipeline::IngestMode::MissingHash,
+                },
+                1_800,
+            )],
+        ),
+        // The week's documents, 1,031 s at most over 12 days to 20/11/2026.
+        branch(
+            "comeu",
+            &[],
+            vec![step(Command::SyncComeu { full: false }, 3_100)],
+        ),
+        // A run cut at its watchdog keeps the datasets it wrote, loaded by the next one: 604 s at
+        // most over 10 nights to 19/11/2026.
         branch(
             "eu-law",
             &[],
@@ -224,22 +458,99 @@ fn daily() -> Vec<Branch> {
                         backlog: false,
                         concurrency: 4,
                     },
-                    1_800,
+                    PLANCHER_SECS,
                 ),
                 step(
                     Command::EuBodies {
                         limit: Some(500),
+                        refresh: None,
                         dry_run: false,
                     },
                     PLANCHER_SECS,
                 ),
             ],
         ),
+        // The cantons' and Belgium's budgets hold their relist, one request per act or document;
+        // the Swiss federal one, a week's changes; Luxembourg's, the states whose file moved.
+        // Their first reads, about 3, 2, 5 and 17 h, are run by hand, as is Canada's, 18 h,
+        // before its step joins the chain.
+        branch(
+            "norms",
+            &[],
+            vec![
+                // Reads acts never visited, and RO acts never read, for 15 minutes at most.
+                step(norms(pipeline::NormsCountry::Ch, Some(15)), 1_200),
+                // Reads no act never visited while the first read, by hand, is under way.
+                step(norms(pipeline::NormsCountry::Lu, Some(0)), 1_200),
+                // Reads acts never visited for an hour at most, a first read carried over to
+                // the next night.
+                step(norms(pipeline::NormsCountry::ChCantons, Some(60)), 4_500),
+                step(norms(pipeline::NormsCountry::Be, None), 1_200),
+                step(norms(pipeline::NormsCountry::BeWal, None), 4_500),
+            ],
+        ),
+        // Beside `norms`: in it, the weekly chain's worst case reaches 87,600 s, past the cron period.
+        branch(
+            "codex",
+            &[],
+            vec![step(norms(pipeline::NormsCountry::BeVlg, None), 2_400)],
+        ),
+        // Ontario's sitemaps, then the texts whose versions moved, on the daily night alone: the
+        // weekly one has no room left. The first read of the 4,853 runs by hand.
+        daily_only_branch(
+            "ontario",
+            &[],
+            vec![step(norms(pipeline::NormsCountry::CaOn, Some(0)), 1_200)],
+        ),
+        // Off the compile's path: a journal's texts carry no dated state for it to wait on.
+        branch(
+            "journals",
+            &[],
+            vec![step(norms(pipeline::NormsCountry::Dj, None), 2_400)],
+        ),
+        // On the daily night alone: the weekly one has no room left under the cron period.
+        daily_only_branch(
+            "africa",
+            &[],
+            vec![
+                step(norms(pipeline::NormsCountry::Bj, None), PLANCHER_SECS),
+                // Adala's French and Arabic trees walked in about 6 min on 21/11/2026.
+                step(norms(pipeline::NormsCountry::Ma, None), 1_500),
+                // One host, one reader at a time. SenegalLII changes by batches, 129 works on
+                // 14/11/2026: ten minutes of them, scans read by OCR, the rest the next night.
+                step(norms(pipeline::NormsCountry::Ohada, None), PLANCHER_SECS),
+                step(norms(pipeline::NormsCountry::Sn, Some(10)), PLANCHER_SECS),
+                // Each type's newest hundred listed in about 4.5 min, then ten minutes of the
+                // texts never visited: 5 to 8 new a day once the first read is through.
+                step(norms(pipeline::NormsCountry::Mg, Some(10)), PLANCHER_SECS),
+                // The courts' own sites still publishing, each at its pace, five minutes of listing
+                // pages a site: the CCJA's 300 s between pages reads its two newest years.
+                step(
+                    Command::SyncCourtSites {
+                        sites: Vec::new(),
+                        full: false,
+                        limit: None,
+                        minutes: 5,
+                        dry_run: false,
+                        ocr_tenant: None,
+                    },
+                    4_500,
+                ),
+            ],
+        ),
+        // After `norms`, whose federal step reads the same host, and off the compile's path, on the
+        // daily night alone: on the weekly one the worst case passes the cron period, and a daily
+        // run relists a listing a week old. An hour of acts never visited.
+        daily_only_branch(
+            "justel",
+            &["norms"],
+            vec![step(norms(pipeline::NormsCountry::BeBru, Some(60)), 4_500)],
+        ),
         // After every writer of the referential: the states of the texts the day
         // touched, and of those never compiled.
         branch(
             "compile",
-            &["dila-texts", "eu-law"],
+            &["dila-texts", "eu-law", "norms", "codex", "ontario"],
             vec![step(
                 Command::Assertions(AssertionsCommand::Compile {
                     full: false,
@@ -247,7 +558,7 @@ fn daily() -> Vec<Branch> {
                     text_uid: None,
                     dry_run: false,
                 }),
-                PLANCHER_SECS,
+                2_400,
             )],
         ),
         branch(
@@ -259,9 +570,16 @@ fn daily() -> Vec<Branch> {
                     full: false,
                     dry_run: false,
                 },
-                // About 70 gateway pages a day at 5 s, on top of the direct sites.
-                1_400,
+                // Education's site map answering 502 to its eight pages held the step 13
+                // minutes on 17/11/2026, and 1,400 s cut it before interior and economy.
+                2_400,
             )],
+        ),
+        // After the bulletins, the page gateway serving one page at a time: 31 pages at 5 s.
+        daily_only_branch(
+            "boss",
+            &["bulletins"],
+            vec![step(Command::SyncBoss { dry_run: false }, PLANCHER_SECS)],
         ),
         branch(
             "service-public",
@@ -288,30 +606,54 @@ fn daily() -> Vec<Branch> {
                     PLANCHER_SECS,
                 ),
                 step(
+                    // By jurisdiction, newest first: an id sweep reads a loaded
+                    // foreign stock before the day's decisions.
                     Command::GenerateSummaries {
                         limit: None,
                         refresh_stale: false,
                         cited_min: None,
-                        by_jurisdiction: false,
+                        by_jurisdiction: true,
                         reverse: false,
                         models: Vec::new(),
                         accounts: Vec::new(),
+                        seat_caps: Vec::new(),
                         jurisdictions: Vec::new(),
                         named: false,
+                        langs: Vec::new(),
+                        reader: Some("fr".to_owned()),
+                        stop_after: Some(5_400 - SUMMARY_DRAIN_SECS),
                     },
                     5_400,
                 ),
-                // After the summaries, so a decision of the day is embedded behind its
-                // own.
+                // After the summaries, so a decision of the day is embedded once, behind
+                // its own; done before the watchdog, so no batch in flight is lost.
                 step(
                     Command::EmbedMissing {
                         limit: None,
                         stock: false,
                         shard: (0, 1),
+                        summarised: true,
+                        by_jurisdiction: true,
+                        multilingual: false,
+                        stop_after: Some(1_680),
                     },
                     1_800,
                 ),
             ],
+        ),
+        // After the decisions' passages, on the same host; a version the referential's writers
+        // add later waits for the next day.
+        daily_only_branch(
+            "norm-vectors",
+            &["summaries"],
+            vec![step(
+                Command::EmbedNorms {
+                    limit: None,
+                    stock: false,
+                    stop_after: Some(600),
+                },
+                PLANCHER_SECS,
+            )],
         ),
         branch(
             "publication",
@@ -322,14 +664,36 @@ fn daily() -> Vec<Branch> {
                 "annonces",
                 "dila-texts",
                 "juricaf",
+                "entscheidsuche",
+                "legimonaco",
+                "juportal",
+                "rechtspraak",
+                "justice-lu",
+                "cce",
+                "scc-csc",
+                "legalis",
                 "ddd",
+                "amf",
+                "juradm-site",
+                "cc-site",
+                "consiliaweb",
                 "cjue",
                 "cnda",
+                "adlc",
+                "comeu",
                 "eu-law",
+                "norms",
+                "codex",
+                "ontario",
+                "journals",
+                "africa",
+                "justel",
                 "compile",
                 "bulletins",
+                "boss",
                 "service-public",
                 "summaries",
+                "norm-vectors",
             ],
             vec![
                 step(Command::Db(DbCommand::Analyze), PLANCHER_SECS),
@@ -352,36 +716,91 @@ fn daily() -> Vec<Branch> {
     ]
 }
 
+/// A source's weekly read, beside the sources; the maintenance waits for them.
+fn weekly_sources() -> Vec<Branch> {
+    vec![
+        // OpenCaseLaw's Obwalden file, read whole: it was last scraped in February 2026.
+        branch(
+            "opencaselaw",
+            &[],
+            vec![step(
+                Command::SyncOpencaselaw { dry_run: false },
+                PLANCHER_SECS,
+            )],
+        ),
+        branch(
+            "eu-nets",
+            &["eu-law", "dila-texts"],
+            vec![
+                // The net of the registry delta the daily sync-eu-law opens with: the
+                // whole registry, a few minutes of SPARQL. The next daily sync-eu-law
+                // gives the catalogue entries it opens their body.
+                step(
+                    Command::SyncEuCatalog {
+                        full: true,
+                        limit: None,
+                    },
+                    PLANCHER_SECS,
+                ),
+                // What the daily JO ingest keeps depositing: an act named by DILA, its
+                // body at EUR-Lex. Left alone the two identities drift apart again.
+                step(Command::SyncEuJorf { limit: None }, PLANCHER_SECS),
+            ],
+        ),
+        branch(
+            "cedh-stubs",
+            &["cedh"],
+            vec![
+                // The HUDOC rows the daily sweep stopped asking for, each asked again monthly.
+                step(Command::SyncCedh { stubs: true }, PLANCHER_SECS),
+            ],
+        ),
+        branch(
+            "avocats",
+            &[],
+            vec![step(
+                Command::Registries {
+                    source: pipeline::RegistrySource::Avocats,
+                    with_history: false,
+                },
+                PLANCHER_SECS,
+            )],
+        ),
+        // After the day's HAL and OAI reads, in the summaries branch.
+        branch(
+            "doctrine-repair",
+            &["summaries"],
+            vec![
+                // Net under the daily scan: 180 days instead of 30, and a `warn!` on what
+                // it repairs. A week repairing nothing says the daily pass holds.
+                step(
+                    Command::SyncHal {
+                        scan: pipeline::HalScan::Repair,
+                    },
+                    PLANCHER_SECS,
+                ),
+                step(
+                    Command::SyncDoctrineOai {
+                        scan: pipeline::DoctrineScan::Repair,
+                        dry_run: false,
+                    },
+                    PLANCHER_SECS,
+                ),
+            ],
+        ),
+    ]
+}
+
 /// Weekly maintenance, `turn` taken from [`rotation`].
 fn weekly(turn: Step) -> Vec<Step> {
     vec![
         step(Command::JudilibreReconcile { apply: true }, PLANCHER_SECS),
         step(Command::StampTexts, PLANCHER_SECS),
         step(Command::Db(DbCommand::ReindexSearch), 9_000),
-        // The net of the registry delta the daily sync-eu-law opens with: the
-        // whole registry, a few minutes of SPARQL. The next daily sync-eu-law
-        // gives the catalogue entries it opens their body.
-        step(
-            Command::SyncEuCatalog {
-                full: true,
-                limit: None,
-            },
-            PLANCHER_SECS,
-        ),
-        // What the daily JO ingest keeps depositing: an act named by DILA, its
-        // body at EUR-Lex. Left alone the two identities drift apart again.
-        step(Command::SyncEuJorf { limit: None }, PLANCHER_SECS),
         // Filet de forme du pot Annonces : l'ingest écrit propre à la
         // construction, ce passage porte une règle nouvelle au stock clos que
         // la moisson ne revisite jamais (titres, acheteurs, lots).
         step(Command::AnnoncesRegulariser { formes: true }, PLANCHER_SECS),
-        step(
-            Command::Registries {
-                source: pipeline::RegistrySource::Avocats,
-                with_history: false,
-            },
-            PLANCHER_SECS,
-        ),
         step(Command::PartiesRelink { full: false }, PLANCHER_SECS),
         turn,
         // 75 fiches, 81 ancres, et le Conseil d'État en ajoute quelques-unes par
@@ -417,21 +836,6 @@ fn weekly(turn: Step) -> Vec<Step> {
         // summaries every year, from the cache.
         step(
             Command::UpgradeSummariesCommentaries { limit: None },
-            PLANCHER_SECS,
-        ),
-        // Net under the daily scan: 180 days instead of 30, and a `warn!` on what
-        // it repairs. A week repairing nothing says the daily pass holds.
-        step(
-            Command::SyncHal {
-                scan: pipeline::HalScan::Repair,
-            },
-            PLANCHER_SECS,
-        ),
-        step(
-            Command::SyncDoctrineOai {
-                scan: pipeline::DoctrineScan::Repair,
-                dry_run: false,
-            },
             PLANCHER_SECS,
         ),
         // Filet de dérive du régime « dérivé à l'écriture » : ferme la marche, il
@@ -488,8 +892,12 @@ fn night_tail() -> Vec<Step> {
             reverse: false,
             models: Vec::new(),
             accounts: Vec::new(),
+            seat_caps: Vec::new(),
             jurisdictions: vec!["CC".to_owned(), "CE".to_owned()],
             named: false,
+            langs: Vec::new(),
+            reader: None,
+            stop_after: Some(64_800 - SUMMARY_DRAIN_SECS),
         },
         64_800,
     )]
@@ -502,17 +910,53 @@ fn plan(kind: ChainKind, week: usize) -> Vec<Branch> {
     }
     let mut branches = daily();
     if matches!(kind, ChainKind::Weekly) {
-        // The only pass that pays for the tenants silent seven nights: a
-        // platform given back is found within a week, the other six do not
-        // probe it.
         for s in branches.iter_mut().flat_map(|b| &mut b.steps) {
-            if let Command::Annonces { relancer_muets, .. } = &mut s.command {
-                *relancer_muets = true;
+            match &mut s.command {
+                // The only pass that pays for the tenants silent seven nights: a
+                // platform given back is found within a week, the other six do not
+                // probe it.
+                Command::Annonces { relancer_muets, .. } => *relancer_muets = true,
+                // Ahead of the compile, which then sees the same night what the relist repairs.
+                Command::SyncNorms { scan, .. } => *scan = pipeline::NormsScan::Relist,
+                // Whole reads at about 3x their longest run to 20/11/2026: 945, 1,739, 1,660 s.
+                Command::SyncDdd { full } => {
+                    *full = true;
+                    s.watchdog_secs = 2_850;
+                }
+                Command::SyncAmf { full } => {
+                    *full = true;
+                    s.watchdog_secs = 4_500;
+                }
+                Command::SyncComeu { full } => {
+                    *full = true;
+                    s.watchdog_secs = 5_000;
+                }
+                // Its catch-up starts no fetch past 4,200 s.
+                Command::SyncEntscheidsuche { missing, .. } => {
+                    *missing = true;
+                    s.watchdog_secs = 5_400;
+                }
+                _ => {}
             }
+        }
+        for b in branches.iter_mut().filter(|b| b.daily_only) {
+            b.steps.clear();
         }
         let mut rotation = rotation();
         let turn = rotation.swap_remove(week % rotation.len());
-        branches.push(branch("weekly", &["publication"], weekly(turn)));
+        branches.extend(weekly_sources());
+        branches.push(branch(
+            "weekly",
+            &[
+                "publication",
+                "opencaselaw",
+                "eu-nets",
+                "cedh-stubs",
+                "avocats",
+                "doctrine-repair",
+            ],
+            weekly(turn),
+        ));
     }
     branches
 }
@@ -536,8 +980,7 @@ pub(crate) async fn run(kind: ChainKind) -> Result<()> {
         tokio::time::sleep(LOCK_POLL).await;
     }
 
-    let week = chrono::Utc::now().timestamp() / (7 * 86_400);
-    let branches = plan(kind, week as usize);
+    let branches = plan(kind, this_week());
     let total: usize = branches.iter().map(|b| b.steps.len()).sum();
     let started = Instant::now();
     tracing::info!(chain, total, "chain: start");
@@ -563,6 +1006,40 @@ pub(crate) async fn run(kind: ChainKind) -> Result<()> {
     )
 }
 
+fn this_week() -> usize {
+    (chrono::Utc::now().timestamp() / (7 * 86_400)) as usize
+}
+
+/// Walks the plan as [`run`] would, each branch on its thread once those it waits for have ended,
+/// a step named rather than run, after the schema check every step makes.
+pub(crate) async fn walk(kind: ChainKind) -> Result<()> {
+    let chain = kind.label();
+    let settings = Settings::from_env()?;
+    let pool = crate::pool_only(&settings, 1).await?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
+        .await
+        .map_err(|e| anyhow!("migrations: {e}"))?;
+    let branches = plan(kind, this_week());
+    let total: usize = branches.iter().map(|b| b.steps.len()).sum();
+    schedule(branches, move |branch| walk_branch(chain, branch)).await?;
+    tracing::info!(chain, total, "chain: plan walked");
+    Ok(())
+}
+
+async fn walk_branch(chain: &'static str, branch: Branch) -> (&'static str, Vec<&'static str>) {
+    for step in &branch.steps {
+        tracing::info!(
+            chain,
+            branch = branch.name,
+            step = step.command.label(),
+            watchdog_secs = step.watchdog_secs,
+            "chain: step planned"
+        );
+    }
+    (branch.name, Vec::new())
+}
+
 /// Runs `pending` side by side, at most [`BRANCHES_AT_ONCE`], each once those it waits for have
 /// ended, in the order listed among those ready; returns the steps that failed.
 async fn schedule<R, F>(mut pending: Vec<Branch>, run: R) -> Result<Vec<&'static str>>
@@ -582,13 +1059,20 @@ where
                 break;
             };
             let (handle, branch, run) = (Handle::current(), pending.remove(ready), run.clone());
+            let (done, ended_rx) = tokio::sync::oneshot::channel();
             // On a thread of its own, so that a step's future need not be `Send`.
-            running.spawn_blocking(move || handle.block_on(run(branch)));
+            std::thread::Builder::new()
+                .name(format!("chain-{}", branch.name))
+                .stack_size(BRANCH_STACK)
+                .spawn(move || done.send(handle.block_on(run(branch))))?;
+            running.spawn(ended_rx);
         }
         let Some(joined) = running.join_next().await else {
             break;
         };
-        let (name, branch_failed) = joined.map_err(|e| anyhow!("chain branch: {e}"))?;
+        let (name, branch_failed) = joined
+            .map_err(|e| anyhow!("chain branch: {e}"))?
+            .map_err(|_| anyhow!("chain branch: its thread ended without an answer"))?;
         ended.insert(name);
         failed.extend(branch_failed);
     }
@@ -740,6 +1224,28 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A branch runs on the main thread's stack, which some steps need beyond a pool thread's.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_branch_has_the_stack_of_the_main_thread() {
+        #[inline(never)]
+        fn deep(n: usize) -> usize {
+            let frame = [n; 1 << 17];
+            std::hint::black_box(&frame);
+            if n == 0 {
+                0
+            } else {
+                deep(n - 1) + frame[0]
+            }
+        }
+        let failed = schedule(
+            vec![branch("deep", &[], Vec::new())],
+            |b: Branch| async move { (b.name, vec![if deep(3) == 6 { "4 MiB" } else { "wrong" }]) },
+        )
+        .await
+        .expect("schedule");
+        assert_eq!(failed, ["4 MiB"]);
     }
 
     /// The publication waits for every branch the day runs before it.

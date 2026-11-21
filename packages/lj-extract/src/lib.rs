@@ -9,6 +9,7 @@
 
 pub mod articles;
 pub mod case_link;
+pub mod cedh;
 pub mod chrono;
 pub mod compiled;
 pub mod data;
@@ -17,6 +18,7 @@ pub mod domain;
 pub mod eponyme;
 pub mod extract;
 pub mod facets;
+pub mod foreign;
 pub mod formation;
 pub mod gazetteer;
 pub mod identity;

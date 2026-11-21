@@ -16,7 +16,7 @@ use anyhow::{anyhow, Result};
 
 use lj_sources_annonces::discover::{canon_host, MOTEURS_CONNECTES};
 use lj_store::repository::DecisionRepository;
-use lj_vocab::ANNONCE_FOND_MARCHE;
+use lj_vocab::JOURNAL_FOND_MARCHE;
 
 use crate::config::Settings;
 
@@ -102,7 +102,7 @@ pub async fn annonces_couverture(limite: usize) -> Result<()> {
     }
 
     let trous = repo
-        .annonces_sans_plateforme(ANNONCE_FOND_MARCHE, &MOTEURS_CONNECTES)
+        .annonces_sans_plateforme(JOURNAL_FOND_MARCHE, &MOTEURS_CONNECTES)
         .await
         .map_err(|e| anyhow!("trous de couverture: {e}"))?;
 

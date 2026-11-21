@@ -52,8 +52,8 @@ pub async fn get_me(state: &AppState, user_sub: &str) -> Result<UserProfile, Api
 
 /// `DELETE /me`: deletes the account for good.
 ///
-/// One `DELETE FROM users`, cascading to bookmarks, identities, web sessions,
-/// mcp_tokens and mcp_auth_codes (ON DELETE CASCADE).
+/// One `DELETE FROM users`, cascading to identities, web sessions, mcp_tokens
+/// and mcp_auth_codes (ON DELETE CASCADE).
 pub async fn delete_me(state: &AppState, user_sub: &str) -> Result<(), ApiError> {
     let conn = state
         .pool

@@ -443,9 +443,102 @@ fn part_prefix_len(token: &str) -> Option<usize> {
         .max()
 }
 
+static INLINE_LABEL: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    let latin = "(?:(?:un|duo|ter|quater|quin|sex|sept|octo|novo)?(?:decies|vicies)|tricies\
+                 |bis|ter|quater|quinquies|sexies|septies|octies|nonies)";
+    regex::Regex::new(&format!(
+        r"(?i)^\s*(?:art\.|article)\s+(\d+(?:er|re|ère|e|r)?{latin}?(?-i:[A-Z]{{0,3}})(?:[-.]\d+)*(?:\s+(?:{latin}(?-i:[A-Z]{{0,3}})|(?-i:[A-Z]{{1,3}})|[a-z])){{0,4}}|premier|unique)(?:\s*\((?:nouveau|ex-?\s*\d+|\d+)\))?\s*\.{{0,2}}\s*(?:[-:\x{{2013}}\x{{2014}}]|\n|$)",
+    ))
+    .expect("inline label")
+});
+
+/// The number an article prints at the head of its own text, `Art. 7. - …` or
+/// `Article 1er` on its line, which the old JO stock leaves out of `NUM`.
+pub fn inline_num(texte: &str) -> Option<String> {
+    INLINE_LABEL.captures(texte).map(|c| {
+        let num = c[1].split_whitespace().collect::<Vec<_>>().join(" ");
+        match num.strip_suffix('r') {
+            Some(n) if n.bytes().all(|b| b.is_ascii_digit()) => format!("{n}er"),
+            _ => num,
+        }
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_article_label_printed_inline_is_its_number() {
+        assert_eq!(
+            inline_num("Art. 7. - Le directeur est chargé").as_deref(),
+            Some("7")
+        );
+        assert_eq!(
+            inline_num("Article 1er\nLe présent arrêté").as_deref(),
+            Some("1er")
+        );
+        assert_eq!(
+            inline_num("Art. 4 bis. - Les mots").as_deref(),
+            Some("4 bis")
+        );
+        assert_eq!(
+            inline_num("Art. 5-1. - Il est inséré").as_deref(),
+            Some("5-1")
+        );
+        assert_eq!(
+            inline_num("Article unique. - La loi").as_deref(),
+            Some("unique")
+        );
+        assert_eq!(
+            inline_num("Article 1609 nonies B\nCet article est complété").as_deref(),
+            Some("1609 nonies B")
+        );
+        assert_eq!(
+            inline_num("Article 93 H ter\nAu 3o, après les mots").as_deref(),
+            Some("93 H ter")
+        );
+        assert_eq!(
+            inline_num("Article 164 F unvicies A\nLes termes").as_deref(),
+            Some("164 F unvicies A")
+        );
+        assert_eq!(
+            inline_num("Article 199 terdecies\nLe III est ainsi modifié").as_deref(),
+            Some("199 terdecies")
+        );
+        assert_eq!(
+            inline_num("Art. 2.. - Les dispositions du présent arrêté").as_deref(),
+            Some("2")
+        );
+        assert_eq!(
+            identity_key(&inline_num("Art. 1r. - Il est créé une zone").unwrap()),
+            "1"
+        );
+        assert_eq!(
+            inline_num("Article 1679bisB:\nAu 3, l'article").as_deref(),
+            Some("1679bisB")
+        );
+        assert_eq!(
+            inline_num("Article 20 (ex-19)\n\n1. Lorsque l'assuré").as_deref(),
+            Some("20")
+        );
+        assert_eq!(
+            inline_num("Article 32 ( 3)\nLe texte du paragraphe 3"),
+            None
+        );
+        assert_eq!(
+            inline_num("Article 3 du décret du 2 mai 1990 est abrogé."),
+            None
+        );
+        assert_eq!(inline_num("Article 3 et 4 sont abrogés."), None);
+        assert_eq!(inline_num("Art. L. 123-4. - Le maire"), None);
+        assert_eq!(inline_num("« Art. 2. - En cas d'absence"), None);
+        assert_eq!(inline_num("Art. 1l. - Toute infraction"), None);
+        assert_eq!(
+            identity_key(&inline_num("Article premier - X").unwrap()),
+            "1"
+        );
+    }
 
     /// A model writes the word, the corpus sometimes carries it: the fallback
     /// only opens on a digit, and gives back nothing else.

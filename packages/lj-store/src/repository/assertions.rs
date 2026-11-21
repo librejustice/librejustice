@@ -1339,11 +1339,11 @@ impl DecisionRepository<'_> {
         let rows = self
             .conn
             .query(
-                "SELECT o.text_uid, o.jurisdiction, o.title, o.keyed, o.body,
+                "SELECT o.text_uid, o.jurisdiction, o.title, o.keyed,
                         EXISTS (SELECT 1 FROM legal_article a WHERE a.text_uid = o.text_uid)
                  FROM (
                    SELECT c.text_uid, t.jurisdiction, coalesce(t.title, '') AS title,
-                          bool_or(c.rule IS NOT NULL) AS keyed, t.body IS NOT NULL AS body
+                          bool_or(c.rule IS NOT NULL) AS keyed
                    FROM text_place_coverage c
                    JOIN legal_text t ON t.text_uid = c.text_uid AND t.jurisdiction = ANY($4)
                    WHERE (c.rule = ANY($6) OR (c.place IS NOT NULL AND c.place <> ALL($1)))
@@ -1353,7 +1353,7 @@ impl DecisionRepository<'_> {
                        SELECT 1 FROM text_place_coverage h
                        WHERE h.text_uid = c.text_uid AND (h.place = ANY($1) OR h.rule = ANY($3))
                          AND h.starts_on <= $2 AND (h.ends_on IS NULL OR h.ends_on > $2))
-                   GROUP BY c.text_uid, t.jurisdiction, t.title, t.body IS NOT NULL
+                   GROUP BY c.text_uid, t.jurisdiction, t.title
                  ) o",
                 &[
                     &at.path,
@@ -1372,10 +1372,24 @@ impl DecisionRepository<'_> {
                 jurisdiction: r.get(1),
                 title: r.get(2),
                 keyed: r.get(3),
-                body: r.get(4),
-                articles: r.get(5),
+                articles: r.get(4),
             })
             .collect())
+    }
+
+    /// The treaties with articles whose parties are known and leave `state` out.
+    pub async fn treaties_without(&self, state: &str) -> Result<Vec<String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT t.text_uid FROM legal_text t
+                 WHERE t.jurisdiction = 'INTL' AND t.parties IS NOT NULL
+                   AND $1 <> ALL(t.parties)
+                   AND EXISTS (SELECT 1 FROM legal_article a WHERE a.text_uid = t.text_uid)",
+                &[&state],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
     }
 
     /// Other articles worded exactly like the version `(text_uid, num_key, start)`.

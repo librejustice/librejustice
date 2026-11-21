@@ -398,18 +398,6 @@ pub fn load_cached_circulaire_ocr(dir: &Path, id: &str) -> Result<Option<String>
     }
 }
 
-/// Écrit le markdown OCR au cache (atomique : fichier temporaire + rename).
-pub fn save_cached_circulaire_ocr(dir: &Path, id: &str, markdown: &str) -> Result<()> {
-    let path = circ_ocr_path(dir, id);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("md.tmp");
-    fs::write(&tmp, markdown)?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
-}
-
 fn circ_ocr_path(dir: &Path, id: &str) -> PathBuf {
     dir.join("ocr").join(format!("{id}.md"))
 }

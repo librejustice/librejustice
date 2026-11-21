@@ -22,6 +22,8 @@ pub(crate) const CEDH_DIR: &str = "cedh";
 pub(crate) const CNDA_DIR: &str = "cnda";
 pub(crate) const DDD_DIR: &str = "ddd";
 pub(crate) const ADLC_DIR: &str = "adlc";
+pub(crate) const AMF_DIR: &str = "amf";
+pub(crate) const JURADM_SITE_DIR: &str = "juradm-site";
 pub(crate) const CJUE_DIR: &str = "cjue";
 pub(crate) const EU_LAW_DIR: &str = "eu_law";
 pub(crate) const PRESSE_DIR: &str = "presse";
@@ -119,6 +121,16 @@ impl StatePaths {
     /// `ingest/cache/adlc`, the dataset of the Autorité de la concurrence.
     pub fn adlc(&self) -> PathBuf {
         self.cache().join(ADLC_DIR)
+    }
+
+    /// `ingest/cache/amf`, the pages of the AMF's Commission des sanctions decisions.
+    pub fn amf(&self) -> PathBuf {
+        self.cache().join(AMF_DIR)
+    }
+
+    /// `ingest/cache/juradm-site`, the items read on the sites of the administrative courts.
+    pub fn juradm_site(&self) -> PathBuf {
+        self.cache().join(JURADM_SITE_DIR)
     }
 
     /// `ingest/cache/cjue` — arrêts CJUE.

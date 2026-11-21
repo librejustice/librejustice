@@ -20,11 +20,18 @@ pub fn code_canonical_url(juris: &str, code: &str) -> String {
 
 /// `<meta description>` d'un article : début du texte de l'article (ou son
 /// intitulé / fil d'Ariane à défaut de texte), tronqué sur une frontière de mot.
-pub fn article_meta_description(article: &LawArticleResponse, title: &str) -> String {
+pub fn article_meta_description(
+    ui: &crate::i18n::Ui,
+    article: &LawArticleResponse,
+    title: &str,
+) -> String {
     // Article modificatif : le `texte` est le résumé de liens brut (illisible en
     // snippet SERP). On résume proprement depuis `modifications`.
     if !article.modifications.is_empty() {
-        return truncate_at_word(&modifying_description(article, title), META_DESCRIPTION_MAX);
+        return truncate_at_word(
+            &modifying_description(ui, article, title),
+            META_DESCRIPTION_MAX,
+        );
     }
     let raw = match article
         .texte
@@ -40,14 +47,15 @@ pub fn article_meta_description(article: &LawArticleResponse, title: &str) -> St
 
 /// Description SERP d'un article modificatif : verbes présents (modifie/crée/
 /// abroge) + codes cibles distincts, dérivés de `modifications`.
-fn modifying_description(article: &LawArticleResponse, title: &str) -> String {
+fn modifying_description(
+    ui: &crate::i18n::Ui,
+    article: &LawArticleResponse,
+    title: &str,
+) -> String {
     let mut verbs: Vec<&str> = Vec::new();
     for m in &article.modifications {
-        let v = match m.action.as_str() {
-            "modifie" => "modifie",
-            "cree" => "crée",
-            "abroge" => "abroge",
-            _ => continue,
+        let Some(v) = (ui.norm.action_verb)(&m.action) else {
+            continue;
         };
         if !verbs.contains(&v) {
             verbs.push(v);
@@ -59,21 +67,12 @@ fn modifying_description(article: &LawArticleResponse, title: &str) -> String {
             codes.push(&m.code);
         }
     }
-    let verbs = join_fr(&verbs);
-    let codes = join_fr(&codes);
+    let verbs = (ui.list)(&verbs);
+    let codes = (ui.list)(&codes);
     if verbs.is_empty() || codes.is_empty() {
         return title.to_string();
     }
-    format!("{title} : {verbs} des dispositions de {codes}.")
-}
-
-/// Joint des libellés en français : « a, b et c ».
-fn join_fr(parts: &[&str]) -> String {
-    match parts {
-        [] => String::new(),
-        [only] => only.to_string(),
-        [head @ .., last] => format!("{} et {}", head.join(", "), last),
-    }
+    (ui.norm.amends)(title, &verbs, &codes)
 }
 
 /// Cap meta description (limite SERP Google). Aligné sur `seo::decision`.

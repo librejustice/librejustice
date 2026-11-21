@@ -21,6 +21,7 @@ pub fn DecisionReferences(
         return ().into_any();
     }
     // The decision's date reaches the article hover cards: the version in force on that day.
+    let ui = &crate::i18n::use_ui().decision;
     let at_date = detail.date_lecture;
     let place = detail.court_place;
     let rows = references
@@ -29,10 +30,10 @@ pub fn DecisionReferences(
         .collect_view();
     view! {
         <section
-            aria-label="Références juridiques"
+            aria-label=ui.legal_references
             class=format!("flex flex-col gap-3 print:hidden {class}")
         >
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Références juridiques"</h2>
+            <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.legal_references}</h2>
             <ul class="flex flex-col gap-3">{rows}</ul>
         </section>
     }

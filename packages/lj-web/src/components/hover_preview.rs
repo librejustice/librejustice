@@ -14,7 +14,7 @@
 use leptos::prelude::*;
 use lj_dtos::{DecisionPreview, LawArticleResponse};
 
-use crate::components::ui::{Badge, BadgeTone};
+use crate::components::ui::{shown_summary, Badge, BadgeTone};
 use crate::helpers::format_iso_date;
 use crate::pages::decision_page::labels::publication_badge;
 use crate::pages::law_page::article_title;
@@ -98,14 +98,13 @@ fn is_iso_date(s: &str) -> bool {
             .all(|(i, c)| i == 4 || i == 7 || c.is_ascii_digit())
 }
 
-/// Payload chargé (article boxé : le `LawArticleResponse` porte timeline et
-/// contexte, bien plus large que le variant décision). Construit par le fetch,
+/// Payload chargé, boxé. Construit par le fetch,
 /// donc jamais au SSR — seul `card_view` (les deux cibles) le consomme.
 #[derive(Clone)]
 #[cfg_attr(not(feature = "hydrate"), allow(dead_code))]
 enum PreviewData {
     Article(Box<LawArticleResponse>),
-    Decision(DecisionPreview),
+    Decision(Box<DecisionPreview>),
 }
 
 /// Enveloppe hover d'un lien de référence : les enfants (le lien) restent tels
@@ -133,6 +132,7 @@ pub fn HoverPreview(kind: PreviewKind, children: Children) -> impl IntoView {
         use std::time::Duration;
 
         let kind = StoredValue::new(kind);
+        let lang = crate::i18n::use_reader_lang().get();
         let open_timer = StoredValue::new_local(None::<TimeoutHandle>);
         let close_timer = StoredValue::new_local(None::<TimeoutHandle>);
         // Fetch en vol : évite le double départ pendant le chargement ; remis à
@@ -162,10 +162,10 @@ pub fn HoverPreview(kind: PreviewKind, children: Children) -> impl IntoView {
                         .ok()
                         .map(|a| PreviewData::Article(Box::new(a))),
                     PreviewKind::Decision { id } => client
-                        .fetch_decision_preview(id)
+                        .fetch_decision_preview(id, lang.code())
                         .await
                         .ok()
-                        .map(PreviewData::Decision),
+                        .map(|d| PreviewData::Decision(Box::new(d))),
                 };
                 match fetched {
                     Some(d) => data.set(Some(d)),
@@ -282,11 +282,13 @@ pub fn HoverPreview(kind: PreviewKind, children: Children) -> impl IntoView {
 fn card_view(data: Option<PreviewData>) -> AnyView {
     match data {
         None => view! {
-            <span class="block text-xs text-[var(--color-ink-subtle)]">"Chargement…"</span>
+            <span class="block text-xs text-[var(--color-ink-subtle)]">
+                {crate::i18n::use_ui().norm.loading}
+            </span>
         }
         .into_any(),
         Some(PreviewData::Article(article)) => article_card(*article),
-        Some(PreviewData::Decision(preview)) => decision_card(preview),
+        Some(PreviewData::Decision(preview)) => decision_card(*preview),
     }
 }
 
@@ -295,17 +297,13 @@ fn card_view(data: Option<PreviewData>) -> AnyView {
 /// date de la décision hôte — affiche sa plage ; la version courante, son
 /// entrée en vigueur.
 fn article_card(article: LawArticleResponse) -> AnyView {
+    let ui = crate::i18n::use_ui();
+    let dates = &ui.dates;
     let title = article_title(&article);
+    let start = format_iso_date(dates, Some(&article.date_debut));
     let since = match article.date_fin.as_deref() {
-        Some(fin) => format!(
-            "En vigueur du {} au {}",
-            format_iso_date(Some(&article.date_debut)),
-            format_iso_date(Some(fin))
-        ),
-        None => format!(
-            "En vigueur depuis le {}",
-            format_iso_date(Some(&article.date_debut))
-        ),
+        Some(fin) => (ui.norm.in_force_from_to)(&start, &format_iso_date(dates, Some(fin))),
+        None => (ui.norm.in_force_since)(&start),
     };
     let texte = article.texte.unwrap_or_default();
     view! {
@@ -323,8 +321,11 @@ fn article_card(article: LawArticleResponse) -> AnyView {
 /// Decision card: title, badges (solution and reach, in the tones of the
 /// result cards), scrollable summary.
 fn decision_card(preview: DecisionPreview) -> AnyView {
-    let solution = preview.solution.map(|s| s.label);
-    let publication = publication_badge(&preview.publication_codes);
+    let ui = crate::i18n::use_ui();
+    let solution = preview
+        .solution
+        .map(|s| crate::i18n::ReferentialUi::label(ui.referential.solution, &s));
+    let publication = publication_badge(&preview.publication_codes, &ui.decision);
     let badges = (solution.is_some() || publication.is_some()).then(|| {
         view! {
             <span class="mt-1.5 flex flex-wrap gap-1.5">
@@ -333,7 +334,19 @@ fn decision_card(preview: DecisionPreview) -> AnyView {
             </span>
         }
     });
-    let summary = preview.summary.unwrap_or_default();
+    let summary = preview
+        .summary
+        .as_deref()
+        .map(|summary| {
+            shown_summary(
+                preview.jurisdiction_type,
+                summary,
+                preview.summary_quote.as_ref(),
+                preview.summary_body.as_ref(),
+            )
+            .text
+        })
+        .unwrap_or_default();
     view! {
         <span class="block font-sans text-sm font-semibold leading-snug text-[var(--color-ink)]">
             {preview.title}
@@ -384,6 +397,6 @@ mod tests {
         assert!(preview_kind("/decision/z-hk-uk5YqPg", None).is_none());
         assert!(preview_kind("/decision/fr/a/b", None).is_none());
         assert!(preview_kind("/norm/fr/code-civil/livre-i/titre-v", None).is_none());
-        assert!(preview_kind("/decision-search", None).is_none());
+        assert!(preview_kind("/fr/decision-search", None).is_none());
     }
 }

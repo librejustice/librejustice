@@ -221,6 +221,41 @@ fn solution_cc_cassation_totale() {
 }
 
 #[test]
+fn solution_cedh_reads_hudoc_conclusion() {
+    let cases = [
+        ("Violation de l'article 3 - Interdiction de la torture (Article 3 - Traitement dégradant)", Some("VIOLATION")),
+        ("Partiellement irrecevable;Violation de l'art. 6-1;Dommage matériel - réparation", Some("VIOLATION")),
+        ("Exception préliminaire rejetée (Article 35-1 - Epuisement des voies de recours internes);Violation de l'article 8", Some("VIOLATION")),
+        ("Violation of Art. 6-1;Pecuniary damage - claim dismissed", Some("VIOLATION")),
+        ("Non-violation de l'article 6+6-3-b - Droit à un procès équitable", Some("NON_VIOLATION")),
+        ("Remainder inadmissible;No violation of Article 8 - Right to respect for private life", Some("NON_VIOLATION")),
+        ("Irrecevable", Some("IRRECEVABILITE")),
+        ("Inadmissible", Some("IRRECEVABILITE")),
+        ("Partly struck out of the list;Partly inadmissible", Some("IRRECEVABILITE")),
+        ("Exception préliminaire retenue (Art. 35-1) Non-épuisement des voies de recours internes", Some("IRRECEVABILITE")),
+        ("Radiation du rôle", Some("RADIATION")),
+        ("Struck out of the list", Some("RADIATION")),
+        ("Frais et dépens - radiation du rôle (règlement amiable);Préjudice moral - réparation pécuniaire", Some("REGLEMENT_AMIABLE")),
+        ("Partly admissible;Partly inadmissible", Some("RECEVABLE")),
+        ("Recevable", Some("RECEVABLE")),
+        ("Pecuniary damage - award (Article 41 - Pecuniary damage;Just satisfaction)", Some("AUTRE")),
+        ("", None),
+    ];
+    for (label, want) in cases {
+        let mut d = decision("CEDH");
+        d.solution = (!label.is_empty()).then(|| label.to_string());
+        d.texte_integral_clean = "PAR CES MOTIFS, LA COUR, À L'UNANIMITÉ, rejette la demande de \
+            satisfaction équitable pour le surplus."
+            .into();
+        assert_eq!(
+            extract_solution(&d),
+            want.map(|k| format!("solution:{k}")),
+            "{label}"
+        );
+    }
+}
+
+#[test]
 fn solution_rejet_maps_directly() {
     let mut d = decision("CA");
     d.solution = Some("rejet".into());
@@ -241,15 +276,36 @@ fn solution_cc_rnsm_stays_rejet() {
 
 #[test]
 fn solution_cc_non_admis_dispositif() {
-    // Dispositif explicite « déclare le pourvoi non admis » : IRRECEVABILITE
-    // même si la solution éditoriale dit « rejet ».
+    // An explicit « déclare le pourvoi non admis » is a non-admission, whatever the
+    // registry's label says.
     let mut d = decision("CC");
     d.solution = Some("rejet".into());
     d.texte_integral_clean =
         "PAR CES MOTIFS : DÉCLARE le pourvoi NON ADMIS. n'admet pas le pourvoi".into();
     assert_eq!(
         extract_solution(&d).as_deref(),
-        Some("solution:IRRECEVABILITE")
+        Some("solution:NON_ADMISSION")
+    );
+}
+
+#[test]
+fn solution_cc_decheance_is_its_own_leaf() {
+    let mut d = decision("CC");
+    d.solution = Some("decheance".into());
+    d.texte_integral_clean = "CONSTATE la déchéance du pourvoi.".into();
+    assert_eq!(extract_solution(&d).as_deref(), Some("solution:DECHEANCE"));
+}
+
+#[test]
+fn solution_admin_partial_annulment_label() {
+    let mut d = decision("TA");
+    d.solution = Some("Annulation partielle".into());
+    d.texte_integral_clean = "D E C I D E : Article 1er : L'arrêté est annulé en tant qu'il \
+        retire trois points. Article 2 : Le surplus des conclusions est rejeté."
+        .into();
+    assert_eq!(
+        extract_solution(&d).as_deref(),
+        Some("solution:ANNULATION_PARTIELLE")
     );
 }
 
@@ -485,4 +541,17 @@ fn listed_counsel_drops_what_a_placed_value_names() {
     );
     assert_eq!(names, ["Capron"]);
     assert_eq!(firms, ["SCP Boré, Salve de Bruneton et Mégret"]);
+}
+
+#[test]
+fn a_consultative_opinion_follows_no_procedure_and_sits_on_no_bench() {
+    let mut d = decision("CE");
+    d.formation = Some("Formation consultative".into());
+    d.texte_integral_clean = "Le projet de loi permet au requérant de demander au juge des référés du Conseil d'Etat, statuant sur le fondement de l'article L. 521-2 du code de justice administrative, la suspension de la décision.\nCet avis a été délibéré par l'assemblée générale.".into();
+    let scan = crate::extract::scan_doc(&d);
+    assert!(scan.as_ref().unwrap().procedure_signals().jref_conseil);
+    assert_eq!(extract_procedure(&d).procedure_uid, None);
+    let axes = crate::extract::formation_axes_scanned(&d, scan.as_ref());
+    assert_eq!(axes.formation_uid, None);
+    assert_eq!(axes.chamber.solemn, Some(lj_core::chamber::Solemn::Avis));
 }

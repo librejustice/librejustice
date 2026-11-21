@@ -6,20 +6,21 @@ use leptos::prelude::*;
 use leptos_router::components::A;
 use lj_dtos::TopCitedArticle;
 
-use crate::helpers::{decision_count, format_article_num};
+use crate::helpers::format_article_num;
 
 /// Bloc du palmarès. Aucun article cité ⇒ pas de bloc.
 pub(crate) fn top_cited_block(top: Vec<TopCitedArticle>) -> AnyView {
     if top.is_empty() {
         return ().into_any();
     }
+    let ui = &crate::i18n::use_ui().norm;
     let items = top
         .into_iter()
         .map(|article| view! { <TopCitedRow article=article /> })
         .collect_view();
     view! {
         <div class="flex flex-col gap-2">
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Articles les plus cités"</h2>
+            <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.most_cited}</h2>
             <ul class="flex flex-col gap-2">{items}</ul>
         </div>
     }
@@ -30,9 +31,10 @@ pub(crate) fn top_cited_block(top: Vec<TopCitedArticle>) -> AnyView {
 /// DTO est brut), hover card d'article sur le lien.
 #[component]
 fn TopCitedRow(article: TopCitedArticle) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
     use crate::components::hover_preview::{preview_kind, HoverPreview};
-    let label = format!("Article {}", format_article_num(&article.label));
-    let count = decision_count(article.count);
+    let label = (crate::i18n::use_ui().norm.article_n)(&format_article_num(&article.label));
+    let count = (numbers.decisions)(article.count);
     let link = match article.href {
         Some(href) => {
             let kind = preview_kind(&href, None);

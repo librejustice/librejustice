@@ -33,6 +33,11 @@ pub const LEGIFRANCE_SOURCES: &[&str] = &[
 pub const DDD_NOTICE_URL: &str =
     "https://juridique.defenseurdesdroits.fr/index.php?lvl=notice_display&id=";
 
+/// A HUDOC document's page, from its itemid (« 001-253629 »).
+pub fn hudoc_url(itemid: &str) -> String {
+    format!("https://hudoc.echr.coe.int/fre?i={itemid}")
+}
+
 /// URL chez l'éditeur officiel, ou `None` quand la provenance n'en expose pas.
 pub fn official_url(src: &SourceRef<'_>) -> Option<String> {
     let uid = src
@@ -49,7 +54,7 @@ pub fn official_url(src: &SourceRef<'_>) -> Option<String> {
             .split('/')
             .next()
             .map(|juritext| format!("https://www.legifrance.gouv.fr/juri/id/{juritext}")),
-        "dila-constit" => src.published_url.map(str::to_string),
+        "dila-constit" | "cc-site" | "consiliaweb" => src.published_url.map(str::to_string),
         "judilibre" => Some(format!("https://www.courdecassation.fr/decision/{uid}")),
         "cjue" => uid.split_once('/').map(|(celex, lang)| {
             format!(
@@ -57,12 +62,20 @@ pub fn official_url(src: &SourceRef<'_>) -> Option<String> {
                 lang.to_ascii_uppercase()
             )
         }),
-        "cedh" => Some(format!("https://hudoc.echr.coe.int/fre?i={uid}")),
+        "cedh" => Some(hudoc_url(uid)),
+        "rechtspraak" => Some(format!(
+            "https://uitspraken.rechtspraak.nl/details?id={uid}"
+        )),
         "cnda" => src
             .published_url
             .map(|path| format!("https://www.cnda.fr{path}")),
-        "ddd" => Some(format!("{DDD_NOTICE_URL}{uid}")),
-        "adlc" => src.published_url.map(str::to_string),
+        "ddd" | "ddd-jurisprudence" => Some(format!("{DDD_NOTICE_URL}{uid}")),
+        "scc-csc" => uid.split_once('/').map(|(id, lang)| {
+            format!("https://decisions.scc-csc.ca/scc-csc/scc-csc/{lang}/item/{id}/index.do")
+        }),
+        "adlc" | "amf" | "juradm-site" | "cce" | "cc-bj" | "cc-ci" | "cc-dj" | "cc-ma"
+        | "hcc-mg" | "jurisprudence-mg" | "african-court" | "ccja" | "cassation-ci" | "cndj-ci"
+        | "journalofficiel-dj" => src.published_url.map(str::to_string),
         "comeu" => uid
             .split_once("-DEC")
             .map(|(case, _)| format!("https://competition-cases.ec.europa.eu/cases/{case}")),

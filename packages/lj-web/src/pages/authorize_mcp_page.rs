@@ -25,33 +25,32 @@ const FORT: &str = "text-[var(--color-ink)]";
 #[component]
 pub fn AuthorizeMcpPage() -> impl IntoView {
     let query = leptos_router::hooks::use_query_map();
+    let ui = &crate::i18n::use_ui().account;
     let champ = move |nom: &'static str| query.with(|q| q.get(nom).unwrap_or_default());
     let declare = Resource::new_blocking(move || champ("client_id"), |id| sendable(nom_client(id)));
     let annonce = move |nom: Option<String>| {
-        let (fort, hote) = demandeur(nom, &champ("redirect_uri"));
+        let (fort, hote) = demandeur(nom, &champ("redirect_uri"), ui.external_app);
         view! { <strong class=FORT>{fort}</strong>{hote.map(|hote| format!(" ({hote})"))} }
     };
 
     view! {
-        <Title text="Autoriser l'accès - LibreJustice" />
+        <Title text=ui.authorize_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex max-w-sm flex-col gap-8 px-4 py-16">
             <div class="flex flex-col gap-2">
-                <h1 class="font-sans text-2xl text-[var(--color-ink)]">"Autoriser l'accès"</h1>
+                <h1 class="font-sans text-2xl text-[var(--color-ink)]">{ui.authorize_heading}</h1>
                 <p class="text-sm text-[var(--color-ink-muted)]">
                     <Suspense fallback=move || annonce(None)>
                         {move || declare.get().map(annonce)}
                     </Suspense>
-                    " demande l'accès en lecture à LibreJustice en votre nom."
+                    {ui.authorize_asks}
                 </p>
             </div>
 
             <div class="rounded-md border border-[var(--color-rule)] p-4 text-sm text-[var(--color-ink-muted)]">
-                <p class="font-medium text-[var(--color-ink)]">"Accès accordé :"</p>
+                <p class="font-medium text-[var(--color-ink)]">{ui.access_granted}</p>
                 <ul class="mt-2 list-inside list-disc">
-                    <li>"Recherche dans les décisions de justice"</li>
-                    <li>"Lecture du texte intégral des décisions"</li>
-                    <li>"Votre adresse e-mail"</li>
+                    {ui.grants.iter().map(|grant| view! { <li>{*grant}</li> }).collect_view()}
                 </ul>
             </div>
 
@@ -66,7 +65,7 @@ pub fn AuthorizeMcpPage() -> impl IntoView {
                     value="approve"
                     class="rounded-md bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                 >
-                    "Autoriser"
+                    {ui.authorize}
                 </button>
                 <button
                     type="submit"
@@ -74,7 +73,7 @@ pub fn AuthorizeMcpPage() -> impl IntoView {
                     value="deny"
                     class="rounded-md border border-[var(--color-rule)] px-4 py-2.5 text-center text-sm text-[var(--color-ink-muted)] transition-colors hover:text-[var(--color-ink)]"
                 >
-                    "Refuser"
+                    {ui.deny}
                 </button>
             </form>
             <crate::pages::login_page::SignalerDepuisEcranBloquant de="/authorize-mcp" />
@@ -100,12 +99,12 @@ async fn nom_client(client_id: String) -> Option<String> {
 
 /// Qui demande, en deux morceaux : le nom mis en avant, et l'hôte de retour
 /// entre parenthèses quand un nom l'accompagne.
-fn demandeur(nom: Option<String>, redirect_uri: &str) -> (String, Option<String>) {
+fn demandeur(nom: Option<String>, redirect_uri: &str, inconnu: &str) -> (String, Option<String>) {
     let hote = hote(redirect_uri);
     match (nom.map(tronque), hote) {
         (Some(nom), hote) => (nom, hote),
         (None, Some(hote)) => (hote, None),
-        (None, None) => ("Une application externe".to_string(), None),
+        (None, None) => (inconnu.to_string(), None),
     }
 }
 
@@ -133,12 +132,15 @@ fn tronque(nom: String) -> String {
 mod tests {
     use super::*;
 
+    const INCONNU: &str = "Une application externe";
+
     #[test]
     fn nom_declare_et_hote_de_retour() {
         assert_eq!(
             demandeur(
                 Some("Claude".to_string()),
-                "https://claude.ai/api/mcp/auth_callback"
+                "https://claude.ai/api/mcp/auth_callback",
+                INCONNU
             ),
             ("Claude".to_string(), Some("claude.ai".to_string()))
         );
@@ -147,22 +149,23 @@ mod tests {
     #[test]
     fn sans_nom_l_hote_tient_lieu_de_nom() {
         assert_eq!(
-            demandeur(None, "http://localhost:8080/cb"),
+            demandeur(None, "http://localhost:8080/cb", INCONNU),
             ("localhost:8080".to_string(), None)
         );
     }
 
     #[test]
     fn sans_rien_d_exploitable() {
-        assert_eq!(
-            demandeur(None, ""),
-            ("Une application externe".to_string(), None)
-        );
+        assert_eq!(demandeur(None, "", INCONNU), (INCONNU.to_string(), None));
     }
 
     #[test]
     fn nom_kilometrique_coupe() {
-        let (nom, _) = demandeur(Some("LibreJustice ".repeat(20)), "https://claude.ai/cb");
+        let (nom, _) = demandeur(
+            Some("LibreJustice ".repeat(20)),
+            "https://claude.ai/cb",
+            INCONNU,
+        );
         assert_eq!(nom.chars().count(), NOM_MAX + 1);
         assert!(nom.ends_with('…'));
     }

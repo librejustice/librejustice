@@ -24,65 +24,67 @@ use lj_store::repository::{
     DecisionRepository, LegalArticleRow, LegalLinkOwner, LegalLinkRow, LegalTextRow,
 };
 
+use lj_norm::text_aliases::{self, TextAlias};
+
 use crate::config::Settings;
 
 /// Un texte curé : métadonnées `legal_text` + chemin du markdown OCR à segmenter.
 #[derive(Deserialize)]
-struct CorpusDoc {
-    text_uid: String,
-    source: String,
-    jurisdiction: String,
-    title: String,
+pub(crate) struct CorpusDoc {
+    pub(crate) text_uid: String,
+    pub(crate) source: String,
+    pub(crate) jurisdiction: String,
+    pub(crate) title: String,
     /// Clé de liaison des citations (fold du linker sur `title_key`). Absente, elle
     /// est dérivée du `title` par `normalize_instrument`. Override explicite quand la
     /// forme citée par les juridictions (« code civil guinéen ») diffère du `title`
     /// canonique d'affichage.
     #[serde(default)]
-    title_key: Option<String>,
-    nature: String,
+    pub(crate) title_key: Option<String>,
+    pub(crate) nature: String,
     /// Provenance structurée du `texte` : `officiel` / `non_officiel` /
     /// `automatique`. Défaut `non_officiel`.
     #[serde(default = "default_translation")]
-    translation: String,
+    pub(crate) translation: String,
     #[serde(default)]
-    source_url: Option<String>,
+    pub(crate) source_url: Option<String>,
     /// Date « as-of » de fraîcheur, ISO `YYYY-MM-DD` : dernière date à laquelle
     /// cette copie reflète le droit en vigueur. Absente ⇒ le loader pose la date du
     /// run.
     #[serde(default)]
-    source_asof: Option<String>,
+    pub(crate) source_asof: Option<String>,
     /// Source secondaire amont : site qu'un agrégateur pointe. Rare.
     #[serde(default)]
-    source_upstream_url: Option<String>,
+    pub(crate) source_upstream_url: Option<String>,
     /// Date du texte (signature/adoption) si connue, ISO `YYYY-MM-DD`.
     #[serde(default)]
-    date_texte: Option<String>,
+    pub(crate) date_texte: Option<String>,
     /// Date d'effet de la forme consolidée (ISO `YYYY-MM-DD`) : `date_debut` des
     /// articles **mono-version** (law-at-date). Absent ⇒ borne ouverte (sentinelle).
     /// Ignoré pour les articles **multi-versions**, chaque version portant sa propre
     /// `date_debut`.
     #[serde(default)]
-    effect_date: Option<String>,
+    pub(crate) effect_date: Option<String>,
     /// Si vrai, le `status` de chaque article est dérivé du corps (`(Abrogé…)`/vide
     /// ⇒ `ABROGE`, sinon `VIGUEUR`) au lieu d'être forcé `VIGUEUR` — pour les formes
     /// consolidées qui annotent leurs articles abrogés. Défaut : `false`.
     #[serde(default)]
-    detect_abrogation: bool,
+    pub(crate) detect_abrogation: bool,
     /// Si vrai, la résolution d'article de ce texte est PRÉFIXE-AGNOSTIQUE : une
     /// citation matche sur le cœur numérique quel que soit le préfixe d'instrument
     /// (codes territoriaux PF/NC cités « L./D./A./nu » alors que l'officiel est
     /// « A./LP. »). À poser SEULEMENT si le n° identifie l'article à lui seul dans ce
     /// code. Défaut : `false`.
     #[serde(default)]
-    num_prefix_agnostic: bool,
+    pub(crate) num_prefix_agnostic: bool,
     /// Articles déjà segmentés par la curation Python. Chaque article est
     /// **mono-version** (`texte`) ou **multi-versions** (`versions[]`, historique daté).
-    articles: Vec<CorpusArticle>,
+    pub(crate) articles: Vec<CorpusArticle>,
     /// Arêtes de graphe curées (`legal_link`) possédées par CE texte au niveau
     /// texte, en remplacement-par-propriétaire comme les articles. Réservées aux uid
     /// hors fonds DILA, où les arêtes texte-niveau appartiennent aux fonds.
     #[serde(default)]
-    links: Vec<CorpusLink>,
+    pub(crate) links: Vec<CorpusLink>,
 }
 
 /// Une arête curée. `direction` vue du texte propriétaire : `outgoing` = il
@@ -90,17 +92,17 @@ struct CorpusDoc {
 /// en `incoming` (« publié par le véhicule »), les fonds ne connaissant jamais
 /// son uid.
 #[derive(Deserialize)]
-struct CorpusLink {
-    verb: String,
+pub(crate) struct CorpusLink {
+    pub(crate) verb: String,
     #[serde(default = "default_link_direction")]
-    direction: String,
-    target_text_uid: String,
+    pub(crate) direction: String,
+    pub(crate) target_text_uid: String,
     /// Libellé affichable de la cible (repris tel quel par les consommateurs
     /// quand la cible n'est pas résolue en base).
-    target_label: String,
+    pub(crate) target_label: String,
     /// Date de l'acte cible (ISO `YYYY-MM-DD`), si connue.
     #[serde(default)]
-    date: Option<String>,
+    pub(crate) date: Option<String>,
 }
 
 /// Défaut de `CorpusLink::direction` (le propriétaire agit).
@@ -120,37 +122,40 @@ fn is_dila_uid(uid: &str) -> bool {
 /// Un article fourni en ligne. Forme **mono-version** (`texte` seul) ou
 /// **multi-versions** (`versions[]`) — exclusives.
 #[derive(Deserialize)]
-struct CorpusArticle {
-    num: String,
+pub(crate) struct CorpusArticle {
+    pub(crate) num: String,
+    /// The key of a piece with no number: `body`, a text's whole content when it numbers no article.
+    #[serde(default)]
+    pub(crate) num_key: Option<String>,
     /// Mono-version : corps consolidé (jafbase, UE, traités non amendés).
     #[serde(default)]
-    texte: Option<String>,
+    pub(crate) texte: Option<String>,
     /// Corps dans la langue d'origine, si disponible — mono-version uniquement.
     #[serde(default)]
-    texte_original: Option<String>,
+    pub(crate) texte_original: Option<String>,
     /// Langue de `texte_original` (ISO-639-1, `ar`…).
     #[serde(default)]
-    lang_original: Option<String>,
+    pub(crate) lang_original: Option<String>,
     /// Override de `translation` pour CET article : une curation fusionne parfois
     /// des provenances de traduction hétérogènes dans un seul texte. Absent ⇒ hérite
     /// de `doc.translation`.
     #[serde(default)]
-    translation: Option<String>,
+    pub(crate) translation: Option<String>,
     /// Apparat éditorial affiché construit par la curation : jurisprudence et
     /// doctrine extraites du corps des éditions annotées, renvois « voir aussi » vers
     /// les instruments insérés. Inséré tel quel dans `legal_article.nota`.
     #[serde(default)]
-    nota: Option<String>,
+    pub(crate) nota: Option<String>,
     /// Multi-versions : historique daté (avenants des traités). Exclusif avec `texte`.
     #[serde(default)]
-    versions: Option<Vec<CorpusVersion>>,
+    pub(crate) versions: Option<Vec<CorpusVersion>>,
     /// Fil d'Ariane des divisions englobantes, segments joints par ` > ` — même
     /// sérialisation que `legal_article.title_path` côté LEGI. Le loader en dérive
     /// aussi les arêtes `legal_toc_edge`. Pour un article multi-versions, le chemin est
     /// celui de la structure COURANTE, chaque version recevant une arête fenêtrée à sa
     /// place.
     #[serde(default)]
-    title_path: Option<String>,
+    pub(crate) title_path: Option<String>,
 }
 
 /// Défaut de `CorpusDoc::translation` (cas jafbase courant : traduction tierce).
@@ -165,25 +170,25 @@ fn default_translation() -> String {
 /// `source` reste un **libellé de diffuseur** (`legifrance`, `jorf`…), jamais une
 /// URL ni une catégorie.
 #[derive(Deserialize)]
-struct CorpusVersion {
+pub(crate) struct CorpusVersion {
     /// Absente ⇒ borne ouverte (version la plus ancienne dont le début n'est pas
     /// connu). Au plus une par article : la PK `(text_uid, num_key, date_debut)` porte
     /// une sentinelle.
     #[serde(default)]
-    date_debut: Option<String>,
+    pub(crate) date_debut: Option<String>,
     #[serde(default)]
-    date_fin: Option<String>,
-    status: String,
-    texte: String,
+    pub(crate) date_fin: Option<String>,
+    pub(crate) status: String,
+    pub(crate) texte: String,
     #[serde(default)]
-    source: Option<String>,
+    pub(crate) source: Option<String>,
     #[serde(default)]
-    source_url: Option<String>,
+    pub(crate) source_url: Option<String>,
     /// Fraîcheur « as-of » propre à la version (ISO `YYYY-MM-DD`). Absente ⇒ doc-level.
     #[serde(default)]
-    source_asof: Option<String>,
+    pub(crate) source_asof: Option<String>,
     #[serde(default)]
-    source_upstream_url: Option<String>,
+    pub(crate) source_upstream_url: Option<String>,
 }
 
 /// Le corps s'OUVRE-t-il sur une annonce d'abrogation ? (`(Abrogé par …)`,
@@ -198,7 +203,10 @@ fn opens_on_abrogation(texte: &str) -> bool {
         .iter()
         .find_map(|adv| low.strip_prefix(adv))
         .unwrap_or(&low);
-    low.starts_with("abrogé") || low.starts_with("article abrogé") || low.starts_with("(abrogé")
+    low.starts_with("abrogé")
+        || low.starts_with("article abrogé")
+        || low.starts_with("(abrogé")
+        || low.starts_with("[abrogé")
 }
 
 /// Retire UN préfixe éditorial de tête : une référence d'acte parenthésée que
@@ -318,33 +326,127 @@ pub(crate) async fn load_dataset_file(
     file: &std::path::Path,
     publie_targets: &mut std::collections::HashSet<String>,
 ) -> Result<()> {
+    let raw =
+        std::fs::read_to_string(file).with_context(|| format!("lecture {}", file.display()))?;
+    let doc: CorpusDoc = serde_json::from_str(&raw)
+        .with_context(|| format!("dataset legal-corpus invalide: {}", file.display()))?;
+    // A dataset without its read date was read when the file was written.
+    let read_on = match doc.source_asof.as_deref() {
+        Some(s) => parse_date(s)?,
+        None => file_mtime_date(file)?,
+    };
+    load_doc(
+        repo,
+        &doc,
+        read_on,
+        &file.display().to_string(),
+        publie_targets,
+    )
+    .await?;
+    write_aliases(repo, &doc.text_uid, &text_aliases::of(&doc.text_uid)).await
+}
+
+/// Writes the hand-written names of texts no sync writes, from lj-norm's `text_aliases.tsv`.
+pub async fn write_text_aliases(uids: &[String]) -> Result<()> {
+    let settings = Settings::from_env()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    lj_store::migrator::apply_migrations(&conn, lj_store::migrator::MigrationIntent::Verify)
+        .await
+        .map_err(|e| anyhow!("migrations: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    for uid in uids {
+        let aliases = text_aliases::of(uid);
+        if aliases.is_empty() {
+            bail!("{uid}: no row in text_aliases.tsv");
+        }
+        write_aliases(&repo, uid, &aliases).await?;
+        tracing::info!(text_uid = %uid, aliases = aliases.len(), "text aliases written");
+    }
+    Ok(())
+}
+
+/// Replaces the names a loaded text is cited by, in one transaction.
+pub(crate) async fn write_aliases(
+    repo: &DecisionRepository<'_>,
+    text_uid: &str,
+    aliases: &[TextAlias],
+) -> Result<()> {
+    repo.conn
+        .batch_execute("BEGIN")
+        .await
+        .map_err(|e| anyhow!("BEGIN aliases {text_uid}: {e}"))?;
+    match repo.replace_text_aliases(text_uid, aliases).await {
+        Ok(()) => repo
+            .conn
+            .batch_execute("COMMIT")
+            .await
+            .map_err(|e| anyhow!("COMMIT aliases {text_uid}: {e}")),
+        Err(e) => {
+            let _ = repo.conn.batch_execute("ROLLBACK").await;
+            Err(anyhow!("replace_text_aliases {text_uid}: {e}"))
+        }
+    }
+}
+
+/// Writes one text authoritatively: its articles and their versions replace the base's, its
+/// structure and its text-level links too. `label` names the text's origin in errors and logs.
+///
+/// One transaction: the text row its upsert locks holds back a concurrent slug pass until every
+/// article is written, so the copies of the text the triggers give the articles carry its slug.
+pub(crate) async fn load_doc(
+    repo: &DecisionRepository<'_>,
+    doc: &CorpusDoc,
+    read_on: chrono::NaiveDate,
+    label: &str,
+    publie_targets: &mut std::collections::HashSet<String>,
+) -> Result<()> {
+    repo.conn
+        .batch_execute("BEGIN")
+        .await
+        .map_err(|e| anyhow!("BEGIN {}: {e}", doc.text_uid))?;
+    match write_doc(repo, doc, read_on, label, publie_targets).await {
+        Ok(()) => repo
+            .conn
+            .batch_execute("COMMIT")
+            .await
+            .map_err(|e| anyhow!("COMMIT {}: {e}", doc.text_uid)),
+        Err(e) => {
+            let _ = repo.conn.batch_execute("ROLLBACK").await;
+            Err(e)
+        }
+    }
+}
+
+async fn write_doc(
+    repo: &DecisionRepository<'_>,
+    doc: &CorpusDoc,
+    read_on: chrono::NaiveDate,
+    label: &str,
+    publie_targets: &mut std::collections::HashSet<String>,
+) -> Result<()> {
     {
-        let raw =
-            std::fs::read_to_string(file).with_context(|| format!("lecture {}", file.display()))?;
-        let doc: CorpusDoc = serde_json::from_str(&raw)
-            .with_context(|| format!("dataset legal-corpus invalide: {}", file.display()))?;
         if lj_norm::jurisdictions::from_url_segment(&doc.jurisdiction.to_ascii_lowercase())
             != Some(doc.jurisdiction.as_str())
         {
-            bail!(
-                "{}: unknown jurisdiction {:?}",
-                file.display(),
-                doc.jurisdiction
-            );
+            bail!("{label}: unknown jurisdiction {:?}", doc.jurisdiction);
         }
 
         let date_texte = doc.date_texte.as_deref().map(parse_date).transpose()?;
         if date_texte.is_none() {
-            tracing::warn!(text_uid = %doc.text_uid, dataset = %file.display(), "dataset without date_texte: the text has no date");
+            tracing::warn!(text_uid = %doc.text_uid, dataset = %label, "dataset without date_texte: the text has no date");
         }
         let effect_date = doc.effect_date.as_deref().map(parse_date).transpose()?;
-        // Fraîcheur « as-of » : valeur explicite du dataset, ou à défaut la date de
-        // modification du FICHIER dataset — la date de curation, invariante au re-load.
-        // Posée par article, ici commune au doc.
-        let source_asof = match doc.source_asof.as_deref() {
-            Some(s) => Some(parse_date(s)?),
-            None => Some(file_mtime_date(file)?),
+        let replaced = lj_norm::text_successions::replaced_on(&doc.text_uid)
+            .map(|d| parse_date(&d.to_string()))
+            .transpose()?;
+        let close = |status: String, date_fin: Option<chrono::NaiveDate>| match (date_fin, replaced)
+        {
+            (None, Some(on)) => ("ABROGE".to_string(), Some(on)),
+            _ => (status, date_fin),
         };
+        let source_asof = Some(read_on);
         let trow = LegalTextRow {
             text_uid: doc.text_uid.clone(),
             jurisdiction: doc.jurisdiction.clone(),
@@ -360,7 +462,6 @@ pub(crate) async fn load_dataset_file(
             eli: None,
             nor: None,
             instrument_key: None,
-            body: None,
             status: None,
         };
         repo.upsert_legal_text(&trow)
@@ -370,9 +471,17 @@ pub(crate) async fn load_dataset_file(
             .await
             .map_err(|e| anyhow!("set num_prefix_agnostic {}: {e}", doc.text_uid))?;
 
-        // Dataset autoritaire : purge des articles existants avant rechargement.
+        let mut sources: Vec<&str> = doc
+            .articles
+            .iter()
+            .flat_map(|a| a.versions.iter().flatten())
+            .filter_map(|v| v.source.as_deref())
+            .chain([doc.source.as_str()])
+            .collect();
+        sources.sort_unstable();
+        sources.dedup();
         let deleted = repo
-            .delete_legal_articles_by_text(&doc.text_uid)
+            .delete_replaced_legal_articles(&doc.text_uid, &sources)
             .await
             .map_err(|e| anyhow!("purge {}: {e}", doc.text_uid))?;
 
@@ -383,7 +492,10 @@ pub(crate) async fn load_dataset_file(
         for (pos, art) in doc.articles.iter().enumerate() {
             // Clé d'identité sans perte, injective par texte : la dé-collision base
             // « 164 » / sous-articles « 164/1 » est intrinsèque.
-            let num_key = lj_norm::article_key::identity_key(&art.num);
+            let num_key = art
+                .num_key
+                .clone()
+                .unwrap_or_else(|| lj_norm::article_key::identity_key(&art.num));
             match (&art.texte, &art.versions) {
                 (Some(_), Some(_)) | (None, None) => bail!(
                     "dataset {} article {} : `texte` (mono) et `versions` (multi) exclusifs, un requis",
@@ -414,10 +526,11 @@ pub(crate) async fn load_dataset_file(
                             None => format!("{}#{}", doc.text_uid, num_key),
                         };
                         let date_debut = v.date_debut.as_deref().map(parse_date).transpose()?;
-                        let date_fin = v.date_fin.as_deref().map(parse_date).transpose()?;
+                        let (status, date_fin) =
+                            close(v.status.clone(), v.date_fin.as_deref().map(parse_date).transpose()?);
                         toc_versions.push(super::corpus_toc::TocVersion {
                             source_uid: source_uid.clone(),
-                            status: v.status.clone(),
+                            status: status.clone(),
                             date_debut,
                             date_fin,
                         });
@@ -427,7 +540,7 @@ pub(crate) async fn load_dataset_file(
                             num_key: num_key.clone(),
                             position: Some(pos as i32),
                             title_path: art.title_path.clone(),
-                            status: v.status.clone(),
+                            status,
                             date_debut,
                             date_fin,
                             texte: Some(v.texte.clone()),
@@ -460,11 +573,14 @@ pub(crate) async fn load_dataset_file(
                 }
                 // Mono-version : `effect_date` partagé (law-at-date) ou borne ouverte.
                 (Some(texte), None) => {
-                    let status = if doc.detect_abrogation {
-                        article_status(texte).to_string()
-                    } else {
-                        "VIGUEUR".to_string()
-                    };
+                    let (status, date_fin) = close(
+                        if doc.detect_abrogation {
+                            article_status(texte).to_string()
+                        } else {
+                            "VIGUEUR".to_string()
+                        },
+                        None,
+                    );
                     toc_articles.push(super::corpus_toc::TocArticle {
                         num: art.num.clone(),
                         num_key: num_key.clone(),
@@ -484,7 +600,7 @@ pub(crate) async fn load_dataset_file(
                         title_path: art.title_path.clone(),
                         status,
                         date_debut: effect_date,
-                        date_fin: None,
+                        date_fin,
                         texte: Some(texte.clone()),
                         texte_original: art.texte_original.clone(),
                         lang_original: art.lang_original.clone(),
@@ -528,41 +644,7 @@ pub(crate) async fn load_dataset_file(
                 );
             }
         } else {
-            let owner = LegalLinkOwner {
-                text_uid: doc.text_uid.clone(),
-                num_key: String::new(),
-                date_debut: None,
-            };
-            let rows: Vec<LegalLinkRow> = doc
-                .links
-                .iter()
-                .map(|l| {
-                    Ok(LegalLinkRow {
-                        typelien: l.verb.to_uppercase(),
-                        verb: l.verb.clone(),
-                        direction: l.direction.clone(),
-                        target_kind: "texte".to_string(),
-                        target_uid: Some(l.target_text_uid.clone()),
-                        target_text_uid: Some(l.target_text_uid.clone()),
-                        target_num: None,
-                        target_num_key: None,
-                        target_nature: None,
-                        target_label: l.target_label.clone(),
-                        target_date: l.date.as_deref().map(parse_date).transpose()?,
-                        target_nor: None,
-                    })
-                })
-                .collect::<Result<_>>()?;
-            for r in &rows {
-                if r.verb == "publie" && r.direction == "incoming" {
-                    if let Some(target) = &r.target_text_uid {
-                        publie_targets.insert(target.clone());
-                    }
-                }
-            }
-            repo.replace_legal_links(&[(owner, rows)])
-                .await
-                .map_err(|e| anyhow!("replace_legal_links {}: {e}", doc.text_uid))?;
+            write_text_links(repo, &doc.text_uid, &doc.links, publie_targets).await?;
         }
 
         tracing::info!(
@@ -575,6 +657,50 @@ pub(crate) async fn load_dataset_file(
             "legal corpus loaded"
         );
     }
+    Ok(())
+}
+
+/// Replaces the text-level links of `text_uid` with `links`.
+pub(crate) async fn write_text_links(
+    repo: &DecisionRepository<'_>,
+    text_uid: &str,
+    links: &[CorpusLink],
+    publie_targets: &mut std::collections::HashSet<String>,
+) -> Result<()> {
+    let owner = LegalLinkOwner {
+        text_uid: text_uid.to_string(),
+        num_key: String::new(),
+        date_debut: None,
+    };
+    let rows: Vec<LegalLinkRow> = links
+        .iter()
+        .map(|l| {
+            Ok(LegalLinkRow {
+                typelien: l.verb.to_uppercase(),
+                verb: l.verb.clone(),
+                direction: l.direction.clone(),
+                target_kind: "texte".to_string(),
+                target_uid: Some(l.target_text_uid.clone()),
+                target_text_uid: Some(l.target_text_uid.clone()),
+                target_num: None,
+                target_num_key: None,
+                target_nature: None,
+                target_label: l.target_label.clone(),
+                target_date: l.date.as_deref().map(parse_date).transpose()?,
+                target_nor: None,
+            })
+        })
+        .collect::<Result<_>>()?;
+    for r in &rows {
+        if r.verb == "publie" && r.direction == "incoming" {
+            if let Some(target) = &r.target_text_uid {
+                publie_targets.insert(target.clone());
+            }
+        }
+    }
+    repo.replace_legal_links(&[(owner, rows)])
+        .await
+        .map_err(|e| anyhow!("replace_legal_links {text_uid}: {e}"))?;
     Ok(())
 }
 
@@ -596,9 +722,6 @@ pub(crate) async fn run_corpus_finishers(
         .date_instruments_from_vehicles(Some(&uids))
         .await
         .map_err(|e| anyhow!("date_instruments_from_vehicles: {e}"))?;
-    repo.refresh_article_denorm(None)
-        .await
-        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     // Ordre de lecture des textes touchés : l'écriture n'a fait qu'invalider les
     //     rangs, ce finisseur les recalcule.
     let (ranked_texts, ranked_rows) = repo
@@ -776,6 +899,7 @@ mod tests {
             "ABROGE"
         );
         assert_eq!(article_status(""), "ABROGE");
+        assert_eq!(article_status("[Abrogé, 2012, ch. 9, art. 2]"), "ABROGE");
         assert_eq!(article_status("Le recouvrement des impôts…"), "VIGUEUR");
     }
 

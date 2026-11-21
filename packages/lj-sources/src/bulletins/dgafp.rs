@@ -21,7 +21,7 @@ pub fn parse_page(html: &str, since_year: i32) -> Vec<BulletinNotice> {
     static RE: OnceLock<[Regex; 6]> = OnceLock::new();
     let [section, item, link, tags, nor, legifrance] = RE.get_or_init(|| {
         [
-            Regex::new(r#"id="annee(\d{4})""#).expect("valid regex"),
+            Regex::new(r#"id="annee(\d{4}|_anterieures)""#).expect("valid regex"),
             Regex::new(r"(?s)<li>(.*?)</li>").expect("valid regex"),
             Regex::new(r#"<a href="([^"]+)""#).expect("valid regex"),
             Regex::new(r"<[^>]+>").expect("valid regex"),
@@ -32,16 +32,22 @@ pub fn parse_page(html: &str, since_year: i32) -> Vec<BulletinNotice> {
                 .expect("valid regex"),
         ]
     });
-    let starts: Vec<(usize, i32)> = section
+    let starts: Vec<(usize, Option<i32>)> = section
         .captures_iter(html)
-        .filter_map(|c| Some((c.get(0)?.start(), c[1].parse().ok()?)))
+        .filter_map(|c| Some((c.get(0)?.start(), c[1].parse().ok())))
         .collect();
+    let earliest = starts
+        .iter()
+        .filter_map(|&(_, y)| y)
+        .min()
+        .unwrap_or(i32::MAX);
     let mut out = Vec::new();
     for (k, &(start, year)) in starts.iter().enumerate() {
-        if year < since_year {
+        if year.unwrap_or(earliest - 1) < since_year {
             continue;
         }
-        let end = starts.get(k + 1).map_or(html.len(), |&(e, _)| e);
+        let next = starts.get(k + 1).map_or(html.len(), |&(e, _)| e);
+        let end = html[start..next].find("</ul>").map_or(next, |e| start + e);
         for li in item.captures_iter(&html[start..end]) {
             let Some(href) = link.captures(&li[1]).map(|c| decode_entities(&c[1])) else {
                 continue;
@@ -103,7 +109,14 @@ mod tests {
 <li><a href="http://circulaires.legifrance.gouv.fr/pdf/2026/08/cir_45032.pdf">Circulaire du 3 août 2026</a> relative à un sujet</li>
 </ul>
 <h2 class="fr-h2"><strong id="annee2018">Année 2018</strong></h2>
-<ul><li><a href="/files/old.pdf">Circulaire du 3 mars 2018</a> relative à un ancien sujet</li></ul>"#;
+<ul><li><a href="/files/old.pdf">Circulaire du 3 mars 2018</a> relative à un ancien sujet</li></ul>
+<h2 class="fr-h2"><strong id="annee_anterieures">Années antérieures</strong></h2>
+<ul><li><a href="/files/C_19990423_FP0001.pdf">FP du 23 avril 1999</a></li></ul>
+</main><footer><ul><li><a href="/les-flux-rss">Flux RSS</a></li></ul></footer>"#;
+        assert_eq!(parse_page(html, 2018).len(), 5);
+        let all = parse_page(html, 0);
+        assert_eq!(all.len(), 6);
+        assert_eq!(all[5].text_uid(), "bo_dgafp_C-19990423-FP0001");
         let notices = parse_page(html, 2019);
         assert_eq!(notices.len(), 4);
         let n = &notices[0];

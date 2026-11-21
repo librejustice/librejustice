@@ -3,13 +3,10 @@
 use leptos::prelude::*;
 use leptos_meta::Title;
 
+use crate::components::prose;
 use crate::seo::CANONICAL_BASE;
 
-/// Prompt d'installation pour les applications agentiques (ChatGPT
-/// Desktop, Claude Desktop…) : une ligne pointant vers le guide agent
-/// `llms-install.md` du dépôt public (convention popularisée par Cline,
-/// suivie par le catalogue MCP de Microsoft, Magic MCP, Firebase MCP…).
-const UNIVERSAL_PROMPT: &str = "Installe LibreJustice (MCP + compétences) en suivant ce guide : https://github.com/librejustice/librejustice/blob/main/llms-install.md";
+const LIEN: &str = "underline underline-offset-2";
 
 /// Fiche du connecteur dans le répertoire officiel claude.ai : installation en
 /// un clic, sans saisie de l'URL de l'endpoint.
@@ -18,47 +15,45 @@ const CLAUDE_DIRECTORY_URL: &str = "https://claude.ai/directory/connectors/libre
 const CHATGPT_DIRECTORY_URL: &str =
     "https://chatgpt.com/plugins/plugin_asdk_app_6a053194fe5c81918e1a3b98ab1f4d63";
 
-/// Prompts d'exemple a copier dans un client IA. Nommer LibreJustice dans la
-/// question est ce qui declenche l'appel du connecteur.
-const TEST_PROMPTS: [&str; 6] = [
-    "En vous appuyant sur LibreJustice, est-ce que vous pouvez me donner sous quelles conditions le Conseil d'État admet la responsabilité sans faute de l'État ?",
-    "En vous appuyant sur LibreJustice, pouvez-vous me donner les conditions dans lesquelles le juge statuant en référé-liberté fait droit à la requête lorsque le préfet n'a pas exécuté l'injonction prononcée par une ordonnance de référé suspension rendue au préalable",
-    "Pouvez-vous chercher sur LibreJustice quelle valeur du point de déficit fonctionnel permanent les cours d'appel retiennent pour une victime de trente ans avec un taux de 10 %, et dans quelle fourchette ?",
-    "En vous appuyant sur LibreJustice, à quelles conditions la responsabilité d'un établissement de santé est-elle engagée pour une infection nosocomiale ? Citez les décisions sur lesquelles vous vous appuyez.",
-    "En vous appuyant sur LibreJustice, ouvrez les arrêts de cour d'appel sur l'aliénation parentale et dites-moi comment ils l'articulent avec l'intérêt de l'enfant.",
-    "En vous appuyant sur LibreJustice, dites-moi si un mécanicien licencié en 2015 avec dix mois d'ancienneté avait droit à l'indemnité de licenciement de la convention collective de l'automobile, et si la réponse serait la même aujourd'hui.",
-];
-
 #[component]
 pub fn McpGuide() -> impl IntoView {
     crate::pages::cache_public_5_min();
+    let ui = &crate::i18n::use_ui().mcp_guide;
     let mcp_url = format!("{CANONICAL_BASE}/mcp/");
-    let prompts = TEST_PROMPTS
+    let prompts = ui
+        .prompts
         .iter()
         .map(|prompt| view! { <CopyPrompt text=*prompt /> });
+    let steps = |steps: &'static [&'static [crate::i18n::Run]]| {
+        steps
+            .iter()
+            .enumerate()
+            .map(|(i, runs)| view! { <Step n=i as u8 + 1>{prose(runs, LIEN)}</Step> })
+            .collect_view()
+    };
 
     view! {
-        <Title text="MCP - LibreJustice" />
+        <Title text=ui.title />
         <div class="mx-auto flex w-full min-w-0 max-w-3xl flex-col gap-16 px-4 py-16 sm:px-6 lg:px-8">
             // Hero
             <section class="flex flex-col gap-6">
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Connecteur MCP"
+                    {ui.eyebrow}
                 </p>
                 <h1
                     class="text-balance font-sans text-3xl leading-[1.05] tracking-tight text-[var(--color-ink)] sm:text-5xl lg:text-[3.5rem]"
                     style="font-variation-settings: 'wght' 300"
                 >
-                    "Votre IA, "
+                    {ui.heading}
                     <em
                         class="not-italic text-[var(--color-accent)]"
                         style="font-variation-settings: 'wght' 750"
                     >
-                        "connectée au droit."
+                        {ui.heading_em}
                     </em>
                 </h1>
                 <p class="text-lg leading-relaxed text-[var(--color-ink-muted)]">
-                    "Connectez Claude, ChatGPT ou votre propre agent au droit français (jurisprudence et textes) via le protocole MCP. La recherche par mots-clés et par reformulation, directement dans le contexte de votre IA."
+                    {ui.intro}
                 </p>
                 <div class="flex flex-wrap items-center gap-3">
                     <a
@@ -67,7 +62,7 @@ pub fn McpGuide() -> impl IntoView {
                         rel="noopener noreferrer"
                         class="rounded-md bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                     >
-                        "Ajouter à Claude"
+                        {ui.add_to_claude}
                     </a>
                     <a
                         href=CHATGPT_DIRECTORY_URL
@@ -75,14 +70,14 @@ pub fn McpGuide() -> impl IntoView {
                         rel="noopener noreferrer"
                         class="rounded-md bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                     >
-                        "Ajouter à ChatGPT"
+                        {ui.add_to_chatgpt}
                     </a>
                 </div>
             </section>
 
             // Démo
             <section class="flex flex-col gap-4">
-                <SectionLabel>"Démo"</SectionLabel>
+                <SectionLabel>{ui.demo}</SectionLabel>
                 <div class="w-full min-w-0 overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)]">
                     <video
                         src="/mcp-demo.webm"
@@ -98,181 +93,71 @@ pub fn McpGuide() -> impl IntoView {
 
             // Installation
             <section class="flex flex-col gap-8">
-                <SectionLabel>"Installation par client"</SectionLabel>
+                <SectionLabel>{ui.install_heading}</SectionLabel>
 
                 <div class="flex flex-col gap-3">
                     <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                        "Claude et ChatGPT s'installent par les boutons en haut de page. Les autres clients n'ont pas encore de fiche LibreJustice dans leur répertoire : ils l'ajoutent comme connecteur personnalisé, à partir de l'adresse du connecteur."
+                        {ui.install_intro}
                     </p>
                     <CopyEndpoint url=mcp_url />
                 </div>
 
-                <ClientHowto title="Claude">
+                <ClientHowto title=ui.claude>
                     <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                        "Claude demande votre accord à chaque appel d'un outil LibreJustice tant que vous ne l'avez pas autorisé. Pour ne plus avoir à valider : "
-                        <strong>"Personnalisation → Connecteurs → LibreJustice"</strong>
-                        ", puis réglez "
-                        <strong>"Outils en lecture seule"</strong>
-                        " sur "
-                        <strong>"Toujours autoriser"</strong>
-                        "."
+                        {prose(ui.claude_note, LIEN)}
                     </p>
                 </ClientHowto>
 
-                <ClientHowto title="Vibe (Mistral)">
-                    <Step n=1>
-                        "Connectez-vous sur "
-                        <a
-                            href="https://chat.mistral.ai"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="underline underline-offset-2"
-                        >
-                            "chat.mistral.ai"
-                        </a>
-                        " (disponible sur tous les plans, y compris gratuit)."
-                    </Step>
-                    <Step n=2>
-                        "Dans la barre latérale, ouvrez "
-                        <strong>"Contexte → Connecteurs"</strong>
-                        "."
-                    </Step>
-                    <Step n=3>
-                        <strong>"Ajouter un connecteur → Ajouter un connecteur personnalisé"</strong>
-                        ". Nommez (ex. "
-                        <em>"LibreJustice"</em>
-                        ") et collez l'adresse dans "
-                        <strong>"Serveur"</strong>
-                        " : l'authentification OAuth est détectée d'elle-même."
-                    </Step>
-                    <Step n=4>
-                        <strong>"Ajouter un connecteur"</strong>
-                        ", puis validez la connexion sur la page LibreJustice qui s'ouvre."
-                    </Step>
-                </ClientHowto>
+                <ClientHowto title=ui.vibe>{steps(ui.vibe_steps)}</ClientHowto>
 
-                <ClientHowto title="Perplexity">
-                    <Step n=1>
-                        "Connectez-vous sur "
-                        <a
-                            href="https://perplexity.ai"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="underline underline-offset-2"
-                        >
-                            "perplexity.ai"
-                        </a>
-                        " (offre Pro, Max ou Enterprise requise)."
-                    </Step>
-                    <Step n=2>
-                        "En bas à gauche, cliquez sur votre avatar puis "
-                        <strong>"Connecteur"</strong>
-                        "."
-                    </Step>
-                    <Step n=3>
-                        "Sélectionnez "
-                        <strong>"Connecteur personnalisé"</strong>
-                        ". Renseignez le nom (ex. "
-                        <em>"LibreJustice"</em>
-                        ") et collez l'adresse du connecteur."
-                    </Step>
-                    <Step n=4>
-                        "Choisissez "
-                        <strong>"OAuth"</strong>
-                        " comme méthode d'authentification, puis cliquez sur "
-                        <strong>"Ajouter"</strong>
-                        ". Perplexity vous redirige vers LibreJustice pour valider la connexion."
-                    </Step>
-                </ClientHowto>
+                <ClientHowto title=ui.perplexity>{steps(ui.perplexity_steps)}</ClientHowto>
             </section>
 
             // Compétences : la méthode de recherche, en plus du connecteur
             <section class="flex flex-col gap-8">
-                <SectionLabel>"Compétences"</SectionLabel>
+                <SectionLabel>{ui.skills_heading}</SectionLabel>
                 <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                    "Deux compétences accompagnent le connecteur : "
-                    <strong>"recherche-jurisprudence"</strong>
-                    " et "
-                    <strong>"recherche-normes"</strong>
-                    ". Une compétence est un mode d'emploi que votre agent lit avant de chercher : lire une décision en intégralité avant de la citer, viser la version d'un texte à la date du litige, éviter les pièges du corpus. Le connecteur fonctionne sans, mais les réponses sont nettement plus fiables avec."
+                    {prose(ui.skills_intro, LIEN)}
                 </p>
 
-                <ClientHowto title="Claude Web">
-                    <Step n=1>
-                        "Téléchargez la compétence : "
-                        <a
-                            href="/skills/recherche-jurisprudence.zip"
-                            download
-                            class="underline underline-offset-2"
-                        >
-                            "recherche-jurisprudence.zip"
-                        </a>
-                        " ou "
-                        <a
-                            href="/skills/recherche-normes.zip"
-                            download
-                            class="underline underline-offset-2"
-                        >
-                            "recherche-normes.zip"
-                        </a>
-                        "."
-                    </Step>
-                    <Step n=2>
-                        "Sur Claude Web : avatar en bas à gauche → "
-                        <strong>"Paramètres → Personnaliser → Compétences"</strong>
-                        " (tous les plans)."
-                    </Step>
-                    <Step n=3>
-                        <strong>"Ajouter → Téléverser une compétence"</strong>
-                        ", puis sélectionnez le zip. Elle s'active dans vos conversations (le connecteur ajouté ci-dessus reste nécessaire)."
-                    </Step>
-                </ClientHowto>
+                <ClientHowto title=ui.claude_web>{steps(ui.claude_web_steps)}</ClientHowto>
 
-                <ClientHowto title="ChatGPT">
+                <ClientHowto title=ui.chatgpt>
                     <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                        "L'application du répertoire installe les deux compétences avec le connecteur."
+                        {ui.chatgpt_skills}
                     </p>
                 </ClientHowto>
             </section>
 
             // Prompts de test
             <section class="flex flex-col gap-4">
-                <SectionLabel>"Exemples de requêtes"</SectionLabel>
+                <SectionLabel>{ui.prompts_heading}</SectionLabel>
                 <p class="text-sm text-[var(--color-ink-subtle)]">
-                    "Copiez ces requêtes dans votre client IA pour tester l'intégration."
+                    {ui.prompts_intro}
                 </p>
                 <ul class="flex flex-col gap-2">{prompts.collect_view()}</ul>
             </section>
 
             // Installation par prompt : le plugin complet (connecteur MCP + compétences)
             <section class="flex flex-col gap-8">
-                <SectionLabel>"Installation par instruction"</SectionLabel>
+                <SectionLabel>{ui.instruction_heading}</SectionLabel>
 
-                <ClientHowto title="ChatGPT Desktop, Claude Desktop…">
+                <ClientHowto title=ui.desktop>
                     <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                        "Ces applications peuvent installer LibreJustice elles-mêmes, connecteur et compétences d'un coup : collez cette instruction, l'assistant suit le guide "
-                        <a
-                            href="https://github.com/librejustice/librejustice/blob/main/llms-install.md"
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            class="underline underline-offset-2"
-                        >
-                            "llms-install.md"
-                        </a>
-                        " du dépôt."
+                        {prose(ui.desktop_note, LIEN)}
                     </p>
-                    <CopyBlock text=UNIVERSAL_PROMPT label="Prompt d'installation" />
+                    <CopyBlock text=ui.install_prompt label=ui.install_prompt_label />
                 </ClientHowto>
             </section>
 
             <section class="flex flex-col gap-4">
-                <SectionLabel>"Plutôt du code ?"</SectionLabel>
+                <SectionLabel>{ui.code_heading}</SectionLabel>
                 <p class="text-sm leading-relaxed text-[var(--color-ink-muted)]">
-                    "Si le consommateur est votre programme et non une IA, le même fonds se lit en REST : "
-                    <a href="/api-guide" class="underline underline-offset-2">
-                        "l'API publique"
+                    {ui.code_lead}
+                    <a href=crate::jurisdiction::use_reader_scope().href("/api-guide") class=LIEN>
+                        {ui.code_link}
                     </a>
-                    ", clé gratuite et contrat OpenAPI."
+                    {ui.code_tail}
                 </p>
             </section>
         </div>
@@ -285,6 +170,7 @@ pub fn McpGuide() -> impl IntoView {
 /// — l'init identique au SSR évite tout décalage d'hydratation.
 #[component]
 fn CopyEndpoint(url: String) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().mcp_guide;
     let url_sig = RwSignal::new(url);
     let copied = RwSignal::new(false);
 
@@ -313,7 +199,7 @@ fn CopyEndpoint(url: String) -> impl IntoView {
     view! {
         <div class="flex items-center gap-2 overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)] px-4 py-3">
             <span class="shrink-0 text-xs uppercase tracking-[0.15em] text-[var(--color-ink-subtle)]">
-                "Endpoint"
+                {ui.endpoint}
             </span>
             <code class="min-w-0 flex-1 truncate font-mono text-sm text-[var(--color-ink)]">
                 {move || url_sig.get()}
@@ -321,10 +207,10 @@ fn CopyEndpoint(url: String) -> impl IntoView {
             <button
                 type="button"
                 on:click=on_copy
-                aria-label="Copier l'adresse"
+                aria-label=ui.copy_address
                 class="shrink-0 rounded px-2 py-1 text-xs text-[var(--color-ink-subtle)] transition-colors hover:bg-[var(--color-rule)] hover:text-[var(--color-ink)]"
             >
-                {move || if copied.get() { "Copié ✓" } else { "Copier" }}
+                {move || if copied.get() { ui.copied } else { ui.copy }}
             </button>
         </div>
     }
@@ -334,6 +220,7 @@ fn CopyEndpoint(url: String) -> impl IntoView {
 /// copie via l'API clipboard après hydratation (même pattern que `CopyEndpoint`).
 #[component]
 fn CopyBlock(text: &'static str, label: &'static str) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().mcp_guide;
     let copied = RwSignal::new(false);
 
     let on_copy = move |_| {
@@ -360,10 +247,10 @@ fn CopyBlock(text: &'static str, label: &'static str) -> impl IntoView {
                 <button
                     type="button"
                     on:click=on_copy
-                    aria-label="Copier"
+                    aria-label=ui.copy
                     class="shrink-0 rounded px-2 py-1 text-xs text-[var(--color-ink-subtle)] transition-colors hover:bg-[var(--color-rule)] hover:text-[var(--color-ink)]"
                 >
-                    {move || if copied.get() { "Copié ✓" } else { "Copier" }}
+                    {move || if copied.get() { ui.copied } else { ui.copy }}
                 </button>
             </div>
             <pre class="overflow-x-auto whitespace-pre-wrap px-4 py-3 font-mono text-sm leading-relaxed text-[var(--color-ink)]">{text}</pre>
@@ -376,6 +263,7 @@ fn CopyBlock(text: &'static str, label: &'static str) -> impl IntoView {
 /// ce qu'il copie.
 #[component]
 fn CopyPrompt(text: &'static str) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().mcp_guide;
     let copied = RwSignal::new(false);
 
     let on_copy = move |_| {
@@ -401,10 +289,10 @@ fn CopyPrompt(text: &'static str) -> impl IntoView {
             <button
                 type="button"
                 on:click=on_copy
-                aria-label="Copier l'instruction"
+                aria-label=ui.copy_instruction
                 class="shrink-0 rounded px-2 py-1 text-xs text-[var(--color-ink-subtle)] transition-colors hover:bg-[var(--color-rule)] hover:text-[var(--color-ink)]"
             >
-                {move || if copied.get() { "Copié ✓" } else { "Copier" }}
+                {move || if copied.get() { ui.copied } else { ui.copy }}
             </button>
         </li>
     }

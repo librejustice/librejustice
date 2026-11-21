@@ -18,6 +18,7 @@ use wasm_bindgen::{Clamped, JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 
 use super::bridge;
+use super::fault::Fault;
 use super::state::{
     Check, Eye, Format, Hit, Hits, Needle, Offline, PageWord, Reading, Rect, Session, Status,
     TextBlock, Verdict, View,
@@ -76,7 +77,7 @@ fn load(global: &str, src: &str) {
     }
 }
 
-async fn module_ready() -> Result<JsValue, String> {
+async fn module_ready() -> Result<JsValue, Fault> {
     if let Some(ready) = MODULE.with(|slot| slot.borrow().clone()) {
         return Ok(ready);
     }
@@ -87,7 +88,7 @@ async fn module_ready() -> Result<JsValue, String> {
         bridge::module(global).await
     }
     .await
-    .map_err(|why| format!("le module d'anonymisation n'a pas pu être chargé ({why})"))?;
+    .map_err(|why| Fault::ModuleUnloaded(Box::new(why)))?;
     MODULE.with(|slot| *slot.borrow_mut() = Some(ready.clone()));
     Ok(ready)
 }
@@ -110,33 +111,33 @@ async fn breathe() {
 
 /// A loader is a `<script>` appended a moment ago, and the promise it poses only
 /// exists once the browser has run it.
-async fn posed(name: &str) -> Result<(), String> {
+async fn posed(name: &str) -> Result<(), Fault> {
     for _ in 0..600 {
         let Some(window) = window() else {
-            return Err("pas de fenêtre".into());
+            return Err(Fault::NoWindow);
         };
         if js_sys::Reflect::has(&window, &JsValue::from_str(name)).unwrap_or(false) {
             return Ok(());
         }
         pause(50).await;
     }
-    Err("le chargeur du module n'a pas répondu".into())
+    Err(Fault::LoaderSilent)
 }
 
-async fn bytes_of(blob: &web_sys::Blob) -> Result<Vec<u8>, String> {
+async fn bytes_of(blob: &web_sys::Blob) -> Result<Vec<u8>, Fault> {
     let buffer = JsFuture::from(blob.array_buffer())
         .await
-        .map_err(|_| "le fichier n'a pas pu être lu".to_string())?;
+        .map_err(|_| Fault::FileUnread)?;
     Ok(js_sys::Uint8Array::new(&buffer).to_vec())
 }
 
-fn blob_of(bytes: &[u8], mime: &str) -> Result<web_sys::Blob, String> {
+fn blob_of(bytes: &[u8], mime: &str) -> Result<web_sys::Blob, Fault> {
     let parts = js_sys::Array::new();
     parts.push(&js_sys::Uint8Array::from(bytes));
     let bag = web_sys::BlobPropertyBag::new();
     bag.set_type(mime);
     web_sys::Blob::new_with_u8_array_sequence_and_options(&parts, &bag)
-        .map_err(|_| "le fichier n'a pas pu être assemblé".to_string())
+        .map_err(|_| Fault::FileUnassembled)
 }
 
 fn sniff(bytes: &[u8]) -> Option<Format> {
@@ -191,15 +192,15 @@ fn web_page(bytes: &[u8]) -> bool {
         || (head.starts_with('<') && (head.contains("<html") || head.contains("<body")))
 }
 
-fn produced_name(name: &str, format: Format) -> String {
+fn produced_name(name: &str, format: Format, redacted: &str) -> String {
     let (stem, extension) = match name.rsplit_once('.') {
         Some((stem, extension)) if !stem.is_empty() => (stem, extension),
         _ => (name, ""),
     };
     match format {
-        Format::Image => format!("{stem}-anonymise.png"),
-        _ if extension.is_empty() => format!("{stem}-anonymise"),
-        _ => format!("{stem}-anonymise.{extension}"),
+        Format::Image => format!("{stem}-{redacted}.png"),
+        _ if extension.is_empty() => format!("{stem}-{redacted}"),
+        _ => format!("{stem}-{redacted}.{extension}"),
     }
 }
 
@@ -255,9 +256,8 @@ pub fn adopt(session: Session, file: web_sys::File) {
 /// Open `bytes` and fill the workbench with what they yield. `propose` is false
 /// when reloading what the tool just produced: the list is the user's by then,
 /// and the rules have nothing left to say about it.
-async fn ingest(session: Session, name: &str, bytes: Vec<u8>, propose: bool) -> Result<(), String> {
-    let format = sniff(&bytes)
-        .ok_or("seuls les PDF, les documents Word ou OpenDocument et les images s'ouvrent ici")?;
+async fn ingest(session: Session, name: &str, bytes: Vec<u8>, propose: bool) -> Result<(), Fault> {
+    let format = sniff(&bytes).ok_or(Fault::Unsupported)?;
     session.name.set(name.to_string());
     session.format.set(format);
     session.read_by_eye.set(false);
@@ -276,10 +276,10 @@ async fn ingest(session: Session, name: &str, bytes: Vec<u8>, propose: bool) -> 
     Ok(())
 }
 
-async fn open_image(session: Session, bytes: &[u8]) -> Result<(), String> {
+async fn open_image(session: Session, bytes: &[u8]) -> Result<(), Fault> {
     let blob = blob_of(bytes, "application/octet-stream")?;
-    let window = window().ok_or("pas de fenêtre")?;
-    let refused = || "cette image n'a pas pu être décodée".to_string();
+    let window = window().ok_or(Fault::NoWindow)?;
+    let refused = || Fault::ImageUndecoded;
     let promise = window
         .create_image_bitmap_with_blob(&blob)
         .map_err(|_| refused())?;
@@ -301,7 +301,7 @@ async fn open_document(
     bytes: Vec<u8>,
     format: Format,
     propose: bool,
-) -> Result<(), String> {
+) -> Result<(), Fault> {
     let module = module_ready().await?;
     let mut document = bridge::Document::open(&module, &bytes)?;
     if format == Format::Pdf {
@@ -338,7 +338,7 @@ async fn with_cmaps(
     module: &JsValue,
     mut document: bridge::Document,
     bytes: &[u8],
-) -> Result<bridge::Document, String> {
+) -> Result<bridge::Document, Fault> {
     loop {
         let missing: Vec<String> = document
             .cmaps_needed()?
@@ -364,7 +364,7 @@ async fn with_cmaps(
 /// Fetch the font files the office module asks for, all at once and each only
 /// once, hand it their bytes, declare the same bytes to the browser under the
 /// family its pages name, then lay out: what is drawn is what was measured.
-async fn lay_out(document: &bridge::Document) -> Result<(), String> {
+async fn lay_out(document: &bridge::Document) -> Result<(), Fault> {
     let faces = document.fonts_needed()?;
     let missing: Vec<String> = faces
         .iter()
@@ -390,7 +390,7 @@ async fn lay_out(document: &bridge::Document) -> Result<(), String> {
             bridge::Source::File(file) => {
                 let bytes = FONTS
                     .with(|fonts| fonts.borrow().get(&file).cloned())
-                    .ok_or_else(|| format!("la police {file} n'a pas été reçue"))?;
+                    .ok_or_else(|| Fault::FontNotReceived(file.clone()))?;
                 if added.insert(file.clone()) {
                     document.add_font(&file, &bytes)?;
                 }
@@ -404,14 +404,13 @@ async fn lay_out(document: &bridge::Document) -> Result<(), String> {
     }
     JsFuture::from(js_sys::Promise::all(&loading))
         .await
-        .map_err(|_| "une police du document n'a pas pu être lue".to_string())?;
+        .map_err(|_| Fault::FontUnread)?;
     document.layout()
 }
 
-async fn fetch_all(urls: &[String]) -> Result<Vec<js_sys::Uint8Array>, String> {
-    let window = window().ok_or("pas de fenêtre")?;
-    let unreachable =
-        |_| "les polices ou les tables du document n'ont pas pu être chargées".to_string();
+async fn fetch_all(urls: &[String]) -> Result<Vec<js_sys::Uint8Array>, Fault> {
+    let window = window().ok_or(Fault::NoWindow)?;
+    let unreachable = |_| Fault::FilesUnloaded;
     let requests = js_sys::Array::new();
     for url in urls {
         requests.push(&window.fetch_with_str(&file_url(url)));
@@ -424,7 +423,7 @@ async fn fetch_all(urls: &[String]) -> Result<Vec<js_sys::Uint8Array>, String> {
     for (url, response) in urls.iter().zip(responses.iter()) {
         let response: web_sys::Response = response.dyn_into().map_err(unreachable)?;
         if !response.ok() {
-            return Err(format!("{url} n'a pas été servi ({})", response.status()));
+            return Err(Fault::NotServed(url.clone(), response.status()));
         }
         let body = response.array_buffer().map_err(unreachable)?;
         bodies.push(&body);
@@ -441,14 +440,14 @@ async fn fetch_all(urls: &[String]) -> Result<Vec<js_sys::Uint8Array>, String> {
 
 /// Give the page's font set a face under `family`, once per family, and hand
 /// back the promise that settles when the browser has parsed it.
-fn declare(family: &str, bytes: &js_sys::Uint8Array) -> Result<Option<js_sys::Promise>, String> {
+fn declare(family: &str, bytes: &js_sys::Uint8Array) -> Result<Option<js_sys::Promise>, Fault> {
     if DECLARED.with(|declared| declared.borrow().contains(family)) {
         return Ok(None);
     }
-    let refused = |_| format!("la police {family} n'a pas pu être déclarée");
+    let refused = |_| Fault::FontUndeclared(family.to_string());
     let face = web_sys::FontFace::new_with_js_u8_array(family, bytes).map_err(refused)?;
     document()
-        .ok_or("pas de document")?
+        .ok_or(Fault::NoDocument)?
         .fonts()
         .add(&face)
         .map_err(refused)?;
@@ -523,25 +522,25 @@ pub fn relabel(session: Session) {
     }
 }
 
-fn drawn_svg(page: usize) -> Result<String, String> {
+fn drawn_svg(page: usize) -> Result<String, Fault> {
     DOCUMENT
         .with(|slot| {
             slot.borrow()
                 .as_ref()
                 .map(|document| document.page_svg(page))
         })
-        .ok_or("aucun document ouvert")?
+        .ok_or(Fault::NothingOpen)?
 }
 
 /// One page, as the SVG the module drew. The faces a PDF page writes its
 /// text in are fetched once it is on screen: the browser redraws the text when
 /// they arrive.
-pub fn page_svg(page: usize, format: Format) -> Result<String, String> {
+pub fn page_svg(page: usize, format: Format) -> Result<String, Fault> {
     let svg = drawn_svg(page)?;
     if format == Format::Pdf {
         let faces = DOCUMENT
             .with(|slot| slot.borrow().as_ref().map(|d| d.page_fonts(page)))
-            .ok_or("aucun document ouvert")??;
+            .ok_or(Fault::NothingOpen)??;
         let wanted: Vec<(String, String)> = faces
             .into_iter()
             .filter_map(|face| match face.source {
@@ -560,7 +559,7 @@ pub fn page_svg(page: usize, format: Format) -> Result<String, String> {
 }
 
 /// Fetch the files not yet fetched and declare each under its family.
-async fn declare_files(faces: Vec<(String, String)>) -> Result<(), String> {
+async fn declare_files(faces: Vec<(String, String)>) -> Result<(), Fault> {
     let missing: Vec<String> = faces
         .iter()
         .map(|(_, file)| file.clone())
@@ -583,25 +582,25 @@ async fn declare_files(faces: Vec<(String, String)>) -> Result<(), String> {
 }
 
 /// Draw the picture into `canvas` at `scale`.
-pub fn paint(canvas: &web_sys::HtmlCanvasElement, scale: f64) -> Result<(), String> {
+pub fn paint(canvas: &web_sys::HtmlCanvasElement, scale: f64) -> Result<(), Fault> {
     let ratio = window().map(|w| w.device_pixel_ratio()).unwrap_or(1.0);
     let context: web_sys::CanvasRenderingContext2d = canvas
         .get_context("2d")
         .ok()
         .flatten()
-        .ok_or("le navigateur n'a pas rendu de contexte 2d")?
+        .ok_or(Fault::No2d)?
         .dyn_into()
-        .map_err(|_| "le navigateur n'a pas rendu de contexte 2d".to_string())?;
+        .map_err(|_| Fault::No2d)?;
     let bitmap = PICTURE
         .with(|slot| slot.borrow().clone())
-        .ok_or("aucune image ouverte")?;
+        .ok_or(Fault::NoImageOpen)?;
     let width = (bitmap.width() as f64 * scale * ratio).round();
     let height = (bitmap.height() as f64 * scale * ratio).round();
     canvas.set_width(width as u32);
     canvas.set_height(height as u32);
     context
         .draw_image_with_image_bitmap_and_dw_and_dh(&bitmap, 0.0, 0.0, width, height)
-        .map_err(|_| "cette image n'a pas pu être dessinée".to_string())
+        .map_err(|_| Fault::ImageUndrawn)
 }
 
 /// The words of `page`, line by line, or none when nothing on it can be read.
@@ -636,7 +635,7 @@ pub fn read_pages(session: Session, eye: Eye) {
     session.eye.set(eye);
     session
         .reading
-        .set(Some(Reading::Stage("chargement".into(), 0.0)));
+        .set(Some(Reading::Stage("starting".into(), 0.0)));
     leptos::task::spawn_local(async move {
         breathe().await;
         match reading(session).await {
@@ -699,10 +698,10 @@ impl Placement {
 }
 
 /// The pixels of an encoded picture, at its own size.
-async fn bitmap_of(bytes: &[u8], mime: &str) -> Result<web_sys::ImageBitmap, String> {
+async fn bitmap_of(bytes: &[u8], mime: &str) -> Result<web_sys::ImageBitmap, Fault> {
     let blob = blob_of(bytes, mime)?;
-    let window = window().ok_or("pas de fenêtre")?;
-    let refused = || "cette image n'a pas pu être décodée".to_string();
+    let window = window().ok_or(Fault::NoWindow)?;
+    let refused = || Fault::ImageUndecoded;
     let promise = window
         .create_image_bitmap_with_blob(&blob)
         .map_err(|_| refused())?;
@@ -724,20 +723,20 @@ async fn page_image(
     sheet: &Sheet<'_>,
     index: usize,
     size: (f64, f64),
-) -> Result<(JsValue, bridge::Prepared, Placement), String> {
+) -> Result<(JsValue, bridge::Prepared, Placement), Fault> {
     let canvas = canvas_element()?;
     let context: web_sys::CanvasRenderingContext2d = canvas
         .get_context("2d")
         .ok()
         .flatten()
-        .ok_or("le navigateur n'a pas rendu de contexte 2d")?
+        .ok_or(Fault::No2d)?
         .dyn_into()
-        .map_err(|_| "le navigateur n'a pas rendu de contexte 2d".to_string())?;
+        .map_err(|_| Fault::No2d)?;
     let read_back = |width: u32, height: u32| {
         context
             .get_image_data(0.0, 0.0, width as f64, height as f64)
             .map(|data| data.data().0)
-            .map_err(|_| "la page n'a pas pu être lue".to_string())
+            .map_err(|_| Fault::PageUnread)
     };
     let put_bitmap = |bitmap: &web_sys::ImageBitmap| {
         let (width, height) = (bitmap.width(), bitmap.height());
@@ -745,8 +744,8 @@ async fn page_image(
         canvas.set_height(height);
         context
             .draw_image_with_image_bitmap(bitmap, 0.0, 0.0)
-            .map_err(|_| "cette image n'a pas pu être dessinée".to_string())?;
-        Ok::<_, String>((width, height, read_back(width, height)?))
+            .map_err(|_| Fault::ImageUndrawn)?;
+        Ok::<_, Fault>((width, height, read_back(width, height)?))
     };
 
     let (width, height, pixels, placement) = match sheet {
@@ -783,7 +782,7 @@ async fn page_image(
                         width as f64,
                         height as f64,
                     )
-                    .map_err(|_| "la page n'a pas pu être dessinée".to_string())?;
+                    .map_err(|_| Fault::PageUndrawn)?;
                 (width, height, read_back(width, height)?, Placement::Drawn)
             }
         },
@@ -792,19 +791,19 @@ async fn page_image(
     let (width, height, pixels) = prepared.image()?;
     let data =
         web_sys::ImageData::new_with_u8_clamped_array_and_sh(Clamped(&pixels), width, height)
-            .map_err(|_| "la page n'a pas pu être convertie".to_string())?;
+            .map_err(|_| Fault::PageUnconverted)?;
     canvas.set_width(width);
     canvas.set_height(height);
     context
         .put_image_data(&data, 0.0, 0.0)
-        .map_err(|_| "la page n'a pas pu être dessinée".to_string())?;
+        .map_err(|_| Fault::PageUndrawn)?;
     Ok((canvas.into(), prepared, placement))
 }
 
 /// `svg` decoded as an image, through a `data:` URL, which the page's
 /// `img-src` admits where it refuses a `blob:` one.
-async fn svg_image(svg: &str) -> Result<web_sys::HtmlImageElement, String> {
-    let refused = |_| "la page n'a pas pu être dessinée".to_string();
+async fn svg_image(svg: &str) -> Result<web_sys::HtmlImageElement, Fault> {
+    let refused = |_| Fault::PageUndrawn;
     let picture = web_sys::HtmlImageElement::new().map_err(refused)?;
     let encoded: String = js_sys::encode_uri_component(svg).into();
     picture.set_src(&format!("data:image/svg+xml;charset=utf-8,{encoded}"));
@@ -815,7 +814,7 @@ async fn svg_image(svg: &str) -> Result<web_sys::HtmlImageElement, String> {
 const READERS: [(&str, &str); 2] = [("ljOcrReady", "/ocr.js"), ("ljHtrReady", "/htr.js")];
 
 /// The reader of `session`, loaded once, its progress shown on `session`.
-async fn text_reader(session: Session) -> Result<JsValue, String> {
+async fn text_reader(session: Session) -> Result<JsValue, Fault> {
     let (global, src) = match session.eye.get_untracked() {
         Eye::Fast => READERS[0],
         Eye::Slow => READERS[1],
@@ -827,7 +826,7 @@ async fn text_reader(session: Session) -> Result<JsValue, String> {
     Ok(reader)
 }
 
-async fn loaded_reader(global: &str, src: &str) -> Result<JsValue, String> {
+async fn loaded_reader(global: &str, src: &str) -> Result<JsValue, Fault> {
     load(global, src);
     posed(global).await?;
     bridge::reader(global).await
@@ -855,7 +854,7 @@ pub fn prepare(session: Session) {
     });
 }
 
-async fn fetch_everything(session: Session) -> Result<(), String> {
+async fn fetch_everything(session: Session) -> Result<(), Fault> {
     let report = move |step: usize, at: f64| {
         let before: f64 = STEPS[..step].iter().sum();
         let total: f64 = STEPS.iter().sum();
@@ -903,10 +902,10 @@ async fn fetch_everything(session: Session) -> Result<(), String> {
 }
 
 /// The names a folder of the tool lists in its `index.txt`.
-async fn listing(folder: &str) -> Result<Vec<String>, String> {
+async fn listing(folder: &str) -> Result<Vec<String>, Fault> {
     let index = fetch_all(&[format!("{folder}/index.txt")]).await?;
-    let text = String::from_utf8(index[0].to_vec())
-        .map_err(|_| format!("{folder}/index.txt n'est pas du texte"))?;
+    let text =
+        String::from_utf8(index[0].to_vec()).map_err(|_| Fault::NotText(folder.to_string()))?;
     Ok(text
         .lines()
         .map(str::trim)
@@ -919,7 +918,7 @@ async fn listing(folder: &str) -> Result<Vec<String>, String> {
 async fn fetch_counted(
     urls: &[String],
     report: impl Fn(f64),
-) -> Result<Vec<js_sys::Uint8Array>, String> {
+) -> Result<Vec<js_sys::Uint8Array>, Fault> {
     let mut fetched = Vec::with_capacity(urls.len());
     for batch in urls.chunks(8) {
         fetched.extend(fetch_all(batch).await?);
@@ -936,7 +935,7 @@ async fn read_sheet(
     sheet: &Sheet<'_>,
     pages: &[(usize, (f64, f64))],
     flip: bool,
-) -> Result<Vec<bridge::Word>, String> {
+) -> Result<Vec<bridge::Word>, Fault> {
     let mut words: Vec<bridge::Word> = Vec::new();
     for &(index, (width, height)) in pages {
         let (image, prepared, placement) =
@@ -967,7 +966,7 @@ async fn read_sheet(
     Ok(words)
 }
 
-async fn reading(session: Session) -> Result<(), String> {
+async fn reading(session: Session) -> Result<(), Fault> {
     let reader = text_reader(session).await?;
     let module = module_ready().await?;
     let sizes = session.pages.get_untracked();
@@ -986,7 +985,7 @@ async fn reading(session: Session) -> Result<(), String> {
         (None, Some(bitmap)) => {
             read_sheet(&module, &reader, &Sheet::Picture(&bitmap), &pages, flip).await?
         }
-        (None, None) => return Err("aucun document ouvert".into()),
+        (None, None) => return Err(Fault::NothingOpen),
     };
 
     let document = match held {
@@ -1008,7 +1007,7 @@ async fn read_again(
     session: Session,
     bytes: &[u8],
     needles: &[String],
-) -> Result<Vec<String>, String> {
+) -> Result<Vec<String>, Fault> {
     if needles.is_empty() {
         return Ok(Vec::new());
     }
@@ -1056,7 +1055,7 @@ async fn read_again(
 
 /// Take the blocks, and the proposals when they are wanted, of a document that
 /// just changed what it holds.
-fn adopt_text(session: Session, document: &bridge::Document, propose: bool) -> Result<(), String> {
+fn adopt_text(session: Session, document: &bridge::Document, propose: bool) -> Result<(), Fault> {
     session.blocks.set(
         document
             .blocks()?
@@ -1151,7 +1150,7 @@ fn boxes(hit: &Hit) -> Vec<Rect> {
     runs
 }
 
-async fn run(session: Session) -> Result<(), String> {
+async fn run(session: Session) -> Result<(), Fault> {
     let by_eye = session.read_by_eye.get_untracked();
     let format = session.format.get_untracked();
     // A PDF read by eye still has the glyphs its file draws: they go as glyphs,
@@ -1209,7 +1208,7 @@ async fn run(session: Session) -> Result<(), String> {
                             false => document.apply(&needles, &drawn),
                         })
                 })
-                .ok_or("aucun document ouvert")??;
+                .ok_or(Fault::NothingOpen)??;
             let size = applied.bytes.len();
             let verdict = Verdict {
                 found: match by_eye {
@@ -1243,7 +1242,12 @@ async fn run(session: Session) -> Result<(), String> {
     if !clean {
         return Ok(());
     }
-    PRODUCED.with(|slot| *slot.borrow_mut() = Some((produced_name(&name, format), bytes.clone())));
+    PRODUCED.with(|slot| {
+        *slot.borrow_mut() = Some((
+            produced_name(&name, format, session.ui.redacted),
+            bytes.clone(),
+        ))
+    });
     session.rects.set(Vec::new());
     session.keep_places(entries.into_iter().map(|e| (e.text, e.kind)));
     breathe().await;
@@ -1287,10 +1291,10 @@ fn check_behind(session: Session, bytes: Vec<u8>, ticked: Vec<String>) {
 
 /// Fill the drawn rectangles on a copy of the picture and write it back as PNG,
 /// which also leaves the EXIF of the source behind.
-async fn redact_image(rects: &[Rect]) -> Result<Vec<u8>, String> {
+async fn redact_image(rects: &[Rect]) -> Result<Vec<u8>, Fault> {
     let bitmap = PICTURE
         .with(|slot| slot.borrow().clone())
-        .ok_or("aucune image ouverte")?;
+        .ok_or(Fault::NoImageOpen)?;
     let canvas = canvas_element()?;
     canvas.set_width(bitmap.width());
     canvas.set_height(bitmap.height());
@@ -1298,9 +1302,9 @@ async fn redact_image(rects: &[Rect]) -> Result<Vec<u8>, String> {
         .get_context("2d")
         .ok()
         .flatten()
-        .ok_or("le navigateur n'a pas rendu de contexte 2d")?
+        .ok_or(Fault::No2d)?
         .dyn_into()
-        .map_err(|_| "le navigateur n'a pas rendu de contexte 2d".to_string())?;
+        .map_err(|_| Fault::No2d)?;
     context
         .draw_image_with_image_bitmap_and_dw_and_dh(
             &bitmap,
@@ -1309,7 +1313,7 @@ async fn redact_image(rects: &[Rect]) -> Result<Vec<u8>, String> {
             bitmap.width() as f64,
             bitmap.height() as f64,
         )
-        .map_err(|_| "cette image n'a pas pu être dessinée".to_string())?;
+        .map_err(|_| Fault::ImageUndrawn)?;
     context.set_fill_style_str("#000000");
     for rect in rects {
         context.fill_rect(rect.x, rect.y, rect.width, rect.height);
@@ -1318,7 +1322,7 @@ async fn redact_image(rects: &[Rect]) -> Result<Vec<u8>, String> {
     let promise = js_sys::Promise::new(&mut |resolve, _| {
         let _ = canvas.to_blob(&resolve);
     });
-    let refused = || "l'image n'a pas pu être réencodée".to_string();
+    let refused = || Fault::ImageUnencoded;
     let blob: web_sys::Blob = JsFuture::from(promise)
         .await
         .map_err(|_| refused())?
@@ -1327,13 +1331,13 @@ async fn redact_image(rects: &[Rect]) -> Result<Vec<u8>, String> {
     bytes_of(&blob).await
 }
 
-fn canvas_element() -> Result<web_sys::HtmlCanvasElement, String> {
+fn canvas_element() -> Result<web_sys::HtmlCanvasElement, Fault> {
     document()
-        .ok_or("pas de document")?
+        .ok_or(Fault::NoDocument)?
         .create_element("canvas")
-        .map_err(|_| "canevas impossible".to_string())?
+        .map_err(|_| Fault::NoCanvas)?
         .dyn_into()
-        .map_err(|_| "canevas impossible".to_string())
+        .map_err(|_| Fault::NoCanvas)
 }
 
 /// Hand a file to the browser's download path.

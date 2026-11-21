@@ -13,3 +13,4 @@ regex = { workspace = true }
 quick-xml = { workspace = true }
 html-escape = { workspace = true }
 jiff = { workspace = true }
+unicode-normalization = { workspace = true }

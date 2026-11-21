@@ -35,6 +35,12 @@ pub(crate) fn has_filters(req: &SearchRequest) -> bool {
         || some(&req.publication)
         || req.date_from.is_some()
         || req.date_to.is_some()
+        || super::filters::conclusions(req)
+}
+
+/// The reader's jurisdiction a browse holds to. France's reads the whole fund.
+pub(crate) fn browsed_home(req: &SearchRequest) -> Option<&str> {
+    req.home.as_deref().filter(|home| *home != "fr")
 }
 
 /// Sans requête, la pertinence vaut la date décroissante.
@@ -70,7 +76,7 @@ async fn window_ids(
 ) -> Result<Vec<(i64, String)>> {
     let mut params: Params = Vec::new();
     let question = !query_lacks_searchable_terms(&req.query);
-    let filtered = (question || has_filters(req)).then(|| {
+    let filtered = (question || has_filters(req) || browsed_home(req).is_some()).then(|| {
         let mut idx = 1usize;
         super::aggregate::build_predicate(req, &mut idx, &mut params)
     });
@@ -188,7 +194,8 @@ async fn snapshot_totals_and_facets(
 }
 
 /// The browse cache key, the filters alone: the total and the facets depend on
-/// neither the page, the order, the mode nor the parts.
+/// neither the page, the order, the mode nor the parts, only on whether
+/// conclusions are asked for.
 fn cache_key(req: &SearchRequest) -> String {
     let mut norm = req.clone();
     norm.offset = 0;
@@ -197,7 +204,11 @@ fn cache_key(req: &SearchRequest) -> String {
     norm.mode = lj_dtos::SearchMode::Auto;
     norm.ai_mode = false;
     norm.search_in = None;
-    serde_json::to_string(&norm).unwrap_or_default()
+    format!(
+        "{}{}",
+        serde_json::to_string(&norm).unwrap_or_default(),
+        super::filters::conclusions(req)
+    )
 }
 
 /// Total et facettes, du cache ou calculés. Single-flight : `optionally_get_with`
@@ -207,13 +218,19 @@ pub(crate) async fn totals_and_facets(
     req: &SearchRequest,
     refs: &Referential,
 ) -> Result<Arc<(i64, SearchFacets)>> {
+    let unfiltered = !has_filters(req) && query_lacks_searchable_terms(&req.query);
+    if let Some(home) = browsed_home(req).filter(|_| unfiltered) {
+        if let Some(warm) = state.home_browse_cache.get(home).await {
+            return Ok(warm);
+        }
+    }
     let mut own_err: Option<ApiError> = None;
     let mut paye = false;
     let hit = state
         .browse_cache
         .optionally_get_with(cache_key(req), async {
             paye = true;
-            let computed = if has_filters(req) || !query_lacks_searchable_terms(&req.query) {
+            let computed = if !unfiltered || browsed_home(req).is_some() {
                 live_totals_and_facets(state, req, refs).await
             } else {
                 snapshot_totals_and_facets(state, refs).await
@@ -263,11 +280,12 @@ pub(crate) async fn browse(state: &AppState, req: &SearchRequest) -> Result<Sear
         .collect();
 
     let hits_conn = super::client(state).await?;
-    let hits: Vec<SearchHit> = super::hits_for_decision_ids(&hits_conn, &page, &req.query, &refs)
-        .await?
-        .into_iter()
-        .map(|(_, hit)| hit)
-        .collect();
+    let hits: Vec<SearchHit> =
+        super::hits_for_decision_ids(&hits_conn, &page, &req.query, &refs, super::reader(req))
+            .await?
+            .into_iter()
+            .map(|(_, hit)| hit)
+            .collect();
     let all_hit_paths: Vec<String> = window.into_iter().map(|(_, path)| path).collect();
 
     Ok(SearchResponse {
@@ -284,6 +302,73 @@ pub(crate) async fn browse(state: &AppState, req: &SearchRequest) -> Result<Sear
         pinned: Vec::new(),
         pinned_more: false,
     })
+}
+
+/// When the homes are counted each day, after the night chain.
+const WARM_AT: (u32, u32) = (7, 30);
+
+/// The night chain's window, 02:45 to 07:00Z, in which nothing is counted here.
+fn in_night(time: chrono::NaiveTime) -> bool {
+    let at = |h, m| chrono::NaiveTime::from_hms_opt(h, m, 0).expect("a valid time");
+    (at(2, 45)..at(7, 0)).contains(&time)
+}
+
+/// Counts every reader jurisdiction's browse without a question, at start outside the night
+/// chain's window and then each day at [`WARM_AT`], so no reader waits on it.
+pub async fn keep_homes_warm(state: AppState) {
+    if !in_night(chrono::Utc::now().time()) {
+        warm_homes(&state).await;
+    }
+    loop {
+        tokio::time::sleep(until_next_warm(chrono::Utc::now())).await;
+        warm_homes(&state).await;
+    }
+}
+
+fn until_next_warm(now: chrono::DateTime<chrono::Utc>) -> std::time::Duration {
+    let at = chrono::NaiveTime::from_hms_opt(WARM_AT.0, WARM_AT.1, 0).expect("a valid time");
+    let today = now.date_naive().and_time(at).and_utc();
+    let next = match today > now {
+        true => today,
+        false => today + chrono::Duration::days(1),
+    };
+    (next - now).to_std().expect("the next warm is ahead")
+}
+
+/// One home at a time: Switzerland's scope alone took 12 s counted live.
+async fn warm_homes(state: &AppState) {
+    let started = std::time::Instant::now();
+    let refs = match referential(state).await {
+        Ok(refs) => refs,
+        Err(e) => {
+            tracing::warn!(error = %e, "home browse warm-up: no referential");
+            return;
+        }
+    };
+    let mut warmed = 0usize;
+    for jurisdiction in crate::jurisdictions::known(&refs) {
+        let req: SearchRequest =
+            serde_json::from_value(serde_json::json!({ "query": "", "home": jurisdiction.code }))
+                .expect("a request naming its home alone");
+        let Some(home) = browsed_home(&req) else {
+            continue;
+        };
+        match live_totals_and_facets(state, &req, &refs).await {
+            Ok(counts) => {
+                state
+                    .home_browse_cache
+                    .insert(home.to_string(), Arc::new(counts))
+                    .await;
+                warmed += 1;
+            }
+            Err(e) => tracing::warn!(home, error = %e, "home browse warm-up failed"),
+        }
+    }
+    tracing::info!(
+        warmed,
+        elapsed_s = started.elapsed().as_secs(),
+        "home browses warmed"
+    );
 }
 
 #[cfg(test)]
@@ -303,5 +388,21 @@ mod tests {
         }
         assert_eq!(nav_window(0, 10), (0, NAV_WINDOW));
         assert_eq!(nav_window(140, 10), (100, NAV_WINDOW));
+    }
+
+    #[test]
+    fn the_homes_are_counted_after_the_night_chain_and_never_inside_it() {
+        let at = |h, m| {
+            chrono::NaiveDate::from_ymd_opt(2026, 11, 20)
+                .and_then(|d| d.and_hms_opt(h, m, 0))
+                .expect("a valid instant")
+                .and_utc()
+        };
+        let hours = |h: u64, m: u64| std::time::Duration::from_secs(h * 3600 + m * 60);
+        assert_eq!(until_next_warm(at(6, 0)), hours(1, 30));
+        assert_eq!(until_next_warm(at(7, 30)), hours(24, 0));
+        assert_eq!(until_next_warm(at(21, 0)), hours(10, 30));
+        assert!(in_night(at(2, 45).time()) && in_night(at(6, 59).time()));
+        assert!(!in_night(at(2, 44).time()) && !in_night(at(7, 0).time()));
     }
 }

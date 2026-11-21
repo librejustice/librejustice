@@ -4,7 +4,7 @@
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::use_navigate;
 use lj_dtos::{
@@ -28,15 +28,16 @@ pub(crate) fn version_url_key(version: &LawArticleVersion) -> String {
 }
 
 /// Libellé humain d'une version (même forme que la frise de la page article).
-fn version_label(version: &LawArticleVersion) -> String {
+fn version_label(version: &LawArticleVersion, ui: &crate::i18n::NormUi) -> String {
+    let dates = &crate::i18n::use_ui().dates;
     match (version.date_debut.is_empty(), version.date_fin.as_deref()) {
-        (true, _) => "Version initiale".to_string(),
+        (true, _) => ui.initial_version.to_string(),
         (false, Some(fin)) => format!(
             "{} – {}",
-            format_iso_date(Some(&version.date_debut)),
-            format_iso_date(Some(fin))
+            format_iso_date(dates, Some(&version.date_debut)),
+            format_iso_date(dates, Some(fin))
         ),
-        (false, None) => format!("depuis le {}", format_iso_date(Some(&version.date_debut))),
+        (false, None) => (ui.since)(&format_iso_date(dates, Some(&version.date_debut))),
     }
 }
 
@@ -44,7 +45,11 @@ fn version_label(version: &LawArticleVersion) -> String {
 pub fn LawComparePage() -> impl IntoView {
     crate::pages::cache_public_5_min();
     let key = compare_key();
-    let cmp = Resource::new_blocking(move || key.get(), |key| sendable(fetch_compare(key)));
+    let lang = crate::i18n::use_reader_lang().get();
+    let cmp = Resource::new_blocking(
+        move || key.get(),
+        move |key| sendable(fetch_compare(key, lang)),
+    );
 
     view! {
         <Suspense fallback=CompareSkeleton>
@@ -69,19 +74,20 @@ fn CompareError(err: PageError) -> impl IntoView {
     if err.status == 404 {
         crate::pages::not_found::signaler_lien_mort();
     }
+    let shell = &crate::i18n::use_ui().shell;
     let eyebrow = if err.status == 404 {
-        "Introuvable"
+        shell.not_found
     } else {
-        "Erreur"
+        shell.error
     };
     view! {
-        <Title text="Comparaison introuvable - LibreJustice" />
+        <Title text=crate::i18n::use_ui().norm.compare_not_found_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
                 {eyebrow}
             </p>
-            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.message}</h1>
+            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.failure.text(&crate::i18n::use_ui().shell)}</h1>
         </div>
     }
 }
@@ -104,19 +110,20 @@ fn CompareSkeleton() -> impl IntoView {
 
 /// Segments d'une colonne : `Equal` nu, `Delete`/`Insert` marqués.
 fn column(segments: Vec<LawCompareSegment>) -> impl IntoView {
+    use crate::components::search::compact_search::highlight::plain_text;
     segments
         .into_iter()
         .map(|s| match s.op {
-            LawCompareOp::Equal => view! { <span>{s.text}</span> }.into_any(),
+            LawCompareOp::Equal => view! { <span>{plain_text(s.text)}</span> }.into_any(),
             LawCompareOp::Delete => view! {
                 <del class="rounded-sm bg-rose-100/70 px-0.5 text-rose-900 decoration-rose-400/70">
-                    {s.text}
+                    {plain_text(s.text)}
                 </del>
             }
             .into_any(),
             LawCompareOp::Insert => view! {
                 <ins class="rounded-sm bg-emerald-100/80 px-0.5 text-emerald-900 no-underline">
-                    {s.text}
+                    {plain_text(s.text)}
                 </ins>
             }
             .into_any(),
@@ -159,6 +166,7 @@ fn cell(
 /// Une ligne alignée : deux cellules côte à côte au-delà de `sm`, empilées en
 /// dessous. Une ligne modifiée porte une teinte, son numéro et son ancre.
 fn compare_row(row: LawCompareRow, change_no: Option<usize>) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().norm;
     let tint = match row.kind {
         LawCompareRowKind::Equal => "",
         _ => "bg-[var(--color-vellum)]/60",
@@ -167,7 +175,7 @@ fn compare_row(row: LawCompareRow, change_no: Option<usize>) -> impl IntoView {
     let marker = change_no.map(|n| {
         view! {
             <p class="px-4 pt-3 text-[10px] uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                {format!("Modification {n}")}
+                {(ui.change_n)(n)}
             </p>
         }
     });
@@ -180,8 +188,8 @@ fn compare_row(row: LawCompareRow, change_no: Option<usize>) -> impl IntoView {
         >
             {marker}
             <div class="grid sm:grid-cols-2 sm:divide-x sm:divide-[var(--color-rule)]/60">
-                {cell(row.left, "Version de référence", "Alinéa absent de cette version")}
-                {cell(row.right, "Version comparée", "Alinéa supprimé")}
+                {cell(row.left, ui.reference_version, ui.absent_paragraph)}
+                {cell(row.right, ui.compared_version, ui.deleted_paragraph)}
             </div>
         </div>
     }
@@ -200,15 +208,16 @@ fn CompareLoaded(cmp: LawCompareResponse) -> impl IntoView {
         rows,
         versions,
     } = cmp;
+    let ui = &crate::i18n::use_ui().norm;
     let code_label = code_title.unwrap_or_else(|| code.clone());
     let num_label = format_article_num(&num);
-    let page_title = format!("Versions de l'article {num_label} du {code_label} - LibreJustice");
+    let page_title = (ui.compare_title)(&num_label, &code_label);
     let text = lj_vocab::norm_path(&jurisdiction, &code);
     let article_href = format!("{text}/{num_key}");
     let canonical = format!("https://librejustice.fr{text}/{num_key}");
 
-    let from_label = version_label(&from);
-    let to_label = version_label(&to);
+    let from_label = version_label(&from, ui);
+    let to_label = version_label(&to, ui);
     let changes = rows
         .iter()
         .filter(|r| r.kind != LawCompareRowKind::Equal)
@@ -224,7 +233,7 @@ fn CompareLoaded(cmp: LawCompareResponse) -> impl IntoView {
         .iter()
         .map(|v| SelectOption {
             value: version_url_key(v),
-            label: version_label(v),
+            label: version_label(v, ui),
         })
         .collect();
     let selector = |label: &'static str, selected: String, other: String, other_is_to: bool| {
@@ -272,28 +281,28 @@ fn CompareLoaded(cmp: LawCompareResponse) -> impl IntoView {
     let verdict = if changes == 0 {
         Either::Left(view! {
             <p class="text-sm text-[var(--color-ink-muted)]">
-                "Les deux rédactions sont identiques, mot pour mot."
+                {ui.identical}
             </p>
         })
     } else {
-        let plural = if changes > 1 { "s" } else { "" };
         Either::Right(view! {
             <p class="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-[var(--color-ink-muted)]">
-                <span>{format!("{changes} modification{plural}")}</span>
+                <span>{(ui.n_changes)(changes)}</span>
                 <a
                     href="#m1"
                     class="text-xs underline underline-offset-4 hover:text-[var(--color-accent)]"
                 >
-                    "Aller à la première"
+                    {ui.go_to_first}
                 </a>
             </p>
         })
     };
 
+    let back = (ui.back_to_article)(&num_label, &code_label);
     view! {
         <Title text=page_title />
         <Meta name="robots" content="noindex" />
-        <Link rel="canonical" href=canonical />
+        <crate::seo::Canonical href=canonical />
 
         <div class="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-6 px-4 py-12 sm:px-6 lg:px-8">
             <nav class="text-sm text-[var(--color-ink-subtle)]">
@@ -301,25 +310,25 @@ fn CompareLoaded(cmp: LawCompareResponse) -> impl IntoView {
                     href=article_href
                     attr:class="underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
                 >
-                    {format!("← Article {num_label} du {code_label}")}
+                    {back}
                 </A>
             </nav>
             <header class="flex flex-col gap-2">
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Comparateur de versions"
+                    {ui.comparator}
                 </p>
                 <h1 class="font-sans text-3xl text-[var(--color-ink)]">
-                    {format!("Article {num_label}")}
+                    {(ui.article_n)(&num_label)}
                 </h1>
                 <p class="text-sm text-[var(--color-ink-muted)]">{code_label.clone()}</p>
             </header>
 
             <div class="flex flex-col gap-3 sm:flex-row sm:items-end">
-                {selector("Version de référence", from_key, to_key.clone(), true)}
+                {selector(ui.reference_version, from_key, to_key.clone(), true)}
                 <span aria-hidden="true" class="hidden pb-2 text-[var(--color-ink-subtle)] sm:block">
                     "→"
                 </span>
-                {selector("Version comparée", to_key, version_url_key(&from), false)}
+                {selector(ui.compared_version, to_key, version_url_key(&from), false)}
             </div>
 
             {verdict}
@@ -328,14 +337,14 @@ fn CompareLoaded(cmp: LawCompareResponse) -> impl IntoView {
                 <div class="hidden grid-cols-2 divide-x divide-[var(--color-rule)]/60 border-b border-[var(--color-rule)] bg-[var(--color-vellum)]/40 sm:grid">
                     <p class="px-4 py-2 text-xs text-[var(--color-ink-muted)]">
                         <span class="uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                            "Référence"
+                            {ui.reference}
                         </span>
                         " · "
                         {from_label}
                     </p>
                     <p class="px-4 py-2 text-xs text-[var(--color-ink-muted)]">
                         <span class="uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                            "Comparée"
+                            {ui.compared}
                         </span>
                         " · "
                         {to_label}
@@ -347,15 +356,15 @@ fn CompareLoaded(cmp: LawCompareResponse) -> impl IntoView {
             <p class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-[var(--color-ink-subtle)]">
                 <span>
                     <del class="rounded-sm bg-rose-100/70 px-1 text-rose-900 decoration-rose-400/70">
-                        "retiré"
+                        {ui.removed}
                     </del>
-                    " de la version de référence"
+                    {ui.removed_from}
                 </span>
                 <span>
                     <ins class="rounded-sm bg-emerald-100/80 px-1 text-emerald-900 no-underline">
-                        "ajouté"
+                        {ui.added}
                     </ins>
-                    " dans la version comparée"
+                    {ui.added_in}
                 </span>
             </p>
         </div>

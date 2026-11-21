@@ -32,6 +32,12 @@ pub enum SourceError {
     Io(#[from] std::io::Error),
     #[error("invalid: {0}")]
     Invalid(String),
+    #[error("{publisher} still refuses {url} with {refusal} after its pauses")]
+    Refused {
+        publisher: &'static str,
+        refusal: crate::publisher::Refusal,
+        url: String,
+    },
 }
 
 pub type Result<T> = std::result::Result<T, SourceError>;

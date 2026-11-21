@@ -3,9 +3,10 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
+use futures::TryStreamExt;
 use object_store::aws::{AmazonS3, AmazonS3Builder};
 use object_store::path::Path;
-use object_store::{ObjectStoreExt, PutPayload};
+use object_store::{ObjectStore, ObjectStoreExt, PutPayload};
 
 pub use object_store::{Error, Result};
 
@@ -57,10 +58,27 @@ impl Bucket {
         }
     }
 
+    /// The keys under `prefix`.
+    pub async fn keys(&self, prefix: &str) -> Result<Vec<String>> {
+        self.store
+            .list(Some(&Path::from(prefix)))
+            .map_ok(|meta| meta.location.to_string())
+            .try_collect()
+            .await
+    }
+
     pub async fn put(&self, key: &str, bytes: impl Into<Bytes>) -> Result<()> {
         self.store
             .put(&Path::from(key), PutPayload::from(bytes.into()))
             .await
             .map(drop)
+    }
+
+    /// Deletes the object at `key`, if there is one.
+    pub async fn delete(&self, key: &str) -> Result<()> {
+        match self.store.delete(&Path::from(key)).await {
+            Ok(()) | Err(Error::NotFound { .. }) => Ok(()),
+            Err(e) => Err(e),
+        }
     }
 }

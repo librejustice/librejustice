@@ -1,6 +1,6 @@
 //! Mutation of the search URL state. Every mutation starts from the current
 //! `ParamsMap` (read through `use_query_map`), applies one change, and returns the
-//! *query string without the leading `?`* ready for `navigate("/decision-search?{qs}")`.
+//! *query string without the leading `?`* ready for [`search_href`].
 //!
 //! Invariants:
 //! - every filter/sort mutation removes `page` (back to page 1);
@@ -12,12 +12,14 @@
 
 use leptos_router::params::ParamsMap;
 
+use crate::i18n::SearchUi;
+
+/// The decision search, under a jurisdiction.
 pub const SEARCH_PATH: &str = "/decision-search";
-/// Route de la recherche de textes (page distincte : moteurs et filtres
-/// propres, aucune recherche transverse).
+/// The text search, under a jurisdiction: its own engines and filters, no cross search.
 pub const TEXTES_PATH: &str = "/norm-search";
 /// Route du moteur d'annonces (pot des événements en cours).
-pub const ANNONCES_PATH: &str = "/notice-search";
+pub const JOURNALS_PATH: &str = "/journal-search";
 
 /// Le corpus que la route interroge. Trois pages de recherche, trois corpus
 /// disjoints : la barre, le mode IA et l'autocomplétion en dépendent.
@@ -25,7 +27,7 @@ pub const ANNONCES_PATH: &str = "/notice-search";
 pub enum Corpus {
     Decisions,
     Textes,
-    Annonces,
+    Journals,
 }
 
 impl Corpus {
@@ -36,50 +38,49 @@ impl Corpus {
             Corpus::Textes => "textes",
             // Le pot n'a pas d'index de suggestions : ses entrées sont des
             // facettes, pas des mots-clés.
-            Corpus::Annonces => "",
+            Corpus::Journals => "",
         }
     }
 
-    pub fn placeholder(self) -> &'static str {
+    pub fn placeholder(self, ui: &SearchUi) -> &'static str {
         match self {
-            Corpus::Decisions => "Rechercher dans la jurisprudence…",
-            Corpus::Textes => "Rechercher dans les codes et lois…",
-            Corpus::Annonces => "Objet ou acteur — « voirie », « redressement »…",
+            Corpus::Decisions => ui.placeholder_decisions,
+            Corpus::Textes => ui.placeholder_texts,
+            Corpus::Journals => ui.placeholder_notices,
         }
     }
 }
 
 pub fn corpus() -> Corpus {
-    match current_search_path() {
-        TEXTES_PATH => Corpus::Textes,
-        ANNONCES_PATH => Corpus::Annonces,
-        _ => Corpus::Decisions,
+    let path = current_search_path();
+    if path.ends_with(TEXTES_PATH) {
+        Corpus::Textes
+    } else if path.ends_with(JOURNALS_PATH) {
+        Corpus::Journals
+    } else {
+        Corpus::Decisions
     }
 }
 
-/// Current search path: `/norm-search` if already there (mutations and submissions
-/// stay there), else `/decision-search`. Read from `window.location`, the calls
-/// only happen in client handlers (click, submit).
+/// The search page on screen, its jurisdiction included: mutations and submissions
+/// stay there. Read from `window.location`, the calls only happen in client handlers.
 #[cfg(feature = "hydrate")]
-fn current_search_path() -> &'static str {
-    let path = web_sys::window().and_then(|w| w.location().pathname().ok());
-    match path.as_deref() {
-        Some(TEXTES_PATH) => TEXTES_PATH,
-        Some(ANNONCES_PATH) => ANNONCES_PATH,
-        _ => SEARCH_PATH,
-    }
+fn current_search_path() -> String {
+    web_sys::window()
+        .and_then(|w| w.location().pathname().ok())
+        .unwrap_or_default()
 }
 
 #[cfg(not(feature = "hydrate"))]
-fn current_search_path() -> &'static str {
-    SEARCH_PATH
+fn current_search_path() -> String {
+    SEARCH_PATH.to_string()
 }
 
 /// Href complet de la recherche pour une query string (sans `?` de tête).
 pub fn search_href(qs: &str) -> String {
     let path = current_search_path();
     if qs.is_empty() {
-        path.to_string()
+        path
     } else {
         format!("{path}?{qs}")
     }
@@ -140,46 +141,54 @@ pub fn toggle_multi(map: &ParamsMap, key: &str, value: &str) -> String {
     })
 }
 
-/// The parts of a decision a search runs in: URL value, label, hint.
-pub const PARTS: [(&str, &str, Option<&str>); 3] = [
-    (
-        "headnote",
-        "Sommaire",
-        Some("Le sommaire ou l'analyse publiés par la juridiction."),
-    ),
-    ("judgment", "Décision", None),
-    ("annexes", "Moyens annexés", None),
-];
+/// The parts a search runs in, by URL value.
+pub const PARTS: [&str; 4] = ["headnote", "judgment", "annexes", "conclusions"];
 
-/// The parts searched: the ones `searchIn` lists, every part when it lists none.
+/// A decision's parts, what a search runs in when `searchIn` lists none.
+pub const DECISION_PARTS: [&str; 3] = ["headnote", "judgment", "annexes"];
+
+/// A part's label, and the hint that explains it when it needs one.
+pub fn part_copy(part: &str, ui: &SearchUi) -> (&'static str, Option<&'static str>) {
+    match part {
+        "headnote" => (ui.part_headnote, Some(ui.part_headnote_hint)),
+        "judgment" => (ui.part_judgment, None),
+        "annexes" => (ui.part_annexes, None),
+        _ => (ui.part_conclusions, Some(ui.part_conclusions_hint)),
+    }
+}
+
+/// The parts searched: the ones `searchIn` lists, a decision's parts when it
+/// lists none.
 pub fn parts_searched(map: &ParamsMap) -> Vec<&'static str> {
     let listed = map.get_all("searchIn").unwrap_or_default();
     let kept: Vec<&'static str> = PARTS
         .iter()
-        .map(|(v, _, _)| *v)
+        .copied()
         .filter(|v| listed.iter().any(|l| l == v))
         .collect();
     if kept.is_empty() {
-        PARTS.iter().map(|(v, _, _)| *v).collect()
+        DECISION_PARTS.to_vec()
     } else {
         kept
     }
 }
 
 /// Toggles one part. The last part searched stays, and `searchIn` goes once
-/// every part is searched again. Drops `page`.
+/// a decision's parts alone are searched again. Drops `page`.
 pub fn toggle_part(map: &ParamsMap, value: &str) -> String {
     let searched = parts_searched(map);
     let next: Vec<String> = PARTS
         .iter()
-        .map(|(v, _, _)| *v)
+        .copied()
         .filter(|v| (*v == value) != searched.contains(v))
         .map(str::to_string)
         .collect();
-    match next.len() {
-        0 => mutate(map, false, |_| {}),
-        n if n == PARTS.len() => with_values(map, "searchIn", &[]),
-        _ => with_values(map, "searchIn", &next),
+    if next.is_empty() {
+        mutate(map, false, |_| {})
+    } else if next == DECISION_PARTS {
+        with_values(map, "searchIn", &[])
+    } else {
+        with_values(map, "searchIn", &next)
     }
 }
 
@@ -279,7 +288,7 @@ mod tests {
     fn parts_are_toggled_from_every_part_and_keep_one() {
         let parts: Vec<lj_dtos::DecisionPart> = PARTS
             .iter()
-            .map(|(v, _, _)| serde_json::from_value(serde_json::json!(v)).unwrap())
+            .map(|v| serde_json::from_value(serde_json::json!(v)).unwrap())
             .collect();
         assert_eq!(parts, lj_dtos::DecisionPart::ALL);
 
@@ -300,5 +309,23 @@ mod tests {
             ("searchIn", "judgment"),
         ]);
         assert_eq!(toggle_part(&two, "annexes"), "q=x");
+
+        assert_eq!(
+            toggle_part(&all, "conclusions"),
+            "q=x&searchIn=headnote&searchIn=judgment&searchIn=annexes&searchIn=conclusions"
+        );
+        let alone = map_of(&[("q", "x"), ("searchIn", "conclusions")]);
+        assert_eq!(
+            toggle_part(&alone, "conclusions"),
+            "q=x&searchIn=conclusions"
+        );
+        let four = map_of(&[
+            ("q", "x"),
+            ("searchIn", "headnote"),
+            ("searchIn", "judgment"),
+            ("searchIn", "annexes"),
+            ("searchIn", "conclusions"),
+        ]);
+        assert_eq!(toggle_part(&four, "conclusions"), "q=x");
     }
 }

@@ -20,9 +20,21 @@ pub use input::{body_text_from_full_text, decision_title};
 /// identifier: staleness is a `<`, so two live prompts of equivalent quality
 /// share a number and are told apart by [`SummaryEngine`].
 ///
-/// The collage shares the number with the rewrite: the stale query keys on this
-/// alone, so a collage left one generation behind is collaged again.
-pub const SUMMARY_PROMPT_VERSION: i16 = 11;
+/// The collage shares the number with the rewrite. A summary is stale below
+/// [`due_generation`] of its text's language, a collage never.
+pub const SUMMARY_PROMPT_VERSION: i16 = 12;
+
+/// Generation 12 changed only the language of a summary, which a French text's already had.
+pub const FRENCH_SUMMARY_GENERATION: i16 = 11;
+
+/// The generation below which the summary of a text in `lang` is stale.
+pub fn due_generation(lang: &str) -> i16 {
+    if lang == "fr" {
+        FRENCH_SUMMARY_GENERATION
+    } else {
+        SUMMARY_PROMPT_VERSION
+    }
+}
 
 /// Supreme and European courts, then appeal, then the authorities, then first
 /// instance. A type left out comes last.
@@ -39,6 +51,7 @@ pub const JURISDICTION_TIERS: &[(&str, i32)] = &[
     ("CNDA", 2),
     ("DDD", 2),
     ("ADLC", 2),
+    ("AMF", 2),
     ("COMEU", 2),
     ("TA", 3),
     ("TJ", 3),
@@ -103,9 +116,51 @@ pub const SUMMARY_PROMPT_BLOCK: &str = include_str!("../data/summary_prompt_bloc
 /// held to the same form.
 pub const SUMMARY_PROMPT_BLOCK_HAIKU: &str = include_str!("../data/summary_prompt_block_haiku.txt");
 
+/// [`SUMMARY_PROMPT_BLOCK`] in English, writing in the language of the text it reads.
+pub const SUMMARY_PROMPT_BLOCK_EN: &str = include_str!("../data/summary_prompt_block_en.txt");
+
+/// [`SUMMARY_PROMPT_BLOCK_HAIKU`] in English, its count held to the points a court indexes.
+/// At `high`, the only level at which Haiku reasons under English instructions.
+pub const SUMMARY_PROMPT_BLOCK_HAIKU_EN: &str =
+    include_str!("../data/summary_prompt_block_haiku_en.txt");
+
+/// The languages a summary is written in, by the ISO 639-1 code of the text it reads,
+/// and the English name a prompt's `{target_language}` takes.
+pub const SUMMARY_LANGUAGES: [(&str, &str); 25] = [
+    ("fr", "French"),
+    ("de", "German"),
+    ("it", "Italian"),
+    ("en", "English"),
+    ("ar", "Arabic"),
+    ("bg", "Bulgarian"),
+    ("cs", "Czech"),
+    ("da", "Danish"),
+    ("el", "Greek"),
+    ("es", "Spanish"),
+    ("et", "Estonian"),
+    ("fi", "Finnish"),
+    ("ga", "Irish"),
+    ("hr", "Croatian"),
+    ("hu", "Hungarian"),
+    ("lt", "Lithuanian"),
+    ("lv", "Latvian"),
+    ("mt", "Maltese"),
+    ("nl", "Dutch"),
+    ("pl", "Polish"),
+    ("pt", "Portuguese"),
+    ("ro", "Romanian"),
+    ("sk", "Slovak"),
+    ("sl", "Slovenian"),
+    ("sv", "Swedish"),
+];
+
 /// [`SUMMARY_PROMPT_COLLAGE_TIGHT`] reading the header [`Header::collage_input`] writes.
 pub const SUMMARY_PROMPT_COLLAGE_HEADED: &str =
     include_str!("../data/summary_prompt_collage_headed.txt");
+
+/// [`SUMMARY_PROMPT_COLLAGE_HEADED`] in English, writing in the language of the text it reads.
+pub const SUMMARY_PROMPT_COLLAGE_HEADED_EN: &str =
+    include_str!("../data/summary_prompt_collage_headed_en.txt");
 
 /// Reasoning level asked of the model, frozen by the engine like the prompt.
 ///
@@ -171,15 +226,22 @@ pub enum SummaryEngine {
     Luna6BlockV11 = 24,
     Gemini31BlockV11 = 25,
     Gemini35BlockV11 = 26,
+    Luna6BlockV12 = 28,
+    Haiku55BlockBatchV12 = 29,
+    Haiku55BlockCliV12 = 30,
+    Gemini31BlockV12 = 31,
+    Gemini35BlockV12 = 32,
+    Luna6CollageHeadedV12 = 33,
 }
 
 impl SummaryEngine {
     /// Every engine that pastes the court's commentary, whatever its generation.
-    pub const COLLAGES: [Self; 4] = [
+    pub const COLLAGES: [Self; 5] = [
         Self::LunaCollageV10,
         Self::LunaCollageV11,
         Self::Luna6CollageV10,
         Self::Luna6CollageHeadedV11,
+        Self::Luna6CollageHeadedV12,
     ];
 
     pub fn code(self) -> i16 {
@@ -207,6 +269,12 @@ impl SummaryEngine {
             | Self::Luna6BlockV11
             | Self::Gemini31BlockV11
             | Self::Gemini35BlockV11 => 11,
+            Self::Luna6BlockV12
+            | Self::Haiku55BlockBatchV12
+            | Self::Haiku55BlockCliV12
+            | Self::Gemini31BlockV12
+            | Self::Gemini35BlockV12
+            | Self::Luna6CollageHeadedV12 => 12,
         }
     }
 
@@ -215,11 +283,13 @@ impl SummaryEngine {
             Self::Gemini31FlashLiteV9
             | Self::Gemini31MonoV10
             | Self::Gemini31PartsV11
-            | Self::Gemini31BlockV11 => "gemini-3.1-flash-lite",
+            | Self::Gemini31BlockV11
+            | Self::Gemini31BlockV12 => "gemini-3.1-flash-lite",
             Self::Gemini35FlashLiteV9
             | Self::Gemini35MonoV10
             | Self::Gemini35PartsV11
-            | Self::Gemini35BlockV11 => "gemini-3.5-flash-lite",
+            | Self::Gemini35BlockV11
+            | Self::Gemini35BlockV12 => "gemini-3.5-flash-lite",
             Self::LunaMonoV9 | Self::LunaCollageV10 | Self::LunaMonoV10 | Self::LunaCollageV11 => {
                 "gpt-5.6-luna"
             }
@@ -227,11 +297,15 @@ impl SummaryEngine {
             | Self::Luna6CollageV10
             | Self::Luna6PartsV11
             | Self::Luna6CollageHeadedV11
-            | Self::Luna6BlockV11 => "gpt-6-luna",
+            | Self::Luna6BlockV11
+            | Self::Luna6BlockV12
+            | Self::Luna6CollageHeadedV12 => "gpt-6-luna",
             Self::Haiku55MonoBatchV10
             | Self::Haiku55MonoCliV10
             | Self::Haiku55BlockBatchV11
-            | Self::Haiku55BlockCliV11 => "claude-haiku-5-5",
+            | Self::Haiku55BlockCliV11
+            | Self::Haiku55BlockBatchV12
+            | Self::Haiku55BlockCliV12 => "claude-haiku-5-5",
         }
     }
 
@@ -243,7 +317,11 @@ impl SummaryEngine {
             | Self::Gemini31PartsV11
             | Self::Gemini35PartsV11
             | Self::Gemini31BlockV11
-            | Self::Gemini35BlockV11 => Thinking::High,
+            | Self::Gemini35BlockV11
+            | Self::Gemini31BlockV12
+            | Self::Gemini35BlockV12
+            | Self::Haiku55BlockBatchV12
+            | Self::Haiku55BlockCliV12 => Thinking::High,
             Self::Luna6MonoV10
             | Self::Luna6CollageV10
             | Self::Haiku55MonoBatchV10
@@ -252,7 +330,9 @@ impl SummaryEngine {
             | Self::Luna6CollageHeadedV11
             | Self::Luna6BlockV11
             | Self::Haiku55BlockBatchV11
-            | Self::Haiku55BlockCliV11 => Thinking::Low,
+            | Self::Haiku55BlockCliV11
+            | Self::Luna6BlockV12
+            | Self::Luna6CollageHeadedV12 => Thinking::Low,
             Self::LunaMonoV9 | Self::LunaCollageV10 | Self::LunaMonoV10 | Self::LunaCollageV11 => {
                 Thinking::None
             }
@@ -282,19 +362,43 @@ impl SummaryEngine {
             Self::Luna6BlockV11 | Self::Gemini31BlockV11 | Self::Gemini35BlockV11 => {
                 SUMMARY_PROMPT_BLOCK
             }
+            Self::Luna6BlockV12 | Self::Gemini31BlockV12 | Self::Gemini35BlockV12 => {
+                SUMMARY_PROMPT_BLOCK_EN
+            }
+            Self::Haiku55BlockBatchV12 | Self::Haiku55BlockCliV12 => SUMMARY_PROMPT_BLOCK_HAIKU_EN,
+            Self::Luna6CollageHeadedV12 => SUMMARY_PROMPT_COLLAGE_HEADED_EN,
         }
+    }
+
+    /// Whether this engine writes the summary of a text in `lang`: a prompt that names
+    /// no `{target_language}` writes French.
+    pub fn writes(self, lang: &str) -> bool {
+        if self.prompt().contains("{target_language}") {
+            SUMMARY_LANGUAGES.iter().any(|(code, _)| *code == lang)
+        } else {
+            lang == "fr"
+        }
+    }
+
+    /// The prompt sent for a text in `lang`, `None` for a language this engine does not write.
+    pub fn system_prompt(self, lang: &str) -> Option<String> {
+        let (_, name) = SUMMARY_LANGUAGES
+            .iter()
+            .find(|(code, _)| *code == lang)
+            .filter(|_| self.writes(lang))?;
+        Some(self.prompt().replace("{target_language}", name))
     }
 
     /// Level of the one call more an answer gets when [`wants_second_pass`] asks for it.
     pub fn second_pass(self) -> Option<Thinking> {
-        matches!(
-            self,
+        match self {
             Self::Haiku55MonoBatchV10
-                | Self::Haiku55MonoCliV10
-                | Self::Haiku55BlockBatchV11
-                | Self::Haiku55BlockCliV11
-        )
-        .then_some(Thinking::Medium)
+            | Self::Haiku55MonoCliV10
+            | Self::Haiku55BlockBatchV11
+            | Self::Haiku55BlockCliV11 => Some(Thinking::Medium),
+            Self::Haiku55BlockBatchV12 | Self::Haiku55BlockCliV12 => Some(Thinking::High),
+            _ => None,
+        }
     }
 
     pub fn from_code(code: i16) -> Option<Self> {
@@ -320,6 +424,12 @@ impl SummaryEngine {
             24 => Self::Luna6BlockV11,
             25 => Self::Gemini31BlockV11,
             26 => Self::Gemini35BlockV11,
+            28 => Self::Luna6BlockV12,
+            29 => Self::Haiku55BlockBatchV12,
+            30 => Self::Haiku55BlockCliV12,
+            31 => Self::Gemini31BlockV12,
+            32 => Self::Gemini35BlockV12,
+            33 => Self::Luna6CollageHeadedV12,
             _ => return None,
         })
     }
@@ -982,7 +1092,7 @@ fn cut_model_tail(text: &str) -> &str {
 
 static FOREIGN_GLYPH: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        "[^\t\n\r\x20-\x7e\u{a0}-\u{24f}\u{300}-\u{3ff}\u{1e00}-\u{1eff}\
+        "[^\t\n\r\x20-\x7e\u{a0}-\u{24f}\u{300}-\u{52f}\u{600}-\u{6ff}\u{1e00}-\u{1eff}\
          \u{2000}-\u{209f}\u{20a0}-\u{20bf}\u{2100}-\u{218f}\u{2200}-\u{22ff}]",
     )
     .unwrap()
@@ -1060,7 +1170,7 @@ mod tests {
         assert_eq!(first_sentence_chars("Article 1. de la loi. Fin."), 21);
     }
 
-    const ENGINES: [SummaryEngine; 21] = [
+    const ENGINES: [SummaryEngine; 27] = [
         SummaryEngine::Gemini31FlashLiteV9,
         SummaryEngine::Gemini35FlashLiteV9,
         SummaryEngine::LunaMonoV9,
@@ -1082,6 +1192,12 @@ mod tests {
         SummaryEngine::Luna6BlockV11,
         SummaryEngine::Gemini31BlockV11,
         SummaryEngine::Gemini35BlockV11,
+        SummaryEngine::Luna6BlockV12,
+        SummaryEngine::Haiku55BlockBatchV12,
+        SummaryEngine::Haiku55BlockCliV12,
+        SummaryEngine::Gemini31BlockV12,
+        SummaryEngine::Gemini35BlockV12,
+        SummaryEngine::Luna6CollageHeadedV12,
     ];
 
     #[test]
@@ -1106,7 +1222,25 @@ mod tests {
     }
 
     #[test]
-    fn clean_strips_the_spam_token_and_keeps_greek_and_operators() {
+    fn the_newest_generation_writes_in_the_language_of_its_text() {
+        let newest = ENGINES
+            .into_iter()
+            .filter(|engine| engine.prompt_version() == SUMMARY_PROMPT_VERSION);
+        for engine in newest {
+            for (code, name) in SUMMARY_LANGUAGES {
+                let prompt = engine.system_prompt(code).unwrap();
+                assert!(prompt.contains(name) && !prompt.contains("{target_language}"));
+            }
+            assert_eq!(engine.system_prompt("ja"), None);
+        }
+        assert_eq!(
+            SummaryEngine::Luna6CollageHeadedV11.system_prompt("de"),
+            None
+        );
+    }
+
+    #[test]
+    fn clean_strips_the_spam_token_and_keeps_the_summary_scripts_and_operators() {
         assert_eq!(
             clean_summary("La requête est rejetée.娱乐网址"),
             "La requête est rejetée."
@@ -1123,6 +1257,9 @@ mod tests {
             clean_summary("La marque υγεία est enregistrée pour un effectif salarié ≤ 5."),
             "La marque υγεία est enregistrée pour un effectif salarié ≤ 5."
         );
+        for summary in ["Жалбата се отхвърля.", "يرفض الطلب."] {
+            assert_eq!(clean_summary(summary), summary);
+        }
     }
 
     #[test]

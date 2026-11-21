@@ -46,6 +46,15 @@ pub fn pdftohtml_extract(bytes: &[u8]) -> Result<String> {
     )
 }
 
+/// Every run of text with its page, place and font size, as `pdftohtml -xml` renders them.
+pub fn pdftohtml_xml_extract(bytes: &[u8]) -> Result<String> {
+    poppler(
+        "pdftohtml",
+        &["-q", "-xml", "-i", "-stdout", "-", "sortie"],
+        bytes,
+    )
+}
+
 /// A PDF of the given pages only, numbered from 1. `qpdf` keeps each page's own
 /// resources, where `pdfseparate` gave each page the resources of the whole file.
 pub fn pages_extract(bytes: &[u8], pages: &[u32]) -> Result<Vec<u8>> {
@@ -64,7 +73,7 @@ pub fn page_count(bytes: &[u8]) -> Result<u32> {
             .arg(&input)
             .stderr(Stdio::null())
             .output()
-            .map_err(|e| SourceError::Invalid(format!("qpdf: {e}")))?;
+            .map_err(|e| std::io::Error::new(e.kind(), format!("qpdf: {e}")))?;
         let shown = String::from_utf8_lossy(&out.stdout);
         shown
             .trim()

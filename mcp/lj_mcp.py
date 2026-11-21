@@ -49,7 +49,7 @@ SEARCH_LISTS = (
     "search_in",
 )
 SEARCH_SCALARS = ("query", "date_from", "date_to", "mode", "sort", "limit", "ai_rerank")
-TEXTS_SCALARS = ("query", "code", "jurisdiction", "valid_from", "as_of", "limit")
+TEXTS_SCALARS = ("query", "code", "jurisdiction", "scope", "valid_from", "as_of", "limit")
 
 
 def as_text(value):

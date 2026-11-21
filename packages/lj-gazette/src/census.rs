@@ -4,12 +4,12 @@ use std::collections::HashMap;
 
 use crate::record::{recompose, rest_paths, Record};
 use crate::rows::Parsed;
-use crate::tree::{self, Node};
+use crate::tree::Node;
 use crate::{bodacc, joafe, Error, Source};
 
 /// The header element, `None` for a one-notice JOAFE file, and the notice elements in document order.
 pub fn originals(source: Source, raw: &[u8]) -> Result<(Option<Node>, Vec<Node>), Error> {
-    let root = tree::parse(&tree::decode(raw)?)?;
+    let root = crate::rows::root(raw)?;
     Ok(match source {
         Source::Bodacc => {
             let (header, items) = bodacc::split(root)?;

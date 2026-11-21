@@ -59,7 +59,7 @@ pub fn DecisionBody(
     if !has_paragraphs {
         return view! {
             <p class="text-sm italic text-[var(--color-ink-subtle)]">
-                "Texte intégral non disponible."
+                {crate::i18n::use_ui().decision.full_text_missing}
             </p>
         }
         .into_any();
@@ -75,6 +75,7 @@ pub fn DecisionBody(
     #[cfg(feature = "hydrate")]
     crate::components::decision::selection::watch_selection(article_ref, selection_state);
 
+    let lang = detail.lang.clone();
     let sections = StoredValue::new(sections);
     let body = move || {
         let mut hits = hits.get().into_iter();
@@ -121,7 +122,7 @@ pub fn DecisionBody(
     };
 
     view! {
-        <article node_ref=article_ref class="prose-decision">
+        <article node_ref=article_ref lang=lang class="prose-decision">
             {body}
         </article>
         <Show when=move || selection_state.get().is_some()>

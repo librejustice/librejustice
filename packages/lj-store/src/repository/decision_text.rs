@@ -32,8 +32,8 @@ pub struct StoredText {
     pub full_text: String,
 }
 
-/// A stored French text mostly in capitals.
-pub struct CapitalText {
+/// A stored French text a repair of the stock reads.
+pub struct RepairText {
     pub text_id: i64,
     pub decision_id: i64,
     /// The text read of its decision, whose fields the extraction writes.
@@ -47,11 +47,19 @@ pub(super) fn text_lang(source_fields: &Value, field: &str) -> Result<Option<&'s
     let Some(code) = source_fields.get(field).and_then(Value::as_str) else {
         return Ok(None);
     };
-    lj_vocab::languages::iso_639_1_of_eu(&code.to_ascii_uppercase())
+    lj_vocab::languages::iso_639_1_of_text(&code.to_ascii_uppercase())
         .map(Some)
         .ok_or_else(|| {
             StoreError::Invalid(format!("source_fields.{field}: unknown language {code}"))
         })
+}
+
+/// The language of the original a provenance carries, the decision's own when it is its only one.
+pub(super) fn original_lang(source_fields: &Value) -> Result<&'static str> {
+    Ok(match text_lang(source_fields, "original_lang")? {
+        Some(lang) => lang,
+        None => text_lang(source_fields, "lang")?.unwrap_or("fr"),
+    })
 }
 
 /// The `annex_start` column of `text`.
@@ -123,8 +131,9 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// The texts of the provenances in `[from, to)` that hold a character reference or open on
-    /// a line repeated within the next nine, `limit` of them after `after` in `source_uid` order.
+    /// The texts of the provenances in `[from, to)` that hold a character reference, a footnote
+    /// call alone on its line between two parentheses, or open on a line repeated within the next
+    /// nine, `limit` of them after `after` in `source_uid` order.
     #[tracing::instrument(name = "db.texts_to_clean", skip(self), fields(db.system = "postgresql"))]
     pub async fn texts_to_clean(
         &self,
@@ -142,6 +151,7 @@ impl DecisionRepository<'_> {
                  WHERE s.source_uid >= $1 AND s.source_uid < $2 AND s.source_uid > $3
                    AND s.deleted_at IS NULL
                    AND (t.full_text ~ '&(#[0-9]+|#[xX][0-9A-Fa-f]+|[A-Za-z][A-Za-z0-9]*);'
+                        OR t.full_text ~ '\\(\\n(\\*?[0-9]{{1,3}}|\\*|[ivx]{{1,4}})\\n\\)'
                         OR left(t.full_text, 1000) ~ '^([^\\n]{{1,80}})\\n([^\\n]*\\n){{1,8}}\\1\\n')
                  ORDER BY s.source_uid
                  LIMIT $4", read = super::pick::read("t")),
@@ -165,7 +175,7 @@ impl DecisionRepository<'_> {
     /// characters hold four capitals for one lowercase letter or more, a superset
     /// of the texts in capitals the caller tells apart.
     #[tracing::instrument(name = "db.texts_in_capitals", skip(self), fields(db.system = "postgresql"))]
-    pub async fn texts_in_capitals(&self, after: i64, upto: i64) -> Result<Vec<CapitalText>> {
+    pub async fn texts_in_capitals(&self, after: i64, upto: i64) -> Result<Vec<RepairText>> {
         let rows = self
             .conn
             .query(
@@ -186,7 +196,41 @@ impl DecisionRepository<'_> {
             .await?;
         Ok(rows
             .iter()
-            .map(|r| CapitalText {
+            .map(|r| RepairText {
+                text_id: r.get(0),
+                decision_id: r.get(1),
+                extracted: r.get(2),
+                full_text: r.get(3),
+            })
+            .collect())
+    }
+
+    /// The opendata texts of the decisions in `(after, upto]` holding a lone
+    /// capital before a word only « par » precedes, a superset of the texts whose
+    /// « par » the caller finds lettered.
+    #[tracing::instrument(name = "db.texts_lettering_par", skip(self), fields(db.system = "postgresql"))]
+    pub async fn texts_lettering_par(&self, after: i64, upto: i64) -> Result<Vec<RepairText>> {
+        let rows = self
+            .conn
+            .query(
+                &format!(
+                    "SELECT t.id, t.decision_id,
+                        {read} AND (d.extract_version IS NULL OR d.extract_version <= $3),
+                        t.full_text
+                 FROM decision_text t
+                 JOIN decisions d ON d.id = t.decision_id
+                 JOIN decision_sources s ON s.source_uid = t.source_uid AND s.source = 'opendata'
+                 WHERE t.decision_id > $1 AND t.decision_id <= $2
+                   AND t.lang = 'fr' AND t.deleted_at IS NULL
+                   AND t.full_text ~ '[A-Z] (lequel|laquelle|lesquels|lesquelles|ailleurs|suite|conséquent|une? |des |deux |trois )'",
+                    read = super::pick::read("t")
+                ),
+                &[&after, &upto, &lj_versions::EXTRACT_VERSION],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| RepairText {
                 text_id: r.get(0),
                 decision_id: r.get(1),
                 extracted: r.get(2),

@@ -1,5 +1,5 @@
 //! European sources: the CEDH (HUDOC) and the CJUE (EUR-Lex). Each language
-//! version of a judgment is a provenance of its own, with its own text.
+//! version of a ruling is a provenance of its own, with its own text.
 
 use std::collections::{HashMap, HashSet};
 
@@ -7,7 +7,7 @@ use anyhow::{anyhow, Result};
 use futures::{StreamExt, TryStreamExt};
 
 use lj_core::decision::Decision;
-use lj_parse::{build_source_fields, parse_cedh, parse_cjue};
+use lj_parse::{build_source_fields, celex_is_opinion, europe_names, parse_cedh, parse_cjue};
 use lj_pg::db::Connection;
 use lj_sources::cedh::CedhResult;
 use lj_sources::curia::CuriaClient;
@@ -79,7 +79,7 @@ fn hudoc_lang(raw: &str) -> Result<&'static str> {
 
 /// The candidate of one language version, `lang` its Publications Office code in
 /// lowercase, written into `source_fields["lang"]`.
-fn html_candidate(
+pub(super) fn html_candidate(
     decision: Decision,
     metadata: &serde_json::Value,
     body_text: &str,
@@ -115,20 +115,18 @@ pub(super) async fn europe_pool() -> Result<deadpool_postgres::Pool> {
     Ok(pool)
 }
 
-/// Lists the HUDOC judgments of a year, French (`HFJUD`) and English (`HEJUD`)
-/// versions alike.
-async fn cedh_judgments(
-    client: &lj_sources::cedh::CedhClient,
-    year: i32,
-) -> Result<Vec<CedhResult>> {
+/// Lists the HUDOC judgments (`HFJUD`, `HEJUD`) and decisions (`HFDEC`, `HEDEC`)
+/// of a year, French and English versions alike.
+async fn cedh_rulings(client: &lj_sources::cedh::CedhClient, year: i32) -> Result<Vec<CedhResult>> {
     use lj_sources::cedh::{parse_results, PAGE_SIZE};
-    let is_judgment = |r: &CedhResult| r.doctype == "HFJUD" || r.doctype == "HEJUD";
+    let is_ruling =
+        |r: &CedhResult| matches!(r.doctype.as_str(), "HFJUD" | "HEJUD" | "HFDEC" | "HEDEC");
     let first = client
         .results_page(year, 0)
         .await
         .map_err(|e| anyhow!("cedh results {year} start=0: {e}"))?;
     let (resultcount, first_rows) = parse_results(&first);
-    let mut rows: Vec<CedhResult> = first_rows.into_iter().filter(is_judgment).collect();
+    let mut rows: Vec<CedhResult> = first_rows.into_iter().filter(is_ruling).collect();
     // HUDOC caps the results of a query.
     let year_end = (resultcount as usize).min(10_000);
     let pages: Vec<Vec<CedhResult>> = futures::stream::iter(
@@ -146,33 +144,72 @@ async fn cedh_judgments(
     .try_collect()
     .await?;
     for page_rows in pages {
-        rows.extend(page_rows.into_iter().filter(is_judgment));
+        rows.extend(page_rows.into_iter().filter(is_ruling));
     }
     Ok(rows)
 }
 
-/// Ingests the CEDH judgments of a range of years, every language version
-/// HUDOC serves. A version already held is skipped; an empty body (the
-/// DOCX→HTML conversion lag, or the French stub of a judgment not yet
-/// translated) is fetched again at the next run.
-async fn run_cedh(start_year: i32, end_year: i32) -> Result<()> {
+/// Which of the rows HUDOC last served empty a sweep asks again. An empty body is
+/// a ruling whose DOCX HUDOC has not converted yet, or the other-language entry
+/// of a ruling published in one language only.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CedhStubs {
+    /// The daily sweep: a stub only while its ruling is recent.
+    Fresh,
+    /// The weekly catch-up: the stubs last asked four weeks ago or more, HUDOC
+    /// publishing a translation months after the ruling.
+    Due,
+}
+
+const STUB_FRESH_DAYS: i64 = 30;
+const STUB_REVISIT_DAYS: i64 = 28;
+
+impl CedhStubs {
+    /// Whether the sweep asks HUDOC for a row not held, `asked` being the day it
+    /// last served it empty.
+    fn asks(
+        self,
+        asked: Option<chrono::NaiveDate>,
+        ruling: Option<chrono::NaiveDate>,
+        today: chrono::NaiveDate,
+    ) -> bool {
+        match (asked, self) {
+            (None, CedhStubs::Fresh) => true,
+            (None, CedhStubs::Due) => false,
+            (Some(_), CedhStubs::Fresh) => {
+                ruling.is_some_and(|d| (today - d).num_days() < STUB_FRESH_DAYS)
+            }
+            (Some(asked), CedhStubs::Due) => (today - asked).num_days() >= STUB_REVISIT_DAYS,
+        }
+    }
+}
+
+/// Ingests the CEDH judgments and decisions of a range of years, every language
+/// version HUDOC serves. A version already held is skipped; an empty body is kept
+/// in the manifest with the day it was asked, and asked again as `stubs` says.
+async fn run_cedh(start_year: i32, end_year: i32, stubs: CedhStubs) -> Result<()> {
     use lj_sources::cedh::{CedhClient, CedhManifest};
 
     let settings = Settings::from_env()?;
     let pool = europe_pool().await?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
 
-    let client = CedhClient::new().with_body_cache(settings.cache_dir());
+    let client = CedhClient::new(&settings.egress_proxy)?.with_body_cache(settings.cache_dir());
     let manifest_path = lj_sources::cedh::manifest_path(&settings.cache_dir());
     let mut manifest = CedhManifest::load(&manifest_path).map_err(|e| anyhow!("manifest: {e}"))?;
 
+    let today = chrono::Utc::now().date_naive();
     let mut total = IngestCounts::default();
+    let (mut gained, mut left) = (0usize, 0usize);
     for year in start_year..=end_year {
-        let mut rows = cedh_judgments(&client, year).await?;
+        let mut rows = cedh_rulings(&client, year).await?;
         let uids: Vec<String> = rows.iter().map(|r| format!("cedh/{}", r.itemid)).collect();
         let held = present_source_uids(&conn, &uids).await?;
         rows.retain(|r| !held.contains(&format!("cedh/{}", r.itemid)));
-        // French first: a judgment's first version creates the decision.
+        let listed = rows.len();
+        rows.retain(|r| stubs.asks(manifest.stubs.get(&r.itemid).copied(), ruling_day(r), today));
+        left += listed - rows.len();
+        // French first: a ruling's first version creates the decision.
         rows.sort_by_key(|r| u8::from(r.language != "FRE"));
 
         let mut counts = IngestCounts::default();
@@ -183,9 +220,11 @@ async fn run_cedh(start_year: i32, end_year: i32) -> Result<()> {
                 .await
                 .map_err(|e| anyhow!("cedh body {}: {e}", row.itemid))?;
             if body.trim().is_empty() {
+                manifest.stubs.insert(row.itemid.clone(), today);
                 counts.empty_skipped += 1;
                 continue;
             }
+            gained += usize::from(manifest.stubs.remove(&row.itemid).is_some());
             let decision = parse_cedh(&body, &row.columns, &row.itemid)
                 .map_err(|e| anyhow!("parse_cedh {}: {e}", row.itemid))?;
             candidates.push(html_candidate(
@@ -225,9 +264,22 @@ async fn run_cedh(start_year: i32, end_year: i32) -> Result<()> {
         updated = total.updated,
         skipped = total.skipped,
         empty = total.empty_skipped,
+        stubs_left = left,
         "ingest_cedh_total"
     );
+    if stubs == CedhStubs::Due && gained > 0 {
+        tracing::warn!(
+            gained,
+            still_empty = total.empty_skipped,
+            "cedh stubs: HUDOC now serves a body the daily sweep no longer asks for"
+        );
+    }
     Ok(())
+}
+
+fn ruling_day(row: &CedhResult) -> Option<chrono::NaiveDate> {
+    let kpdate = row.columns["kpdate"].as_str()?;
+    chrono::NaiveDate::parse_from_str(kpdate.get(..10)?, "%Y-%m-%d").ok()
 }
 
 /// The ISO 639-1 languages of procedure of a CJUE judgment, read from its CDM
@@ -347,12 +399,22 @@ async fn run_cjue(start_year: i32, end_year: i32, short: bool) -> Result<()> {
                 break;
             }
             let celexes: Vec<String> = rows.iter().map(|r| r.celex.clone()).collect();
-            let held = repo
+            let mut held = repo
                 .cjue_languages(&celexes)
                 .await
                 .map_err(|e| anyhow!("cjue_languages: {e}"))?;
+            let opinions: Vec<String> = celexes
+                .iter()
+                .filter(|c| celex_is_opinion(c))
+                .cloned()
+                .collect();
+            for (celex, (langs, fields)) in repo.conclusions_held(&opinions).await? {
+                held.entry(celex)
+                    .or_insert((langs.into_iter().map(|l| (l, i32::MAX)).collect(), fields));
+            }
 
             let mut candidates: Vec<Candidate> = Vec::new();
+            let mut paged: Vec<String> = Vec::new();
             for row in &rows {
                 let published = published.get(&row.celex).map_or(&[][..], Vec::as_slice);
                 let (langs, stored) = match held.get(&row.celex) {
@@ -448,6 +510,10 @@ async fn run_cjue(start_year: i32, end_year: i32, short: bool) -> Result<()> {
                         }
                     }
                 }
+                if celex_is_opinion(&row.celex) && !fetched.is_empty() {
+                    write_opinion(&repo, &row.celex, &predicates, &fetched).await?;
+                    paged.push(row.celex.clone());
+                }
                 for (iso, body, docid) in fetched {
                     let eu = eu_of_iso_639_1(iso).expect("wanted languages are official");
                     let mut fields = predicates.clone();
@@ -474,6 +540,8 @@ async fn run_cjue(start_year: i32, end_year: i32, short: bool) -> Result<()> {
             if !candidates.is_empty() {
                 drain_batch(&conn, candidates, IngestMode::MissingHash, &mut counts).await?;
             }
+            repo.pin_conclusions_pages(&std::mem::take(&mut paged))
+                .await?;
 
             offset += PAGE_SIZE;
             // EUR-Lex caps OFFSET: past it, the next page is empty.
@@ -507,6 +575,40 @@ async fn run_cjue(start_year: i32, end_year: i32, short: bool) -> Result<()> {
         from_curia,
         "ingest_cjue_total"
     );
+    Ok(())
+}
+
+/// Writes an Advocate General's opinion to `conclusions`, beside the page its texts make.
+async fn write_opinion(
+    repo: &DecisionRepository<'_>,
+    celex: &str,
+    predicates: &serde_json::Value,
+    fetched: &[(&'static str, String, Option<u64>)],
+) -> Result<()> {
+    let Some((first_lang, first_body, _)) = fetched.first() else {
+        return Ok(());
+    };
+    let parsed = parse_cjue(first_body, predicates, celex, first_lang)
+        .map_err(|e| anyhow!("parse_cjue {celex}: {e}"))?;
+    let langs: Vec<String> = fetched.iter().map(|(l, _, _)| l.to_string()).collect();
+    let author = predicates[TITLE_FIELD]
+        .as_str()
+        .and_then(super::conclusions::advocate_general);
+    repo.upsert_conclusions(&lj_store::repository::ConclusionsWrite {
+        source: super::conclusions::EUR_LEX,
+        source_uid: celex,
+        jurisdiction_code: "cjue",
+        case_numbers: &parsed.numero_dossiers.unwrap_or_default(),
+        ruled_on: None,
+        delivered_on: super::conclusions::iso_date(parsed.date_lecture.as_deref()),
+        author: author.as_deref(),
+        langs: &langs,
+        source_fields: predicates,
+        public_id: None,
+        summary: None,
+        summary_engine: None,
+    })
+    .await?;
     Ok(())
 }
 
@@ -601,7 +703,12 @@ async fn curia_texts(
 /// Bootstrap CEDH : balaye les années [[`from_year`] (défaut [`CEDH_START_YEAR`]),
 /// courante]. `from_year` cible un backfill sans re-lister le fonds ancien.
 pub async fn ingest_cedh(from_year: Option<i32>) -> Result<()> {
-    run_cedh(from_year.unwrap_or(CEDH_START_YEAR), current_year()).await
+    run_cedh(
+        from_year.unwrap_or(CEDH_START_YEAR),
+        current_year(),
+        CedhStubs::Fresh,
+    )
+    .await
 }
 
 /// Warms the disk cache of the CEDH bodies (`<cache_dir>/cedh/bodies/`) for
@@ -613,14 +720,14 @@ pub async fn cache_cedh(from_year: Option<i32>) -> Result<()> {
     const CACHE_CONCURRENCY: usize = 8;
 
     let settings = Settings::from_env()?;
-    let client = CedhClient::new().with_body_cache(settings.cache_dir());
+    let client = CedhClient::new(&settings.egress_proxy)?.with_body_cache(settings.cache_dir());
     let start_year = from_year.unwrap_or(CEDH_START_YEAR);
     let end_year = current_year();
 
     let mut total_fetched = 0usize;
     let mut total_empty = 0usize;
     for year in start_year..=end_year {
-        let rows = cedh_judgments(&client, year).await?;
+        let rows = cedh_rulings(&client, year).await?;
         let served: Vec<bool> = futures::stream::iter(rows.iter().map(|r| {
             let client = &client;
             async move {
@@ -661,20 +768,42 @@ pub async fn ingest_cjue(short: bool) -> Result<()> {
     run_cjue(CJUE_START_YEAR, current_year(), short).await
 }
 
+/// Weekly catch-up of the daily CEDH sync: the rows of `[N-1, N]` HUDOC served
+/// empty, asked again once their last visit is old enough.
+pub async fn sync_cedh_stubs() -> Result<()> {
+    let year = current_year();
+    run_cedh(year - 1, year, CedhStubs::Due).await
+}
+
 /// Daily CEDH sync over the sliding window `[N-1, N]`: new judgments, the
 /// language versions HUDOC has published since the last run, and the legal summaries.
 pub async fn sync_cedh() -> Result<()> {
+    write_europe_names().await?;
     let year = current_year();
-    run_cedh(year - 1, year).await?;
+    run_cedh(year - 1, year, CedhStubs::Fresh).await?;
+    super::cedh_application::ingest_cedh_applications().await?;
+    super::cedh_link::settle_cedh_steps(lj_store::repository::CedhVisit::Unread).await?;
     super::court_summaries::sync_cedh_summaries(year - 1).await
 }
 
 /// Daily CJUE sync over the sliding window `[N-1, N]`: new judgments, the
 /// languages EUR-Lex has published since the last run, and the court's summaries.
 pub async fn sync_cjue() -> Result<()> {
+    write_europe_names().await?;
     let year = current_year();
     run_cjue(year - 1, year, false).await?;
     super::court_summaries::sync_cjue_summaries(year - 1).await
+}
+
+/// Writes the European courts' names in the other languages on their rows.
+pub(super) async fn write_europe_names() -> Result<()> {
+    let pool = europe_pool().await?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    let named = DecisionRepository::new(&conn)
+        .write_jurisdiction_names(&europe_names())
+        .await?;
+    tracing::info!(named, "europe sync: court names written");
+    Ok(())
 }
 
 /// Page of the joined-cases catch-up, under the CELLAR cap on sorted rows. A
@@ -797,6 +926,19 @@ pub async fn backfill_cjue_titles(dry_run: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_stub_is_asked_daily_while_its_ruling_is_recent_then_every_four_weeks() {
+        let day = |s: &str| chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let today = day("2026-11-16");
+        let (recent, old) = (Some(day("2026-11-01")), Some(day("2025-06-12")));
+        assert!(CedhStubs::Fresh.asks(None, old, today));
+        assert!(CedhStubs::Fresh.asks(Some(day("2026-11-15")), recent, today));
+        assert!(!CedhStubs::Fresh.asks(Some(day("2026-11-15")), old, today));
+        assert!(!CedhStubs::Due.asks(None, old, today));
+        assert!(!CedhStubs::Due.asks(Some(day("2026-11-01")), old, today));
+        assert!(CedhStubs::Due.asks(Some(day("2026-10-19")), old, today));
+    }
 
     #[test]
     fn a_cjue_decision_is_wanted_in_french_english_and_its_languages_of_procedure() {

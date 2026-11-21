@@ -16,11 +16,17 @@ pub(super) const NORM_SCOPE: &str = "slug IS NOT NULL";
 /// The texts of a fond of `$1`, the fond's first types bound at `$2`.
 fn fond_filter(jurisdiction: &str, fond: &str) -> (String, Vec<String>) {
     let (paths, untyped) = lj_norm::norm_fond::fond_paths(jurisdiction, fond);
-    let filter = match untyped {
-        true => format!("jurisdiction = $1 AND ({FIRST_TYPE} = ANY($2) OR {FIRST_TYPE} IS NULL)"),
-        false => format!("jurisdiction = $1 AND {FIRST_TYPE} = ANY($2)"),
-    };
-    (filter, paths)
+    match untyped {
+        // An untyped text's second path is its territory when it has one.
+        true => (
+            format!("jurisdiction = $1 AND NOT coalesce({FIRST_TYPE} = ANY($2), false)"),
+            lj_norm::norm_fond::other_fond_paths(jurisdiction, fond),
+        ),
+        false => (
+            format!("jurisdiction = $1 AND {FIRST_TYPE} = ANY($2)"),
+            paths,
+        ),
+    }
 }
 
 impl DecisionRepository<'_> {

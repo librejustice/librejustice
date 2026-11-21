@@ -17,20 +17,19 @@ const ACTION_RETRAIT: &str =
 
 /// Fallback label: the API rejects an empty one.
 #[cfg(feature = "hydrate")]
-fn default_label() -> String {
+fn default_label(ui: &crate::i18n::ProfileUi) -> String {
     let d = js_sys::Date::new_0();
-    format!(
-        "Clé du {:02}/{:02}/{}",
-        d.get_date(),
-        d.get_month() + 1,
-        d.get_full_year()
-    )
+    (ui.default_key_label)(d.get_date(), d.get_month() + 1, d.get_full_year())
 }
 
 #[component]
 pub fn ApiKeysSettings() -> impl IntoView {
+    let ui = &crate::i18n::use_ui().profile;
+    #[cfg(feature = "hydrate")]
+    let shell = &crate::i18n::use_ui().shell;
     let cles = RwSignal::new(Vec::<ApiKeySummary>::new());
-    let secret = RwSignal::new(None::<String>);
+    // The id of the key the secret opens, so its revocation takes the secret off the screen.
+    let secret = RwSignal::new(None::<(String, String)>);
     let erreur = RwSignal::new(None::<String>);
     let libelle = RwSignal::new(String::new());
     let en_cours = RwSignal::new(false);
@@ -43,7 +42,7 @@ pub fn ApiKeysSettings() -> impl IntoView {
                 .await
             {
                 Ok(resp) => cles.set(resp.items),
-                Err(e) => erreur.set(Some(e.message)),
+                Err(e) => erreur.set(Some(e.failure.text(shell))),
             }
         });
     });
@@ -58,7 +57,7 @@ pub fn ApiKeysSettings() -> impl IntoView {
         {
             let saisi = libelle.get().trim().to_string();
             let nom = if saisi.is_empty() {
-                default_label()
+                default_label(ui)
             } else {
                 saisi
             };
@@ -68,11 +67,11 @@ pub fn ApiKeysSettings() -> impl IntoView {
                     .await
                 {
                     Ok(cree) => {
-                        secret.set(Some(cree.secret));
+                        secret.set(Some((cree.key.id.clone(), cree.secret)));
                         cles.update(|c| c.insert(0, cree.key));
                         libelle.set(String::new());
                     }
-                    Err(e) => erreur.set(Some(e.message)),
+                    Err(e) => erreur.set(Some(e.failure.text(shell))),
                 }
                 en_cours.set(false);
             });
@@ -88,8 +87,13 @@ pub fn ApiKeysSettings() -> impl IntoView {
                 .revoke_api_key(&id)
                 .await
             {
-                Ok(()) => cles.update(|c| c.retain(|k| k.id != id)),
-                Err(e) => erreur.set(Some(e.message)),
+                Ok(()) => {
+                    if secret.with_untracked(|s| s.as_ref().is_some_and(|(key, _)| *key == id)) {
+                        secret.set(None);
+                    }
+                    cles.update(|c| c.retain(|k| k.id != id));
+                }
+                Err(e) => erreur.set(Some(e.failure.text(shell))),
             }
         });
         #[cfg(not(feature = "hydrate"))]
@@ -99,9 +103,12 @@ pub fn ApiKeysSettings() -> impl IntoView {
     view! {
         <div class="flex flex-col gap-3">
             <p class="text-sm text-[var(--color-ink-muted)]">
-                "Une clé donne accès à l'API publique, la même recherche que le connecteur MCP, en REST. Elle est gratuite et se révoque à tout moment."
-                <a href="/api-guide" class="ml-1 text-[var(--color-accent)] underline hover:opacity-80">
-                    "Voir la documentation"
+                {ui.keys_intro}
+                <a
+                    href=crate::jurisdiction::use_reader_scope().href("/api-guide")
+                    class="ml-1 text-[var(--color-accent)] underline hover:opacity-80"
+                >
+                    {ui.keys_docs}
                 </a>
             </p>
 
@@ -109,24 +116,24 @@ pub fn ApiKeysSettings() -> impl IntoView {
                 <input
                     type="text"
                     class=CHAMP
-                    placeholder="Nom de la clé (facultatif)"
+                    placeholder=ui.key_name_placeholder
                     maxlength="64"
                     prop:value=move || libelle.get()
                     on:input:target=move |ev| libelle.set(ev.target().value())
                 />
                 <button type="button" class=BOUTON on:click=creer disabled=move || en_cours.get()>
-                    "Créer une clé"
+                    {ui.create_key}
                 </button>
             </div>
 
             {move || {
                 secret
                     .get()
-                    .map(|s| {
+                    .map(|(_, s)| {
                         view! {
                             <div class="flex flex-col gap-2 rounded-md border border-[var(--color-accent)] bg-[var(--color-vellum)] p-4">
                                 <p class="text-sm font-medium text-[var(--color-ink)]">
-                                    "Copiez cette clé maintenant : elle ne sera plus affichée."
+                                    {ui.copy_key_now}
                                 </p>
                                 <code class="break-all rounded-md bg-[var(--color-parchment)] px-3 py-2 font-mono text-sm text-[var(--color-ink)]">
                                     {s}
@@ -142,7 +149,7 @@ pub fn ApiKeysSettings() -> impl IntoView {
                     .map(|e| {
                         view! {
                             <p class="text-sm text-red-700 dark:text-red-400">
-                                {"La clé n'a pas pu être traitée : "} {e}
+                                {ui.key_failed} {e}
                             </p>
                         }
                     })
@@ -164,7 +171,7 @@ pub fn ApiKeysSettings() -> impl IntoView {
                                 class=ACTION_RETRAIT
                                 on:click=move |_| revoquer(id.clone())
                             >
-                                "Révoquer"
+                                {ui.revoke}
                             </button>
                         </div>
                     }

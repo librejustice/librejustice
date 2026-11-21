@@ -5,18 +5,19 @@ use leptos::prelude::*;
 
 #[component]
 pub fn ResultEmpty(#[prop(into)] query: Signal<String>) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
     move || {
         if query.get().is_empty() {
             return view! {
                 <div class="flex flex-col items-start gap-3 border-t border-[var(--color-rule)] py-16">
                     <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                        "Aucun résultat"
+                        {ui.no_results}
                     </p>
                     <h2 class="font-sans text-2xl text-[var(--color-ink)]">
-                        "Aucune décision ne répond à ces filtres"
+                        {ui.no_decision_for_filters}
                     </h2>
                     <p class="max-w-prose text-[var(--color-ink-muted)]">
-                        "Retirez un filtre, ou élargissez la période."
+                        {ui.remove_a_filter}
                     </p>
                 </div>
             }
@@ -25,15 +26,15 @@ pub fn ResultEmpty(#[prop(into)] query: Signal<String>) -> impl IntoView {
         view! {
             <div class="flex flex-col items-start gap-3 border-t border-[var(--color-rule)] py-16">
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Aucun résultat"
+                    {ui.no_results}
                 </p>
                 <h2 class="font-sans text-2xl text-[var(--color-ink)]">
-                    "Rien trouvé pour «\u{00A0}"{move || query.get()}"\u{00A0}»"
+                    {move || (ui.nothing_found_for)(&query.get())}
                 </h2>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    "Essayez de reformuler avec moins de termes, des synonymes, ou des opérateurs booléens ("
-                    <code class="font-mono">"ET"</code>", "<code class="font-mono">"OU"</code>", "
-                    <code class="font-mono">"SAUF"</code>"). Le mode Reformulation fonctionne mieux avec des formulations naturelles."
+                    {ui.rephrase_before}
+                    <code class="font-mono">{ui.op_and}</code>", "<code class="font-mono">{ui.op_or}</code>", "
+                    <code class="font-mono">{ui.op_not}</code>{ui.rephrase_after}
                 </p>
             </div>
         }

@@ -26,7 +26,7 @@ use lj_store::repository::{
     AnnonceAEnrichir, AnnonceChamps, AnnonceSourceWriteItem, AnnonceWriteItem, AnnonceWriteStats,
     ContenuPose, DecisionRepository, DetailPose, FileEnrichissement, ResultatPose, SondeLiens,
 };
-use lj_vocab::ANNONCE_FOND_MARCHE;
+use lj_vocab::JOURNAL_FOND_MARCHE;
 
 use crate::config::Settings;
 
@@ -669,7 +669,7 @@ pub async fn annonces_regulariser(formes: bool) -> Result<()> {
 async fn regulariser(repo: &DecisionRepository<'_>, formes: bool) -> Result<()> {
     let debut = std::time::Instant::now();
     let orphelines = repo
-        .annonces_orphelines(ANNONCE_FOND_MARCHE)
+        .annonces_orphelines(JOURNAL_FOND_MARCHE)
         .await
         .map_err(|e| anyhow!("orphelines: {e}"))?;
     let mut cles: Vec<String> = Vec::new();
@@ -1498,7 +1498,7 @@ async fn resoudre(repo: &DecisionRepository<'_>, limite: i64, applique: bool) ->
         .filter(|(h, _)| !muets.contains(h))
         .collect();
     let candidates = repo
-        .annonces_a_jumeler(ANNONCE_FOND_MARCHE)
+        .annonces_a_jumeler(JOURNAL_FOND_MARCHE)
         .await
         .map_err(|e| anyhow!("candidates: {e}"))?;
 
@@ -1736,7 +1736,7 @@ async fn jumeler(repo: &DecisionRepository<'_>, applique: bool) -> Result<()> {
         .collect();
 
     let canaux = repo
-        .canaux_plateforme_ouverts(ANNONCE_FOND_MARCHE)
+        .canaux_plateforme_ouverts(JOURNAL_FOND_MARCHE)
         .await
         .map_err(|e| anyhow!("canaux ouverts: {e}"))?;
     let mut vivier: HashMap<String, Vec<&AnnonceChamps>> = HashMap::new();
@@ -1801,7 +1801,7 @@ async fn jumeler(repo: &DecisionRepository<'_>, applique: bool) -> Result<()> {
         .collect();
 
     let candidates = repo
-        .annonces_a_jumeler(ANNONCE_FOND_MARCHE)
+        .annonces_a_jumeler(JOURNAL_FOND_MARCHE)
         .await
         .map_err(|e| anyhow!("candidates au jumelage: {e}"))?;
     let total = candidates.len();
@@ -2079,7 +2079,7 @@ async fn ecrire_resultats(
                 );
                 let item = AnnonceWriteItem {
                     uid: marche_uid_de_resultat(&r.idweb, parent_effectif.as_deref()),
-                    fond: ANNONCE_FOND_MARCHE.to_string(),
+                    fond: JOURNAL_FOND_MARCHE.to_string(),
                     famille_uid: r.nature.map(|n| n.facet_uid().to_string()),
                     // Déjà en forme : le connecteur forme à la construction.
                     titre: r.objet.chars().take(400).collect(),
@@ -2469,7 +2469,7 @@ pub async fn ecrire_resultats_decp(
     applique: bool,
 ) -> Result<(usize, usize, usize, u64)> {
     let marches = repo
-        .marches_clos_sans_resultat(ANNONCE_FOND_MARCHE, depuis)
+        .marches_clos_sans_resultat(JOURNAL_FOND_MARCHE, depuis)
         .await
         .map_err(|e| anyhow!("marchés clos sans résultat: {e}"))?;
     let sirens: Vec<String> = declarations
@@ -2722,7 +2722,7 @@ fn ecrire(c: &AnnonceCanonique) -> AnnonceWriteItem {
     );
     AnnonceWriteItem {
         uid: c.uid.clone(),
-        fond: ANNONCE_FOND_MARCHE.to_string(),
+        fond: JOURNAL_FOND_MARCHE.to_string(),
         famille_uid: c.famille_uid.map(str::to_string),
         titre: c.titre.chars().take(400).collect(),
         description: c.contenu.description.clone(),
@@ -2867,7 +2867,7 @@ async fn tirer_les_fiches(
 
     let file = repo
         .annonces_a_enrichir(
-            ANNONCE_FOND_MARCHE,
+            JOURNAL_FOND_MARCHE,
             &lj_annonces::PRIORITE,
             &lj_annonces::SANS_FICHE,
             limite,
@@ -3080,7 +3080,7 @@ pub async fn annonces_sonder_liens(par_moteur: i64) -> Result<()> {
     let repo = DecisionRepository::new(&conn);
 
     let liens = repo
-        .liens_a_sonder(ANNONCE_FOND_MARCHE, par_moteur)
+        .liens_a_sonder(JOURNAL_FOND_MARCHE, par_moteur)
         .await
         .map_err(|e| anyhow!("liens à sonder: {e}"))?;
     let tirs = annonces::sonde::sonder(&liens, BUDGET_SONDE).await;

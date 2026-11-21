@@ -1,5 +1,5 @@
-//! JOAFE files, in three schemas: `parution` (1901-1996 and since 2020), `PARUTION_JO_ASSOCIATION`
-//! (2004-2019) and `ANNONCE_REF` alone, one file per notice (1997-2003).
+//! JOAFE files, in three schemas: `parution` (1901-1996 and since 2020, in JSON since parution 20260045),
+//! `PARUTION_JO_ASSOCIATION` (2004-2019) and `ANNONCE_REF` alone, one file per notice (1997-2003).
 
 use crate::record::{decompose, parse_any_date, Codec, Column, Record, Spec};
 use crate::tree::{Body, Node};
@@ -40,37 +40,58 @@ pub static SPEC: Spec = Spec::new(&[
     Column {
         name: "page",
         codec: Codec::Int,
-        paths: &["metadonnees/page", "PAGES/@debut"],
+        paths: &["metadonnees/page", "metadonnees/page#", "PAGES/@debut"],
     },
     Column {
         name: "theme1",
         codec: Codec::Int,
-        paths: &["metadonnees/themes/theme/@code", "THEMES/THEME/@code"],
+        paths: &[
+            "metadonnees/themes/theme/@code",
+            "metadonnees/themes/theme[]/theme/code",
+            "THEMES/THEME/@code",
+        ],
     },
     Column {
         name: "theme1_label",
         codec: Codec::Dict(dict::JOAFE_THEME),
-        paths: &["metadonnees/themes/theme"],
+        paths: &[
+            "metadonnees/themes/theme",
+            "metadonnees/themes/theme[]/theme/Libelle",
+        ],
     },
     Column {
         name: "theme2",
         codec: Codec::Int,
-        paths: &["metadonnees/themes/theme/@code", "THEMES/THEME/@code"],
+        paths: &[
+            "metadonnees/themes/theme/@code",
+            "metadonnees/themes/theme[]/theme/code",
+            "THEMES/THEME/@code",
+        ],
     },
     Column {
         name: "theme2_label",
         codec: Codec::Dict(dict::JOAFE_THEME),
-        paths: &["metadonnees/themes/theme"],
+        paths: &[
+            "metadonnees/themes/theme",
+            "metadonnees/themes/theme[]/theme/Libelle",
+        ],
     },
     Column {
         name: "theme3",
         codec: Codec::Int,
-        paths: &["metadonnees/themes/theme/@code", "THEMES/THEME/@code"],
+        paths: &[
+            "metadonnees/themes/theme/@code",
+            "metadonnees/themes/theme[]/theme/code",
+            "THEMES/THEME/@code",
+        ],
     },
     Column {
         name: "theme3_label",
         codec: Codec::Dict(dict::JOAFE_THEME),
-        paths: &["metadonnees/themes/theme"],
+        paths: &[
+            "metadonnees/themes/theme",
+            "metadonnees/themes/theme[]/theme/Libelle",
+        ],
     },
     Column {
         name: "lieu",
@@ -78,6 +99,8 @@ pub static SPEC: Spec = Spec::new(&[
         paths: &[
             "contenu/*/lieuDeclaration/lieuSousPref",
             "contenu/*/lieuDeclaration/lieuPref",
+            "contenu/*/lieuDeclaration/lieuSousPref/libelle",
+            "contenu/*/lieuDeclaration/lieuPref/libelle",
             "LIEU_DECLARATION",
         ],
     },
@@ -321,6 +344,16 @@ fn take_children(node: &mut Node, names: &[&str]) -> Vec<Node> {
     taken
 }
 
+/// The notices of a `listeAnnonces`, repeated in XML, in arrays in JSON.
+const NOTICES: &[&str] = &[
+    "annonce",
+    "rectificatif",
+    "annulation",
+    "annonce[]",
+    "rectificatif[]",
+    "annulation[]",
+];
+
 /// The root with its notices taken out, and the notices.
 pub fn split(mut root: Node) -> Result<(Node, Vec<Node>), Error> {
     let items = match root.name.as_str() {
@@ -329,7 +362,25 @@ pub fn split(mut root: Node) -> Result<(Node, Vec<Node>), Error> {
                 return Err(Error::new("empty <parution>"));
             };
             match children.iter_mut().find(|c| c.name == "listeAnnonces") {
-                Some(list) => take_children(list, &["annonce", "rectificatif"]),
+                Some(list) => {
+                    let mut items = Vec::new();
+                    for taken in take_children(list, NOTICES) {
+                        match taken.body {
+                            Body::Children(listed) if taken.name.ends_with("[]") => {
+                                items.extend(listed)
+                            }
+                            Body::Empty if taken.name.ends_with("[]") => {}
+                            _ => items.push(taken),
+                        }
+                    }
+                    if let Some(other) = list.children().first() {
+                        return Err(Error::new(format!(
+                            "<{}> in <listeAnnonces> is no notice",
+                            other.name
+                        )));
+                    }
+                    items
+                }
                 None => Vec::new(),
             }
         }

@@ -9,7 +9,7 @@
 
 use leptos::either::{Either, EitherOf3};
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use lj_dtos::{
@@ -19,10 +19,11 @@ use lj_dtos::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, Failure};
 use crate::components::own_page_description;
 use crate::components::search::{CardView, ResultCard};
 use crate::helpers::{format_iso_date, group_thousands, split_entity_uid};
+use crate::i18n::{DirectoryUi, EntityUi};
 use crate::pages::decision_page::data::{sendable, PageError};
 use crate::seo::CANONICAL_BASE;
 
@@ -40,7 +41,7 @@ fn client() -> ApiClient {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EntityDecisionsResult {
     pub response: Option<EntityDecisionsResponse>,
-    pub error: Option<String>,
+    pub error: Option<crate::api::Failure>,
 }
 
 /// Fiche (identité + agrégats), bloquante SSR pour le SEO. Uid inconnu ⇒ 404.
@@ -48,7 +49,7 @@ pub async fn fetch_entity(ns: String, id: String) -> Result<EntityPageResponse, 
     if ns.trim().is_empty() || id.trim().is_empty() {
         return Err(PageError {
             status: 400,
-            message: "Entité invalide".to_string(),
+            failure: Failure::InvalidEntity,
         });
     }
     let data = client().fetch_entity(&ns, &id).await?;
@@ -76,7 +77,7 @@ pub async fn fetch_entity_decisions(ns: String, id: String, page: i64) -> Entity
         },
         Err(err) => EntityDecisionsResult {
             response: None,
-            error: Some(err.message),
+            error: Some(err.failure),
         },
     }
 }
@@ -179,20 +180,20 @@ fn EntityError(err: PageError) -> impl IntoView {
     if err.status == 404 {
         crate::pages::not_found::signaler_lien_mort();
     }
+    let all = crate::i18n::use_ui();
     let eyebrow = if err.status == 404 {
-        "Introuvable"
+        all.shell.not_found
     } else {
-        "Erreur"
+        all.shell.error
     };
-    let title = "Entité introuvable - LibreJustice";
     view! {
-        <Title text=title />
+        <Title text=all.entity.not_found_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
                 {eyebrow}
             </p>
-            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.message}</h1>
+            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.failure.text(&crate::i18n::use_ui().shell)}</h1>
         </div>
     }
 }
@@ -234,8 +235,9 @@ fn EntityLoaded(
     let (ns, local) = split_entity_uid(&header.uid);
     let (ns, local) = (ns.to_string(), local.to_string());
     let base_path = lj_vocab::entity_path(&ns, &local);
+    let ui = &crate::i18n::use_ui().entity;
 
-    let category = namespace_label(&ns);
+    let category = namespace_label(ui, &ns);
     let title = header.denomination.clone();
     let page_title = format!("{title} - LibreJustice");
     let url = format!("{CANONICAL_BASE}{base_path}");
@@ -244,12 +246,12 @@ fn EntityLoaded(
         let document = url.clone();
         Effect::new(move |_| crate::reads::report(lj_dtos::ReadKind::Entity, &document));
     }
-    let description = meta_description(&header, &stats, category);
+    let description = meta_description(ui, &header, &stats, category);
     let jsonld = build_json_ld(&header, &url, category);
 
     let is_lawyer = matches!(ns.as_str(), "cnb" | "oacc") && header.nature == "physique";
-    let denominations = denominations_section(&header);
-    let contentieux = contentieux_section(&stats, matches!(ns.as_str(), "cnb" | "oacc"));
+    let denominations = denominations_section(ui, &header);
+    let contentieux = contentieux_section(ui, &stats, matches!(ns.as_str(), "cnb" | "oacc"));
     let documents = (ns == "siren").then(|| view! { <DocumentsSection siren=local.clone() /> });
 
     view! {
@@ -260,10 +262,13 @@ fn EntityLoaded(
         <Meta property="og:title" content=title.clone() />
         <Meta property="og:description" content=description.clone() />
         <Meta property="og:url" content=url.clone() />
-        <Meta property="og:locale" content="fr_FR" />
+        <Meta
+            property="og:locale"
+            content=crate::i18n::use_reader_lang().get().og_locale()
+        />
         <Meta property="og:image" content=crate::seo::OG_IMAGE />
         {is_lawyer.then(|| view! { <Meta name="robots" content="noindex" /> })}
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto w-full max-w-4xl flex-1 px-4 py-10 sm:px-6 lg:px-8">
@@ -278,24 +283,24 @@ fn EntityLoaded(
 }
 
 /// Libellé de catégorie d'un namespace registre.
-fn namespace_label(ns: &str) -> &'static str {
+fn namespace_label(ui: &'static EntityUi, ns: &str) -> &'static str {
     match ns {
-        "siren" => "Entreprise",
-        "rna" => "Association",
-        "cnb" => "Avocat",
-        "oacc" => "Avocat aux Conseils",
-        _ => "Entité",
+        "siren" => ui.company,
+        "rna" => ui.association,
+        "cnb" => ui.lawyer,
+        "oacc" => ui.supreme_lawyer,
+        _ => ui.entity,
     }
 }
 
 /// Forme lisible de l'uid registre (`SIREN 552 043 002`, `RNA W123456789`…).
 /// `None` si le namespace n'a pas de forme d'affichage dédiée.
-fn registry_label(ns: &str, local: &str) -> Option<String> {
+fn registry_label(ui: &EntityUi, ns: &str, local: &str) -> Option<String> {
     match ns {
         "siren" => Some(format!("SIREN {}", format_siren(local))),
         "rna" => Some(format!("RNA {}", local.to_uppercase())),
         "cnb" => Some(format!("CNB {local}")),
-        "oacc" => Some(format!("Avocats aux Conseils · {local}")),
+        "oacc" => Some(format!("{} · {local}", ui.supreme_lawyers)),
         _ => None,
     }
 }
@@ -310,18 +315,16 @@ fn format_siren(s: &str) -> String {
     }
 }
 
-fn meta_description(header: &EntityHeaderDto, stats: &EntityStatsDto, category: &str) -> String {
-    let count = stats.decision_count;
-    let decisions = match count {
-        0 => "aucune décision référencée".to_string(),
-        1 => "1 décision référencée".to_string(),
-        n => format!("{} décisions référencées", group_thousands(n)),
-    };
-    format!(
-        "{}, {}. {} sur LibreJustice.",
-        header.denomination,
-        category.to_lowercase(),
-        decisions,
+fn meta_description(
+    ui: &EntityUi,
+    header: &EntityHeaderDto,
+    stats: &EntityStatsDto,
+    category: &str,
+) -> String {
+    (ui.meta_description)(
+        &header.denomination,
+        &category.to_lowercase(),
+        &(ui.decisions_referenced)(stats.decision_count),
     )
 }
 
@@ -351,8 +354,10 @@ fn build_json_ld(header: &EntityHeaderDto, url: &str, category: &str) -> String 
 
 #[component]
 fn EntityHeader(header: EntityHeaderDto, category: &'static str) -> impl IntoView {
+    let all = crate::i18n::use_ui();
+    let ui = &all.entity;
     let (ns, local) = split_entity_uid(&header.uid);
-    let registry = registry_label(ns, local);
+    let registry = registry_label(ui, ns, local);
 
     let forme_badge = header.forme.clone().map(neutral_badge);
     let registry_badge = registry.map(|r| {
@@ -366,14 +371,14 @@ fn EntityHeader(header: EntityHeaderDto, category: &'static str) -> impl IntoVie
     let state_badge = if header.active {
         view! {
             <span class="inline-flex items-center rounded-full border border-[var(--color-accent)] px-2.5 py-0.5 text-xs text-[var(--color-accent)]">
-                "En activité"
+                {ui.active}
             </span>
         }
         .into_any()
     } else {
         view! {
             <span class="inline-flex items-center rounded-full border border-[var(--color-rule)] px-2.5 py-0.5 text-xs text-[var(--color-ink-subtle)]">
-                "Cessée"
+                {all.directory.ceased}
             </span>
         }
         .into_any()
@@ -385,7 +390,7 @@ fn EntityHeader(header: EntityHeaderDto, category: &'static str) -> impl IntoVie
         .filter(|s| !s.eq_ignore_ascii_case(&header.denomination))
         .map(|s| {
             view! {
-                <p class="text-sm text-[var(--color-ink-subtle)]">{format!("Sigle : {s}")}</p>
+                <p class="text-sm text-[var(--color-ink-subtle)]">{(ui.acronym)(&s)}</p>
             }
         });
 
@@ -420,7 +425,7 @@ fn neutral_badge(text: String) -> AnyView {
 
 /// Timeline des dénominations (plus récente en tête) — rendue seulement à partir
 /// de deux dénominations datées (une seule = déjà l'en-tête).
-fn denominations_section(header: &EntityHeaderDto) -> Option<AnyView> {
+fn denominations_section(ui: &'static EntityUi, header: &EntityHeaderDto) -> Option<AnyView> {
     if header.denominations.len() < 2 {
         return None;
     }
@@ -429,7 +434,7 @@ fn denominations_section(header: &EntityHeaderDto) -> Option<AnyView> {
         .iter()
         .rev()
         .map(|d| {
-            let period = denomination_period(d.date_debut.as_deref(), d.date_fin.as_deref());
+            let period = denomination_period(ui, d.date_debut.as_deref(), d.date_fin.as_deref());
             let period_view = period.map(|p| {
                 view! { <span class="text-xs text-[var(--color-ink-subtle)]">{p}</span> }
             });
@@ -443,10 +448,8 @@ fn denominations_section(header: &EntityHeaderDto) -> Option<AnyView> {
         .collect_view();
     Some(
         view! {
-            <section aria-label="Chronologie des dénominations" class="mt-10">
-                <h2 class="font-sans text-base text-[var(--color-ink)]">
-                    "Chronologie des dénominations"
-                </h2>
+            <section aria-label=ui.denominations class="mt-10">
+                <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.denominations}</h2>
                 <ol class="mt-4 flex flex-col gap-2">{rows}</ol>
             </section>
         }
@@ -454,31 +457,31 @@ fn denominations_section(header: &EntityHeaderDto) -> Option<AnyView> {
     )
 }
 
-fn denomination_period(debut: Option<&str>, fin: Option<&str>) -> Option<String> {
+fn denomination_period(ui: &EntityUi, debut: Option<&str>, fin: Option<&str>) -> Option<String> {
+    let dates = &crate::i18n::use_ui().dates;
     match (debut, fin) {
         (Some(d), Some(f)) => Some(format!(
             "{} – {}",
-            format_iso_date(Some(d)),
-            format_iso_date(Some(f))
+            format_iso_date(dates, Some(d)),
+            format_iso_date(dates, Some(f))
         )),
-        (Some(d), None) => Some(format!("depuis {}", format_iso_date(Some(d)))),
-        (None, Some(f)) => Some(format!("jusqu'au {}", format_iso_date(Some(f)))),
+        (Some(d), None) => Some((ui.since)(&format_iso_date(dates, Some(d)))),
+        (None, Some(f)) => Some((ui.until)(&format_iso_date(dates, Some(f)))),
         (None, None) => None,
     }
 }
 
 // ── Contentieux (agrégats) ────────────────────────────────────────────────────
 
-fn contentieux_section(stats: &EntityStatsDto, is_avocat: bool) -> AnyView {
-    // Pour un avocat, `side` est le côté qu'il représente, pas le sien.
+fn contentieux_section(ui: &'static EntityUi, stats: &EntityStatsDto, is_avocat: bool) -> AnyView {
     let (applicant_label, defendant_label) = if is_avocat {
-        ("En demande", "En défense")
+        (ui.for_applicant, ui.for_defendant)
     } else {
-        ("Comme demandeur", "Comme défendeur")
+        (ui.as_applicant, ui.as_defendant)
     };
     let tiles = view! {
         <div class="grid grid-cols-3 gap-4">
-            {stat_tile("Décisions", stats.decision_count)}
+            {stat_tile(ui.decisions, stats.decision_count)}
             {stat_tile(applicant_label, stats.as_applicant)}
             {stat_tile(defendant_label, stats.as_defendant)}
         </div>
@@ -486,23 +489,21 @@ fn contentieux_section(stats: &EntityStatsDto, is_avocat: bool) -> AnyView {
 
     if stats.decision_count == 0 {
         return view! {
-            <section aria-label="Contentieux" class="mt-10">
-                <h2 class="font-sans text-base text-[var(--color-ink)]">"Contentieux"</h2>
+            <section aria-label=ui.litigation class="mt-10">
+                <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.litigation}</h2>
                 {tiles}
-                <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">
-                    "Aucune décision ne référence cette entité pour l'instant."
-                </p>
+                <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">{ui.no_decision}</p>
             </section>
         }
         .into_any();
     }
 
-    let by_jurisdiction = jurisdiction_block(&stats.by_jurisdiction);
-    let by_year = year_block(&stats.by_year);
+    let by_jurisdiction = jurisdiction_block(ui, &stats.by_jurisdiction);
+    let by_year = year_block(ui, &stats.by_year);
 
     view! {
-        <section aria-label="Contentieux" class="mt-10">
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Contentieux"</h2>
+        <section aria-label=ui.litigation class="mt-10">
+            <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.litigation}</h2>
             {tiles}
             <div class="mt-6 grid grid-cols-1 gap-8 md:grid-cols-2">
                 {by_jurisdiction}
@@ -514,10 +515,11 @@ fn contentieux_section(stats: &EntityStatsDto, is_avocat: bool) -> AnyView {
 }
 
 fn stat_tile(label: &'static str, value: i64) -> AnyView {
+    let numbers = &crate::i18n::use_ui().numbers;
     view! {
         <div class="rounded-lg border border-[var(--color-rule)] bg-[var(--color-vellum)]/40 p-4">
             <p class="font-sans text-2xl text-[var(--color-ink)] tabular-nums">
-                {group_thousands(value)}
+                {group_thousands(numbers, value)}
             </p>
             <p class="mt-1 text-xs uppercase tracking-[0.14em] text-[var(--color-ink-subtle)]">
                 {label}
@@ -529,7 +531,7 @@ fn stat_tile(label: &'static str, value: i64) -> AnyView {
 
 /// Répartition par juridiction (barres CSS horizontales, décroissant).
 /// Libellés abrégés (« CA Agen », « TJ Lille ») — le complet reste en tooltip.
-fn jurisdiction_block(items: &[EntityKeyCountDto]) -> Option<AnyView> {
+fn jurisdiction_block(ui: &EntityUi, items: &[EntityKeyCountDto]) -> Option<AnyView> {
     if items.is_empty() {
         return None;
     }
@@ -538,7 +540,7 @@ fn jurisdiction_block(items: &[EntityKeyCountDto]) -> Option<AnyView> {
         .iter()
         .map(|i| bar_row(&abbreviate_jurisdiction(&i.label), &i.label, i.count, max))
         .collect_view();
-    Some(sub_block("Par juridiction", rows))
+    Some(sub_block(ui.by_jurisdiction, rows))
 }
 
 /// Abréviation conventionnelle d'un libellé de juridiction : famille en sigle
@@ -560,6 +562,7 @@ fn abbreviate_jurisdiction(label: &str) -> String {
         ("Défenseur des droits", "DDD"),
         ("Autorité de la concurrence", "Aut. conc."),
         ("Conseil de la concurrence", "Cons. conc."),
+        ("Autorité des marchés financiers", "AMF"),
     ];
     if let Some((_, court)) = EXACT.iter().find(|(full, _)| *full == label) {
         return (*court).to_string();
@@ -597,7 +600,7 @@ fn abbreviate_jurisdiction(label: &str) -> String {
 }
 
 /// Répartition par année (barres CSS, ordre chronologique).
-fn year_block(items: &[EntityYearCountDto]) -> Option<AnyView> {
+fn year_block(ui: &EntityUi, items: &[EntityYearCountDto]) -> Option<AnyView> {
     if items.is_empty() {
         return None;
     }
@@ -609,7 +612,7 @@ fn year_block(items: &[EntityYearCountDto]) -> Option<AnyView> {
             bar_row(&year, &year, i.count, max)
         })
         .collect_view();
-    Some(sub_block("Par année", rows))
+    Some(sub_block(ui.by_year, rows))
 }
 
 fn sub_block(title: &'static str, rows: impl IntoView + 'static) -> AnyView {
@@ -626,6 +629,7 @@ fn sub_block(title: &'static str, rows: impl IntoView + 'static) -> AnyView {
 
 /// Une barre : libellé (complet en tooltip), jauge proportionnelle, compteur.
 fn bar_row(label: &str, full: &str, count: i64, max: i64) -> AnyView {
+    let numbers = &crate::i18n::use_ui().numbers;
     let pct = ((count as f64 / max as f64) * 100.0).round().max(3.0);
     view! {
         <li class="flex items-center gap-3">
@@ -642,7 +646,7 @@ fn bar_row(label: &str, full: &str, count: i64, max: i64) -> AnyView {
                 />
             </span>
             <span class="w-10 shrink-0 text-right text-xs tabular-nums text-[var(--color-ink-subtle)]">
-                {group_thousands(count)}
+                {group_thousands(numbers, count)}
             </span>
         </li>
     }
@@ -656,48 +660,51 @@ fn bar_row(label: &str, full: &str, count: i64, max: i64) -> AnyView {
 /// amont indisponible) → la section n'existe pas dans le flux.
 #[component]
 fn RegistreSection(registre: Resource<Option<EntityRegistreResponse>>) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().entity;
     view! {
         <Suspense fallback=|| ()>
-            {move || Suspend::new(async move { registre.await.and_then(registre_view) })}
+            {move || Suspend::new(async move { registre.await.and_then(|data| registre_view(ui, data)) })}
         </Suspense>
     }
 }
 
-fn registre_view(data: EntityRegistreResponse) -> Option<AnyView> {
-    if data.entreprise.is_none() && data.annonces.is_empty() && data.liens.is_empty() {
+fn registre_view(ui: &'static EntityUi, data: EntityRegistreResponse) -> Option<AnyView> {
+    if data.entreprise.is_none() && data.journals.is_empty() && data.liens.is_empty() {
         return None;
     }
-    let entreprise = data.entreprise.map(entreprise_block);
+    let entreprise = data.entreprise.map(|e| entreprise_block(ui, e));
     let liens = liens_block(data.liens);
     // Une seule section « Annonces », toutes origines fusionnées : nos lignes par
-    // rôle d'arête et le live DILA par fond, projetés dans le même `AnnonceHit`.
-    let annonces = annonces_section(data.annonces);
+    // rôle d'arête et le live DILA par fond, projetés dans le même `JournalHit`.
+    let journals = journals_section(ui, data.journals);
     let registre = (entreprise.is_some() || liens.is_some()).then(|| {
         view! {
-            <section aria-label="Registre" class="mt-10">
-                <h2 class="font-sans text-base text-[var(--color-ink)]">"Registre"</h2>
+            <section aria-label=ui.registry class="mt-10">
+                <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.registry}</h2>
                 {entreprise}
                 {liens}
             </section>
         }
     });
-    Some(view! { {registre} {annonces} }.into_any())
+    Some(view! { {registre} {journals} }.into_any())
 }
 
 /// Identité enrichie + dirigeants + finances (entreprises `siren:`).
-fn entreprise_block(e: RegistreEntrepriseDto) -> AnyView {
+fn entreprise_block(ui: &'static EntityUi, e: RegistreEntrepriseDto) -> AnyView {
+    let numbers = &crate::i18n::use_ui().numbers;
+    let dates = &crate::i18n::use_ui().dates;
     let mut identity: Vec<(&'static str, String)> = Vec::new();
     if let Some(adresse) = e.siege_adresse {
-        identity.push(("Siège", adresse));
+        identity.push((ui.head_office, adresse));
     }
     if let Some(naf) = e.activite_naf {
-        identity.push(("Activité (NAF)", naf));
+        identity.push((ui.activity, naf));
     }
     if let Some(date) = e.date_creation {
-        identity.push(("Création", format_iso_date(Some(&date))));
+        identity.push((ui.created, format_iso_date(dates, Some(&date))));
     }
     if let Some(effectif) = e.effectif {
-        identity.push(("Effectif", effectif));
+        identity.push((ui.workforce, effectif));
     }
     let identity_rows = (!identity.is_empty()).then(|| {
         let rows = identity
@@ -737,7 +744,7 @@ fn entreprise_block(e: RegistreEntrepriseDto) -> AnyView {
         view! {
             <div class="mt-6 flex flex-col gap-2">
                 <h3 class="text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                    "Dirigeants"
+                    {ui.officers}
                 </h3>
                 <ul class="flex flex-col gap-1.5">{rows}</ul>
             </div>
@@ -751,10 +758,10 @@ fn entreprise_block(e: RegistreEntrepriseDto) -> AnyView {
             .map(|f| {
                 let ca = f
                     .chiffre_affaires
-                    .map(|v| format!("CA {}", format_euros(v)));
+                    .map(|v| (ui.turnover)(&(numbers.euros)(&group_thousands(numbers, v))));
                 let resultat = f
                     .resultat_net
-                    .map(|v| format!("résultat {}", format_euros(v)));
+                    .map(|v| (ui.net_result)(&(numbers.euros)(&group_thousands(numbers, v))));
                 let detail = [ca, resultat]
                     .into_iter()
                     .flatten()
@@ -771,7 +778,7 @@ fn entreprise_block(e: RegistreEntrepriseDto) -> AnyView {
         view! {
             <div class="mt-6 flex flex-col gap-2">
                 <h3 class="text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                    "Comptes publiés"
+                    {ui.accounts}
                 </h3>
                 <ul class="flex flex-col gap-1.5">{rows}</ul>
             </div>
@@ -786,25 +793,25 @@ fn entreprise_block(e: RegistreEntrepriseDto) -> AnyView {
     .into_any()
 }
 
-/// Montant en euros, signe conservé, milliers groupés (`format_siren` du pauvre
-/// pour la monnaie : `-2 469 630 €`).
-fn format_euros(value: i64) -> String {
-    format!("{} €", group_thousands(value))
-}
-
 /// The entity's notices, one block per group. The group is an edge role for our
 /// rows ("Marchés publics en cours"), a fond for the live DILA ("Vie des
 /// entreprises", "Journal officiel des associations"). One of our rows leads to its
 /// page `/notice/fr/{uid}`; a live row points to the official source, never proxied.
-fn annonces_section(groups: Vec<lj_dtos::EntityAnnonceGroupDto>) -> Option<AnyView> {
+fn journals_section(
+    ui: &'static EntityUi,
+    groups: Vec<lj_dtos::EntityJournalGroupDto>,
+) -> Option<AnyView> {
     if groups.is_empty() {
         return None;
     }
-    let blocs = groups.into_iter().map(annonce_group_block).collect_view();
+    let blocs = groups
+        .into_iter()
+        .map(|g| annonce_group_block(ui, g))
+        .collect_view();
     Some(
         view! {
-            <section aria-label="Annonces" class="mt-10">
-                <h2 class="font-sans text-base text-[var(--color-ink)]">"Annonces"</h2>
+            <section aria-label=ui.notices class="mt-10">
+                <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.notices}</h2>
                 {blocs}
             </section>
         }
@@ -812,13 +819,13 @@ fn annonces_section(groups: Vec<lj_dtos::EntityAnnonceGroupDto>) -> Option<AnyVi
     )
 }
 
-fn annonce_group_block(g: lj_dtos::EntityAnnonceGroupDto) -> AnyView {
+fn annonce_group_block(ui: &EntityUi, g: lj_dtos::EntityJournalGroupDto) -> AnyView {
     let shown = g.items.len() as i64;
     let rows = g.items.into_iter().map(annonce_row).collect_view();
     let more = (g.total > shown).then(|| {
         view! {
             <p class="text-xs text-[var(--color-ink-subtle)]">
-                {format!("{} annonces au total.", group_thousands(g.total))}
+                {(ui.notices_total)(g.total)}
             </p>
         }
     });
@@ -837,23 +844,24 @@ fn annonce_group_block(g: lj_dtos::EntityAnnonceGroupDto) -> AnyView {
 /// Une annonce en ligne. La date affichée est celle qui compte pour le fond :
 /// l'échéance quand il y en a une (une consultation se lit par sa date limite),
 /// la parution sinon.
-fn annonce_row(a: lj_dtos::AnnonceHit) -> AnyView {
+fn annonce_row(a: lj_dtos::JournalHit) -> AnyView {
+    let dates = &crate::i18n::use_ui().dates;
     let date = a
         .echeance
         .as_deref()
         .unwrap_or(&a.date_publication)
         .get(..10)
-        .map(|d| format_iso_date(Some(d)))
+        .map(|d| format_iso_date(dates, Some(d)))
         .unwrap_or_else(|| "—".to_string());
     let libelle = view! {
         <span class="min-w-0 flex-1 truncate text-sm text-[var(--color-ink)]">{a.titre}</span>
     };
     // Nos lignes ont une fiche chez nous ; les lignes live n'ont que leur source,
     // et un fond sans `url_action` (un JOAFE sans PDF) ne pose pas de lien.
-    let cible = if a.fond == lj_vocab::ANNONCE_FOND_MARCHE {
+    let cible = if a.fond == lj_vocab::JOURNAL_FOND_MARCHE {
         EitherOf3::A(view! {
             <A
-                href=lj_vocab::notice_path(&a.uid)
+                href=lj_vocab::notice_path("FR", &a.uid)
                 attr:class="min-w-0 flex-1 truncate text-sm text-[var(--color-ink)] hover:text-[var(--color-accent)]"
             >
                 {libelle}
@@ -933,9 +941,10 @@ fn DocumentsSection(siren: String) -> impl IntoView {
         siren.get_value()
     );
     let note = "text-sm text-[var(--color-ink-muted)]";
+    let ui = &crate::i18n::use_ui().entity;
     view! {
-        <section aria-label="Actes et comptes annuels" class="mt-10">
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Actes et comptes annuels"</h2>
+        <section aria-label=ui.documents class="mt-10">
+            <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.documents}</h2>
             {move || match state.get() {
                 Documents::Idle => view! {
                     <button
@@ -943,25 +952,25 @@ fn DocumentsSection(siren: String) -> impl IntoView {
                         on:click=load
                         class="mt-4 rounded-full border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 py-1 text-xs text-[var(--color-ink-muted)] hover:border-[var(--color-accent)] hover:text-[var(--color-accent)]"
                     >
-                        "Afficher les documents déposés"
+                        {ui.show_documents}
                     </button>
                 }
                 .into_any(),
-                Documents::Loading => view! { <p class=format!("mt-4 {note}")>"Chargement…"</p> }.into_any(),
+                Documents::Loading => view! { <p class=format!("mt-4 {note}")>{ui.loading}</p> }.into_any(),
                 Documents::Loaded(response) if response.comptes.is_empty() && response.actes.is_empty() => {
-                    view! { <p class=format!("mt-4 {note}")>"Aucun document déposé au registre."</p> }.into_any()
+                    view! { <p class=format!("mt-4 {note}")>{ui.no_documents}</p> }.into_any()
                 }
                 Documents::Loaded(response) => view! {
-                    {documents_list("Comptes annuels", response.comptes)}
-                    {documents_list("Actes", response.actes)}
-                    <p class="mt-4 text-xs text-[var(--color-ink-subtle)]">"Source : INPI, registre national des entreprises."</p>
+                    {documents_list(ui.annual_accounts, response.comptes)}
+                    {documents_list(ui.deeds, response.actes)}
+                    <p class="mt-4 text-xs text-[var(--color-ink-subtle)]">{ui.documents_source}</p>
                 }
                 .into_any(),
                 Documents::Failed => view! {
                     <p class=format!("mt-4 {note}")>
-                        "Liste indisponible pour le moment. "
+                        {ui.documents_unavailable}
                         <a href=inpi.clone() target="_blank" rel="noopener external" class="text-[var(--color-accent)] underline hover:opacity-80">
-                            "Consulter sur data.inpi.fr"
+                            {ui.see_inpi}
                         </a>
                     </p>
                 }
@@ -1002,7 +1011,8 @@ fn documents_list(
 
 #[component]
 fn DocumentRow(document: lj_dtos::EntityDocumentDto) -> impl IntoView {
-    let filed = format_iso_date(document.filed.as_deref());
+    let dates = &crate::i18n::use_ui().dates;
+    let filed = format_iso_date(dates, document.filed.as_deref());
     view! {
         <li class="flex gap-3 text-sm">
             <span class="w-28 shrink-0 text-[var(--color-ink-subtle)]">{filed}</span>
@@ -1027,30 +1037,36 @@ fn DecisionsSection(
     page: Signal<i64>,
 ) -> impl IntoView {
     let base_path = StoredValue::new(base_path);
+    let all = crate::i18n::use_ui();
+    let ui = &all.entity;
     view! {
-        <section aria-label="Décisions" class="mt-10">
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Décisions"</h2>
+        <section aria-label=ui.decisions class="mt-10">
+            <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.decisions}</h2>
             <Suspense fallback=move || {
                 view! {
-                    <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">
-                        "Chargement des décisions…"
-                    </p>
+                    <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">{ui.loading_decisions}</p>
                 }
             }>
                 {move || Suspend::new(async move {
                     let resolved = decisions.await;
-                    decisions_view(resolved, &base_path.get_value(), page.get())
+                    decisions_view(ui, &all.directory, resolved, &base_path.get_value(), page.get())
                 })}
             </Suspense>
         </section>
     }
 }
 
-fn decisions_view(resolved: EntityDecisionsResult, base_path: &str, page: i64) -> AnyView {
+fn decisions_view(
+    ui: &'static EntityUi,
+    directory: &'static DirectoryUi,
+    resolved: EntityDecisionsResult,
+    base_path: &str,
+    page: i64,
+) -> AnyView {
     if let Some(err) = resolved.error {
         return view! {
             <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">
-                {format!("Décisions indisponibles ({err}).")}
+                {(ui.decisions_unavailable)(&err.text(&crate::i18n::use_ui().shell))}
             </p>
         }
         .into_any();
@@ -1060,9 +1076,7 @@ fn decisions_view(resolved: EntityDecisionsResult, base_path: &str, page: i64) -
     };
     if response.items.is_empty() {
         return view! {
-            <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">
-                "Aucune décision sur cette page."
-            </p>
+            <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">{ui.no_decision_on_page}</p>
         }
         .into_any();
     }
@@ -1088,9 +1102,9 @@ fn decisions_view(resolved: EntityDecisionsResult, base_path: &str, page: i64) -
         .items
         .into_iter()
         .enumerate()
-        .map(|(index, item)| decision_result_card(item, index, page, hit_paths.clone()))
+        .map(|(index, item)| decision_result_card(ui, item, index, page, hit_paths.clone()))
         .collect_view();
-    let pagination = pagination_view(base_path, page, total_pages);
+    let pagination = pagination_view(directory, base_path, page, total_pages);
     view! {
         <ol class="mt-2 flex flex-col">{cards}</ol>
         {pagination}
@@ -1101,12 +1115,13 @@ fn decisions_view(resolved: EntityDecisionsResult, base_path: &str, page: i64) -
 /// Une décision de la fiche en carte résultat de recherche, coiffée du badge de
 /// rôle de l'entité (Demandeur / Défendeur / Conseil).
 fn decision_result_card(
+    ui: &EntityUi,
     item: EntityDecisionHitDto,
     index: usize,
     page: i64,
     hit_paths: std::sync::Arc<Vec<String>>,
 ) -> AnyView {
-    let role = role_label(item.side.as_deref(), &item.quality).map(str::to_string);
+    let role = role_label(ui, item.side.as_deref(), &item.quality).map(str::to_string);
     view! {
         <li class="contents">
             <ResultCard
@@ -1125,20 +1140,25 @@ fn decision_result_card(
 }
 
 /// Rôle de l'entité dans la décision : conseil > côté (demandeur/défendeur).
-fn role_label(side: Option<&str>, quality: &str) -> Option<&'static str> {
+fn role_label(ui: &EntityUi, side: Option<&str>, quality: &str) -> Option<&'static str> {
     if matches!(quality, "law_firm" | "counsel_name") {
-        return Some("Conseil");
+        return Some(ui.counsel);
     }
     match side {
-        Some("applicant") => Some("Demandeur"),
-        Some("defendant") => Some("Défendeur"),
+        Some("applicant") => Some(ui.applicant),
+        Some("defendant") => Some(ui.defendant),
         _ => None,
     }
 }
 
 /// Pagination `<A>` (précédent / page courante / suivant) — SSR-friendly, la
 /// navigation se fait par `?page=`. Masquée s'il n'y a qu'une page.
-fn pagination_view(base_path: &str, page: i64, total_pages: i64) -> Option<AnyView> {
+fn pagination_view(
+    ui: &'static DirectoryUi,
+    base_path: &str,
+    page: i64,
+    total_pages: i64,
+) -> Option<AnyView> {
     if total_pages <= 1 {
         return None;
     }
@@ -1150,7 +1170,7 @@ fn pagination_view(base_path: &str, page: i64, total_pages: i64) -> Option<AnyVi
                 attr:class="inline-flex items-center gap-1 text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
             >
                 <span aria-hidden="true">"←"</span>
-                "Précédent"
+                {ui.previous}
             </A>
         }
         .into_any()
@@ -1161,7 +1181,7 @@ fn pagination_view(base_path: &str, page: i64, total_pages: i64) -> Option<AnyVi
                 href=format!("{base_path}?page={}", page + 1)
                 attr:class="inline-flex items-center gap-1 text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
             >
-                "Suivant"
+                {ui.next}
                 <span aria-hidden="true">"→"</span>
             </A>
         }
@@ -1170,12 +1190,12 @@ fn pagination_view(base_path: &str, page: i64, total_pages: i64) -> Option<AnyVi
     Some(
         view! {
             <nav
-                aria-label="Pagination"
+                aria-label=ui.pagination
                 class="mt-6 flex items-center justify-between border-t border-[var(--color-rule)] pt-4"
             >
                 <div class="min-w-0">{prev}</div>
                 <span class="text-xs tabular-nums text-[var(--color-ink-subtle)]">
-                    {format!("Page {page} sur {total_pages}")}
+                    {(ui.page_of)(page, total_pages)}
                 </span>
                 <div class="min-w-0 text-right">{next}</div>
             </nav>

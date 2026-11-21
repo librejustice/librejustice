@@ -35,7 +35,7 @@ pub fn SearchSubmit(size: SubmitSize) -> impl IntoView {
 
     view! {
         <button type="submit" class=class>
-            "Rechercher"
+            {crate::i18n::use_ui().search.search}
         </button>
     }
 }

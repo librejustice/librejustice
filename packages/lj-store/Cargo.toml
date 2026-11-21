@@ -16,6 +16,7 @@ lj-versions = { workspace = true }
 lj-fold = { workspace = true }
 lj-vocab = { workspace = true }
 lj-gazette = { workspace = true }
+lj-summary = { workspace = true }
 tokio = { workspace = true }
 tokio-postgres = { workspace = true }
 bytes = { workspace = true }
@@ -23,6 +24,7 @@ futures = { workspace = true }
 deadpool-postgres = { workspace = true }
 pgvector = { workspace = true }
 serde_json = { workspace = true }
+xxhash-rust = { workspace = true }
 chrono = { workspace = true }
 jiff = { workspace = true }
 thiserror = { workspace = true }

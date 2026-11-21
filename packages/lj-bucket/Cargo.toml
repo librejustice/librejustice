@@ -7,5 +7,6 @@ rust-version.workspace = true
 
 [dependencies]
 bytes = { workspace = true }
+futures = { workspace = true }
 object_store = { workspace = true }
 lj-workspace-hack = { version = "0.1", path = "../lj-workspace-hack" }

@@ -20,6 +20,16 @@ use serde_json::Value;
 const DILA_COPY_CONTAINMENT: f64 = 0.8;
 const DILA_DISTINCT_CONTAINMENT: f64 = 0.7;
 
+/// The source that publishes decisions without their docket.
+const LEGALIS: &str = "legalis";
+/// Measured on 15 Legalis pages of courts of appeal: 0.96 to 0.99 against the decision each
+/// copies, 0.07 at most against any other of the same court and day.
+const LEGALIS_COPY_CONTAINMENT: f64 = 0.8;
+const LEGALIS_DISTINCT_CONTAINMENT: f64 = 0.3;
+/// Measured on the African Court's five pairs at one address: 1.0 for the two it posted twice,
+/// 0.29 at most for the others.
+pub const SOURCE_TWIN_CONTAINMENT: f64 = 0.8;
+
 fn is_dila_judicial(source: &str) -> bool {
     matches!(source, "dila-cass" | "dila-inca" | "dila-capp")
 }
@@ -57,12 +67,34 @@ pub struct WebNoteHead {
 
 /// The three judicial funds are one publisher: a decision holds one of their
 /// records, the others are copies.
+/// The other provenances of a Decisia item, whose French and English pages share its number: its
+/// other language at A2AJ and, at the Supreme Court, the court's own page.
+fn decisia_siblings(source_uid: &str) -> Option<Vec<String>> {
+    let (dataset, item) = match source_uid.split('/').collect::<Vec<_>>()[..] {
+        ["a2aj", dataset, item, _] => (dataset, item),
+        ["scc-csc", item, _] => ("SCC", item),
+        _ => return None,
+    };
+    let mut uids: Vec<String> = ["fr", "en"]
+        .iter()
+        .map(|l| format!("a2aj/{dataset}/{item}/{l}"))
+        .collect();
+    if dataset == "SCC" {
+        uids.extend(["fr", "en"].map(|l| format!("scc-csc/{item}/{l}")));
+    }
+    uids.retain(|u| u != source_uid);
+    Some(uids)
+}
+
 fn same_publisher(held: &str, incoming: &str) -> bool {
     held == incoming || (is_dila_judicial(held) && is_dila_judicial(incoming))
 }
 
 /// The languages held for a CELEX, each with the bytes of its text, and one's source fields.
 pub type CjueHeld = (Vec<(String, i32)>, Value);
+
+/// A live decision's id, court code and date.
+pub type DecisionAddress = (i64, Option<String>, Option<NaiveDate>);
 
 impl DecisionRepository<'_> {
     /// Sonde d'idempotence intra-source sur le pivot `decision_sources.source_uid`
@@ -91,7 +123,7 @@ impl DecisionRepository<'_> {
     /// `source_uid` of the authority provenance, tombstoned included: highest
     /// rank, then French, then English, then smallest `source_uid`. `None` for a
     /// decision without provenance. Only the authority writes the metadata and
-    /// the lead text.
+    /// the read text.
     #[tracing::instrument(name = "db.authority_source_uid", skip(self), fields(db.system = "postgresql"))]
     pub async fn authority_source_uid(&self, decision_id: i64) -> Result<Option<String>> {
         let row = self
@@ -227,7 +259,9 @@ impl DecisionRepository<'_> {
                   payload_format = EXCLUDED.payload_format,
                   source_fields = EXCLUDED.source_fields,
                   lang = EXCLUDED.lang,
-                  deleted_at = EXCLUDED.deleted_at,
+                  deleted_at = CASE WHEN decision_sources.expired_checksum = EXCLUDED.content_checksum
+                                    THEN coalesce(decision_sources.deleted_at, NOW())
+                                    ELSE EXCLUDED.deleted_at END,
                   ingested_at = NOW()
                 ",
                 &[
@@ -455,8 +489,9 @@ impl DecisionRepository<'_> {
 
     /// The decision an other language of the same judgment already carries:
     /// the CJUE by its CELEX, else by an ECLI naming a single decision, the CEDH
-    /// by its ECLI. `None` when none, or when the ECLI names several decisions
-    /// or, at the CEDH, one that already has `lang`.
+    /// by its ECLI, juportal by the ECLI its French and Dutch pages share. `None`
+    /// when none, or when the ECLI names several decisions or, at the CEDH, one
+    /// that already has `lang`.
     #[tracing::instrument(name = "db.find_language_sibling", skip(self, decision), fields(db.system = "postgresql"))]
     pub(super) async fn find_language_sibling(
         &self,
@@ -498,6 +533,21 @@ impl DecisionRepository<'_> {
                 _ => None,
             });
         }
+        if let Some(rest) = decision.source_uid.strip_prefix("juportal/") {
+            let ecli = rest.strip_suffix("/nl").unwrap_or(rest);
+            let uids: Vec<String> = [format!("juportal/{ecli}"), format!("juportal/{ecli}/nl")]
+                .into_iter()
+                .filter(|u| *u != decision.source_uid)
+                .collect();
+            let row = self
+                .conn
+                .query_one(
+                    "SELECT min(decision_id) FROM decision_sources WHERE source_uid = ANY($1)",
+                    &[&uids],
+                )
+                .await?;
+            return Ok(row.get(0));
+        }
         if let Some((reference, _)) = decision
             .source_uid
             .strip_prefix("comeu/")
@@ -508,6 +558,16 @@ impl DecisionRepository<'_> {
                 .map(|l| format!("comeu/{reference}/{l}"))
                 .filter(|u| *u != decision.source_uid)
                 .collect();
+            let row = self
+                .conn
+                .query_one(
+                    "SELECT min(decision_id) FROM decision_sources WHERE source_uid = ANY($1)",
+                    &[&uids],
+                )
+                .await?;
+            return Ok(row.get(0));
+        }
+        if let Some(uids) = decisia_siblings(&decision.source_uid) {
             let row = self
                 .conn
                 .query_one(
@@ -568,10 +628,14 @@ impl DecisionRepository<'_> {
         let (Some(court), Some(date)) = (e.jurisdiction.as_ref(), e.date_lecture) else {
             return Ok(Identity::Create);
         };
-        if e.docket_numbers.is_empty() {
-            return Ok(Identity::Create);
-        }
         let court = self.court_code(court).await?;
+        let source = source_from_source_uid(&decision.source_uid);
+        if source == LEGALIS {
+            return self.legalis_identity(decision, &court, date).await;
+        }
+        if e.docket_numbers.is_empty() {
+            return self.created_or_legalis(decision, &court, date).await;
+        }
         let rows = self
             .conn
             .query(
@@ -588,7 +652,6 @@ impl DecisionRepository<'_> {
                 &[&court, &date, &e.docket_numbers, &decision.source_uid],
             )
             .await?;
-        let source = source_from_source_uid(&decision.source_uid);
         let (mut ids, mut traits, mut held_by_source) = (Vec::new(), Vec::new(), Vec::new());
         for r in rows {
             let sources: Vec<String> = r.get(6);
@@ -642,20 +705,102 @@ impl DecisionRepository<'_> {
             Choice::Neither => {}
         }
         if !is_dila_judicial(source) || held_by_source.is_empty() {
+            return self.created_or_legalis(decision, &court, date).await;
+        }
+        Ok(
+            match self
+                .best_containment(&decision.texte_integral_clean, &held_by_source)
+                .await?
+            {
+                Some((c, id)) if c >= DILA_COPY_CONTAINMENT => Identity::Copy(id),
+                Some((c, id)) if c > DILA_DISTINCT_CONTAINMENT => Identity::Hold(id),
+                _ => self.created_or_legalis(decision, &court, date).await?,
+            },
+        )
+    }
+
+    /// A Legalis record: the decision at its court and date whose text holds it, one Legalis
+    /// already holds excepted.
+    async fn legalis_identity(
+        &self,
+        decision: &lj_core::decision::Decision,
+        court: &str,
+        date: NaiveDate,
+    ) -> Result<Identity> {
+        let ids: Vec<i64> = self
+            .conn
+            .query(
+                "SELECT d.id FROM decisions d \
+                 WHERE d.deleted_at IS NULL AND d.jurisdiction_code = $1 AND d.date_lecture = $2 \
+                   AND EXISTS (SELECT 1 FROM decision_sources s \
+                               WHERE s.decision_id = d.id AND s.deleted_at IS NULL) \
+                   AND NOT EXISTS (SELECT 1 FROM decision_sources s \
+                                   WHERE s.decision_id = d.id AND s.deleted_at IS NULL AND s.source = $3)",
+                &[&court, &date, &LEGALIS],
+            )
+            .await?
+            .into_iter()
+            .map(|r| r.get(0))
+            .collect();
+        Ok(
+            match self
+                .best_containment(&decision.texte_integral_clean, &ids)
+                .await?
+            {
+                Some((c, id)) if c >= LEGALIS_COPY_CONTAINMENT => Identity::Attach(id),
+                Some((c, id)) if c > LEGALIS_DISTINCT_CONTAINMENT => Identity::Hold(id),
+                _ => Identity::Create,
+            },
+        )
+    }
+
+    /// The decision Legalis alone holds at this court and date whose text the record holds, else
+    /// a new one.
+    async fn created_or_legalis(
+        &self,
+        decision: &lj_core::decision::Decision,
+        court: &str,
+        date: NaiveDate,
+    ) -> Result<Identity> {
+        let ids: Vec<i64> = self
+            .conn
+            .query(
+                "SELECT d.id FROM decisions d \
+                 WHERE d.deleted_at IS NULL AND d.jurisdiction_code = $1 AND d.date_lecture = $2 \
+                   AND EXISTS (SELECT 1 FROM decision_sources s \
+                               WHERE s.decision_id = d.id AND s.deleted_at IS NULL AND s.source = $3) \
+                   AND NOT EXISTS (SELECT 1 FROM decision_sources s \
+                                   WHERE s.decision_id = d.id AND s.deleted_at IS NULL AND s.source <> $3)",
+                &[&court, &date, &LEGALIS],
+            )
+            .await?
+            .into_iter()
+            .map(|r| r.get(0))
+            .collect();
+        if ids.is_empty() {
             return Ok(Identity::Create);
         }
+        Ok(
+            match self
+                .best_containment(&decision.texte_integral_clean, &ids)
+                .await?
+            {
+                Some((c, id)) if c >= LEGALIS_COPY_CONTAINMENT => Identity::Attach(id),
+                _ => Identity::Create,
+            },
+        )
+    }
+
+    /// Of `ids`, the decision whose text shares the most with `text`, and that share.
+    async fn best_containment(&self, text: &str, ids: &[i64]) -> Result<Option<(f64, i64)>> {
         let mut best: Option<(f64, i64)> = None;
-        for (id, text) in self.read_texts(&held_by_source).await? {
-            let c = text_containment(&decision.texte_integral_clean, &text);
+        for (id, held) in self.read_texts(ids).await? {
+            let c = text_containment(text, &held);
             if best.is_none_or(|(b, _)| c > b) {
                 best = Some((c, id));
             }
         }
-        Ok(match best {
-            Some((c, id)) if c >= DILA_COPY_CONTAINMENT => Identity::Copy(id),
-            Some((c, id)) if c > DILA_DISTINCT_CONTAINMENT => Identity::Hold(id),
-            _ => Identity::Create,
-        })
+        Ok(best)
     }
 
     /// Those of `ids` whose fields come from several provenances.
@@ -726,6 +871,56 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
+    /// Every active `juradm-site` provenance: its `source_uid` and the bucket key of the file it
+    /// was read from.
+    #[tracing::instrument(name = "db.juradm_site_files", skip(self), fields(db.system = "postgresql"))]
+    pub async fn juradm_site_files(&self) -> Result<Vec<(String, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_uid, source_fields->>'file' FROM decision_sources \
+                  WHERE source = 'juradm-site' AND deleted_at IS NULL",
+                &[],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// Every active provenance of `source`: its decision, `source_uid`, checksum and payload format.
+    #[tracing::instrument(name = "db.source_provenances", skip(self), fields(db.system = "postgresql"))]
+    pub async fn source_provenances(
+        &self,
+        source: &str,
+    ) -> Result<Vec<(i64, String, String, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT decision_id, source_uid, content_checksum, payload_format \
+                   FROM decision_sources WHERE source = $1 AND deleted_at IS NULL",
+                &[&source],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
+            .collect())
+    }
+
+    /// The Conseil constitutionnel's decision pages, among these, that an active provenance names.
+    #[tracing::instrument(name = "db.constit_pages_held", skip_all, fields(db.system = "postgresql", n = urls.len()))]
+    pub async fn constit_pages_held(&self, urls: &[String]) -> Result<Vec<String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT source_fields->'META_JURI_CONSTIT'->>'URL_CC' FROM decision_sources \
+                  WHERE source IN ('dila-constit', 'cc-site') AND deleted_at IS NULL \
+                    AND source_fields->'META_JURI_CONSTIT'->>'URL_CC' = ANY($1)",
+                &[&urls],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| r.get(0)).collect())
+    }
+
     /// The active `source_uid`s the base holds among these.
     #[tracing::instrument(name = "db.active_source_uids", skip_all, fields(db.system = "postgresql", n = uids.len()))]
     pub async fn active_source_uids(&self, uids: &[String]) -> Result<Vec<String>> {
@@ -749,6 +944,20 @@ impl DecisionRepository<'_> {
             )
             .await?;
         Ok(row.map(|r| r.get(0)))
+    }
+
+    /// Id, court and date of a live decision, by its public id.
+    #[tracing::instrument(name = "db.decision_address", skip(self), fields(db.system = "postgresql"))]
+    pub async fn decision_address(&self, public_id: &str) -> Result<Option<DecisionAddress>> {
+        let row = self
+            .conn
+            .query_opt(
+                "SELECT id, jurisdiction_code, date_lecture FROM decisions \
+                 WHERE public_id = $1 AND deleted_at IS NULL",
+                &[&public_id],
+            )
+            .await?;
+        Ok(row.map(|r| (r.get(0), r.get(1), r.get(2))))
     }
 
     /// Rank of the decision's highest active provenance.
@@ -938,7 +1147,7 @@ impl DecisionRepository<'_> {
     /// Corps transactionnel de [`delete`](Self::delete) : résout la provenance, pose
     /// le verrou xact sur `decision_id`, tombstone, `reconcile`. À exécuter dans la
     /// transaction ouverte par l'appelant.
-    async fn delete_locked(&self, source_uid: &str) -> Result<bool> {
+    pub(super) async fn delete_locked(&self, source_uid: &str) -> Result<bool> {
         let row = self
             .conn
             .query_opt(
@@ -1221,17 +1430,114 @@ impl DecisionRepository<'_> {
                  cites AS (
                      UPDATE case_citation SET target_decision_id = $1 WHERE target_decision_id = $2),
                  text_cites AS (
-                     UPDATE text_case_citation SET target_decision_id = $1 WHERE target_decision_id = $2),
-                 renvois AS (
-                     UPDATE decision_renvoi SET target_decision_id = $1 WHERE target_decision_id = $2)
-                 UPDATE user_bookmarks b SET decision_id = $1
-                 WHERE b.decision_id = $2
-                   AND NOT EXISTS (SELECT 1 FROM user_bookmarks k
-                                   WHERE k.user_sub = b.user_sub AND k.decision_id = $1)",
+                     UPDATE text_case_citation SET target_decision_id = $1 WHERE target_decision_id = $2)
+                 UPDATE decision_renvoi SET target_decision_id = $1 WHERE target_decision_id = $2",
                 &[&keeper, &copy],
             )
             .await?;
         self.merge_into_locked(keeper, copy).await
+    }
+
+    /// Absorbs `copy` into `keeper`, the same decision in another language, as
+    /// [`absorb_into`](Self::absorb_into) does. A text of a language the keeper lacks follows its
+    /// provenance with its summary, and takes the keeper's columns as `decision_text_put` writes
+    /// them. Returns the texts moved.
+    #[tracing::instrument(name = "db.absorb_language_into", skip(self), fields(db.system = "postgresql"))]
+    pub async fn absorb_language_into(&self, copy: i64, keeper: i64) -> Result<u64> {
+        self.conn.batch_execute("BEGIN").await?;
+        let res = async {
+            let moved = self
+                .conn
+                .execute(
+                    "UPDATE decision_text t SET decision_id = d.id, counted = FALSE, \
+                       text_status = CASE WHEN t.lang = d.lang THEN 'authentic' ELSE 'official' END, \
+                       search_title = d.search_title, jurisdiction_type = d.jurisdiction_type, \
+                       jurisdiction_code = d.jurisdiction_code, seat_paths = d.seat_paths, \
+                       formation_paths = d.formation_paths, legal_instruments = d.legal_instruments, \
+                       legal_article_composite = d.legal_article_composite, \
+                       publication_codes = d.publication_codes, legal_domain_uid = d.legal_domain_uid, \
+                       solution_uid = d.solution_uid, office_uid = d.office_uid, \
+                       procedure_uid = d.procedure_uid, docket_numbers = d.docket_numbers, \
+                       ecli = d.ecli, date_lecture = d.date_lecture, deleted_at = d.deleted_at, \
+                       kind = d.kind \
+                     FROM decisions d \
+                     WHERE d.id = $1 AND t.decision_id = $2 \
+                       AND NOT EXISTS (SELECT 1 FROM decision_text k \
+                                       WHERE k.decision_id = $1 AND k.lang = t.lang)",
+                    &[&keeper, &copy],
+                )
+                .await?;
+            self.absorb_into_locked(copy, keeper).await?;
+            Ok(moved)
+        }
+        .await;
+        match res {
+            Ok(moved) => {
+                self.conn.batch_execute("COMMIT").await?;
+                Ok(moved)
+            }
+            Err(e) => {
+                let _ = self.conn.batch_execute("ROLLBACK").await;
+                Err(e)
+            }
+        }
+    }
+
+    /// The decisions of `court` a publisher holds under two slug families, as (keeper, twin):
+    /// the decision of a `kept_prefix` slug and that of the `dup_prefix` slug of the same day
+    /// and number.
+    #[tracing::instrument(name = "db.juricaf_twin_pairs", skip(self), fields(db.system = "postgresql"))]
+    pub async fn juricaf_twin_pairs(
+        &self,
+        court: &str,
+        dup_prefix: &str,
+        kept_prefix: &str,
+    ) -> Result<Vec<(i64, i64)>> {
+        let rows = self
+            .conn
+            .query(
+                "WITH held AS MATERIALIZED (
+                     SELECT s.decision_id, substr(s.source_uid, length('juricaf/') + 1) AS slug
+                     FROM decisions d JOIN decision_sources s ON s.decision_id = d.id
+                     WHERE d.jurisdiction_code = $1 AND d.deleted_at IS NULL
+                       AND s.source = 'juricaf' AND s.deleted_at IS NULL)
+                 SELECT k.decision_id, t.decision_id
+                 FROM held t JOIN held k ON k.slug = $3 || substr(t.slug, length($2) + 1)
+                 WHERE starts_with(t.slug, $2) AND k.decision_id <> t.decision_id
+                 ORDER BY 1, 2",
+                &[&court, &dup_prefix, &kept_prefix],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// Each decision of `court` whose every provenance is `source`'s, with the decisions of the
+    /// court that hold none of `source`, of its day, sharing a docket key with it.
+    #[tracing::instrument(name = "db.single_source_twins", skip(self), fields(db.system = "postgresql"))]
+    pub async fn single_source_twins(
+        &self,
+        court: &str,
+        source: &str,
+    ) -> Result<Vec<(i64, Vec<i64>)>> {
+        let rows = self
+            .conn
+            .query(
+                "WITH d AS MATERIALIZED (
+                     SELECT d.id, d.date_lecture, lj_docket_keys(d.docket_numbers) AS k,
+                            bool_and(s.source = $2) AS only, bool_or(s.source = $2) AS has
+                     FROM decisions d
+                     JOIN decision_sources s ON s.decision_id = d.id AND s.deleted_at IS NULL
+                     WHERE d.jurisdiction_code = $1 AND d.deleted_at IS NULL
+                     GROUP BY d.id)
+                 SELECT c.id, array_agg(o.id ORDER BY o.id)
+                 FROM d c JOIN d o ON o.date_lecture = c.date_lecture AND o.k && c.k AND NOT o.has
+                 WHERE c.only
+                 GROUP BY c.id
+                 ORDER BY c.id",
+                &[&court, &source],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
     /// Each Judilibre record without an operative part, beside a decision of its court, day
@@ -1605,5 +1911,44 @@ impl DecisionRepository<'_> {
                 &[&source, &keep],
             )
             .await?)
+    }
+
+    /// The provenance of `source`, another than `source_uid`, that already holds `text` at this
+    /// court and date under the same dockets: the record a publisher posted twice. Two decisions
+    /// of one case file or of one day, each with its own text, are not twins.
+    #[tracing::instrument(name = "db.source_twin", skip(self, docket_numbers, text), fields(db.system = "postgresql"))]
+    pub async fn source_twin(
+        &self,
+        source: &str,
+        source_uid: &str,
+        court: &str,
+        date: NaiveDate,
+        docket_numbers: &[String],
+        text: &str,
+    ) -> Result<Option<String>> {
+        let mut uids: HashMap<i64, String> = self
+            .conn
+            .query(
+                "SELECT d.id, s.source_uid FROM decisions d \
+                 JOIN decision_sources s ON s.decision_id = d.id \
+                 WHERE d.deleted_at IS NULL AND d.jurisdiction_code = $1 AND d.date_lecture = $2 \
+                   AND cardinality(lj_docket_keys($3)) > 0 \
+                   AND lj_docket_keys(d.docket_numbers) @> lj_docket_keys($3) \
+                   AND lj_docket_keys(d.docket_numbers) <@ lj_docket_keys($3) \
+                   AND s.deleted_at IS NULL AND s.source = $4 AND s.source_uid <> $5",
+                &[&court, &date, &docket_numbers, &source, &source_uid],
+            )
+            .await?
+            .into_iter()
+            .map(|r| (r.get(0), r.get(1)))
+            .collect();
+        let ids: Vec<i64> = uids.keys().copied().collect();
+        if ids.is_empty() {
+            return Ok(None);
+        }
+        Ok(match self.best_containment(text, &ids).await? {
+            Some((c, id)) if c >= SOURCE_TWIN_CONTAINMENT => uids.remove(&id),
+            _ => None,
+        })
     }
 }

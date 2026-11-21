@@ -10,19 +10,19 @@ use crate::cache::{CachePolicy, CACHE_DECISION, CACHE_SEARCH};
 use crate::error::{validation, ApiError, Result};
 use crate::state::AppState;
 use crate::{
-    annonces, bookmarks, decisions, entities, jurisdiction_hubs, legi, mcp, me, norm_hubs, oauth,
-    pdf_export, registre, robots, search, sitemap, stats, usage,
+    decisions, entities, journals, jurisdiction_hubs, legi, mcp, me, norm_hubs, oauth, pdf_export,
+    registre, robots, search, sitemap, stats, usage,
 };
 use axum::extract::{OriginalUri, Path, Query, RawQuery, Request, State};
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode, Uri};
 use axum::middleware::{self, Next};
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::routing::{delete, get, post, put};
+use axum::routing::{delete, get, post};
 use axum::{Extension, Router};
 use axum_tracing_opentelemetry::middleware::{OtelAxumLayer, OtelInResponseLayer};
 use lj_dtos::{
-    ActivitySource, BookmarksResponse, DecisionPart, Domain, HealthResponse, JurisdictionType,
-    SearchMode, SearchRequest, Solution, SortOrder,
+    ActivitySource, DecisionPart, Domain, HealthResponse, JurisdictionType, SearchMode,
+    SearchRequest, Solution, SortOrder,
 };
 use serde::Deserialize;
 use tower::Layer as _;
@@ -34,16 +34,11 @@ use tower_http::set_header::SetResponseHeaderLayer;
 /// optionnel) avec l'état injecté — sans fallback ni middleware.
 fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
     // ── DATA API (préfixe `/internal`) ────────────────────────────────────────
-    let api = Router::new()
-        .route("/health", get(health))
-        .route("/origine-interne", get(origine_interne))
-        .route("/search", get(search_endpoint))
-        .route("/search/decompte", get(search_decompte_endpoint))
-        .route("/search/instruments", get(search_instruments_endpoint))
-        .route("/search-textes", get(search_textes_endpoint))
-        .route("/suggest", get(suggest_endpoint))
+    // The corpus reads, one `PageData` token each; searches and files spend their own class.
+    let reads = Router::new()
         .route("/codes", get(codes_catalogue))
         .route("/corpus-stats", get(corpus_stats))
+        .route("/jurisdictions", get(reader_jurisdictions))
         .route("/open-source", get(open_source_list))
         .route("/juridictions", get(jurisdictions_catalogue))
         .route("/juridictions/{code}", get(jurisdiction_hub))
@@ -51,9 +46,10 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         .route("/normes", get(normes_catalogue))
         .route("/normes/{juris}/{fond}", get(norm_hub))
         .route("/normes/{juris}/{fond}/{annee}", get(norm_year))
-        .route("/annonces", get(annonces_endpoint))
-        .route("/annonces/catalogue", get(annonces_catalogue))
-        .route("/annonces/{uid}", get(annonce_detail))
+        .route("/journals", get(journals_endpoint))
+        .route("/journals/catalogue", get(journals_catalogue))
+        .route("/journals/{uid}", get(annonce_detail))
+        .route("/notices/{uid}", get(notice_detail))
         .route("/decision/{decision_id}", get(decision))
         .route("/decision/{decision_id}/similar", get(decision_similar))
         .route("/decision/{decision_id}/preview", get(decision_preview))
@@ -62,25 +58,42 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         .route("/entity/{ns}/{id}/decisions", get(entity_decisions))
         .route("/entity/{ns}/{id}/registre", get(entity_registre))
         .route("/entity/{ns}/{id}/documents", get(entity_documents))
-        .route(
-            "/entity/{ns}/{id}/documents/{kind}/{doc}",
-            get(entity_document),
-        )
         .route("/entities/search", get(entities_search))
         .route("/entities/directory", get(entities_directory))
         .route("/entities/stats", get(entities_stats))
-        .route(
-            "/decision/{decision_id}/download.pdf",
-            get(decision_download_pdf),
-        )
         .nest_service(
             "/norm",
             middleware::from_fn(detach_jurisdiction).layer(legi_router().with_state(state.clone())),
         )
-        .route("/texte/{*rest}", get(texte_moved))
         .route("/places", get(places))
         .route("/corpus", get(place_corpus))
         .route("/corpus/{date}", get(place_corpus_at_date))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::admission::admit_read,
+        ));
+    let api = Router::new()
+        .route("/health", get(health))
+        .route("/origine-interne", get(origine_interne))
+        .route("/search", get(search_endpoint))
+        .route("/search/decompte", get(search_decompte_endpoint))
+        .route("/search/instruments", get(search_instruments_endpoint))
+        .route("/search-textes", get(search_textes_endpoint))
+        .route(
+            "/search-textes/decompte",
+            get(search_textes_decompte_endpoint),
+        )
+        .route("/suggest", get(suggest_endpoint))
+        .route(
+            "/entity/{ns}/{id}/documents/{kind}/{doc}",
+            get(entity_document),
+        )
+        .route(
+            "/decision/{decision_id}/download.pdf",
+            get(decision_download_pdf),
+        )
+        .route("/texte/{*rest}", get(texte_moved))
+        .merge(reads)
         .merge(
             Router::new()
                 .nest("/auth", crate::accounts::router())
@@ -96,11 +109,6 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         )
         .nest("/account", crate::account::router())
         .route("/me", get(get_me))
-        .route("/me/bookmarks", get(list_bookmarks))
-        .route(
-            "/me/bookmarks/{decision_id}",
-            put(add_bookmark).delete(remove_bookmark),
-        )
         .route("/me/api-keys", get(list_api_keys).post(create_api_key))
         .route("/me/api-keys/{key_id}", delete(revoke_api_key))
         .route(
@@ -137,7 +145,7 @@ fn assemble_routes(state: AppState, enable_mcp: bool) -> Router {
         .merge(oauth::well_known_router())
         .merge(sitemap::router())
         .merge(robots::router())
-        .merge(annonces_feeds_router())
+        .merge(journals_feeds_router())
         .with_state(state.clone());
 
     // ── MCP (gated) ───────────────────────────────────────────────────────────
@@ -342,6 +350,7 @@ fn deep_probe_request(query: &str) -> SearchRequest {
         legal_domain: None,
         jurisdiction_code: None,
         seat: None,
+        home: None,
         formation: None,
         legal_instrument: None,
         legal_article: None,
@@ -354,6 +363,7 @@ fn deep_probe_request(query: &str) -> SearchRequest {
         limit: 1,
         offset: 0,
         ai_mode: false,
+        lang: None,
     }
 }
 
@@ -510,6 +520,7 @@ struct SearchParams {
     legal_domain: Vec<Domain>,
     jurisdiction_code: Vec<String>,
     seat: Vec<String>,
+    home: Option<String>,
     formation: Vec<String>,
     legal_instrument: Vec<String>,
     legal_article: Vec<String>,
@@ -522,6 +533,7 @@ struct SearchParams {
     limit: u32,
     offset: u32,
     ai_rerank: Option<bool>,
+    lang: Option<String>,
 }
 
 impl Default for SearchParams {
@@ -533,6 +545,7 @@ impl Default for SearchParams {
             legal_domain: Vec::new(),
             jurisdiction_code: Vec::new(),
             seat: Vec::new(),
+            home: None,
             formation: Vec::new(),
             legal_instrument: Vec::new(),
             legal_article: Vec::new(),
@@ -545,6 +558,7 @@ impl Default for SearchParams {
             limit: 20,
             offset: 0,
             ai_rerank: None,
+            lang: None,
         }
     }
 }
@@ -604,10 +618,11 @@ const PUBLIC_SEARCH_PARAMS: [&str; 20] = [
     "limit",
     "offset",
 ];
-const PUBLIC_NORM_SEARCH_PARAMS: [&str; 7] = [
+const PUBLIC_NORM_SEARCH_PARAMS: [&str; 8] = [
     "query",
     "code",
     "jurisdiction",
+    "scope",
     "valid_from",
     "as_of",
     "limit",
@@ -873,6 +888,7 @@ fn parse_search_query(raw: &str, rerank_by_default: bool) -> Result<SearchReques
             }
             "jurisdiction_code" => p.jurisdiction_code.push(value),
             "seat" => p.seat.push(value),
+            "home" => p.home = Some(crate::jurisdictions::parse_home(&value)?),
             "formation" => p.formation.push(value),
             "legal_instrument" => p.legal_instrument.push(value),
             "legal_article" => p.legal_article.push(value),
@@ -914,6 +930,7 @@ fn parse_search_query(raw: &str, rerank_by_default: bool) -> Result<SearchReques
             "ai_rerank" => {
                 p.ai_rerank = Some(matches!(value.as_str(), "1" | "true" | "yes" | "on"))
             }
+            "lang" => p.lang = Some(checked_lang(&value)?.to_owned()),
             _ => {}
         }
     }
@@ -959,6 +976,7 @@ fn parse_search_query(raw: &str, rerank_by_default: bool) -> Result<SearchReques
         legal_domain: opt_vec(p.legal_domain),
         jurisdiction_code: opt_vec(p.jurisdiction_code),
         seat: opt_vec(p.seat),
+        home: p.home,
         formation: opt_vec(p.formation),
         legal_instrument: opt_vec(p.legal_instrument),
         legal_article: opt_vec(p.legal_article),
@@ -971,6 +989,7 @@ fn parse_search_query(raw: &str, rerank_by_default: bool) -> Result<SearchReques
         limit: p.limit,
         offset: p.offset,
         ai_mode: p.ai_rerank.unwrap_or(rerank_by_default),
+        lang: p.lang,
     })
 }
 
@@ -1133,11 +1152,41 @@ fn pct_decode(s: &str) -> String {
 
 // ── Décision (détail + sous-ressources) ───────────────────────────────────────
 
+/// `?lang=it`: the reader's language, which the decision's text is picked for first.
+#[derive(Debug, Deserialize)]
+struct LangQuery {
+    lang: Option<String>,
+}
+
+fn checked_lang(v: &str) -> Result<&str> {
+    if v.len() == 2 && v.bytes().all(|b| b.is_ascii_lowercase()) {
+        Ok(v)
+    } else {
+        Err(ApiError::Unprocessable(validation::value_error(
+            &["query", "lang"],
+            v,
+            "a language is two lower-case letters",
+        )))
+    }
+}
+
+impl LangQuery {
+    fn lang(&self) -> Result<Option<&str>> {
+        self.lang.as_deref().map(checked_lang).transpose()
+    }
+
+    /// The reader's language a summary is served in, French when none is named.
+    fn reader(&self) -> Result<&str> {
+        Ok(self.lang()?.unwrap_or("fr"))
+    }
+}
+
 async fn decision(
     State(state): State<AppState>,
     Path(decision_id): Path<String>,
+    Query(q): Query<LangQuery>,
 ) -> Result<Response> {
-    let result = decisions::get_decision(&state, &decision_id).await?;
+    let result = decisions::get_decision(&state, &decision_id, q.lang()?).await?;
     Ok(with_cache(CACHE_DECISION, result))
 }
 
@@ -1148,7 +1197,7 @@ async fn decision_public(
     headers: HeaderMap,
     Path(decision_id): Path<String>,
 ) -> Result<Response> {
-    let detail = decisions::get_decision(&state, &decision_id).await?;
+    let detail = decisions::get_decision(&state, &decision_id, None).await?;
     api_read(
         &state,
         user_id.as_deref(),
@@ -1175,8 +1224,9 @@ async fn decision_public(
 async fn decision_preview(
     State(state): State<AppState>,
     Path(decision_id): Path<String>,
+    Query(q): Query<LangQuery>,
 ) -> Result<Response> {
-    let result = decisions::decision_preview(&state, &decision_id).await?;
+    let result = decisions::decision_preview(&state, &decision_id, q.reader()?).await?;
     Ok(with_cache(CACHE_DECISION, result))
 }
 
@@ -1502,6 +1552,7 @@ async fn decision_similar(
     State(state): State<AppState>,
     Path(decision_id): Path<String>,
     Query(q): Query<SimilarQuery>,
+    Query(l): Query<LangQuery>,
 ) -> Result<Response> {
     let limit: u32 = match q.limit {
         None => 4,
@@ -1523,7 +1574,7 @@ async fn decision_similar(
             12,
         )));
     }
-    let body = decisions::similar_decisions(&state, &decision_id, limit).await?;
+    let body = decisions::similar_decisions(&state, &decision_id, limit, l.reader()?).await?;
     Ok(with_cache(CACHE_DECISION, body))
 }
 
@@ -1567,6 +1618,7 @@ async fn decision_download_pdf(
     OptionalUser(user_id): OptionalUser,
     headers: HeaderMap,
     Path(decision_id): Path<String>,
+    Query(q): Query<LangQuery>,
 ) -> Result<Response> {
     let budget_key = crate::ratelimit::caller_key(user_id.as_deref(), &headers);
     if state
@@ -1577,7 +1629,7 @@ async fn decision_download_pdf(
     {
         return Err(ApiError::TooManyRequests);
     }
-    let result = decisions::get_decision(&state, &decision_id).await?;
+    let result = decisions::get_decision(&state, &decision_id, q.lang()?).await?;
     let filename = decision_filename(&result);
     let content = tokio::task::spawn_blocking(move || pdf_export::build_decision_pdf(&result))
         .await
@@ -1984,29 +2036,13 @@ async fn legi_article_by_uid_public(
     Query(q): Query<AsOfQuery>,
 ) -> Result<Response> {
     refuse_unknown_params(uri.query().unwrap_or(""), &PUBLIC_NORM_PARAMS)?;
-    let web = &state.settings.web_base_url;
     match lj_norm::text_identity::legifrance_id(&uid) {
         Some((lj_norm::text_identity::IdKind::Text, _)) => {
             let (code, juris) = legi::text_ref_by_uid(&state, &uid)
                 .await?
                 .ok_or(ApiError::NotFound)?;
-            let body = match legi::law_root(&state, &code, Some(&juris)).await? {
-                legi::LawRoot::Body(summary) => {
-                    crate::mcp_presenters::present_law_text(&summary, web)
-                }
-                legi::LawRoot::Toc(summary, toc) => {
-                    crate::mcp_presenters::present_law_text_root(&summary, &toc, web)
-                }
-            };
-            api_read(
-                &state,
-                user_id.as_deref(),
-                &headers,
-                &uri,
-                lj_dtos::ReadKind::Text,
-                &body.url,
-            );
-            Ok(with_cache(CACHE_DECISION, body))
+            let read = (user_id.as_deref(), &headers, &uri);
+            text_root_public(&state, read, &code, Some(&juris)).await
         }
         Some((lj_norm::text_identity::IdKind::Section, _)) => {
             let mut texts = legi::section_texts_by_cid(&state, &uid).await?;
@@ -2029,6 +2065,10 @@ async fn legi_article_by_uid_public(
                 return Err(ApiError::NotFound);
             }
             let (code, num) = targets.remove(0);
+            if num.is_empty() {
+                let read = (user_id.as_deref(), &headers, &uri);
+                return text_root_public(&state, read, &code, None).await;
+            }
             let article = article_public(&state, &code, None, &num, q.as_of.as_deref()).await?;
             api_read(
                 &state,
@@ -2041,6 +2081,31 @@ async fn legi_article_by_uid_public(
             Ok(with_cache(CACHE_DECISION, article))
         }
     }
+}
+
+/// A text read whole by its id: its body, else its table of contents.
+async fn text_root_public(
+    state: &AppState,
+    (user, headers, uri): (Option<&str>, &HeaderMap, &Uri),
+    code: &str,
+    juris: Option<&str>,
+) -> Result<Response> {
+    let web = &state.settings.web_base_url;
+    let body = match legi::law_root(state, code, juris).await? {
+        legi::LawRoot::Body(summary) => crate::mcp_presenters::present_law_text(&summary, web),
+        legi::LawRoot::Toc(summary, toc) => {
+            crate::mcp_presenters::present_law_text_root(&summary, &toc, web)
+        }
+    };
+    api_read(
+        state,
+        user,
+        headers,
+        uri,
+        lj_dtos::ReadKind::Text,
+        &body.url,
+    );
+    Ok(with_cache(CACHE_DECISION, body))
 }
 
 fn api_read(
@@ -2103,6 +2168,7 @@ async fn legi_article_citing(
     juris: Option<Extension<UrlJurisdiction>>,
     Path((code, num)): Path<(String, String)>,
     Query(p): Query<LegiCitingQuery>,
+    Query(l): Query<LangQuery>,
 ) -> Result<Response> {
     p.validate()?;
     let body = legi::article_citing(
@@ -2114,6 +2180,7 @@ async fn legi_article_citing(
         p.place.as_deref(),
         p.limit,
         p.offset,
+        l.reader()?,
     )
     .await?;
     Ok(with_cache(CACHE_DECISION, body))
@@ -2124,6 +2191,7 @@ async fn legi_section_citing(
     juris: Option<Extension<UrlJurisdiction>>,
     Path((code, path)): Path<(String, String)>,
     Query(p): Query<LegiCitingQuery>,
+    Query(l): Query<LangQuery>,
 ) -> Result<Response> {
     p.validate()?;
     let body = legi::section_citing(
@@ -2134,6 +2202,7 @@ async fn legi_section_citing(
         p.date.as_deref(),
         p.limit,
         p.offset,
+        l.reader()?,
     )
     .await?;
     Ok(with_cache(CACHE_DECISION, body))
@@ -2254,32 +2323,13 @@ async fn search_textes_served(
             .map_err(journaliser_refus)?;
     }
     p.validate().map_err(journaliser_refus)?;
-    // The places read from and the orders searched, both repeated: what applies
-    // in any place is served, the default reader's when none is named.
-    let pairs = parse_qs(raw.as_deref().unwrap_or(""));
-    let repeated = |key: &str| -> Vec<String> {
-        pairs
-            .iter()
-            .filter(|(k, v)| k == key && !v.is_empty())
-            .map(|(_, v)| v.clone())
-            .collect()
-    };
-    let places = repeated("place");
-    let jurisdictions = repeated("jurisdiction");
+    let TextesArgs {
+        places,
+        jurisdictions,
+        at,
+        valid_from,
+    } = textes_args(&p, raw.as_deref())?;
     let context = search_context(p.context.as_deref(), surface);
-    let at = p.as_of.as_deref().map(parse_legi_date).transpose()?;
-    let valid_from = p
-        .valid_from
-        .as_deref()
-        .map(|d| crate::legi::query_date("valid_from", d))
-        .transpose()?;
-    if valid_from.is_some_and(|from| from > at.unwrap_or_else(|| chrono::Utc::now().date_naive())) {
-        return Err(ApiError::Unprocessable(validation::value_error(
-            &["query", "valid_from"],
-            p.valid_from.as_deref().unwrap_or_default(),
-            "valid_from must not be after as_of, which defaults to today",
-        )));
-    }
     let identity = lj_identity::Identity::resolve(user_id.as_deref(), &headers);
     let budget_key = crate::ratelimit::key_of(&identity);
     let caller = usage::Caller::http(
@@ -2298,6 +2348,7 @@ async fn search_textes_served(
                 &state,
                 p.code.as_deref(),
                 &jurisdictions,
+                p.scope.as_deref(),
                 valid_from,
                 at,
                 p.limit,
@@ -2307,7 +2358,26 @@ async fn search_textes_served(
             )
             .await?
         }
-        _ => {
+        (Surface::Public, _) => {
+            legi::search_textes_counted(
+                &state,
+                &p.query,
+                p.code.as_deref(),
+                &places,
+                &jurisdictions,
+                p.source.as_deref(),
+                p.scope.as_deref(),
+                at,
+                valid_from,
+                p.limit,
+                p.offset,
+                p.mode,
+                caller,
+                budget_key.as_ref(),
+            )
+            .await?
+        }
+        (Surface::Internal, _) => {
             legi::search_textes(
                 &state,
                 &p.query,
@@ -2340,9 +2410,88 @@ async fn search_textes_served(
     }
 }
 
+/// Total and facets of the same parameters as `/internal/search-textes`, asked
+/// after its hits: the cached answer is found again from the parameters. Records
+/// no search, the list has.
+async fn search_textes_decompte_endpoint(
+    State(state): State<AppState>,
+    OptionalUser(user_id): OptionalUser,
+    headers: HeaderMap,
+    Query(p): Query<ArticleSearchQuery>,
+    RawQuery(raw): RawQuery,
+) -> Result<Response> {
+    p.validate().map_err(journaliser_refus)?;
+    let TextesArgs {
+        places,
+        jurisdictions,
+        at,
+        valid_from,
+    } = textes_args(&p, raw.as_deref())?;
+    let identity = lj_identity::Identity::resolve(user_id.as_deref(), &headers);
+    let budget_key = crate::ratelimit::key_of(&identity);
+    let counted = legi::count_textes(
+        &state,
+        &p.query,
+        p.code.as_deref(),
+        &places,
+        &jurisdictions,
+        p.source.as_deref(),
+        p.scope.as_deref(),
+        at,
+        valid_from,
+        p.mode,
+        search_context(p.context.as_deref(), Surface::Internal),
+        budget_key.as_ref(),
+    )
+    .await?;
+    Ok(with_cache(CACHE_SEARCH, counted))
+}
+
+struct TextesArgs {
+    places: Vec<String>,
+    jurisdictions: Vec<String>,
+    at: Option<chrono::NaiveDate>,
+    valid_from: Option<chrono::NaiveDate>,
+}
+
+/// The places read from and the orders searched, both repeated: what applies in
+/// any place is served, the default reader's when none is named.
+fn textes_args(p: &ArticleSearchQuery, raw: Option<&str>) -> Result<TextesArgs> {
+    let pairs = parse_qs(raw.unwrap_or(""));
+    let repeated = |key: &str| -> Vec<String> {
+        pairs
+            .iter()
+            .filter(|(k, v)| k == key && !v.is_empty())
+            .map(|(_, v)| v.clone())
+            .collect()
+    };
+    let at = p.as_of.as_deref().map(parse_legi_date).transpose()?;
+    let valid_from = p
+        .valid_from
+        .as_deref()
+        .map(|d| crate::legi::query_date("valid_from", d))
+        .transpose()?;
+    if valid_from.is_some_and(|from| from > at.unwrap_or_else(|| chrono::Utc::now().date_naive())) {
+        return Err(ApiError::Unprocessable(validation::value_error(
+            &["query", "valid_from"],
+            p.valid_from.as_deref().unwrap_or_default(),
+            "valid_from must not be after as_of, which defaults to today",
+        )));
+    }
+    Ok(TextesArgs {
+        places: repeated("place"),
+        jurisdictions: repeated("jurisdiction")
+            .into_iter()
+            .map(lj_norm::jurisdictions::union_as_eu)
+            .collect(),
+        at,
+        valid_from,
+    })
+}
+
 // ── Annonces ────────────────────────────────────────────────────────────────
 
-const ANNONCES_MAX_LIMIT: u32 = 100;
+const JOURNALS_MAX_LIMIT: u32 = 100;
 const ANNONCES_MAX_OFFSET: u32 = 5_000;
 
 /// Parse la query string du moteur d'annonces (`/api/annonces` et les flux) —
@@ -2357,8 +2506,8 @@ fn zone_canonique(valeur: &str) -> String {
     }
 }
 
-fn parse_annonces_query(raw: &str) -> Result<lj_dtos::AnnonceSearchRequest> {
-    let mut req = lj_dtos::AnnonceSearchRequest::default();
+fn parse_journals_query(raw: &str) -> Result<lj_dtos::JournalSearchRequest> {
+    let mut req = lj_dtos::JournalSearchRequest::default();
     for (key, value) in parse_qs(raw) {
         match key.as_str() {
             "q" => req.q = Some(value),
@@ -2378,8 +2527,10 @@ fn parse_annonces_query(raw: &str) -> Result<lj_dtos::AnnonceSearchRequest> {
                 })?)
             }
             "closes" => req.closes = matches!(value.as_str(), "1" | "true" | "yes" | "on"),
+            "jurisdiction" => req.jurisdiction = Some(value),
+            "home" => req.home = Some(crate::jurisdictions::parse_home(&value)?),
             "sort" => {
-                req.sort = de_enum::<lj_dtos::AnnonceSort>(&value).ok_or_else(|| {
+                req.sort = de_enum::<lj_dtos::JournalSort>(&value).ok_or_else(|| {
                     ApiError::Unprocessable(validation::enum_error(
                         &["query", "sort"],
                         &value,
@@ -2403,12 +2554,12 @@ fn parse_annonces_query(raw: &str) -> Result<lj_dtos::AnnonceSearchRequest> {
     if let Some(inconnu) = req
         .fond
         .iter()
-        .find(|f| !annonces::FONDS.contains(&f.as_str()))
+        .find(|f| !journals::FONDS.contains(&f.as_str()))
     {
         return Err(ApiError::Unprocessable(validation::enum_error(
             &["query", "fond"],
             inconnu,
-            &annonces::FONDS,
+            &journals::FONDS,
         )));
     }
     if req.limit < 1 {
@@ -2418,11 +2569,11 @@ fn parse_annonces_query(raw: &str) -> Result<lj_dtos::AnnonceSearchRequest> {
             1,
         )));
     }
-    if req.limit > ANNONCES_MAX_LIMIT {
+    if req.limit > JOURNALS_MAX_LIMIT {
         return Err(ApiError::Unprocessable(validation::less_than_equal(
             &["query", "limit"],
             &req.limit.to_string(),
-            i64::from(ANNONCES_MAX_LIMIT),
+            i64::from(JOURNALS_MAX_LIMIT),
         )));
     }
     if req.offset > ANNONCES_MAX_OFFSET {
@@ -2436,14 +2587,14 @@ fn parse_annonces_query(raw: &str) -> Result<lj_dtos::AnnonceSearchRequest> {
 }
 
 /// Moteur facetté du pot Annonces (`GET /api/annonces`).
-async fn annonces_endpoint(
+async fn journals_endpoint(
     State(state): State<AppState>,
     OptionalUser(user_id): OptionalUser,
     headers: HeaderMap,
     RawQuery(raw): RawQuery,
 ) -> Result<Response> {
-    let req = parse_annonces_query(raw.as_deref().unwrap_or(""))?;
-    let body = annonces::search(&state, &req).await?;
+    let req = parse_journals_query(raw.as_deref().unwrap_or(""))?;
+    let body = journals::search(&state, &req).await?;
     let caller = usage::Caller::http(
         ActivitySource::Web,
         user_id.is_some(),
@@ -2456,7 +2607,7 @@ async fn annonces_endpoint(
         state.pseudonymiser.as_ref(),
         &headers,
     );
-    let filters = annonces_filters(&req).to_string();
+    let filters = journals_filters(&req).to_string();
     caller.record_search(
         lj_dtos::SearchEngine::Annonces,
         req.q.as_deref().unwrap_or("").trim(),
@@ -2471,7 +2622,7 @@ async fn annonces_endpoint(
 
 /// The whole filter minus the window, plus the page number: the same keys as
 /// the `/annonces` URL.
-fn annonces_filters(req: &lj_dtos::AnnonceSearchRequest) -> serde_json::Value {
+fn journals_filters(req: &lj_dtos::JournalSearchRequest) -> serde_json::Value {
     let mut value = serde_json::to_value(req).unwrap_or_else(|_| serde_json::json!({}));
     if let Some(obj) = value.as_object_mut() {
         obj.remove("q");
@@ -2484,8 +2635,8 @@ fn annonces_filters(req: &lj_dtos::AnnonceSearchRequest) -> serde_json::Value {
     value
 }
 
-async fn annonces_catalogue(State(state): State<AppState>) -> Result<Response> {
-    let body = annonces::catalogue(&state).await?;
+async fn journals_catalogue(State(state): State<AppState>) -> Result<Response> {
+    let body = journals::catalogue(&state).await?;
     Ok(with_cache(CACHE_DECISION, body))
 }
 
@@ -2493,55 +2644,60 @@ async fn annonce_detail(
     State(state): State<AppState>,
     Path(uid): Path<String>,
 ) -> Result<Response> {
-    let body = annonces::detail(&state, &uid).await?;
+    let body = journals::detail(&state, &uid).await?;
     Ok(with_cache(CACHE_DECISION, body))
 }
 
-/// Alert feeds, mounted at the root: `/notice-search.rss` (new notices) and
-/// `/notice-search.ics` (deadlines). An alert is a filter state, the same query
+async fn notice_detail(State(state): State<AppState>, Path(uid): Path<String>) -> Result<Response> {
+    let body = crate::notices::notice(&state, &uid).await?;
+    Ok(with_cache(CACHE_DECISION, body))
+}
+
+/// Alert feeds, mounted at the root: `/journal-search.rss` (new notices) and
+/// `/journal-search.ics` (deadlines). An alert is a filter state, the same query
 /// string as the page, no account.
-fn annonces_feeds_router() -> Router<AppState> {
+fn journals_feeds_router() -> Router<AppState> {
     Router::new()
-        .route("/notice-search.rss", get(annonces_rss))
-        .route("/notice-search.ics", get(annonces_ics))
+        .route("/journal-search.rss", get(journals_rss))
+        .route("/journal-search.ics", get(journals_ics))
 }
 
 /// Requête d'un flux : le filtre de la page, la fenêtre forcée au plafond du flux
 /// et l'ordre imposé par le média (nouveautés pour un lecteur, échéance pour un
 /// agenda).
-fn feed_request(raw: &str, sort: lj_dtos::AnnonceSort) -> Result<lj_dtos::AnnonceSearchRequest> {
-    let mut req = parse_annonces_query(raw)?;
+fn feed_request(raw: &str, sort: lj_dtos::JournalSort) -> Result<lj_dtos::JournalSearchRequest> {
+    let mut req = parse_journals_query(raw)?;
     req.sort = sort;
-    req.limit = annonces::FEED_MAX_ITEMS;
+    req.limit = journals::FEED_MAX_ITEMS;
     req.offset = 0;
     req.closes = false;
     Ok(req)
 }
 
-async fn annonces_rss(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Result<Response> {
+async fn journals_rss(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Result<Response> {
     let raw = raw.as_deref().unwrap_or("");
-    let req = feed_request(raw, lj_dtos::AnnonceSort::Nouveautes)?;
-    let hits = annonces::hits_flux(&state, &req).await?;
+    let req = feed_request(raw, lj_dtos::JournalSort::Nouveautes)?;
+    let hits = journals::hits_flux(&state, &req).await?;
     let base = state.settings.web_base_url.trim_end_matches('/');
     let self_url = if raw.is_empty() {
-        format!("{base}/notice-search.rss")
+        format!("{base}/journal-search.rss")
     } else {
-        format!("{base}/notice-search.rss?{raw}")
+        format!("{base}/journal-search.rss?{raw}")
     };
     Ok(feed_response(
-        annonces::rss(&req, &hits, &self_url, base),
+        journals::rss(&req, &hits, &self_url, base),
         "application/rss+xml; charset=utf-8",
     ))
 }
 
-async fn annonces_ics(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Result<Response> {
-    let mut req = feed_request(raw.as_deref().unwrap_or(""), lj_dtos::AnnonceSort::Echeance)?;
+async fn journals_ics(State(state): State<AppState>, RawQuery(raw): RawQuery) -> Result<Response> {
+    let mut req = feed_request(raw.as_deref().unwrap_or(""), lj_dtos::JournalSort::Echeance)?;
     // Un agenda ne parle que des fonds qui ouvrent un délai.
     let demandes = std::mem::take(&mut req.fond);
-    req.fond = annonces::FONDS
+    req.fond = journals::FONDS
         .iter()
         .copied()
-        .filter(|f| lj_dtos::annonce_fond_a_echeance(f))
+        .filter(|f| lj_dtos::journal_fond_a_echeance(f))
         .filter(|f| demandes.is_empty() || demandes.iter().any(|d| d == f))
         .map(str::to_string)
         .collect();
@@ -2549,11 +2705,11 @@ async fn annonces_ics(State(state): State<AppState>, RawQuery(raw): RawQuery) ->
     let hits = if req.fond.is_empty() {
         Vec::new()
     } else {
-        annonces::hits_flux(&state, &req).await?
+        journals::hits_flux(&state, &req).await?
     };
     let base = state.settings.web_base_url.trim_end_matches('/');
     Ok(feed_response(
-        annonces::ics(&req, &hits, base),
+        journals::ics(&req, &hits, base),
         "text/calendar; charset=utf-8",
     ))
 }
@@ -2592,6 +2748,14 @@ async fn codes_catalogue(
 async fn corpus_stats(State(state): State<AppState>) -> Result<Response> {
     let body = stats::corpus_stats(&state).await?;
     Ok(with_cache(CACHE_DECISION, body))
+}
+
+async fn reader_jurisdictions(State(state): State<AppState>) -> Result<Response> {
+    let refs = crate::referential::referential(&state).await?;
+    Ok(with_cache(
+        CACHE_DECISION,
+        crate::jurisdictions::known(&refs),
+    ))
 }
 
 async fn open_source_list() -> Response {
@@ -2774,34 +2938,6 @@ async fn revoke_api_key(
     }
 }
 
-// ── Signets ─────────────────────────────────────────────────────────────────
-
-async fn list_bookmarks(
-    State(state): State<AppState>,
-    RequiredUser(sub): RequiredUser,
-) -> Result<Response> {
-    let (items, total) = bookmarks::list_bookmarks(&state, &sub).await?;
-    Ok(Json(BookmarksResponse { items, total }).into_response())
-}
-
-async fn add_bookmark(
-    State(state): State<AppState>,
-    RequiredUser(sub): RequiredUser,
-    Path(decision_id): Path<String>,
-) -> Result<StatusCode> {
-    bookmarks::add_bookmark(&state, &sub, &decision_id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
-async fn remove_bookmark(
-    State(state): State<AppState>,
-    RequiredUser(sub): RequiredUser,
-    Path(decision_id): Path<String>,
-) -> Result<StatusCode> {
-    bookmarks::remove_bookmark(&state, &sub, &decision_id).await?;
-    Ok(StatusCode::NO_CONTENT)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2827,7 +2963,7 @@ mod tests {
     /// still does nothing until this parser reads its key.
     #[test]
     fn chaque_axe_multivalue_de_l_url_atteint_la_requete() {
-        let req = parse_annonces_query(
+        let req = parse_journals_query(
             "fond=marche&zone=973&famille=TRAVAUX&cpv=45&cpv=nature_marche:SERVICES&metier=etudes",
         )
         .expect("query");
@@ -2894,7 +3030,7 @@ mod tests {
         };
         assert_eq!(obj["type"], json!("enum"));
         assert_eq!(obj["loc"], json!(["query", "solution"]));
-        assert!(obj["msg"].as_str().unwrap().contains("'REJET'"));
+        assert!(obj["msg"].as_str().unwrap().contains("'DISMISSED'"));
 
         let err = parse_search_query("query=x&jurisdiction_type=TRIBUNAL", false).unwrap_err();
         let ApiError::Unprocessable(obj) = err else {
@@ -2907,7 +3043,7 @@ mod tests {
     #[test]
     fn search_query_accepts_valid_enum_tokens() {
         let req = parse_search_query(
-            "query=x&solution=REJET&jurisdiction_type=TA&formation=FR.TA.JUGE_REFERES",
+            "query=x&solution=DISMISSED&jurisdiction_type=TA&formation=FR.TA.JUGE_REFERES",
             false,
         )
         .unwrap();

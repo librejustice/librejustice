@@ -14,6 +14,8 @@ use serde::{Deserialize, Serialize};
 /// à la liste exacte (query string) et de restaurer le scroll.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct FromSearch {
+    /// The search page, under its jurisdiction.
+    pub path: String,
     /// Query string complète (`?q=…&page=…`), telle quelle.
     pub search: String,
     /// Position de scroll à restaurer au retour (px).
@@ -89,17 +91,19 @@ pub fn use_restore_scroll() -> RestoreScrollSignal {
 /// server, where no click happens.
 pub fn search_origin(highlight: Option<String>) -> FromSearch {
     #[cfg(feature = "hydrate")]
-    let (search, scroll_y) = web_sys::window()
+    let (path, search, scroll_y) = web_sys::window()
         .map(|w| {
             (
+                w.location().pathname().unwrap_or_default(),
                 w.location().search().unwrap_or_default(),
                 w.scroll_y().unwrap_or(0.0),
             )
         })
         .unwrap_or_default();
     #[cfg(not(feature = "hydrate"))]
-    let (search, scroll_y) = (String::new(), 0.0);
+    let (path, search, scroll_y) = (String::new(), String::new(), 0.0);
     FromSearch {
+        path,
         search,
         scroll_y,
         highlight,

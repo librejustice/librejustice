@@ -2,7 +2,7 @@
 //! `upsert`/`update_existing`, application de provenance, écriture canonique,
 //! création, et mise à jour batchée des champs ré-extractibles.
 
-use super::decision_text::text_lang;
+use super::decision_text::original_lang;
 use super::support::{
     as_param_refs, extracted_column_type, extracted_field_value, formation_paths, is_routed_field,
     now, CASE_CITATIONS_FIELD, CASE_NAME_FIELD, DECISION_LINKS_FIELD, LEGAL_REFS_FIELD,
@@ -72,7 +72,11 @@ impl DecisionRepository<'_> {
             // Provenance connue (active OU tombstonée) → ré-update en place, même
             // décision. Skip seulement si active ET checksum inchangé ; une provenance
             // tombstonée se ressuscite même à checksum égal.
-            if active && stored_checksum == content_checksum {
+            if (active && stored_checksum == content_checksum)
+                || self
+                    .is_expired(&decision.source_uid, content_checksum)
+                    .await?
+            {
                 return Ok(UpsertResult {
                     id,
                     status: UpsertStatus::Skipped,
@@ -266,7 +270,12 @@ impl DecisionRepository<'_> {
                   themes = $17,
                   formation_uid = $18,
                   search_title = $19,
-                  seat = $20, seat_paths = $21, formation_paths = $22
+                  seat = $20, seat_paths = $21, formation_paths = $22,
+                  kind = $25,
+                  lang = CASE WHEN EXISTS (SELECT 1 FROM decision_sources s
+                                            WHERE s.decision_id = $8 AND s.source_uid <> $24
+                                              AND s.deleted_at IS NULL)
+                              THEN lang ELSE $23 END
                 WHERE id = $8
                   AND (extract_version IS NULL OR extract_version <= $9)
                 ",
@@ -293,6 +302,9 @@ impl DecisionRepository<'_> {
                     &e.and_then(|e| e.seat.clone()).map(Json),
                     &e.map(|e| e.seat_paths.clone()).unwrap_or_default(),
                     &e.map(formation_paths).unwrap_or_default(),
+                    &original_lang(source_fields)?,
+                    &decision.source_uid,
+                    &e.map(|e| e.kind).unwrap_or_default().as_str(),
                 ],
             )
             .await?;
@@ -454,6 +466,35 @@ impl DecisionRepository<'_> {
         Ok(resolved)
     }
 
+    /// The labels these courts carry, by code.
+    #[tracing::instrument(name = "db.jurisdiction_labels", skip_all, fields(db.system = "postgresql"))]
+    pub async fn jurisdiction_labels(
+        &self,
+        codes: &[String],
+    ) -> Result<std::collections::HashMap<String, String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT code, label FROM jurisdiction WHERE code = ANY($1)",
+                &[&codes],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// Renames courts by code, for a fonds that alone names them.
+    #[tracing::instrument(name = "db.relabel_jurisdictions", skip_all, fields(db.system = "postgresql"))]
+    pub async fn relabel_jurisdictions(&self, codes: &[String], labels: &[String]) -> Result<u64> {
+        Ok(self
+            .conn
+            .execute(
+                "UPDATE jurisdiction j SET label = u.label \
+                 FROM UNNEST($1::text[], $2::text[]) AS u(code, label) WHERE j.code = u.code",
+                &[&codes, &labels],
+            )
+            .await?)
+    }
+
     /// `jurisdiction_type` and `jurisdiction_code` of a live decision, by its public id.
     #[tracing::instrument(name = "db.decision_jurisdiction", skip(self), fields(db.system = "postgresql"))]
     pub async fn decision_jurisdiction(
@@ -485,6 +526,221 @@ impl DecisionRepository<'_> {
         Ok(self
             .conn
             .query_one("SELECT pg_try_advisory_lock(hashtext('juricaf_sync'))", &[])
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one juportal sync at a time fetches and loads.
+    pub async fn juportal_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtext('juportal_sync'))",
+                &[],
+            )
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one Rechtspraak sync at a time fetches and loads.
+    pub async fn rechtspraak_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtext('rechtspraak_sync'))",
+                &[],
+            )
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one data.public.lu sync at a time fetches and loads.
+    pub async fn justice_lu_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtext('justice_lu_sync'))",
+                &[],
+            )
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one entscheidsuche sync at a time fetches and loads each set
+    /// of courts, the empty set naming them all.
+    pub async fn entscheidsuche_lock(&self, courts: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtext('entscheidsuche_sync:' || $1))",
+                &[&courts],
+            )
+            .await?
+            .get(0))
+    }
+
+    /// Every entscheidsuche provenance by its index id: the day its document was scraped, and
+    /// whether its text was read from the original file rather than the index.
+    #[tracing::instrument(name = "db.entscheidsuche_held", skip(self), fields(db.system = "postgresql"))]
+    pub async fn entscheidsuche_held(&self) -> Result<Vec<(String, Option<String>, bool)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT substr(source_uid, length('entscheidsuche/') + 1), \
+                        source_fields->>'scrapedate', \
+                        coalesce((source_fields->>'text_from_original')::boolean, false) \
+                 FROM decision_sources WHERE source = 'entscheidsuche'",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2)))
+            .collect())
+    }
+
+    /// The decision of each of these provenances the base holds, and whether it has a summary.
+    #[tracing::instrument(name = "db.provenance_decisions", skip_all, fields(db.system = "postgresql", n = uids.len()))]
+    pub async fn provenance_decisions(
+        &self,
+        uids: &[String],
+    ) -> Result<std::collections::HashMap<String, (i64, bool)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT s.source_uid, s.decision_id, \
+                        EXISTS (SELECT 1 FROM decision_text t \
+                                WHERE t.decision_id = s.decision_id AND t.summary IS NOT NULL) \
+                 FROM decision_sources s WHERE s.source_uid = ANY($1)",
+                &[&uids],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get(0), (r.get(1), r.get(2))))
+            .collect())
+    }
+
+    /// The md5 of the text each of these live decisions serves.
+    #[tracing::instrument(name = "db.text_digests", skip_all, fields(db.system = "postgresql", n = ids.len()))]
+    pub async fn text_digests(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, String>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT DISTINCT ON (t.decision_id) t.decision_id, md5(t.full_text) \
+                 FROM decision_text t JOIN decisions d ON d.id = t.decision_id \
+                 WHERE t.decision_id = ANY($1) AND d.deleted_at IS NULL \
+                 ORDER BY t.decision_id, t.id",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows.into_iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// The day and the text each of these live decisions serves.
+    #[tracing::instrument(name = "db.days_and_texts", skip_all, fields(db.system = "postgresql", n = ids.len()))]
+    pub async fn days_and_texts(
+        &self,
+        ids: &[i64],
+    ) -> Result<std::collections::HashMap<i64, (Option<String>, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT DISTINCT ON (t.decision_id) t.decision_id, d.date_lecture::text, t.full_text \
+                 FROM decision_text t JOIN decisions d ON d.id = t.decision_id \
+                 WHERE t.decision_id = ANY($1) AND d.deleted_at IS NULL \
+                 ORDER BY t.decision_id, t.id",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| (r.get(0), (r.get(1), r.get(2))))
+            .collect())
+    }
+
+    /// Gives a provenance, and the text it wrote, the `source_uid` its source now names it by.
+    #[tracing::instrument(name = "db.rename_provenance", skip(self), fields(db.system = "postgresql"))]
+    pub async fn rename_provenance(&self, from: &str, to: &str) -> Result<()> {
+        let renamed: i64 = self
+            .conn
+            .query_one(
+                "WITH s AS (UPDATE decision_sources SET source_uid = $2 WHERE source_uid = $1 \
+                            RETURNING decision_id), \
+                      t AS (UPDATE decision_text t SET source_uid = $2 FROM s \
+                            WHERE t.decision_id = s.decision_id AND t.source_uid = $1) \
+                 SELECT count(*) FROM s",
+                &[&from, &to],
+            )
+            .await?
+            .get(0);
+        if renamed != 1 {
+            return Err(StoreError::Invalid(format!(
+                "rename_provenance {from} -> {to}: {renamed} rows"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Held until the session ends: one sync of a court's own site at a time fetches and loads.
+    pub async fn court_site_lock(&self, source: &str) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtext('court_site_sync:' || $1))",
+                &[&source],
+            )
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one Légimonaco sync at a time fetches and loads.
+    pub async fn legimonaco_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one(
+                "SELECT pg_try_advisory_lock(hashtext('legimonaco_sync'))",
+                &[],
+            )
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one Legalis sync at a time fetches and loads.
+    pub async fn legalis_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one("SELECT pg_try_advisory_lock(hashtext('legalis_sync'))", &[])
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one Défenseur des droits sync at a time reads its catalogue.
+    pub async fn ddd_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one("SELECT pg_try_advisory_lock(hashtext('ddd_sync'))", &[])
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one Supreme Court of Canada sync at a time fetches and loads.
+    pub async fn scc_csc_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one("SELECT pg_try_advisory_lock(hashtext('scc_csc_sync'))", &[])
+            .await?
+            .get(0))
+    }
+
+    /// Held until the session ends: one Conseil du contentieux des étrangers sync at a time.
+    pub async fn cce_lock(&self) -> Result<bool> {
+        Ok(self
+            .conn
+            .query_one("SELECT pg_try_advisory_lock(hashtext('cce_sync'))", &[])
             .await?
             .get(0))
     }
@@ -914,10 +1170,7 @@ impl DecisionRepository<'_> {
             .as_deref()
             .map(|n| vec![lj_core::case_names::case_name_key(n)]);
         let case_name_source = case_name.as_ref().map(|_| "source");
-        let lang = match text_lang(source_fields, "original_lang")? {
-            Some(l) => l,
-            None => text_lang(source_fields, "lang")?.unwrap_or("fr"),
-        };
+        let lang = original_lang(source_fields)?;
         let row = self
             .conn
             .query_one(
@@ -930,10 +1183,10 @@ impl DecisionRepository<'_> {
                   solution_uid, procedure_uid, office_uid, legal_domain_uid,
                   jurisdiction_code, themes, formation_uid,
                   search_title, case_name, case_name_keys, case_name_source,
-                  seat, seat_paths, lang, formation_paths
+                  seat, seat_paths, lang, formation_paths, kind
                 )
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16,
-                        $17, $18, $19, $20, $21, $22, $23, $24, $25)
+                        $17, $18, $19, $20, $21, $22, $23, $24, $25, $26)
                 RETURNING id
                 ",
                 &[
@@ -962,6 +1215,7 @@ impl DecisionRepository<'_> {
                     &e.map(|e| e.seat_paths.clone()).unwrap_or_default(),
                     &lang,
                     &e.map(formation_paths).unwrap_or_default(),
+                    &e.map(|e| e.kind).unwrap_or_default().as_str(),
                 ],
             )
             .await?;

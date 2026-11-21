@@ -448,6 +448,7 @@ const BLOCKS: [(&str, &str); 7] = [
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JorfPublication {
     pub jorftext: String,
+    pub nature: Option<String>,
     pub num_parution: Option<String>,
     pub num_sequence: Option<i32>,
     pub origine_publi: Option<String>,
@@ -508,6 +509,7 @@ pub fn parse_jorf_publication(raw: &[u8]) -> Result<JorfPublication, CoreError> 
         })
         .collect();
     Ok(JorfPublication {
+        nature: node_text(find_anywhere(&root, "META_COMMUN/NATURE")),
         num_parution: chronicle("NUM_PARUTION"),
         num_sequence: number("NUM_SEQUENCE")?,
         origine_publi: chronicle("ORIGINE_PUBLI"),
@@ -813,6 +815,7 @@ mod tests {
     #[test]
     fn a_publication_keeps_its_place_in_the_issue_and_its_blocks() {
         let p = parse_jorf_publication(ARRETE_CYBER.as_bytes()).expect("publication");
+        assert_eq!(p.nature.as_deref(), Some("ARRETE"));
         assert_eq!(p.num_parution.as_deref(), Some("0235"));
         assert_eq!(p.num_sequence, Some(1));
         assert_eq!(p.page_deb, None);

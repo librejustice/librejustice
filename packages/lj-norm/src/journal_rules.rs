@@ -225,6 +225,16 @@ pub fn reaches(journal_code: &str, path: &[String]) -> bool {
         .any(|r| r.regime == Regime::Default && path.iter().any(|p| p == r.place))
 }
 
+/// The seat roots of the courts a reader of `path` answers to beside their own:
+/// those ruling on the law of a journal that reaches the place by default.
+pub fn court_orders(path: &[String]) -> Vec<&'static str> {
+    crate::applicability::journals()
+        .iter()
+        .filter(|j| reaches(j.code, path))
+        .filter_map(|j| j.courts)
+        .collect()
+}
+
 /// A stretch on which a place receives the texts of a key by default, with
 /// the source of the line that sets each bound.
 #[derive(Debug, Clone, PartialEq, Eq)]

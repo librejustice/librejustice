@@ -209,6 +209,7 @@ pub fn CheckboxOption(
     // référentiel. Réactif : il arrive avec les facettes, après la ligne.
     #[prop(optional, into)] hint: Signal<Option<String>>,
 ) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
     let button_class = move || {
         cn([
             "flex w-full items-center gap-2.5 rounded px-2 py-1 text-left text-sm transition-colors",
@@ -260,7 +261,7 @@ pub fn CheckboxOption(
             <span class="flex-1 leading-tight">{label}</span>
             <Show when=shows_count>
                 <span class="tabular-nums text-xs text-[var(--color-ink-subtle)]">
-                    {move || group_thousands(count.get())}
+                    {move || group_thousands(numbers, count.get())}
                 </span>
             </Show>
         </button>
@@ -347,6 +348,7 @@ fn CollapsibleRow(
     #[prop(optional, into)] hint: Signal<Option<String>>,
     children: ChildrenFn,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
     let expanded = RwSignal::new(auto_expand.get_untracked());
     Effect::new(move |_| {
         if auto_expand.get() {
@@ -374,7 +376,7 @@ fn CollapsibleRow(
             <div class="flex items-center gap-1">
                 <button
                     type="button"
-                    aria-label=move || if expanded.get() { "Réduire" } else { "Développer" }
+                    aria-label=move || if expanded.get() { ui.collapse } else { ui.expand }
                     disabled=move || !has_children.get()
                     on:click=move |_| expanded.update(|v| *v = !*v)
                     class=chevron_class
@@ -577,6 +579,7 @@ pub fn FacetChecklist(
     #[prop(into)] on_toggle: Callback<String>,
 ) -> impl IntoView {
     const CAP: usize = 6;
+    let ui = &crate::i18n::use_ui().search;
     let show_all = RwSignal::new(false);
     // `Memo` : lu par les signaux `count`/`label` de chaque ligne.
     let rows = Memo::new(move |_| {
@@ -644,7 +647,7 @@ pub fn FacetChecklist(
                     on:click=move |_| show_all.update(|v| *v = !*v)
                     class="self-start px-2 text-xs text-[var(--color-accent)] hover:underline"
                 >
-                    {move || if show_all.get() { "Voir moins" } else { "Voir plus" }}
+                    {move || if show_all.get() { ui.show_less } else { ui.show_more }}
                 </button>
             </Show>
         </div>

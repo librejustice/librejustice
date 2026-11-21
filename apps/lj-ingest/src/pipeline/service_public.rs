@@ -9,7 +9,8 @@ use lj_norm::article_order::num_key_sort_key;
 use lj_norm::text_identity::{legifrance_id, IdKind};
 use lj_parse::{ArticleSpan, ServicePublicSheet, SheetReference};
 use lj_store::repository::{
-    DecisionRepository, LegalLinkOwner, LegalLinkRow, LegalTextRow, SectionArticle, SectionArticles,
+    BodyWrite, DecisionRepository, LegalLinkOwner, LegalLinkRow, LegalTextRow, SectionArticle,
+    SectionArticles,
 };
 
 use crate::config::Settings;
@@ -80,6 +81,13 @@ pub async fn sync_service_public() -> Result<()> {
         repo.upsert_legal_text(&row)
             .await
             .map_err(|e| anyhow!("upsert_legal_text {}: {e}", row.text_uid))?;
+        repo.write_text_bodies(
+            "fiche_pratique",
+            &[(row.text_uid.clone(), sheet.body.clone())],
+            BodyWrite::Replace,
+        )
+        .await
+        .map_err(|e| anyhow!("write_text_bodies {}: {e}", row.text_uid))?;
         edges.push((
             LegalLinkOwner {
                 text_uid: row.text_uid,
@@ -144,7 +152,6 @@ fn sheet_row(sheet: &ServicePublicSheet) -> Result<LegalTextRow> {
         eli: None,
         nor: None,
         instrument_key: None,
-        body: Some(sheet.body.clone()),
         status: Some("VIGUEUR".to_string()),
     })
 }

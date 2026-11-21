@@ -6,6 +6,59 @@ use super::*;
 // `&amp;nbsp;`, mojibake par sous-arbre) ; le parser reste PUR.
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// The CNIL deliberations that lay down a general rule or position: the norms
+/// hold them, as the CNIL's doctrine.
+pub const CNIL_DOCTRINE_NATURES: &[&str] = &[
+    "Référentiel/Règlement type/Norme",
+    "Recommandation/Lignes directrices",
+];
+
+fn is_cnil_doctrine(meta_cnil: &XmlNode) -> bool {
+    node_text(meta_cnil.find_first(&["NATURE_DELIB"]))
+        .is_some_and(|n| CNIL_DOCTRINE_NATURES.contains(&n.trim()))
+}
+
+/// A CNIL deliberation of [`CNIL_DOCTRINE_NATURES`], as the norms take it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CnilDoctrine {
+    /// `CNILTEXT…`, its DILA identifier.
+    pub id: String,
+    pub title: String,
+    pub number: Option<String>,
+    pub date_texte: String,
+    pub date_publi: Option<String>,
+    pub nor: Option<String>,
+    /// `ETAT_JURIDIQUE`: `VIGUEUR`, `MODIFIE`, `ABROGE`, `ANNULE`, `PERIME`.
+    pub status: String,
+    pub body: String,
+}
+
+/// The deliberation a `TEXTE_CNIL` member holds when its nature is one of
+/// [`CNIL_DOCTRINE_NATURES`] and it has a body.
+pub fn cnil_doctrine(raw: &[u8]) -> Option<CnilDoctrine> {
+    let root = build_tree(raw)?;
+    let meta = root.find("META/META_SPEC/META_CNIL")?;
+    if !is_cnil_doctrine(meta) {
+        return None;
+    }
+    let field = |tag: &str| node_text(meta.find_first(&[tag])).filter(|v| !v.trim().is_empty());
+    let body = root
+        .find_first(&["BLOC_TEXTUEL/CONTENU", "TEXTE/BLOC_TEXTUEL/CONTENU"])
+        .and_then(XmlNode::html_text)
+        .map(|t| clean_texte(&t))
+        .filter(|t| !t.trim().is_empty())?;
+    Some(CnilDoctrine {
+        id: node_text(root.find("META/META_COMMUN")?.find_first(&["ID"]))?,
+        title: field("TITREFULL").or_else(|| field("TITRE"))?,
+        number: field("NUMERO"),
+        date_texte: field("DATE_TEXTE")?,
+        date_publi: field("DATE_PUBLI"),
+        nor: field("NOR"),
+        status: field("ETAT_JURIDIQUE").unwrap_or_else(|| "VIGUEUR".to_string()),
+        body,
+    })
+}
+
 /// Fonds bulk DILA. Sélectionne le sous-bloc `META_JURI_*` et le routage de
 /// juridiction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -374,6 +427,9 @@ pub fn parse_dila_doc(
     let id = meta_commun
         .and_then(|m| node_text(m.find_first(&["ID"])))
         .ok_or_else(|| CoreError::Xml(format!("DILA {member_path}: META_COMMUN/ID absent")))?;
+    if fond == DilaFond::Cnil && meta_sub.is_some_and(is_cnil_doctrine) {
+        return Ok(Vec::new());
+    }
     // CNIL : date dans `META_CNIL/DATE_TEXTE` (pas de `META_JURI`).
     let date_dec = match fond {
         DilaFond::Cnil => meta_sub.and_then(|m| node_text(m.find_first(&["DATE_TEXTE"]))),

@@ -4,7 +4,8 @@
 
 use super::support::now;
 use super::types::{
-    CollageRow, DisplayInput, GtDoc, MissingSummaryRow, SitemapDecision, SitemapRow, SummaryStamp,
+    CollageRow, DisplayInput, GtDoc, MissingSummaryRow, PickedText, SitemapDecision, SitemapRow,
+    SummaryStamp,
 };
 use super::DecisionRepository;
 use crate::error::Result;
@@ -14,6 +15,20 @@ use serde_json::Value;
 use std::collections::HashMap;
 use std::ops::Range;
 use tokio_postgres::types::Json;
+
+/// An article of the norm vector bench, in force today.
+#[derive(Debug, Clone)]
+pub struct NormBenchArticle {
+    pub text_uid: String,
+    pub slug: String,
+    pub title: String,
+    /// Empty for a piece of its text.
+    pub num: String,
+    pub title_path: String,
+    pub texte: String,
+    pub date_debut: NaiveDate,
+    pub date_fin: Option<NaiveDate>,
+}
 
 /// A summary as stored, its body and the court's words located in codepoints.
 #[derive(Debug, Clone)]
@@ -46,13 +61,27 @@ pub struct EmbedInput {
     pub others: Vec<EmbedText>,
 }
 
-/// A text of a decision and the provenance that wrote it.
+/// Which decisions of [`DecisionRepository::embed_queue`] are taken, and in what order.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EmbedScope {
+    /// Only the decisions the site shows each of whose texts the passages read
+    /// carries a summary at its generation, a collage or the court's own.
+    pub summarised: bool,
+    /// The French courts first, then the CEDH, then the rest, each newest first;
+    /// by id otherwise.
+    pub by_jurisdiction: bool,
+    /// Only the decisions whose passages read more than one text.
+    pub multilingual: bool,
+}
+
+/// A text of a decision, the provenance that wrote it and the summary it carries.
 #[derive(Debug, Clone)]
 pub struct EmbedText {
     pub full_text: String,
     pub source_fields: Value,
     pub source_uid: String,
     pub lang: String,
+    pub summary: Option<String>,
 }
 
 /// Sort d'une écriture de révision manuelle par [`DecisionRepository::upsert_fields_at_version`].
@@ -100,7 +129,94 @@ pub struct ManualFields {
     pub jurisdiction_code: Option<String>,
 }
 
+/// Per judged `(slug, num)`, the `(jurisdiction, text_uid)` it can name.
+pub type DocTexts = HashMap<(String, String), Vec<(String, String)>>;
+
 impl DecisionRepository<'_> {
+    /// The `(jurisdiction, text_uid)` each `(slug, num)` can name, French first: the
+    /// text a former slug redirects to, else those under the slug holding `num`.
+    #[tracing::instrument(name = "db.norm_bench_doc_texts", skip(self, keys), fields(db.system = "postgresql", keys = keys.len()))]
+    pub async fn norm_bench_doc_texts(&self, keys: &[(String, String)]) -> Result<DocTexts> {
+        let (slugs, nums): (Vec<&str>, Vec<&str>) =
+            keys.iter().map(|(s, n)| (s.as_str(), n.as_str())).unzip();
+        let mut texts = DocTexts::new();
+        for r in self
+            .conn
+            .query(
+                "WITH k AS (SELECT * FROM unnest($1::text[], $2::text[]) AS k(slug, num)),
+                 named AS (
+                   SELECT k.slug, k.num, t.jurisdiction, t.text_uid
+                   FROM k JOIN legal_text_slug_redirect r ON r.ancien_slug = k.slug
+                          JOIN legal_text t ON t.text_uid = r.text_uid
+                   UNION ALL
+                   SELECT k.slug, k.num, t.jurisdiction, t.text_uid
+                   FROM k JOIN legal_text t ON t.slug = k.slug
+                   WHERE NOT EXISTS (SELECT 1 FROM legal_text_slug_redirect r
+                                     WHERE r.ancien_slug = k.slug))
+                 SELECT slug, num, jurisdiction, text_uid FROM named n
+                 WHERE n.num = ''
+                    OR EXISTS (SELECT 1 FROM legal_article a
+                               WHERE a.text_uid = n.text_uid AND a.num = n.num)
+                 ORDER BY slug, num, jurisdiction <> 'FR', jurisdiction",
+                &[&slugs, &nums],
+            )
+            .await?
+        {
+            texts
+                .entry((r.get(0), r.get(1)))
+                .or_default()
+                .push((r.get(2), r.get(3)));
+        }
+        Ok(texts)
+    }
+
+    /// The searchable articles in force today of `text_uids`, and of `sample`
+    /// other texts drawn by `seed`, text by text in reading order.
+    #[tracing::instrument(name = "db.norm_bench_articles", skip(self, text_uids), fields(db.system = "postgresql", texts = text_uids.len()))]
+    pub async fn norm_bench_articles(
+        &self,
+        text_uids: &[String],
+        sample: i64,
+        seed: &str,
+    ) -> Result<Vec<NormBenchArticle>> {
+        Ok(self
+            .conn
+            .query(
+                "WITH gt AS (SELECT unnest($1::text[]) AS text_uid),
+                 drawn AS (
+                   SELECT t.text_uid FROM legal_text t
+                   WHERE t.slug IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM gt WHERE gt.text_uid = t.text_uid)
+                     AND EXISTS (SELECT 1 FROM legal_article a
+                                 WHERE a.text_uid = t.text_uid AND a.searchable)
+                   ORDER BY hashtext(t.text_uid || $3)
+                   LIMIT $2)
+                 SELECT a.text_uid, t.slug, t.title, a.num, coalesce(a.title_path, ''),
+                        a.texte, a.date_debut, a.date_fin
+                 FROM legal_article a JOIN legal_text t ON t.text_uid = a.text_uid
+                 WHERE a.text_uid IN (SELECT text_uid FROM gt UNION SELECT text_uid FROM drawn)
+                   AND a.searchable AND a.texte IS NOT NULL
+                   AND a.date_debut <= CURRENT_DATE
+                   AND (a.date_fin IS NULL OR a.date_fin > CURRENT_DATE)
+                 ORDER BY a.text_uid, a.reading_rank NULLS LAST, a.position NULLS LAST,
+                          a.num_key",
+                &[&text_uids, &sample, &seed],
+            )
+            .await?
+            .iter()
+            .map(|r| NormBenchArticle {
+                text_uid: r.get(0),
+                slug: r.get(1),
+                title: r.get(2),
+                num: r.get(3),
+                title_path: r.get(4),
+                texte: r.get(5),
+                date_debut: r.get(6),
+                date_fin: r.get(7),
+            })
+            .collect())
+    }
+
     /// Persiste le `payload_format` (`xml`/`json`) d'une décision : c'est lui qui
     /// choisit le reconstructeur côté re-extract (`fetch_reextract_inputs`).
     #[tracing::instrument(name = "db.set_payload_format", skip(self), fields(db.system = "postgresql"))]
@@ -235,14 +351,14 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// Texte intégral (`decisions.full_text`, grain décision) par id. Décisions sans
-    /// `full_text` omises.
-    pub async fn fetch_full_texts(&self, ids: &[i64]) -> Result<Vec<(i64, String)>> {
+    /// The text each decision is read from, and its language. Decisions without a
+    /// text are left out.
+    pub async fn fetch_full_texts(&self, ids: &[i64]) -> Result<Vec<PickedText>> {
         let rows = self
             .conn
             .query(
                 &format!(
-                    "SELECT decision_id, full_text FROM decision_text \
+                    "SELECT decision_id, lang, full_text FROM decision_text \
                  WHERE decision_id = ANY($1) AND {read}",
                     read = super::pick::read("decision_text")
                 ),
@@ -251,7 +367,33 @@ impl DecisionRepository<'_> {
             .await?;
         Ok(rows
             .into_iter()
-            .map(|r| (r.get::<_, i64>(0), r.get::<_, String>(1)))
+            .map(|r| PickedText {
+                decision_id: r.get(0),
+                lang: r.get(1),
+                full_text: r.get(2),
+            })
+            .collect())
+    }
+
+    /// The texts named by decision and language.
+    pub async fn fetch_texts(&self, keys: &[(i64, &str)]) -> Result<Vec<PickedText>> {
+        let (ids, langs): (Vec<i64>, Vec<&str>) = keys.iter().copied().unzip();
+        let rows = self
+            .conn
+            .query(
+                "SELECT t.decision_id, t.lang, t.full_text \
+                 FROM unnest($1::bigint[], $2::text[]) k(id, lang) \
+                 JOIN decision_text t ON t.decision_id = k.id AND t.lang = k.lang",
+                &[&ids, &langs],
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|r| PickedText {
+                decision_id: r.get(0),
+                lang: r.get(1),
+                full_text: r.get(2),
+            })
             .collect())
     }
 
@@ -293,6 +435,47 @@ impl DecisionRepository<'_> {
         let sql = format!("SELECT full_text FROM decision_text TABLESAMPLE SYSTEM ({sample_pct})");
         let rows = self.conn.query(sql.as_str(), &[]).await?;
         Ok(rows.into_iter().map(|r| r.get::<_, String>(0)).collect())
+    }
+
+    /// The `texte` of the article rows `ids`.
+    pub async fn article_textes(&self, ids: &[i64]) -> Result<Vec<(i64, Option<String>)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT id, texte FROM legal_article WHERE id = ANY($1)",
+                &[&ids],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// The score `legal_article_bm25` gives the rows `ids` on `texte` alone:
+    /// `query` as one indexed term when `term`, else matched as the search does.
+    /// A row the clause misses is absent. The ids go in the query at a score of
+    /// 0: as a predicate, ParadeDB pushes them down at a score of 1.
+    pub async fn article_texte_scores(
+        &self,
+        query: &str,
+        term: bool,
+        ids: &[i64],
+    ) -> Result<HashMap<i64, f64>> {
+        let clause = if term {
+            "paradedb.term('texte', $1::text)"
+        } else {
+            "paradedb.match('texte', $1)"
+        };
+        let rows = self
+            .conn
+            .query(
+                &format!(
+                    "SELECT id, paradedb.score(id)::float8 FROM legal_article \
+                     WHERE id @@@ paradedb.boolean(must => ARRAY[{clause}, \
+                       paradedb.const_score(0, paradedb.term_set('id', $2::bigint[]))])"
+                ),
+                &[&query, &ids],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
     }
 
     /// Fréquence documentaire `df` d'un terme indexé `term` dans `full_text`.
@@ -512,17 +695,19 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    /// The decisions whose passages `embed-missing` rebuilds, by id, among those
-    /// with `id % shard.1 == shard.0`. By default: a text without passages and
-    /// not visited at `embed_version`, a passage lacking its embedding, or
-    /// passages embedded at `embed_version` without the summary their text now
-    /// carries. With `stock`, also every decision visited below `embed_version`
-    /// and every passage embedded behind another summary than its text's.
+    /// The decisions whose passages `embed-missing` rebuilds, among those with
+    /// `id % shard.1 == shard.0`. By default: a text without passages and not
+    /// visited at `embed_version`, a passage lacking its embedding, or passages
+    /// embedded at `embed_version` without the summary their text now carries.
+    /// With `stock`, also every decision visited below `embed_version` and every
+    /// passage embedded behind another summary than its text's. `scope` orders
+    /// them; [`Self::embed_scope`] narrows them.
     pub async fn embed_queue(
         &self,
         embed_version: i16,
         stock: bool,
         shard: (i64, i64),
+        scope: EmbedScope,
     ) -> Result<Vec<i64>> {
         let mut sql = format!(
             "SELECT d.id FROM decisions d
@@ -556,10 +741,73 @@ impl DecisionRepository<'_> {
                 order = super::pick::order("p", "d")
             ));
         }
-        sql.push_str(" ORDER BY 1");
+        let sql = format!(
+            "SELECT d.id FROM ({sql}) q(id) JOIN decisions d ON d.id = q.id
+             ORDER BY CASE WHEN $4::bool THEN CASE WHEN d.jurisdiction_type = 'CEDH' THEN 1
+                                             WHEN d.jurisdiction_type = ANY($5::text[]) THEN 2 ELSE 0 END END,
+                      CASE WHEN $4 THEN d.date_lecture END DESC NULLS LAST,
+                      CASE WHEN $4 THEN -d.id ELSE d.id END"
+        );
+        let rest: Vec<&str> = lj_vocab::courts::FOREIGN_COURT_TYPES
+            .iter()
+            .copied()
+            .chain(["CJUE", "COMEU"])
+            .collect();
         let rows = self
             .conn
-            .query(sql.as_str(), &[&embed_version, &shard.0, &shard.1])
+            .query(
+                sql.as_str(),
+                &[
+                    &embed_version,
+                    &shard.0,
+                    &shard.1,
+                    &scope.by_jurisdiction,
+                    &rest,
+                ],
+            )
+            .await?;
+        Ok(rows.iter().map(|r| r.get(0)).collect())
+    }
+
+    /// Those of `ids`, in their order, that `scope` takes. Asked a batch at a time:
+    /// over a whole queue of 900,000 decisions, these checks take ten minutes.
+    pub async fn embed_scope(&self, ids: &[i64], scope: EmbedScope) -> Result<Vec<i64>> {
+        if !scope.summarised && !scope.multilingual {
+            return Ok(ids.to_vec());
+        }
+        let sql = format!(
+            "SELECT d.id FROM unnest($1::bigint[]) WITH ORDINALITY k(id, n) JOIN decisions d ON d.id = k.id
+             WHERE (NOT $2::bool
+                    OR (SELECT count(*) FROM decision_text t WHERE t.decision_id = d.id AND {embedded}) > 1)
+               AND (NOT $3::bool OR (d.deleted_at IS NULL AND d.public_id IS NOT NULL
+               AND EXISTS (SELECT 1 FROM decision_text t WHERE t.decision_id = d.id AND {read})
+               AND NOT EXISTS (
+                 SELECT 1 FROM decision_text t WHERE t.decision_id = d.id AND {embedded}
+                   AND (t.summary IS NULL
+                        OR NOT (coalesce(t.summary_prompt_version, 0::int2)
+                                    >= CASE WHEN t.lang = 'fr' THEN $4::int2 ELSE $5::int2 END
+                                OR coalesce(t.summary_engine, 0::int2) = ANY($6::int2[]))))))
+             ORDER BY k.n",
+            read = super::pick::read("t"),
+            embedded = super::pick::embedded("t")
+        );
+        let collages: Vec<i16> = lj_summary::SummaryEngine::COLLAGES
+            .iter()
+            .map(|engine| engine.code())
+            .collect();
+        let rows = self
+            .conn
+            .query(
+                sql.as_str(),
+                &[
+                    &ids,
+                    &scope.multilingual,
+                    &scope.summarised,
+                    &lj_summary::FRENCH_SUMMARY_GENERATION,
+                    &lj_summary::SUMMARY_PROMPT_VERSION,
+                    &collages,
+                ],
+            )
             .await?;
         Ok(rows.iter().map(|r| r.get(0)).collect())
     }
@@ -601,7 +849,7 @@ impl DecisionRepository<'_> {
             .conn
             .query(
                 &format!(
-                    "SELECT t.decision_id, t.full_text, ds.source_fields, t.source_uid, t.lang
+                    "SELECT t.decision_id, t.full_text, ds.source_fields, t.source_uid, t.lang, t.summary
                      FROM decision_text t
                      JOIN decision_sources ds ON ds.source_uid = t.source_uid AND ds.deleted_at IS NULL
                      WHERE t.decision_id = ANY($1) AND t.source_uid <> ALL($2) AND {passages}
@@ -617,6 +865,7 @@ impl DecisionRepository<'_> {
                 source_fields: r.get(2),
                 source_uid: r.get(3),
                 lang: r.get(4),
+                summary: r.get(5),
             });
         }
         Ok(rows
@@ -1092,6 +1341,7 @@ impl DecisionRepository<'_> {
     pub async fn set_summary(
         &self,
         decision_id: i64,
+        lang: &str,
         summary: &str,
         body: Option<Range<usize>>,
         quote: Option<Range<usize>>,
@@ -1102,11 +1352,11 @@ impl DecisionRepository<'_> {
         let (start, end) = codepoint_columns(quote);
         self.conn
             .execute(
-                &format!("WITH t AS (UPDATE decision_text SET summary = $1, summary_prompt_version = $2, \
+                "WITH t AS (UPDATE decision_text SET summary = $1, summary_prompt_version = $2, \
                             summary_engine = $3, summary_quote_start = $6, summary_quote_end = $7, \
                             summary_body_start = $8, summary_body_end = $9 \
-                            WHERE decision_id = $5 AND {read} RETURNING decision_id) \
-                 UPDATE decisions SET updated_at = $4 WHERE id = (SELECT decision_id FROM t)", read = super::pick::read("decision_text")),
+                            WHERE decision_id = $5 AND lang = $10 RETURNING decision_id) \
+                 UPDATE decisions SET updated_at = $4 WHERE id = (SELECT decision_id FROM t)",
                 &[
                     &summary,
                     &prompt_version,
@@ -1117,14 +1367,15 @@ impl DecisionRepository<'_> {
                     &end,
                     &body_start,
                     &body_end,
+                    &lang,
                 ],
             )
             .await?;
         Ok(())
     }
 
-    /// [`Self::set_summary`] on a row still below `target_version`, false when another
-    /// writer reached the generation first.
+    /// [`Self::set_summary`] on the read text still below `target_version`, false when
+    /// another writer reached the generation first.
     #[tracing::instrument(name = "db.set_stale_summary", skip(self, summary), fields(db.system = "postgresql"))]
     pub async fn set_stale_summary(
         &self,
@@ -1160,34 +1411,117 @@ impl DecisionRepository<'_> {
         Ok(written == 1)
     }
 
-    /// The rows [`Self::iter_summaries_by_jurisdiction`] yields, for decisions named by id.
+    /// The summary of the text of `decision_id` in `text_lang` written in `reader`, another
+    /// language, replacing the one held.
+    #[tracing::instrument(name = "db.set_reader_summary", skip(self, summary), fields(db.system = "postgresql"))]
+    #[allow(clippy::too_many_arguments)]
+    pub async fn set_reader_summary(
+        &self,
+        decision_id: i64,
+        text_lang: &str,
+        reader: &str,
+        summary: &str,
+        body: Option<Range<usize>>,
+        prompt_version: i16,
+        engine: i16,
+    ) -> Result<()> {
+        let (body_start, body_end) = codepoint_columns(body);
+        self.conn
+            .execute(
+                "WITH r AS (INSERT INTO decision_text_reader_summary \
+                            (decision_text_id, lang, summary, summary_engine, summary_prompt_version, \
+                             summary_body_start, summary_body_end) \
+                            SELECT t.id, $3, $4, $5, $6, $7, $8 FROM decision_text t \
+                            WHERE t.decision_id = $1 AND t.lang = $2 \
+                            ON CONFLICT (decision_text_id, lang) DO UPDATE SET summary = EXCLUDED.summary, \
+                              summary_engine = EXCLUDED.summary_engine, \
+                              summary_prompt_version = EXCLUDED.summary_prompt_version, \
+                              summary_body_start = EXCLUDED.summary_body_start, \
+                              summary_body_end = EXCLUDED.summary_body_end \
+                            RETURNING decision_text_id) \
+                 UPDATE decisions SET updated_at = $9 WHERE id = $1 AND EXISTS (SELECT 1 FROM r)",
+                &[
+                    &decision_id,
+                    &text_lang,
+                    &reader,
+                    &summary,
+                    &engine,
+                    &prompt_version,
+                    &body_start,
+                    &body_end,
+                    &now(),
+                ],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Moves to their French reader summary up to `batch` summaries of texts in another
+    /// language than French written at generation `last_french` or below, clears them
+    /// from their text, and sets back to `embed_version` with no stamp the decisions
+    /// embedded behind them. Returns the texts moved and the decisions requeued.
+    #[tracing::instrument(name = "db.move_reader_summaries", skip(self), fields(db.system = "postgresql"))]
+    pub async fn move_reader_summaries(
+        &self,
+        last_french: i16,
+        embed_version: i16,
+        batch: i64,
+    ) -> Result<(i64, i64)> {
+        let (_, collages) = summary_scope(&[]);
+        let row = self
+            .conn
+            .query_one(
+                "WITH picked AS (
+                   SELECT t.id FROM decision_text t
+                   WHERE t.lang <> 'fr' AND t.summary IS NOT NULL
+                     AND t.summary_prompt_version <= $1
+                     AND coalesce(t.summary_engine, 0::int2) <> ALL($4::int2[])
+                   ORDER BY t.id LIMIT $3
+                   FOR UPDATE
+                 ), moved AS (
+                   INSERT INTO decision_text_reader_summary
+                     (decision_text_id, lang, summary, summary_engine, summary_prompt_version,
+                      summary_body_start, summary_body_end)
+                   SELECT t.id, 'fr', t.summary, t.summary_engine, t.summary_prompt_version,
+                          t.summary_body_start, t.summary_body_end
+                   FROM decision_text t JOIN picked p ON p.id = t.id
+                   ON CONFLICT (decision_text_id, lang) DO NOTHING
+                 ), cleared AS (
+                   UPDATE decision_text t SET summary = NULL, summary_engine = NULL,
+                          summary_prompt_version = NULL, summary_body_start = NULL, summary_body_end = NULL
+                   FROM picked p WHERE t.id = p.id
+                   RETURNING t.decision_id
+                 ), requeued AS (
+                   UPDATE decisions d SET embed_version = $2, embed_summary_engine = NULL,
+                          embed_summary_prompt_version = NULL
+                   WHERE d.id IN (SELECT decision_id FROM cleared) AND d.embed_summary_engine IS NOT NULL
+                   RETURNING d.id
+                 )
+                 SELECT (SELECT count(*) FROM cleared), (SELECT count(*) FROM requeued)",
+                &[&last_french, &embed_version, &batch, &collages],
+            )
+            .await?;
+        Ok((row.get(0), row.get(1)))
+    }
+
+    /// The rows of the read texts of the decisions named by id, as the worklists yield them.
     #[tracing::instrument(name = "db.summary_rows", skip(self, ids), fields(db.system = "postgresql", n = ids.len()))]
     pub async fn summary_rows(&self, ids: &[i64]) -> Result<Vec<MissingSummaryRow>> {
         let rows = self
             .conn
             .query(
-                "SELECT d.id, d.public_id, d.jurisdiction_type, j.label, \
-                        d.date_lecture::text, d.docket_numbers \
-                 FROM decisions d \
-                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code \
-                 WHERE d.id = ANY($1) AND d.public_id IS NOT NULL AND d.deleted_at IS NULL",
+                &format!(
+                    "SELECT {SUMMARY_ROW}, true \
+                     FROM decisions d \
+                     JOIN decision_text t ON t.decision_id = d.id AND {read} \
+                     LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code \
+                     WHERE d.id = ANY($1) AND d.public_id IS NOT NULL AND d.deleted_at IS NULL",
+                    read = super::pick::read("t")
+                ),
                 &[&ids],
             )
             .await?;
-        Ok(rows
-            .iter()
-            .map(|row| {
-                let docket: Option<Vec<String>> = row.get(5);
-                MissingSummaryRow {
-                    decision_id: row.get(0),
-                    public_id: row.get(1),
-                    jurisdiction_type: row.get(2),
-                    jurisdiction_name: row.get(3),
-                    date_lecture: row.get(4),
-                    docket_numbers: docket.filter(|v| !v.is_empty()),
-                }
-            })
-            .collect())
+        Ok(rows.iter().map(missing_summary_row).collect())
     }
 
     /// Iterates over every active decision, in PK order. `lastmod` =
@@ -1364,7 +1698,7 @@ impl DecisionRepository<'_> {
             .conn
             .query(
                 &format!("
-                SELECT d.id, {text}, c.commentary, c.analysis
+                SELECT d.id, {text}, c.commentary, c.analysis, {lang}
                 FROM decisions d
                 JOIN LATERAL (
                     SELECT ds.source_fields->>'summary' AS commentary, false AS analysis
@@ -1389,7 +1723,7 @@ impl DecisionRepository<'_> {
                 ) c ON true
                 WHERE d.id = ANY($1) AND EXISTS (SELECT 1 FROM decision_text dt WHERE dt.decision_id = d.id)
                 ORDER BY d.id
-                ", text = super::pick::text("p.full_text", "d")),
+                ", text = super::pick::text("p.full_text", "d"), lang = super::pick::text("p.lang", "d")),
                 &[&ids, &prose_min],
             )
             .await?;
@@ -1400,23 +1734,18 @@ impl DecisionRepository<'_> {
                 full_text: r.get(1),
                 commentary: r.get(2),
                 analysis: r.get(3),
+                lang: r.get(4),
             })
             .collect())
     }
 
-    /// Itère les décisions sans summary à jour, par batches.
+    /// The texts whose summary is missing, or, French, below its generation with
+    /// `include_stale`, in `langs` or every language a summary is written in, by
+    /// decision id in batches. `limit` bounds the whole iteration; `wrap` goes on over
+    /// `]0, start_id]` once `]start_id, max]` is spent.
     ///
-    /// Chaque ligne = `(decision_id, public_id, jurisdiction_type,
-    /// jurisdiction_name, date_lecture, docket_numbers)` — les quatre dernières
-    /// reconstruisent le titre côté appelant. `summary IS NULL`, plus avec
-    /// `include_stale` les `summary_prompt_version < target_version`. Tombstones et
-    /// décisions sans corps exclues. `limit` borne le total yieldé sur toute
-    /// l'itération ; `wrap` reprend sur `]0, start_id]` une fois l'arc
-    /// `]start_id, max]` épuisé.
-    ///
-    /// Renvoie tous les batches matérialisés : les frontières de batch, donc
-    /// l'identité des appels Mistral concurrents, sont préservées.
-    #[allow(clippy::type_complexity)]
+    /// Every batch is materialised, so its bounds stay those of the calls it feeds.
+    #[allow(clippy::too_many_arguments)]
     #[tracing::instrument(name = "db.iter_decisions_missing_summary", skip(self), fields(db.system = "postgresql"))]
     pub async fn iter_decisions_missing_summary(
         &self,
@@ -1426,13 +1755,13 @@ impl DecisionRepository<'_> {
         start_id: i64,
         wrap: bool,
         include_stale: bool,
+        langs: &[&str],
     ) -> Result<Vec<Vec<MissingSummaryRow>>> {
-        // Plafond sur l'arc courant : max bigint avant un éventuel wrap, puis
-        // `start_id` une fois qu'on a bouclé sur le bas de la plage.
+        let (langs, collages) = summary_scope(langs);
         let mut ceiling: i64 = i64::MAX;
         let mut wrapped = false;
         let mut emitted: i64 = 0;
-        let mut last_id = start_id;
+        let mut last = (start_id, String::new());
         let mut batches: Vec<Vec<MissingSummaryRow>> = Vec::new();
         loop {
             let remaining = match limit {
@@ -1447,59 +1776,53 @@ impl DecisionRepository<'_> {
                 .query(
                     &format!(
                         "
-                SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
-                       d.date_lecture::text, d.docket_numbers
+                SELECT {SUMMARY_ROW}, {read}
                 FROM decisions d
-                JOIN decision_text t ON t.decision_id = d.id AND {read}
+                JOIN decision_text t ON t.decision_id = d.id AND {embedded}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
-                WHERE d.id > $1
+                WHERE (d.id, t.lang) > ($1, $9)
                   AND d.id <= $2
+                  AND t.lang = ANY($6)
                   AND (
                     t.summary IS NULL
-                    OR ($5 AND (
+                    OR ($5 AND t.lang = 'fr' AND (
                       t.summary_prompt_version IS NULL
-                      OR t.summary_prompt_version < $3
-                    ))
+                      OR t.summary_prompt_version < CASE WHEN t.lang = 'fr' THEN $8::int2 ELSE $3::int2 END
+                    ) AND coalesce(t.summary_engine, 0::int2) <> ALL($7::int2[]))
                   )
                   AND d.public_id IS NOT NULL
+                  AND d.kind = 'decision'
                   AND d.deleted_at IS NULL
-                ORDER BY d.id
+                ORDER BY d.id, t.lang
                 LIMIT $4
                 ",
-                        read = super::pick::read("t")
+                        read = super::pick::read("t"),
+                        embedded = super::pick::embedded("t")
                     ),
                     &[
-                        &last_id,
+                        &last.0,
                         &ceiling,
                         &target_version,
                         &remaining,
                         &include_stale,
+                        &langs,
+                        &collages,
+                        &french_due(target_version),
+                        &last.1,
                     ],
                 )
                 .await?;
             let n = rows.len();
-            if n > 0 {
-                let mut batch: Vec<MissingSummaryRow> = Vec::with_capacity(n);
-                for row in &rows {
-                    let docket: Option<Vec<String>> = row.get(5);
-                    batch.push(MissingSummaryRow {
-                        decision_id: row.get(0),
-                        public_id: row.get(1),
-                        jurisdiction_type: row.get(2),
-                        jurisdiction_name: row.get(3),
-                        date_lecture: row.get(4),
-                        docket_numbers: docket.filter(|v| !v.is_empty()),
-                    });
-                }
+            if let Some(tail) = rows.last() {
+                last = (tail.get(0), tail.get(6));
                 emitted += n as i64;
-                last_id = rows[n - 1].get::<_, i64>(0);
-                batches.push(batch);
+                batches.push(rows.iter().map(missing_summary_row).collect());
             }
             if n == 0 || (n as i64) < remaining {
                 if wrap && !wrapped && start_id > 0 {
                     wrapped = true;
                     ceiling = start_id;
-                    last_id = 0;
+                    last = (0, String::new());
                     continue;
                 }
                 break;
@@ -1524,7 +1847,9 @@ impl DecisionRepository<'_> {
         min_citations: i32,
         only: &[&str],
         named: bool,
+        langs: &[&str],
     ) -> Result<Vec<Vec<MissingSummaryRow>>> {
+        let (langs, collages) = summary_scope(langs);
         let rows = self
             .conn
             .query(
@@ -1536,28 +1861,30 @@ impl DecisionRepository<'_> {
                     WHERE target_decision_id IS NOT NULL
                     GROUP BY 1
                 )
-                SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
-                       d.date_lecture::text, d.docket_numbers
+                SELECT {SUMMARY_ROW}, {read}
                 FROM cites c
                 JOIN decisions d ON d.id = c.id
-                JOIN decision_text t ON t.decision_id = d.id AND {read}
+                JOIN decision_text t ON t.decision_id = d.id AND {embedded}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE c.n >= $4
                   AND (cardinality($5::text[]) = 0 OR d.jurisdiction_type = ANY($5))
                   AND (NOT $6 OR d.case_name IS NOT NULL)
+                  AND t.lang = ANY($7)
                   AND (
                     t.summary IS NULL
-                    OR ($2 AND (
+                    OR ($2 AND t.lang = 'fr' AND (
                       t.summary_prompt_version IS NULL
-                      OR t.summary_prompt_version < $1
-                    ))
+                      OR t.summary_prompt_version < CASE WHEN t.lang = 'fr' THEN $9::int2 ELSE $1::int2 END
+                    ) AND coalesce(t.summary_engine, 0::int2) <> ALL($8::int2[]))
                   )
                   AND d.public_id IS NOT NULL
+                  AND d.kind = 'decision'
                   AND d.deleted_at IS NULL
-                ORDER BY c.n DESC, d.id
+                ORDER BY c.n DESC, d.id, t.lang
                 LIMIT $3
                 ",
-                    read = super::pick::read("t")
+                    read = super::pick::read("t"),
+                    embedded = super::pick::embedded("t")
                 ),
                 &[
                     &target_version,
@@ -1566,31 +1893,19 @@ impl DecisionRepository<'_> {
                     &min_citations,
                     &only,
                     &named,
+                    &langs,
+                    &collages,
+                    &french_due(target_version),
                 ],
             )
             .await?;
         Ok(rows
             .chunks(usize::try_from(batch_size.max(1)).unwrap_or(usize::MAX))
-            .map(|chunk| {
-                chunk
-                    .iter()
-                    .map(|row| {
-                        let docket: Option<Vec<String>> = row.get(5);
-                        MissingSummaryRow {
-                            decision_id: row.get(0),
-                            public_id: row.get(1),
-                            jurisdiction_type: row.get(2),
-                            jurisdiction_name: row.get(3),
-                            date_lecture: row.get(4),
-                            docket_numbers: docket.filter(|v| !v.is_empty()),
-                        }
-                    })
-                    .collect()
-            })
+            .map(|chunk| chunk.iter().map(missing_summary_row).collect())
             .collect())
     }
 
-    /// Stale or missing summaries by jurisdiction tier, then most recent first, or
+    /// Missing summaries, and stale French ones, by jurisdiction tier, then most recent first, or
     /// the whole order backwards when `reverse`, in the types of `only` when it
     /// names any, and only the decisions with a usage name when `named`. A type absent from `types` comes after every tier. One query bounded by `limit`: the top-N sort holds the
     /// batch, never every candidate.
@@ -1607,7 +1922,9 @@ impl DecisionRepository<'_> {
         reverse: bool,
         only: &[&str],
         named: bool,
+        langs: &[&str],
     ) -> Result<Vec<Vec<MissingSummaryRow>>> {
+        let (langs, collages) = summary_scope(langs);
         let (tier, recent) = if reverse {
             ("DESC", "ASC NULLS FIRST")
         } else {
@@ -1618,27 +1935,30 @@ impl DecisionRepository<'_> {
             .query(
                 &format!(
                     "
-                SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
-                       d.date_lecture::text, d.docket_numbers
+                SELECT {SUMMARY_ROW}, {read}
                 FROM decisions d
-                JOIN decision_text t ON t.decision_id = d.id AND {read}
+                JOIN decision_text t ON t.decision_id = d.id AND {embedded}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE (
                     t.summary IS NULL
-                    OR ($2 AND (
+                    OR ($2 AND t.lang = 'fr' AND (
                       t.summary_prompt_version IS NULL
-                      OR t.summary_prompt_version < $1
-                    ))
+                      OR t.summary_prompt_version < CASE WHEN t.lang = 'fr' THEN $10::int2 ELSE $1::int2 END
+                    ) AND coalesce(t.summary_engine, 0::int2) <> ALL($9::int2[]))
                   )
+                  AND t.lang = ANY($8)
                   AND d.public_id IS NOT NULL
+                  AND d.kind = 'decision'
                   AND d.deleted_at IS NULL
                   AND (cardinality($6::text[]) = 0 OR d.jurisdiction_type = ANY($6))
                   AND (NOT $7 OR d.case_name IS NOT NULL)
                 ORDER BY coalesce(($5::int[])[array_position($4::text[], d.jurisdiction_type)], 2147483647) {tier},
-                         d.date_lecture {recent}, d.id {recent_id}
+                         d.date_lecture {recent}, d.id {recent_id}, t.lang
                 LIMIT $3
                 ",
-                    recent_id = if reverse { "ASC" } else { "DESC" }, read = super::pick::read("t")
+                    recent_id = if reverse { "ASC" } else { "DESC" },
+                    read = super::pick::read("t"),
+                    embedded = super::pick::embedded("t")
                 ),
                 &[
                     &target_version,
@@ -1648,32 +1968,80 @@ impl DecisionRepository<'_> {
                     &tiers,
                     &only,
                     &named,
+                    &langs,
+                    &collages,
+                    &french_due(target_version),
                 ],
             )
             .await?;
         Ok(rows
             .chunks(usize::try_from(batch_size.max(1)).unwrap_or(usize::MAX))
-            .map(|chunk| {
-                chunk
-                    .iter()
-                    .map(|row| {
-                        let docket: Option<Vec<String>> = row.get(5);
-                        MissingSummaryRow {
-                            decision_id: row.get(0),
-                            public_id: row.get(1),
-                            jurisdiction_type: row.get(2),
-                            jurisdiction_name: row.get(3),
-                            date_lecture: row.get(4),
-                            docket_numbers: docket.filter(|v| !v.is_empty()),
-                        }
-                    })
-                    .collect()
-            })
+            .map(|chunk| chunk.iter().map(missing_summary_row).collect())
             .collect())
     }
 
-    /// What one engine wrote, oldest id first, in one jurisdiction type or in all
-    /// of them. Keyset on `d.id`, batches materialised like the sweep above.
+    /// The read texts in another language than `reader` without a summary in it, or,
+    /// with `include_stale`, with one below its generation, by jurisdiction tier then
+    /// most recent first, as [`Self::iter_summaries_by_jurisdiction`] orders them.
+    #[allow(clippy::too_many_arguments)]
+    #[tracing::instrument(name = "db.iter_reader_summaries", skip(self), fields(db.system = "postgresql"))]
+    pub async fn iter_reader_summaries(
+        &self,
+        reader: &str,
+        target_version: i16,
+        batch_size: i64,
+        limit: Option<i64>,
+        include_stale: bool,
+        types: &[&str],
+        tiers: &[i32],
+    ) -> Result<Vec<Vec<MissingSummaryRow>>> {
+        let (langs, _) = summary_scope(&[]);
+        let due = if reader == "fr" {
+            french_due(target_version)
+        } else {
+            target_version
+        };
+        let rows = self
+            .conn
+            .query(
+                &format!(
+                    "
+                SELECT {SUMMARY_ROW}, true
+                FROM decisions d
+                JOIN decision_text t ON t.decision_id = d.id AND {read}
+                LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
+                LEFT JOIN decision_text_reader_summary r ON r.decision_text_id = t.id AND r.lang = $1
+                WHERE t.lang <> $1
+                  AND t.lang = ANY($7)
+                  AND (r.decision_text_id IS NULL OR ($2 AND r.summary_prompt_version < $3))
+                  AND d.public_id IS NOT NULL
+                  AND d.deleted_at IS NULL
+                ORDER BY coalesce(($6::int[])[array_position($5::text[], d.jurisdiction_type)], 2147483647),
+                         d.date_lecture DESC NULLS LAST, d.id DESC
+                LIMIT $4
+                ",
+                    read = super::pick::read("t")
+                ),
+                &[
+                    &reader,
+                    &include_stale,
+                    &due,
+                    &limit.unwrap_or(i64::MAX),
+                    &types,
+                    &tiers,
+                    &langs,
+                ],
+            )
+            .await?;
+        Ok(rows
+            .chunks(usize::try_from(batch_size.max(1)).unwrap_or(usize::MAX))
+            .map(|chunk| chunk.iter().map(missing_summary_row).collect())
+            .collect())
+    }
+
+    /// What one engine wrote on the read texts, oldest id first, in one jurisdiction
+    /// type or in all of them. Keyset on `d.id`, batches materialised like the sweep
+    /// above.
     ///
     /// No version predicate: a text that changes without its generation moving
     /// leaves `summary_prompt_version` equal on both sides, and the engine code
@@ -1688,6 +2056,7 @@ impl DecisionRepository<'_> {
         batch_size: i64,
         limit: Option<i64>,
     ) -> Result<Vec<Vec<MissingSummaryRow>>> {
+        let (langs, _) = summary_scope(&[]);
         let mut emitted: i64 = 0;
         let mut last_id: i64 = 0;
         let mut batches: Vec<Vec<MissingSummaryRow>> = Vec::new();
@@ -1704,43 +2073,32 @@ impl DecisionRepository<'_> {
                 .query(
                     &format!(
                         "
-                SELECT d.id, d.public_id, d.jurisdiction_type, j.label,
-                       d.date_lecture::text, d.docket_numbers
+                SELECT {SUMMARY_ROW}, true
                 FROM decisions d
                 JOIN decision_text t ON t.decision_id = d.id AND {read}
                 LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
                 WHERE d.id > $1
                   AND t.summary_engine = $2
                   AND ($3::text IS NULL OR d.jurisdiction_type = $3)
+                  AND t.lang = ANY($5)
                   AND d.public_id IS NOT NULL
+                  AND d.kind = 'decision'
                   AND d.deleted_at IS NULL
                 ORDER BY d.id
                 LIMIT $4
                 ",
                         read = super::pick::read("t")
                     ),
-                    &[&last_id, &engine, &jurisdiction_type, &remaining],
+                    &[&last_id, &engine, &jurisdiction_type, &remaining, &langs],
                 )
                 .await?;
             let n = rows.len();
             if n == 0 {
                 break;
             }
-            let mut batch: Vec<MissingSummaryRow> = Vec::with_capacity(n);
-            for row in &rows {
-                let docket: Option<Vec<String>> = row.get(5);
-                batch.push(MissingSummaryRow {
-                    decision_id: row.get(0),
-                    public_id: row.get(1),
-                    jurisdiction_type: row.get(2),
-                    jurisdiction_name: row.get(3),
-                    date_lecture: row.get(4),
-                    docket_numbers: docket.filter(|v| !v.is_empty()),
-                });
-            }
             emitted += n as i64;
             last_id = rows[n - 1].get::<_, i64>(0);
-            batches.push(batch);
+            batches.push(rows.iter().map(missing_summary_row).collect());
             if (n as i64) < remaining {
                 break;
             }
@@ -1823,6 +2181,48 @@ impl DecisionRepository<'_> {
             })
             .collect())
     }
+}
+
+/// The columns of [`MissingSummaryRow`] over `d`, `j` and the text `t`, but whether
+/// `t` is the read text.
+const SUMMARY_ROW: &str = "d.id, d.public_id, d.jurisdiction_type, j.label, \
+                           d.date_lecture::text, d.docket_numbers, t.lang";
+
+/// A row selected as [`SUMMARY_ROW`] then whether its text is the read one.
+fn missing_summary_row(row: &tokio_postgres::Row) -> MissingSummaryRow {
+    let docket: Option<Vec<String>> = row.get(5);
+    MissingSummaryRow {
+        decision_id: row.get(0),
+        public_id: row.get(1),
+        jurisdiction_type: row.get(2),
+        jurisdiction_name: row.get(3),
+        date_lecture: row.get(4),
+        docket_numbers: docket.filter(|v| !v.is_empty()),
+        lang: row.get(6),
+        read: row.get(7),
+    }
+}
+
+/// The languages of `only` a summary is written in, all of them when `only` is empty,
+/// and the engines whose rows never go stale: a collage pastes the court's own words,
+/// which a later generation has no reason to redo.
+fn summary_scope(only: &[&str]) -> (Vec<&'static str>, Vec<i16>) {
+    (
+        lj_summary::SUMMARY_LANGUAGES
+            .iter()
+            .map(|(code, _)| *code)
+            .filter(|code| only.is_empty() || only.contains(code))
+            .collect(),
+        lj_summary::SummaryEngine::COLLAGES
+            .iter()
+            .map(|engine| engine.code())
+            .collect(),
+    )
+}
+
+/// The generation a French text's summary is stale below, never above the target.
+fn french_due(target_version: i16) -> i16 {
+    lj_summary::FRENCH_SUMMARY_GENERATION.min(target_version)
 }
 
 fn codepoints(start: Option<i32>, end: Option<i32>) -> Option<Range<usize>> {

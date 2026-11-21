@@ -7,11 +7,9 @@
 use leptos::prelude::*;
 use lj_dtos::{DecisionDetail, UiAction};
 
+use crate::i18n::use_ui;
 use crate::pages::decision_page::reference::build_decision_references;
 
-#[cfg(feature = "hydrate")]
-#[cfg(feature = "hydrate")]
-use crate::api::ApiClient;
 #[cfg(feature = "hydrate")]
 use crate::components::decision_bar::{use_decision_bar, visit_seed, DecisionBarState};
 
@@ -44,13 +42,16 @@ pub fn DecisionHeader(detail: DecisionDetail) -> impl IntoView {
     let _ = &detail;
 }
 
-/// Barre d'actions (référence, signet, impression, PDF). Rendue dans
+/// Barre d'actions (référence, impression, PDF). Rendue dans
 /// `DecisionSimilar`.
 #[component]
 pub fn DecisionActions(detail: DecisionDetail) -> impl IntoView {
     let references = build_decision_references(&detail);
-    let pdf_href = format!("/internal/decision/{}/download.pdf", detail.id);
-    let decision_id = detail.id.clone();
+    let ui = &use_ui().decision;
+    let pdf_href = match crate::components::decision::decision_texts::chosen_text(&detail) {
+        Some(lang) => format!("/internal/decision/{}/download.pdf?lang={lang}", detail.id),
+        None => format!("/internal/decision/{}/download.pdf", detail.id),
+    };
 
     let on_print = move |_| {
         #[cfg(feature = "hydrate")]
@@ -63,14 +64,13 @@ pub fn DecisionActions(detail: DecisionDetail) -> impl IntoView {
         <div class="flex flex-col gap-2">
             <div class="flex flex-nowrap items-center gap-2">
                 <CopyReferenceButton full=references.full.clone() short=references.short.clone() />
-                <BookmarkButton decision_id=decision_id />
                 <button
                     type="button"
                     on:click=on_print
                     data-usage=UiAction::DecisionPrint.as_str()
                     class="inline-flex shrink-0 items-center gap-2 rounded-sm border border-[var(--color-rule)] px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
-                    aria-label="Impression"
-                    title="Impression"
+                    aria-label=ui.print
+                    title=ui.print
                 >
                     <PrintIcon />
                 </button>
@@ -82,8 +82,8 @@ pub fn DecisionActions(detail: DecisionDetail) -> impl IntoView {
                     rel="external nofollow noopener"
                     target="_blank"
                     class="inline-flex shrink-0 items-center gap-2 rounded-sm border border-[var(--color-rule)] px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] no-underline transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
-                    aria-label="PDF"
-                    title="PDF"
+                    aria-label=ui.pdf
+                    title=ui.pdf
                 >
                     <PdfIcon />
                 </a>
@@ -93,89 +93,10 @@ pub fn DecisionActions(detail: DecisionDetail) -> impl IntoView {
     .into_any()
 }
 
-/// Bouton « signet », gated par l'auth : masqué tant que la session n'est pas
-/// résolue (jamais au SSR). Bascule optimiste add/remove avec rollback en erreur.
-#[component]
-fn BookmarkButton(decision_id: String) -> impl IntoView {
-    let authed = RwSignal::new(None::<bool>);
-    let is_on = RwSignal::new(false);
-    let busy = RwSignal::new(false);
-    // `StoredValue` (Copy) : `toggle` est rejoué par `<Show>` (closure `Fn`), il
-    // ne peut pas capturer la `String` par move.
-    #[cfg(feature = "hydrate")]
-    let did = StoredValue::new(decision_id);
-    #[cfg(not(feature = "hydrate"))]
-    let _ = decision_id;
-
-    #[cfg(feature = "hydrate")]
-    Effect::new(move |_| {
-        leptos::task::spawn_local(async move {
-            let session = crate::auth::has_session().await;
-            authed.set(Some(session));
-            if session {
-                let client = ApiClient::from_context();
-                if let Ok(bookmarks) = client.list_bookmarks().await {
-                    let id = did.get_value();
-                    is_on.set(bookmarks.items.iter().any(|b| b.id == id));
-                }
-            }
-        });
-    });
-
-    let toggle = move |_| {
-        #[cfg(feature = "hydrate")]
-        {
-            if busy.get_untracked() {
-                return;
-            }
-            let id = did.get_value();
-            let currently = is_on.get_untracked();
-            busy.set(true);
-            is_on.set(!currently);
-            leptos::task::spawn_local(async move {
-                let client = ApiClient::from_context();
-                let res = if currently {
-                    client.remove_bookmark(&id).await
-                } else {
-                    client.add_bookmark(&id).await
-                };
-                if res.is_err() {
-                    is_on.set(currently);
-                }
-                busy.set(false);
-            });
-        }
-    };
-
-    let label = move || {
-        if is_on.get() {
-            "Retirer des signets"
-        } else {
-            "Ajouter aux signets"
-        }
-    };
-
-    view! {
-        <Show when=move || authed.get() == Some(true)>
-            <button
-                type="button"
-                on:click=toggle
-                data-usage=UiAction::DecisionBookmark.as_str()
-                disabled=move || busy.get()
-                aria-pressed=move || is_on.get().to_string()
-                aria-label=label
-                title=label
-                class="inline-flex shrink-0 items-center gap-2 rounded-sm border border-[var(--color-rule)] px-2.5 py-1.5 text-xs text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)] disabled:opacity-50"
-            >
-                <BookmarkIcon filled=is_on />
-            </button>
-        </Show>
-    }
-}
-
 #[component]
 fn CopyReferenceButton(full: String, short: String) -> impl IntoView {
     let open = RwSignal::new(false);
+    let ui = &use_ui().decision;
     // Quelle référence vient d'être copiée (`"full"`/`"short"`), `None` sinon.
     let copied = RwSignal::new(None::<&'static str>);
     let container_ref = NodeRef::<leptos::html::Div>::new();
@@ -231,12 +152,14 @@ fn CopyReferenceButton(full: String, short: String) -> impl IntoView {
                     if copied.get().is_some() {
                         view! {
                             <CheckIcon />
-                            " Copié"
+                            " "
+                            {ui.copied}
                         }
                             .into_any()
                     } else {
                         view! {
-                            "Référence "
+                            {ui.reference}
+                            " "
                             <svg aria-hidden="true" viewBox="0 0 12 12" class=chevron_class>
                                 <path
                                     d="M2.25 4.5L6 8.25 9.75 4.5"
@@ -257,7 +180,7 @@ fn CopyReferenceButton(full: String, short: String) -> impl IntoView {
                 class="lj-panel absolute left-0 top-full z-30 mt-2 min-w-72 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] p-2 shadow-lg"
             >
                 <CopyMenuButton
-                        label="Copier la référence complète"
+                        label=ui.copy_full_reference
                         usage=UiAction::DecisionCopyFull
                         value=full.clone()
                         copied=Signal::derive(move || copied.get() == Some("full"))
@@ -267,7 +190,7 @@ fn CopyReferenceButton(full: String, short: String) -> impl IntoView {
                         })
                     />
                     <CopyMenuButton
-                        label="Copier la référence abrégée"
+                        label=ui.copy_short_reference
                         usage=UiAction::DecisionCopyShort
                         value=short.clone()
                         copied=Signal::derive(move || copied.get() == Some("short"))
@@ -290,6 +213,7 @@ fn CopyMenuButton(
     #[prop(into)] copied: Signal<bool>,
     on_copy: Callback<()>,
 ) -> impl IntoView {
+    let copied_label = use_ui().decision.copied;
     view! {
         <button
             type="button"
@@ -298,25 +222,10 @@ fn CopyMenuButton(
             class="flex w-full flex-col items-start gap-1 rounded-sm px-3 py-2 text-left transition-colors hover:bg-[var(--color-vellum)]"
         >
             <span class="text-sm text-[var(--color-ink)]">
-                {move || if copied.get() { "Copié" } else { label }}
+                {move || if copied.get() { copied_label } else { label }}
             </span>
             <span class="text-sm text-[var(--color-ink-subtle)]">{value}</span>
         </button>
-    }
-}
-
-#[component]
-fn BookmarkIcon(#[prop(into)] filled: Signal<bool>) -> impl IntoView {
-    view! {
-        <svg aria-hidden="true" viewBox="0 0 16 16" class="h-3.5 w-3.5">
-            <path
-                d="M4 2.5h8v11l-4-2.5-4 2.5z"
-                fill=move || if filled.get() { "currentColor" } else { "none" }
-                stroke="currentColor"
-                stroke-width="1.3"
-                stroke-linejoin="round"
-            />
-        </svg>
     }
 }
 

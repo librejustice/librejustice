@@ -42,6 +42,12 @@ static CUT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"([A-Za-zÀ-ÿ]+
 static ITALIC: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\*(\S(?:[^*\n]{0,198}\S)?)\*").unwrap());
 static MD_HEADING: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^#{1,6}\s+").unwrap());
+/// A superscript an OCR writes in LaTeX, `1$^{er}$`.
+static SUPERSCRIPT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\$\^\{([^{}$\\]{1,8})\}\$").unwrap());
+/// A character an OCR's markdown escapes, as the `\_` of an anonymised name.
+static ESCAPE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\\([\\`*_{}\[\]()#+\-.!|$<>~])").unwrap());
 static MD_IMAGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"!\[[^\]]*\]\([^)]*\)").unwrap());
 static MD_LINK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\[([^\]]*)\]\([^)\s]*\)").unwrap());
 static LOWER_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|\s)[a-zà-ÿ]{3,}").unwrap());
@@ -221,7 +227,9 @@ fn unmark(line: &str) -> String {
     } else {
         plain
     };
-    MD_HEADING.replace(&plain, "").trim().to_string()
+    let plain = MD_HEADING.replace(&plain, "");
+    let plain = SUPERSCRIPT.replace_all(&plain, "$1");
+    ESCAPE.replace_all(&plain, "$1").trim().to_string()
 }
 
 #[cfg(test)]
@@ -281,6 +289,15 @@ mod tests {
     fn an_enumeration_keeps_one_item_per_line() {
         let raw = "Il soutient que :\n- la décision est insuffisamment motivée ;\n- elle méconnaît l'article 8.";
         assert_eq!(reflow_page_text(raw), raw);
+    }
+
+    #[test]
+    fn an_escape_and_a_superscript_an_ocr_writes_read_as_text() {
+        let raw = "Entre M. Y \\_\\_\\_\\_\\_, domicilié chemin \\_\\_\\_ (GE), notifié le 1$^{er}$ mars 2006, soit US\\$ 55'930.-";
+        assert_eq!(
+            reflow_page_text(raw),
+            "Entre M. Y _____, domicilié chemin ___ (GE), notifié le 1er mars 2006, soit US$ 55'930.-"
+        );
     }
 
     #[test]

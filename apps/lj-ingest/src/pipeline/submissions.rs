@@ -9,7 +9,7 @@ use lj_parse::{
     clean_ocr_markdown, contribution_source_fields, parse_cnda, reflow_cnda_pdf_text,
     reflow_page_text,
 };
-use lj_store::repository::{canonical_jurisdiction_code, DecisionRepository, JurisdictionRow};
+use lj_store::repository::{DecisionRepository, JurisdictionRow};
 use serde_json::{json, Value};
 
 use crate::config::Settings;
@@ -126,6 +126,20 @@ struct Delivered {
     numbers: Vec<String>,
 }
 
+fn court_approval(court: &JurisdictionRow) -> Approval {
+    let judicial = matches!(
+        court.jurisdiction_type.as_str(),
+        "CA" | "TJ" | "TCOM" | "CPH" | "CC"
+    );
+    Approval {
+        court: court.jurisdiction_type.clone(),
+        number: String::new(),
+        date: None,
+        name: Some(court.label.clone()),
+        code: judicial.then(|| court.source_code.clone()),
+    }
+}
+
 /// Refuses a court the extraction does not place, since every re-extraction places it again.
 pub async fn load(dir: &Path, dry_run: bool, mode: IngestMode) -> Result<()> {
     let pool = europe_pool().await?;
@@ -146,27 +160,18 @@ pub async fn load(dir: &Path, dry_run: bool, mode: IngestMode) -> Result<()> {
             .ok_or_else(|| anyhow!("{}: no court {}", d.uid, d.jurisdiction_code))?;
         let text = std::fs::read_to_string(dir.join("texte").join(format!("{}.txt", d.uid)))?;
         let uid = format!("contribution/{}", content_checksum(d.uid.as_bytes()));
-        let judicial = matches!(
-            court.jurisdiction_type.as_str(),
-            "CA" | "TJ" | "TCOM" | "CPH" | "CC"
-        );
         let checksum = content_checksum(text.as_bytes());
         let approval = Approval {
-            court: court.jurisdiction_type.clone(),
             number: d.numbers.first().cloned().unwrap_or_default(),
             date: d.date,
-            name: Some(court.label.clone()),
-            code: judicial.then(|| court.source_code.clone()),
+            ..court_approval(court)
         };
         let mut decision = decision_of(&uid, text, &approval);
         decision.numero_dossier = d.numbers.first().cloned();
         decision.numero_dossiers = (!d.numbers.is_empty()).then_some(d.numbers);
         decision.formation = d.formation;
-        let placed = lj_extract::extract::jurisdiction_scanned(&decision, None, &[]).map(|j| {
-            ctx.jur_codes.get(&j.code).cloned().unwrap_or_else(|| {
-                canonical_jurisdiction_code(&j.jurisdiction_type, j.city.as_deref(), &j.code)
-            })
-        });
+        let placed = lj_extract::extract::jurisdiction_scanned(&decision, None, &[])
+            .map(|j| lj_extract_rows::court_code(&j, &ctx.jur_codes, &ctx.jur_sources));
         if placed.as_deref() != Some(court.code.as_str()) {
             unplaced.push(format!("{} ({})", d.uid, court.code));
             continue;
@@ -297,5 +302,89 @@ fn decision_of(uid: &str, text: String, approval: &Approval) -> Decision {
         sections: Vec::new(),
         metadata_header: String::new(),
         parse_warnings: Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn seeded(code: &str) -> JurisdictionRow {
+        let r = super::super::jurisdiction_seed::seed()
+            .into_iter()
+            .find(|r| r.code == code)
+            .unwrap_or_else(|| panic!("{code} is seeded"));
+        JurisdictionRow {
+            source_code: r.code.clone(),
+            code: r.code,
+            jurisdiction_type: r.jurisdiction_type,
+            city: Some(r.city),
+            label: r.label,
+            place: None,
+        }
+    }
+
+    /// A seeded court's source code is its code, which `load` reads back through `jur_codes`.
+    fn placed(decision: &Decision) -> Option<String> {
+        lj_extract::extract::jurisdiction_scanned(decision, None, &[]).map(|j| j.code)
+    }
+
+    /// A foreign court is placed at ingest by its source, never from a contribution's head.
+    #[test]
+    fn every_seeded_court_is_placed_on_its_code() {
+        for r in super::super::jurisdiction_seed::seed()
+            .into_iter()
+            .filter(|r| !lj_vocab::courts::is_foreign(&r.jurisdiction_type))
+        {
+            let court = seeded(&r.code);
+            let decision = decision_of("contribution/1", String::new(), &court_approval(&court));
+            assert_eq!(
+                placed(&decision),
+                Some(court.code.clone()),
+                "{}",
+                court.label
+            );
+        }
+    }
+
+    #[test]
+    fn a_motivation_of_the_paris_assize_court_sitting_in_appeal_is_placed() {
+        let court = seeded("assises_paris");
+        for head in [
+            "Cour d'assises de Paris statuant en appel\nFEUILLE DE MOTIVATION\nArticle 365-1 du code de procédure pénale\nAffaire [B] [A]\nLa cour d'assises d'appel de Paris statuant en appel a été convaincue de la culpabilité de Monsieur [B] [A] :",
+            "EXTRAIT DES MINUTES DU GREFFE DE LA COUR D'ASSISES DE PARIS\nCour d'assises de Paris statuant en appel\nFEUILLE DE MOTIVATION\nArticle 365-1 du code de procédure pénale\nAffaire [A] [B]",
+        ] {
+            let mut decision =
+                decision_of("contribution/1", head.to_string(), &court_approval(&court));
+            decision.formation = Some("statuant en appel".to_string());
+            assert_eq!(placed(&decision).as_deref(), Some("assises_paris"));
+            let axes = lj_extract::extract::formation_axes_scanned(&decision, None);
+            assert_eq!(axes.formation_uid, Some("formation:APPEL"));
+            let seat = lj_core::chamber::Seat {
+                jurisdiction_type: court.jurisdiction_type.clone(),
+                jurisdiction_code: Some(court.code.clone()),
+                ..axes.chamber
+            };
+            assert_eq!(seat.paths(), ["FR", "FR.ASSISES", "FR.ASSISES.PARIS"]);
+        }
+    }
+
+    #[test]
+    fn a_departmental_criminal_court_and_the_dieppe_tribunals_are_placed() {
+        for (code, head) in [
+            (
+                "ccd_vaucluse",
+                "COUR CRIMINELLE DÉPARTEMENTALE DE VAUCLUSE\nFEUILLE DE MOTIVATION",
+            ),
+            (
+                "tgi_dieppe",
+                "TRIBUNAL POUR ENFANTS DE DIEPPE\nJUGEMENT EN ASSISTANCE ÉDUCATIVE\nN° E19/0047",
+            ),
+            ("tj_dieppe", "TRIBUNAL JUDICIAIRE DE DIEPPE\nJUGEMENT"),
+        ] {
+            let court = seeded(code);
+            let decision = decision_of("contribution/1", head.to_string(), &court_approval(&court));
+            assert_eq!(placed(&decision).as_deref(), Some(code), "{head}");
+        }
     }
 }

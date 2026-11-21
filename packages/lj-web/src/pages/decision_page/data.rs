@@ -4,21 +4,21 @@ use leptos::prelude::*;
 use lj_dtos::{DecisionDetail, DecisionPartyDto, SimilarDecisionHit};
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ApiClient, ApiError};
+use crate::api::{ApiClient, ApiError, Failure};
+use crate::i18n::Lang;
 
-/// Erreur de page sérialisable (le `Resource` la stream SSR → hydrate ; `ApiError`
-/// n'est pas `Serialize`, on porte status + message).
+/// A page's error, streamed by its `Resource` from the server to the browser.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PageError {
     pub status: u16,
-    pub message: String,
+    pub failure: Failure,
 }
 
 impl From<ApiError> for PageError {
     fn from(err: ApiError) -> Self {
         Self {
             status: err.status,
-            message: err.message,
+            failure: err.failure,
         }
     }
 }
@@ -30,7 +30,7 @@ pub struct SimilarResult {
     pub principe: Vec<SimilarDecisionHit>,
     pub espece: Vec<SimilarDecisionHit>,
     pub abstained: bool,
-    pub error: Option<String>,
+    pub error: Option<crate::api::Failure>,
 }
 
 fn client() -> ApiClient {
@@ -40,20 +40,53 @@ fn client() -> ApiClient {
 /// Charge le détail (bloquant SSR pour le SEO). Le résumé est garanti en base et
 /// porté par le détail, donc présent dans le HTML SSR (description / synthèse)
 /// sans génération à la volée.
-pub async fn fetch_detail(id: String) -> Result<DecisionDetail, PageError> {
+pub async fn fetch_detail(id: String, lang: Lang) -> Result<DecisionDetail, PageError> {
     if id.trim().is_empty() {
         return Err(PageError {
             status: 400,
-            message: "Identifiant invalide".to_string(),
+            failure: Failure::InvalidId,
         });
     }
-    let detail = client().fetch_decision(&id).await?;
+    let mut detail = client().fetch_decision(&id, Some(lang.code())).await?;
+    detail.title = crate::helpers::retitle(
+        &lang.ui().dates,
+        &detail.title,
+        detail.date_lecture.as_deref(),
+    );
+    if let Some(seat) = detail
+        .seat_parts
+        .as_ref()
+        .and_then(lang.ui().referential.seat)
+    {
+        if let Some(french) = detail.seat.replace(seat.clone()) {
+            detail.title = detail
+                .title
+                .replacen(&format!(", {french}"), &format!(", {seat}"), 1);
+        }
+    }
+    if let Some(named) = detail.court_names.get(lang.code()).cloned() {
+        use crate::helpers::renamed;
+        detail.title = renamed(&named, &detail.title, detail.jurisdiction_name.as_deref());
+        detail.seat = detail.seat.map(|seat| renamed(&named, &seat, None));
+        detail.jurisdiction_name = Some(named.name);
+    }
+    for reference in detail.legal_references.iter_mut().flatten() {
+        crate::i18n::relabel_title(lang, &mut reference.instrument);
+    }
+    for target in detail
+        .paragraph_spans
+        .iter_mut()
+        .flatten()
+        .flat_map(|span| span.targets.iter_mut())
+    {
+        crate::i18n::relabel_title(lang, &mut target.label);
+    }
     Ok(detail)
 }
 
 /// Charge les voisins (non bloquant, streamé via `<Suspense>`). Ne rejette
 /// jamais : erreur repliée en `error`.
-pub async fn fetch_similar(id: String) -> SimilarResult {
+pub async fn fetch_similar(id: String, lang: Lang) -> SimilarResult {
     if id.trim().is_empty() {
         return SimilarResult {
             principe: Vec::new(),
@@ -62,7 +95,7 @@ pub async fn fetch_similar(id: String) -> SimilarResult {
             error: None,
         };
     }
-    match client().fetch_similar_decisions(&id).await {
+    match client().fetch_similar_decisions(&id, lang.code()).await {
         Ok(response) => SimilarResult {
             principe: response.principe,
             espece: response.espece,
@@ -73,7 +106,7 @@ pub async fn fetch_similar(id: String) -> SimilarResult {
             principe: Vec::new(),
             espece: Vec::new(),
             abstained: false,
-            error: Some(err.message),
+            error: Some(err.failure),
         },
     }
 }
@@ -84,7 +117,7 @@ pub async fn fetch_similar(id: String) -> SimilarResult {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PartiesResult {
     pub parties: Vec<DecisionPartyDto>,
-    pub error: Option<String>,
+    pub error: Option<crate::api::Failure>,
 }
 
 /// Charge les parties (streamé via `<Suspense>`). Erreur repliée en `error`.
@@ -102,7 +135,7 @@ pub async fn fetch_parties(id: String) -> PartiesResult {
         },
         Err(err) => PartiesResult {
             parties: Vec::new(),
-            error: Some(err.message),
+            error: Some(err.failure),
         },
     }
 }

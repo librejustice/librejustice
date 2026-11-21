@@ -1,18 +1,16 @@
 //! Rewrites what an unchanged DILA member now reads differently: article texte
-//! and nota, JORF bodies built from articles, and the spans indexing into them.
+//! and nota, and the spans indexing into them.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::collections::HashSet;
+use std::path::PathBuf;
 
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
-use lj_core::normalizer::normalize_chars;
 use lj_extract_rows::{build_declared, owner_rows, Declared, OwnerRows};
 use lj_pg::db::Connection;
 use lj_sources::dila::DilaFond;
 use lj_store::repository::{
-    ArticleTextDrift, ArticleTextRead, ArticleTextWrite, BodyTextWrite, DecisionRepository,
+    ArticleTextDrift, ArticleTextRead, ArticleTextWrite, DecisionRepository,
 };
 use rayon::prelude::*;
 
@@ -22,7 +20,7 @@ use super::legi::{classify_legi_member, LegiMember};
 use super::ExtractCtx;
 use crate::config::Settings;
 
-/// Versions compared, and bodies read, per round trip.
+/// Versions compared per round trip.
 const BATCH: usize = 1_000;
 /// Members parsed per rayon round.
 const CHUNK: usize = 4_096;
@@ -136,11 +134,6 @@ struct Tally {
     /// Each drifted version once, though members repeat across archives.
     drifted: HashSet<(String, String, NaiveDate)>,
     versions_written: u64,
-    bodies_compared: usize,
-    bodies_current: usize,
-    bodies_drifted: usize,
-    bodies_written: u64,
-    bodies_unmatched: usize,
 }
 
 async fn backfill_fond(
@@ -150,43 +143,18 @@ async fn backfill_fond(
     spans: Option<Spans>,
 ) -> Result<()> {
     let paths = lj_sources::dila::cached_dila_tarballs(&settings.cache_dir(), fond.dila())?;
-    let bodies: HashSet<String> = match fond {
-        ArticleFond::Jorf => repo
-            .legal_text_uids_with_body("JORFTEXT")
-            .await
-            .map_err(|e| anyhow!("legal_text_uids_with_body: {e}"))?
-            .into_iter()
-            .collect(),
-        ArticleFond::Legi | ArticleFond::Kali => HashSet::new(),
-    };
     let mut tally = Tally {
         archives: paths.len(),
         ..Tally::default()
     };
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<(bool, Vec<Member>)>(4);
-    let bodies = Arc::new(bodies);
-    let reader = {
-        let bodies = bodies.clone();
-        tokio::task::spawn_blocking(move || read_archives(fond, &paths, &bodies, &tx))
-    };
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Vec<Member>>(4);
+    let reader = tokio::task::spawn_blocking(move || read_archives(fond, &paths, &tx));
     let mut reads: Vec<ArticleTextRead> = Vec::new();
-    let mut parts: HashMap<String, BodyParts> = HashMap::new();
-    while let Some((stock, members)) = rx.recv().await {
+    while let Some(members) = rx.recv().await {
         for member in members {
             tally.members += 1;
             match member {
-                Member::Article { read, block } => {
-                    reads.extend(read);
-                    if let Some(block) = block {
-                        parts
-                            .entry(block.text_uid.clone())
-                            .or_default()
-                            .push(block, stock);
-                    }
-                }
-                Member::Order { text_uid, ids } => {
-                    parts.entry(text_uid).or_default().order = Some(ids)
-                }
+                Member::Article(read) => reads.extend(read),
                 Member::Unreadable => tally.unreadable += 1,
             }
         }
@@ -201,7 +169,6 @@ async fn backfill_fond(
     if !reads.is_empty() {
         rewrite_articles(repo, reads, spans, &mut tally).await?;
     }
-    rewrite_bodies(repo, parts, spans, &mut tally).await?;
     tracing::warn!(
         fond = ?fond,
         dry_run = spans.is_none(),
@@ -210,11 +177,6 @@ async fn backfill_fond(
         unreadable = tally.unreadable,
         versions_drifted = tally.drifted.len(),
         versions_written = tally.versions_written,
-        bodies_compared = tally.bodies_compared,
-        bodies_current = tally.bodies_current,
-        bodies_drifted = tally.bodies_drifted,
-        bodies_written = tally.bodies_written,
-        bodies_unmatched = tally.bodies_unmatched,
         "backfill-article-text"
     );
     Ok(())
@@ -222,47 +184,30 @@ async fn backfill_fond(
 
 /// What a member gives the pass.
 enum Member {
-    Article {
-        read: Option<ArticleTextRead>,
-        block: Option<Block>,
-    },
-    Order {
-        text_uid: String,
-        ids: Vec<String>,
-    },
+    Article(Option<ArticleTextRead>),
     Unreadable,
 }
 
-/// The text of a JORF article whose text carries a body.
-struct Block {
-    text_uid: String,
-    id: String,
-    texte: String,
-    numbered: bool,
-}
-
 /// Streams the archives in replay order, parsing each chunk of members in
-/// parallel; the flag sent with a chunk says it comes from the stock.
+/// parallel.
 fn read_archives(
     fond: ArticleFond,
     paths: &[PathBuf],
-    bodies: &HashSet<String>,
-    tx: &tokio::sync::mpsc::Sender<(bool, Vec<Member>)>,
+    tx: &tokio::sync::mpsc::Sender<Vec<Member>>,
 ) -> Result<()> {
     for (i, path) in paths.iter().enumerate() {
-        let stock = is_stock(path);
         let send = |chunk: Vec<(String, Vec<u8>)>| -> Result<()> {
             let members = chunk
                 .into_par_iter()
-                .map(|(name, raw)| read_member(fond, &name, &raw, bodies))
+                .map(|(name, raw)| read_member(fond, &name, &raw))
                 .collect();
-            tx.blocking_send((stock, members))
+            tx.blocking_send(members)
                 .map_err(|_| anyhow!("backfill-article-text: consumer stopped"))
         };
         let mut chunk: Vec<(String, Vec<u8>)> = Vec::with_capacity(CHUNK);
         lj_sources::tar_reader::for_each_member_filtered(
             path,
-            |name| wanted(fond, name, stock, bodies),
+            |name| wanted(fond, name),
             |name, raw| {
                 chunk.push((name, raw));
                 if chunk.len() == CHUNK {
@@ -277,76 +222,50 @@ fn read_archives(
     Ok(())
 }
 
-fn is_stock(path: &Path) -> bool {
-    path.file_name()
-        .is_some_and(|n| n.to_string_lossy().starts_with("Freemium_"))
-}
-
-/// The members the pass reads: every article, and on JORF the stock structs of
-/// the texts that carry a body.
-fn wanted(fond: ArticleFond, name: &str, stock: bool, bodies: &HashSet<String>) -> bool {
+/// The members the pass reads: every article.
+fn wanted(fond: ArticleFond, name: &str) -> bool {
     match fond {
         ArticleFond::Legi => matches!(classify_legi_member(name), LegiMember::Article),
         ArticleFond::Kali => matches!(classify_kali_member(name), KaliMember::Article),
-        ArticleFond::Jorf => match classify_jorf_member(name) {
-            JorfMember::Article => true,
-            JorfMember::Struct => {
-                let stem = name.rsplit('/').next().unwrap_or(name);
-                stock && bodies.contains(stem.trim_end_matches(".xml"))
-            }
-            JorfMember::Texte | JorfMember::Section | JorfMember::Issue | JorfMember::Ignore => {
-                false
-            }
-        },
+        ArticleFond::Jorf => matches!(classify_jorf_member(name), JorfMember::Article),
     }
 }
 
 /// Reads a member as the ingest maps it: the versions it skips are skipped here.
-fn read_member(fond: ArticleFond, name: &str, raw: &[u8], bodies: &HashSet<String>) -> Member {
+fn read_member(fond: ArticleFond, name: &str, raw: &[u8]) -> Member {
     let checksum = xxhash_rust::xxh3::xxh3_64(raw);
     let member = match fond {
-        ArticleFond::Legi => lj_extract::legi::parse_legi_article(raw).map(|a| Member::Article {
-            read: (!a.num_key.is_empty()).then_some(ArticleTextRead {
-                source_uid: a.legiarti,
-                content_checksum: checksum,
-                texte: a.texte,
-                nota: a.nota,
-            }),
-            block: None,
+        ArticleFond::Legi => lj_extract::legi::parse_legi_article(raw).map(|a| {
+            let placeholder = a
+                .texte
+                .as_deref()
+                .is_some_and(lj_extract::legi::is_placeholder);
+            Member::Article(
+                (!a.num_key.is_empty() && !placeholder).then_some(ArticleTextRead {
+                    source_uid: a.legiarti,
+                    content_checksum: checksum,
+                    texte: a.texte,
+                    nota: a.nota,
+                }),
+            )
         }),
-        ArticleFond::Kali => lj_extract::kali::parse_kali_article(raw).map(|a| Member::Article {
-            read: (!a.num_key.is_empty()).then_some(ArticleTextRead {
+        ArticleFond::Kali => lj_extract::kali::parse_kali_article(raw).map(|a| {
+            Member::Article((!a.num_key.is_empty()).then_some(ArticleTextRead {
                 source_uid: a.kaliarti,
                 content_checksum: checksum,
                 texte: a.texte,
                 nota: None,
-            }),
-            block: None,
+            }))
         }),
-        ArticleFond::Jorf if matches!(classify_jorf_member(name), JorfMember::Struct) => {
-            lj_extract::jorf::parse_jorf_struct(raw).map(|s| Member::Order {
-                ids: s.articles().map(|(id, _)| id.to_string()).collect(),
-                text_uid: s.jorftext,
-            })
-        }
         ArticleFond::Jorf => lj_extract::jorf::parse_jorf_article(raw).map(|a| {
-            let numbered = a.num.is_some();
-            let block = match &a.texte {
-                Some(texte) if bodies.contains(&a.jorftext) => Some(Block {
-                    text_uid: a.jorftext.clone(),
-                    id: a.jorfarti.clone(),
-                    texte: texte.clone(),
-                    numbered,
+            Member::Article(
+                (a.num.is_some() && a.num_key.is_some()).then_some(ArticleTextRead {
+                    source_uid: a.jorfarti,
+                    content_checksum: checksum,
+                    texte: a.texte,
+                    nota: a.nota,
                 }),
-                _ => None,
-            };
-            let read = (numbered && a.num_key.is_some()).then_some(ArticleTextRead {
-                source_uid: a.jorfarti,
-                content_checksum: checksum,
-                texte: a.texte,
-                nota: a.nota,
-            });
-            Member::Article { read, block }
+            )
         }),
     };
     member.unwrap_or_else(|e| {
@@ -406,128 +325,4 @@ async fn rewrite_articles(
         .await
         .map_err(|e| anyhow!("rewrite_article_texts: {e}"))?;
     Ok(())
-}
-
-/// The articles of a JORF text that carries a body.
-#[derive(Default)]
-struct BodyParts {
-    /// Unnumbered articles of every archive, a later version replacing an earlier.
-    unnumbered: BTreeMap<String, String>,
-    stock: Vec<(String, String)>,
-    order: Option<Vec<String>>,
-}
-
-impl BodyParts {
-    fn push(&mut self, block: Block, stock: bool) {
-        if stock {
-            self.stock.push((block.id.clone(), block.texte.clone()));
-        }
-        if !block.numbered {
-            self.unnumbered.insert(block.id, block.texte);
-        }
-    }
-
-    /// The bodies the JORF passes write from these articles: the unnumbered ones
-    /// joined, and every stock article in its struct order.
-    fn assemblies(&self) -> Vec<String> {
-        let unnumbered = (!self.unnumbered.is_empty()).then(|| {
-            let parts: Vec<&str> = self.unnumbered.values().map(String::as_str).collect();
-            parts.join("\n\n")
-        });
-        let stock = (!self.stock.is_empty())
-            .then(|| super::treaty_bodies::assemble_ordered(self.order.as_deref(), &self.stock));
-        unnumbered
-            .into_iter()
-            .chain(stock)
-            .map(|body| normalize_chars(&body))
-            .collect()
-    }
-}
-
-enum BodyOutcome {
-    Current,
-    Unmatched,
-    Drifted(BodyTextWrite),
-}
-
-/// A stored body is rewritten when it holds an assembly's words in an older
-/// layout; one that holds other words came from elsewhere and is left alone.
-async fn rewrite_bodies(
-    repo: &DecisionRepository<'_>,
-    parts: HashMap<String, BodyParts>,
-    spans: Option<Spans>,
-    tally: &mut Tally,
-) -> Result<()> {
-    let uids: Vec<String> = parts.keys().cloned().collect();
-    let parts = Arc::new(parts);
-    for batch in uids.chunks(BATCH) {
-        let stored = repo
-            .legal_text_bodies_of(batch)
-            .await
-            .map_err(|e| anyhow!("legal_text_bodies_of: {e}"))?;
-        tally.bodies_compared += stored.len();
-        let parts = parts.clone();
-        let outcomes: Vec<BodyOutcome> = tokio::task::spawn_blocking(move || {
-            stored
-                .into_par_iter()
-                .map(|(text_uid, stored)| body_outcome(&parts[&text_uid], text_uid, stored, spans))
-                .collect()
-        })
-        .await
-        .map_err(|e| anyhow!("body spans join: {e}"))?;
-        let mut writes = Vec::new();
-        for outcome in outcomes {
-            match outcome {
-                BodyOutcome::Current => tally.bodies_current += 1,
-                BodyOutcome::Unmatched => tally.bodies_unmatched += 1,
-                BodyOutcome::Drifted(write) => writes.push(write),
-            }
-        }
-        tally.bodies_drifted += writes.len();
-        if spans.is_some() && !writes.is_empty() {
-            tally.bodies_written += repo
-                .rewrite_legal_text_bodies(&writes)
-                .await
-                .map_err(|e| anyhow!("rewrite_legal_text_bodies: {e}"))?;
-        }
-    }
-    Ok(())
-}
-
-fn body_outcome(
-    parts: &BodyParts,
-    text_uid: String,
-    stored: String,
-    spans: Option<Spans>,
-) -> BodyOutcome {
-    let assemblies = parts.assemblies();
-    if assemblies.contains(&stored) {
-        return BodyOutcome::Current;
-    }
-    let Some(body) = assemblies
-        .into_iter()
-        .find(|body| words(body).eq(words(&stored)))
-    else {
-        tracing::debug!(%text_uid, "backfill-article-text: body matches no assembly");
-        return BodyOutcome::Unmatched;
-    };
-    let OwnerRows { cases, cites } = match spans {
-        Some(spans) => spans.rows(&body, &text_uid, None, None),
-        None => OwnerRows {
-            cases: Vec::new(),
-            cites: Vec::new(),
-        },
-    };
-    BodyOutcome::Drifted(BodyTextWrite {
-        text_uid,
-        stored,
-        body,
-        cases,
-        cites,
-    })
-}
-
-/// A text without the whitespace and cell separators the HTML reading lays out.
-fn words(text: &str) -> impl Iterator<Item = char> + '_ {
-    text.chars().filter(|c| !c.is_whitespace() && *c != '|')
 }

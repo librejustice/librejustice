@@ -3,6 +3,9 @@
 #[cfg(feature = "hydrate")]
 use leptos::prelude::*;
 
+/// The view's language: a chat frames it at no address that would name one.
+const LANG: crate::i18n::Lang = crate::i18n::Lang::Fr;
+
 /// Hosts keep this document as long as they like, so it names no build: the
 /// entry module it imports does.
 #[cfg(feature = "ssr")]
@@ -10,17 +13,19 @@ pub fn document(origin: &str) -> String {
     let literal = |text: &str| serde_json::to_string(text).expect("a string serialises");
     let entry = literal(&format!("{origin}{}", lj_vocab::files::ENTRY));
     let origin = literal(origin);
+    let ui = &LANG.ui().redact;
+    let (lang, loading, failed) = (LANG.code(), ui.mcp_loading, literal(ui.mcp_failed));
     format!(
         r#"<!doctype html>
-<html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
+<html lang="{lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>
 <body class="antialiased bg-[var(--color-parchment)] text-[var(--color-ink)]">
-<p>Chargement de l'anonymisation...</p>
+<p>{loading}</p>
 <script type="module">
 try {{
   const {{ mount }} = await import({entry});
   await mount({origin});
 }} catch (error) {{
-  document.body.textContent = "L'anonymisation n'a pas pu se charger.";
+  document.body.textContent = {failed};
   throw error;
 }}
 </script>
@@ -97,28 +102,26 @@ fn Card() -> impl IntoView {
     use super::outlet::{Outlet, Outlets};
     use super::state::{Session, Status};
 
+    crate::i18n::provide_lang(LANG);
+    let ui = &crate::i18n::use_ui().redact;
     let host = Host::connect();
     send_links_to(host);
-    let session = Session::new();
+    let session = Session::new(ui);
     let mut outlets = Vec::new();
     if host.stores_files() {
-        outlets.push(Outlet::new(
-            "Ajouter à la conversation",
-            move |name, bytes| async move {
-                host.attach(&neutral(&name), &bytes).await?;
-                Ok(Some("Le document est envoyé à la conversation."))
-            },
-        ));
+        outlets.push(Outlet::new(ui.add_to_chat, move |name, bytes| async move {
+            host.attach(&neutral(ui, &name), &bytes, ui.attach_prompt)
+                .await?;
+            Ok(Some(ui.sent_to_chat))
+        }));
     }
-    outlets.push(Outlet::new("Télécharger", move |name, bytes| async move {
+    outlets.push(Outlet::new(ui.download, move |name, bytes| async move {
         Ok(host
-            .download(&neutral(&name), &bytes)
+            .download(&neutral(ui, &name), &bytes)
             .await?
             .map(|saved| match saved {
-                Saved::Opened => "Le fichier s'ouvre dans un nouvel onglet.",
-                Saved::Downloaded => {
-                    "Fichier téléchargé. Vous pouvez le joindre à la conversation."
-                }
+                Saved::Opened => ui.opens_in_tab,
+                Saved::Downloaded => ui.downloaded,
             }))
     }));
     provide_context(Outlets(outlets));
@@ -141,9 +144,7 @@ fn Card() -> impl IntoView {
     let title = move || match session.status.get() {
         Status::Ready => view! { <super::Toolbar session=session /> }.into_any(),
         _ => view! {
-            <p class="min-w-0 flex-1 truncate font-sans text-sm font-medium">
-                "Atelier d'anonymisation"
-            </p>
+            <p class="min-w-0 flex-1 truncate font-sans text-sm font-medium">{ui.workbench}</p>
         }
         .into_any(),
     };
@@ -161,8 +162,8 @@ fn Card() -> impl IntoView {
                 <Show when=move || host.expands.get()>
                     <button type="button" class=super::SECONDARY on:click=toggle>
                         {move || match full() {
-                            true => "Réduire",
-                            false => "Agrandir",
+                            true => ui.collapse,
+                            false => ui.expand,
                         }}
                     </button>
                 </Show>
@@ -175,10 +176,10 @@ fn Card() -> impl IntoView {
 /// What the view hands the chat is named after none of the original's name,
 /// which often carries a party's.
 #[cfg(feature = "hydrate")]
-fn neutral(name: &str) -> String {
+fn neutral(ui: &crate::i18n::RedactUi, name: &str) -> String {
     match name.rsplit_once('.') {
-        Some((_, extension)) => format!("document-anonymise.{extension}"),
-        None => "document-anonymise".to_string(),
+        Some((_, extension)) => format!("{}.{extension}", ui.neutral_name),
+        None => ui.neutral_name.to_string(),
     }
 }
 

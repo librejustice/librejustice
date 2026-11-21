@@ -15,7 +15,7 @@
 //!
 //! Encoding boundary: the HTML is decoded here, latin-1 or UTF-8 depending on
 //! what the bytes carry, plus the `0x19` cleanup (mis-mapped Windows-1252
-//! apostrophe). The CRP PDF is never downloaded: only its existence is stored.
+//! apostrophe). A CRP's PDF is read through the egress gateway by [`CrpClient`].
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -366,6 +366,42 @@ pub fn decode_ariane_html(raw: &[u8]) -> String {
                 b => b as char,
             })
             .collect(),
+    }
+}
+
+/// The rapporteur public's conclusions as ArianeWeb serves them, a PDF per decision.
+pub struct CrpClient {
+    http: reqwest::Client,
+}
+
+impl CrpClient {
+    pub fn new(proxy: &str) -> Result<Self> {
+        if proxy.is_empty() {
+            return Err(SourceError::Invalid(
+                "ArianeWeb's conclusions are read through LIBREJUSTICE_EGRESS_PROXY, which is empty"
+                    .into(),
+            ));
+        }
+        let http = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .proxy(reqwest::Proxy::all(proxy)?)
+            .connect_timeout(Duration::from_secs(15))
+            .timeout(Duration::from_secs(120))
+            .build()?;
+        Ok(Self { http })
+    }
+
+    /// The PDF of the conclusions read on `date` in case `dossier`, `None` when the site
+    /// answers anything else.
+    pub async fn pdf(&self, date: &str, dossier: &str) -> Result<Option<Vec<u8>>> {
+        let url = format!("{BASE_URL}/fr/arianeweb/CRP/conclusion/{date}/{dossier}?download_pdf");
+        let resp = self.http.get(&url).send().await?;
+        if resp.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        let resp = resp.error_for_status()?;
+        let bytes = resp.bytes().await?;
+        Ok(bytes.starts_with(b"%PDF").then(|| bytes.to_vec()))
     }
 }
 

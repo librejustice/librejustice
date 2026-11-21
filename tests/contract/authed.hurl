@@ -291,12 +291,15 @@ Content-Type: application/json
 { "jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {} }
 HTTP 200
 [Asserts]
-jsonpath "$.result.tools" count == 4
+jsonpath "$.result.tools" count == 6
 jsonpath "$.result.tools[*].name" contains "get_norm"
+jsonpath "$.result.tools[*].name" contains "get_notice"
 jsonpath "$.result.tools[0].inputSchema.anyOf" not exists
 jsonpath "$.result.tools[1].inputSchema.anyOf" not exists
 jsonpath "$.result.tools[2].inputSchema.anyOf" not exists
 jsonpath "$.result.tools[3].inputSchema.anyOf" not exists
+jsonpath "$.result.tools[4].inputSchema.anyOf" not exists
+jsonpath "$.result.tools[5].inputSchema.anyOf" not exists
 
 # ── 10 ter. Les rattrapages de désignation, que seul un vrai jeton atteint ───
 # Un client MCP est un modèle : il compose la forme d'appel qui lui paraît
@@ -605,6 +608,39 @@ refresh_token: {{refresh}}
 client_id: {{client_id}}
 # Statut seul, comme le fait déjà `oauth.hurl` § 6d : la propriété à verrouiller
 # est « l'ancien refresh ne marche plus », et le 400 l'exprime entièrement.
+HTTP 400
+
+# ── 13 bis. The run hands back every token it still holds ───────────────────
+# Rotation spends the old refresh token alone: the first access token lives on.
+POST {{base}}/oauth/revoke
+[FormParams]
+token: {{access}}
+HTTP 200
+
+POST {{base}}/oauth/revoke
+[FormParams]
+token: {{access2}}
+HTTP 200
+
+POST {{base}}/oauth/revoke
+[FormParams]
+token: {{refresh2}}
+HTTP 200
+
+POST {{base}}/mcp
+Authorization: Bearer {{access2}}
+Accept: application/json, text/event-stream
+Content-Type: application/json
+{ "jsonrpc": "2.0", "id": 4, "method": "tools/list", "params": {} }
+HTTP 401
+[Asserts]
+jsonpath "$.error" == "invalid_token"
+
+POST {{base}}/oauth/token
+[FormParams]
+grant_type: refresh_token
+refresh_token: {{refresh2}}
+client_id: {{client_id}}
 HTTP 400
 
 # ── 14. Un jeton MCP inventé est refusé ──────────────────────────────────────

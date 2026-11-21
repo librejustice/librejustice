@@ -54,6 +54,8 @@ pub const FORMATION_LABELS: &[(&str, &str)] = &[
     ("formation:RESTREINTE", "Formation restreinte"),
     ("formation:SECTION", "Formation de section"),
     ("formation:PLENIERE", "Formation plénière"),
+    ("formation:APPEL", "Statuant en appel"),
+    ("formation:SPECIALE", "Spécialement composée"),
 ];
 
 /// Labels des offices `office:*` — miroir du référentiel.
@@ -81,6 +83,8 @@ pub const JURISDICTION_TYPE_LABELS: &[(&str, &str)] = &[
     ("TJ", "Tribunal judiciaire"),
     ("TCOM", "Tribunal de commerce"),
     ("CPH", "Conseil de prud'hommes"),
+    ("ASSISES", "Cour d'assises"),
+    ("CCD", "Cour criminelle départementale"),
     ("CNDA", "Cour nationale du droit d'asile"),
     ("CONSTIT", "Conseil constitutionnel"),
     ("TC", "Tribunal des conflits"),
@@ -88,6 +92,7 @@ pub const JURISDICTION_TYPE_LABELS: &[(&str, &str)] = &[
     ("CJUE", "Cour de justice de l'Union européenne"),
     ("DDD", "Défenseur des droits"),
     ("ADLC", "Autorité de la concurrence"),
+    ("AMF", "Autorité des marchés financiers"),
     ("COMEU", "Commission européenne"),
 ];
 
@@ -115,7 +120,7 @@ pub fn office_label(uid: &str) -> Option<&'static str> {
 /// Minuscule mi-titre : première lettre abaissée sauf sigle (2ᵉ caractère déjà
 /// majuscule). « Pôle 5 » → « pôle 5 », « Chambre B » → « chambre B »,
 /// « DALO » intact.
-fn mid_title(s: &str) -> String {
+pub(crate) fn mid_title(s: &str) -> String {
     let mut chars = s.chars();
     match (chars.next(), chars.next()) {
         (Some(first), second)
@@ -143,19 +148,27 @@ fn formation_redundant(base: &str, formation: &str) -> bool {
         .all(|t| base_tokens.contains(&t))
 }
 
-/// Chamber, then formation, then office, joined by a middle dot; a missing axis
-/// leaves no hole. Folding drops what would be said twice, and « Juge unique »
-/// beside an office is the corpus rather than an edge case: nearly every decision
-/// carrying both axes has it, so without that filter the seat reads « juge unique
-/// · magistrat désigné ».
-pub fn seat_display(
+/// The axes of a seat its title shows, each as the title reads it. Folding drops
+/// what would be said twice, and « Juge unique » beside an office is the corpus
+/// rather than an edge case: nearly every decision carrying both axes has it, so
+/// without that filter the seat reads « juge unique · magistrat désigné ».
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SeatAxes<'a> {
+    pub chamber: Option<&'a str>,
+    pub formation: Option<&'a str>,
+    pub office: Option<&'a str>,
+}
+
+/// The axes `jurisdiction` does not already say. `chamber_label` comes as a title
+/// reads it, [`crate::chamber::Seat::title_label`].
+pub fn seat_axes<'a>(
     jurisdiction: &str,
-    chamber_label: Option<&str>,
-    formation_label: Option<&str>,
-    office_label: Option<&str>,
-) -> Option<String> {
+    chamber_label: Option<&'a str>,
+    formation_label: Option<&'a str>,
+    office_label: Option<&'a str>,
+) -> SeatAxes<'a> {
     let jur_folded = lj_fold::fold_chars(jurisdiction);
-    let base = chamber_label
+    let chamber = chamber_label
         .map(str::trim)
         .filter(|p| !p.is_empty() && !jur_folded.contains(&lj_fold::fold_chars(p)));
     let office = office_label
@@ -165,36 +178,58 @@ pub fn seat_display(
     let formation = formation_label.map(str::trim).filter(|f| {
         !f.is_empty()
             && !jur_folded.contains(&lj_fold::fold_chars(f))
-            && !base.is_some_and(|b| formation_redundant(b, f))
+            && !chamber.is_some_and(|b| formation_redundant(b, f))
             && !dit_par_l_office(f)
     });
-    let qualifiers: Vec<&str> = formation.into_iter().chain(office).collect();
-    let Some(b) = base else {
-        return match qualifiers.is_empty() {
-            true => None,
-            false => Some(
-                qualifiers
-                    .into_iter()
-                    .map(mid_title)
-                    .collect::<Vec<_>>()
-                    .join(" · "),
-            ),
-        };
-    };
-    // « Chambre jugeant seule » grafts onto a position already ending in the
-    // chamber it qualifies, so it is never a segment of its own.
-    if let [q] = qualifiers[..] {
-        if (lj_fold::fold_chars(b).ends_with("chambre")
-            || lj_fold::fold_chars(b).ends_with("sous-section"))
-            && q.get(..8)
-                .is_some_and(|p| p.eq_ignore_ascii_case("chambre "))
-        {
-            return Some(format!("{} {}", mid_title(b), &q[8..]));
-        }
+    SeatAxes {
+        chamber,
+        formation,
+        office,
     }
-    let mut segments = vec![mid_title(b)];
-    segments.extend(qualifiers.into_iter().map(mid_title));
-    Some(segments.join(" · "))
+}
+
+impl SeatAxes<'_> {
+    /// Chamber, then formation, then office, joined by a middle dot; a missing axis
+    /// leaves no hole.
+    pub fn display(&self) -> Option<String> {
+        let qualifiers: Vec<&str> = self.formation.into_iter().chain(self.office).collect();
+        let Some(b) = self.chamber else {
+            return match qualifiers.is_empty() {
+                true => None,
+                false => Some(
+                    qualifiers
+                        .into_iter()
+                        .map(mid_title)
+                        .collect::<Vec<_>>()
+                        .join(" · "),
+                ),
+            };
+        };
+        // « Chambre jugeant seule » grafts onto a position already ending in the
+        // chamber it qualifies, so it is never a segment of its own.
+        if let [q] = qualifiers[..] {
+            if (lj_fold::fold_chars(b).ends_with("chambre")
+                || lj_fold::fold_chars(b).ends_with("sous-section"))
+                && q.get(..8)
+                    .is_some_and(|p| p.eq_ignore_ascii_case("chambre "))
+            {
+                return Some(format!("{b} {}", &q[8..]));
+            }
+        }
+        let mut segments = vec![b.to_string()];
+        segments.extend(qualifiers.into_iter().map(mid_title));
+        Some(segments.join(" · "))
+    }
+}
+
+/// The seat a title shows: [`seat_axes`], displayed.
+pub fn seat_display(
+    jurisdiction: &str,
+    chamber_label: Option<&str>,
+    formation_label: Option<&str>,
+    office_label: Option<&str>,
+) -> Option<String> {
+    seat_axes(jurisdiction, chamber_label, formation_label, office_label).display()
 }
 
 /// The number the title names the decision by, which is the head one: it is
@@ -237,6 +272,31 @@ pub fn decision_title(
     parts.join(", ")
 }
 
+/// The title of conclusions: who presented them and when, then the case as a decision's
+/// title names it.
+pub fn conclusions_title(
+    author: Option<&str>,
+    date: Option<&str>,
+    case_name: Option<&str>,
+    docket: Option<&str>,
+) -> String {
+    let mut head = match author.map(str::trim).filter(|a| !a.is_empty()) {
+        Some(author) => format!("Conclusions de {author}"),
+        None => "Conclusions".to_string(),
+    };
+    if let Some(date) = date.filter(|d| !d.is_empty()) {
+        head = format!("{head}, présentées le {}", format_fr_date(date));
+    }
+    let mut parts = vec![head];
+    if let Some(nom) = case_name.map(str::trim).filter(|n| !n.is_empty()) {
+        parts.push(nom.to_string());
+    }
+    if let Some(n) = docket.map(str::trim).filter(|n| !n.is_empty()) {
+        parts.push(n.to_string());
+    }
+    parts.join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -245,7 +305,7 @@ mod tests {
     fn seat_pole_chambre_avec_formation() {
         let seat = seat_display(
             "Cour d'appel de Paris",
-            Some("Pôle 5, 3e chambre"),
+            Some("pôle 5, 3e chambre"),
             Some("Formation à trois"),
             None,
         );
@@ -270,7 +330,7 @@ mod tests {
     fn seat_ssr_sans_suffixe_redondant() {
         let seat = seat_display(
             "Conseil d'État",
-            Some("Sous-sections 2/6 réunies"),
+            Some("sous-sections 2/6 réunies"),
             Some("Sous-sections réunies"),
             None,
         );

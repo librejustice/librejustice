@@ -36,6 +36,8 @@ const SOURCES_SUIVIES: &[(&str, i64)] = &[
     ("adlc", 35),
     // Adoption dates 14 days apart at most over 2023-2026, across the Christmas break.
     ("comeu", 30),
+    // Decision dates 105 days apart at most over 2023-2026, the summer and the year's end idle.
+    ("amf", 150),
 ];
 
 /// Channels of the Annonces pot, and the days without a new row past which the
@@ -353,6 +355,10 @@ async fn dataset_ue_uid_ferme() -> Result<u64> {
 /// nothing.
 async fn version_article_mal_situee() -> Result<u64> {
     let conn = repo_conn().await?;
+    // Each count reads all of legal_article: 12 to 36 s under an ingest's load.
+    conn.batch_execute("SET statement_timeout = '120s'")
+        .await
+        .map_err(|e| anyhow!("set statement_timeout: {e}"))?;
     let (sentinelles, redatees, non_fermees) = DecisionRepository::new(&conn)
         .versions_mal_situees()
         .await

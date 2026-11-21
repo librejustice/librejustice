@@ -4,6 +4,7 @@ pub mod address;
 pub mod bodacc;
 pub mod census;
 pub mod joafe;
+pub mod json;
 pub mod officers;
 pub mod record;
 pub mod rows;

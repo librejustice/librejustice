@@ -161,25 +161,29 @@ pub async fn report_action(
 }
 
 fn page_kind(path: &str) -> &'static str {
-    match path
-        .trim_start_matches('/')
-        .split('/')
-        .next()
-        .unwrap_or_default()
-    {
-        "" => "home",
+    let mut segments = path.trim_start_matches('/').split('/');
+    let first = segments.next().unwrap_or_default();
+    if first.len() == 2 && first.bytes().all(|b| b.is_ascii_lowercase()) {
+        return match segments.next() {
+            None => "home",
+            Some("decision-search" | "norm-search" | "journal-search") => "search",
+            Some("api-guide") => "info",
+            Some(_) => "unknown",
+        };
+    }
+    match first {
         "decision" => "decision",
         "norm" => "norm",
         "entity" => "entity",
         "notice" => "notice",
-        "decision-index" | "norm-index" | "notice-index" | "entity-index" => "index",
-        "decision-search" | "norm-search" | "notice-search" | "entity-search" => "search",
+        "decision-index" | "norm-index" | "journal-index" | "entity-index" => "index",
+        "entity-search" => "search",
         "login" | "reset-password" | "confirm" | "login-link" | "email-change"
         | "authorize-mcp" => "auth",
-        "profile" | "bookmarks" => "account",
+        "profile" => "account",
         "tools" | "redact" => "tool",
-        "sources" | "feedback" | "api-guide" | "mcp-guide" | "legal-notice" | "privacy"
-        | "terms" | "open-source" => "info",
+        "sources" | "feedback" | "mcp-guide" | "legal-notice" | "privacy" | "terms"
+        | "open-source" => "info",
         _ => "unknown",
     }
 }
@@ -307,7 +311,7 @@ mod tests {
     #[test]
     fn le_site_lui_meme_est_interne() {
         assert_eq!(
-            de("https://librejustice.fr/decision-search?q=bail"),
+            de("https://librejustice.fr/fr/decision-search?q=bail"),
             "internal"
         );
         assert_eq!(de("https://www.librejustice.fr/"), "internal");
@@ -324,11 +328,15 @@ mod tests {
 
     #[test]
     fn le_type_de_page_se_lit_sur_le_premier_segment() {
-        assert_eq!(page_kind("/"), "home");
+        assert_eq!(page_kind("/fr"), "home");
+        assert_eq!(page_kind("/ch"), "home");
         assert_eq!(page_kind("/decision/fr/W2MaOjgp4jgf"), "decision");
         assert_eq!(page_kind("/norm/fr/code-civil/1240"), "norm");
         assert_eq!(page_kind("/decision-index/fr/ca_rennes/2004"), "index");
-        assert_eq!(page_kind("/norm-search"), "search");
+        assert_eq!(page_kind("/ch/norm-search"), "search");
+        assert_eq!(page_kind("/fr/decision-search"), "search");
+        assert_eq!(page_kind("/fr/journal-search"), "search");
+        assert_eq!(page_kind("/fr/codes"), "unknown");
         assert_eq!(page_kind("/authorize-mcp"), "auth");
         assert_eq!(page_kind("/login"), "auth");
         assert_eq!(

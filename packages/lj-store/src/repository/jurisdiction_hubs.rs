@@ -134,7 +134,7 @@ impl DecisionRepository<'_> {
                            extract(year FROM date_lecture)::int AS year,
                            count(*) AS decision_count
                     FROM decisions
-                    WHERE deleted_at IS NULL
+                    WHERE deleted_at IS NULL AND kind = 'decision'
                     GROUP BY 1, 2
                 ), stale AS (
                     DELETE FROM jurisdiction_year_counts c
@@ -197,7 +197,7 @@ impl DecisionRepository<'_> {
                          WHERE jurisdiction_code = $1 \
                            AND date_lecture >= make_date($2, 1, 1) \
                            AND date_lecture < make_date($2 + 1, 1, 1) \
-                           AND deleted_at IS NULL \
+                           AND deleted_at IS NULL AND kind = 'decision' \
                          ORDER BY date_lecture DESC, id \
                          LIMIT $3 OFFSET $4",
                         &[one, &year, &limit, &offset],
@@ -212,7 +212,7 @@ impl DecisionRepository<'_> {
                          WHERE jurisdiction_code = ANY($1) \
                            AND date_lecture >= make_date($2, 1, 1) \
                            AND date_lecture < make_date($2 + 1, 1, 1) \
-                           AND deleted_at IS NULL \
+                           AND deleted_at IS NULL AND kind = 'decision' \
                          ORDER BY date_lecture DESC, id \
                          LIMIT $3 OFFSET $4",
                         &[&several, &year, &limit, &offset],

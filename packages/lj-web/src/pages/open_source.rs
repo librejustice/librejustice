@@ -5,13 +5,18 @@ use leptos_router::components::A;
 use lj_dtos::{OpenSourceLink, OpenSourceResponse};
 
 use crate::api::ApiClient;
+use crate::components::{prose, LINK};
+use crate::i18n::OpenSourceUi;
 use crate::pages::law_page::data::{sendable, PageError};
 
-const LIEN: &str = "text-[var(--color-accent)] underline-offset-4 hover:underline";
+type FontSources = (
+    fn(&OpenSourceUi) -> &'static str,
+    &'static [(&'static str, &'static str)],
+);
 
-const FONT_SOURCES: &[(&str, &[(&str, &str)])] = &[
+const FONT_SOURCES: &[FontSources] = &[
     (
-        "Pour Liberation Sans Narrow, ",
+        |ui| ui.liberation_sources,
         &[
             ("Regular.sfd", "LiberationSansNarrow-Regular.sfd"),
             ("Bold.sfd", "LiberationSansNarrow-Bold.sfd"),
@@ -22,19 +27,24 @@ const FONT_SOURCES: &[(&str, &[(&str, &str)])] = &[
         ],
     ),
     (
-        "Pour la Tahoma de Wine, ",
+        |ui| ui.tahoma_sources,
         &[
             ("tahoma.sfd", "tahoma.sfd"),
             ("tahomabd.sfd", "tahomabd.sfd"),
             ("genttf.ff", "WineTahoma-genttf.ff"),
         ],
     ),
-    ("Pour OpenSymbol, ", &[("OpenSymbol.sfd", "OpenSymbol.sfd")]),
+    (
+        |ui| ui.opensymbol_sources,
+        &[("OpenSymbol.sfd", "OpenSymbol.sfd")],
+    ),
 ];
 
 #[component]
 pub fn OpenSource() -> impl IntoView {
     crate::pages::cache_public_5_min();
+    let all = crate::i18n::use_ui();
+    let ui = &all.open_source;
     let list = Resource::new_blocking(
         || (),
         |_| {
@@ -47,21 +57,10 @@ pub fn OpenSource() -> impl IntoView {
         },
     );
     view! {
-        <Title text="Composants open source - LibreJustice" />
+        <Title text=ui.title />
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
-            <h1 class="font-sans text-3xl text-[var(--color-ink)]">"Composants open source"</h1>
-            <p class="mt-4 text-[var(--color-ink-muted)]">
-                "Le "
-                <a
-                    class=LIEN
-                    href="https://github.com/librejustice/librejustice"
-                    rel="noreferrer"
-                    target="_blank"
-                >
-                    "code de LibreJustice"
-                </a>
-                " est publié sous licence Apache 2.0. Il s'appuie sur les composants de tiers ci-dessous, bibliothèques, polices et modèles de lecture des documents, qui gardent chacun leur licence."
-            </p>
+            <h1 class="font-sans text-3xl text-[var(--color-ink)]">{ui.heading}</h1>
+            <p class="mt-4 text-[var(--color-ink-muted)]">{prose(ui.intro, LINK)}</p>
 
             <Suspense fallback=|| ()>
                 {move || Suspend::new(async move {
@@ -71,7 +70,7 @@ pub fn OpenSource() -> impl IntoView {
                             Either::Right(
                                 view! {
                                     <p class="mt-10 text-sm text-[var(--color-ink-muted)]">
-                                        {err.message}
+                                        {err.failure.text(&crate::i18n::use_ui().shell)}
                                     </p>
                                 },
                             )
@@ -81,19 +80,16 @@ pub fn OpenSource() -> impl IntoView {
             </Suspense>
 
             <section class="mt-10">
-                <h2 class="font-sans text-xl text-[var(--color-ink)]">"Mentions"</h2>
+                <h2 class="font-sans text-xl text-[var(--color-ink)]">{ui.notes}</h2>
                 <div class="mt-3 space-y-2 text-sm text-[var(--color-ink-muted)]">
+                    <p>{ui.ocr_weights}</p>
+                    <p>{ui.word_lists}</p>
                     <p>
-                        "Les deux réseaux PP-OCRv5 sont servis avec leurs poids convertis en float16 et leurs dimensions symboliques renommées. PyLaia RIMES est exporté de PyTorch vers ONNX, avec des poids en int8."
-                    </p>
-                    <p>
-                        "Les listes FrequencyWords, de Hermit Dave, sont construites depuis le corpus OpenSubtitles 2018 d'OPUS. Elles sont servies sans modification."
-                    </p>
-                    <p>
-                        "Les sources des polices sous copyleft sont servies avec elles. "
+                        {ui.font_sources}
                         {FONT_SOURCES
                             .iter()
                             .map(|&(font, files)| {
+                                let font = font(ui);
                                 let last = files.len() - 1;
                                 view! {
                                     {font}
@@ -103,13 +99,13 @@ pub fn OpenSource() -> impl IntoView {
                                         .map(|(i, &(label, file))| {
                                             let sep = match i {
                                                 0 => "",
-                                                i if i == last => " et ",
+                                                i if i == last => ui.and,
                                                 _ => ", ",
                                             };
                                             view! {
                                                 {sep}
                                                 <a
-                                                    class=LIEN
+                                                    class=LINK
                                                     href=format!("/redactor/fonts/sources/{file}")
                                                     rel="external"
                                                 >
@@ -130,11 +126,12 @@ pub fn OpenSource() -> impl IntoView {
             <div class="mt-auto pt-12">
                 <div class="border-t border-[var(--color-rule)] pt-6">
                     <A
-                        href="/"
+                        href=crate::jurisdiction::use_reader_scope().href("/")
                         attr:class="inline-flex items-center gap-1.5 text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)]"
                     >
                         <span aria-hidden="true">"←"</span>
-                        " Retour à l'accueil"
+                        " "
+                        {all.shell.back_home}
                     </A>
                 </div>
             </div>
@@ -144,20 +141,28 @@ pub fn OpenSource() -> impl IntoView {
 
 #[component]
 fn Components(response: OpenSourceResponse) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().open_source;
     view! {
         <table class="mt-10 w-full text-left text-sm">
             <thead class="text-[var(--color-ink)]">
                 <tr>
-                    <th class="py-2 pr-4 font-medium">"Composant"</th>
-                    <th class="py-2 pr-4 font-medium">"Version"</th>
-                    <th class="py-2 font-medium">"Licence"</th>
+                    <th class="py-2 pr-4 font-medium">{ui.component}</th>
+                    <th class="py-2 pr-4 font-medium">{ui.version}</th>
+                    <th class="py-2 font-medium">{ui.licence}</th>
                 </tr>
             </thead>
             <tbody class="text-[var(--color-ink-muted)]">
                 {response
                     .components
                     .into_iter()
-                    .map(|c| {
+                    .map(|mut c| {
+                        let named = |label: &mut String| {
+                            if let Some(named) = (ui.named)(label) {
+                                *label = named.to_string();
+                            }
+                        };
+                        named(&mut c.name);
+                        c.licence.iter_mut().for_each(|link| named(&mut link.label));
                         view! {
                             <tr class="border-t border-[var(--color-rule)] align-top">
                                 <td class="py-1.5 pr-4 text-[var(--color-ink)]">
@@ -202,7 +207,7 @@ fn Components(response: OpenSourceResponse) -> impl IntoView {
 fn text_link(link: OpenSourceLink) -> impl IntoView {
     match link.href {
         Some(href) => Either::Left(view! {
-            <a class=LIEN href=href rel="external">
+            <a class=LINK href=href rel="external">
                 {link.label}
             </a>
         }),

@@ -15,6 +15,7 @@ use chrono::NaiveDate;
 use super::types::{CitationOccurrenceRow, CitingDecisionRow, SectionCitingTextRow};
 use super::DecisionRepository;
 use crate::error::{Result, StoreError};
+use lj_norm::text_aliases::TextAlias;
 use tokio_postgres::binary_copy::BinaryCopyInWriter;
 use tokio_postgres::types::{ToSql, Type};
 
@@ -509,16 +510,20 @@ impl DecisionRepository<'_> {
             let rows = self
                 .conn
                 .query(
+                    // Counted before the join: grouped by the text's columns, the
+                    // planner walks the article index in text order, 81 s against 12 s.
                     &format!(
                         "SELECT t.text_uid, coalesce(t.title, ''), coalesce(t.title_key, ''),
                             coalesce(t.nature, ''), t.jurisdiction,
                             coalesce(t.num_prefix_agnostic, false),
-                            count(a.*) FILTER (WHERE {valid_a} AND {norm_a}),
+                            coalesce(n.in_force, 0),
                             t.date_texte::text, t.nor
                      FROM legal_text t
-                     LEFT JOIN legal_article a ON a.text_uid = t.text_uid
-                     GROUP BY t.text_uid, t.title, t.title_key, t.nature, t.jurisdiction,
-                              t.num_prefix_agnostic, t.date_texte, t.nor"
+                     LEFT JOIN (
+                         SELECT a.text_uid, count(*) AS in_force FROM legal_article a
+                         WHERE {valid_a} AND {norm_a} AND a.num <> ''
+                         GROUP BY a.text_uid
+                     ) n ON n.text_uid = t.text_uid"
                     ),
                     &[],
                 )
@@ -554,11 +559,98 @@ impl DecisionRepository<'_> {
     /// l'index d'existence du `LinkSnapshot` (`ref_num_key` jamais inventé).
     #[tracing::instrument(name = "db.link_catalog_articles", skip(self), fields(db.system = "postgresql"))]
     pub async fn link_catalog_articles(&self) -> Result<Vec<(String, String)>> {
+        self.conn
+            .batch_execute("BEGIN; SET LOCAL statement_timeout = 0")
+            .await?;
         let rows = self
             .conn
-            .query("SELECT DISTINCT text_uid, num_key FROM legal_article", &[])
+            .query(
+                "SELECT DISTINCT text_uid, num_key FROM legal_article WHERE num <> ''",
+                &[],
+            )
+            .await;
+        match &rows {
+            Ok(_) => self.conn.batch_execute("COMMIT").await?,
+            Err(_) => {
+                let _ = self.conn.batch_execute("ROLLBACK").await;
+            }
+        }
+        Ok(rows?.iter().map(|r| (r.get(0), r.get(1))).collect())
+    }
+
+    /// Replaces the aliases of one text, inside the caller's transaction.
+    #[tracing::instrument(name = "db.replace_text_aliases", skip(self, aliases), fields(db.system = "postgresql"))]
+    pub async fn replace_text_aliases(&self, text_uid: &str, aliases: &[TextAlias]) -> Result<()> {
+        self.conn
+            .execute(
+                "DELETE FROM legal_text_alias WHERE text_uid = $1",
+                &[&text_uid],
+            )
             .await?;
-        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
+        if aliases.is_empty() {
+            return Ok(());
+        }
+        let kinds: Vec<&str> = aliases.iter().map(|a| a.kind.as_str()).collect();
+        let langs: Vec<&str> = aliases.iter().map(|a| a.lang.as_str()).collect();
+        let values: Vec<&str> = aliases.iter().map(|a| a.value.as_str()).collect();
+        self.conn
+            .execute(
+                "INSERT INTO legal_text_alias (text_uid, kind, lang, value)
+                 SELECT $1, k, l, v FROM unnest($2::text[], $3::text[], $4::text[]) AS u(k, l, v)
+                 ON CONFLICT DO NOTHING",
+                &[&text_uid, &kinds, &langs, &values],
+            )
+            .await?;
+        Ok(())
+    }
+
+    /// Writes the aliases of the texts the base holds, in one statement: the texts in `replaced`
+    /// lose the ones `aliases` does not name, the others keep theirs. Returns the rows added.
+    #[tracing::instrument(name = "db.put_text_aliases", skip(self, replaced, aliases), fields(db.system = "postgresql"))]
+    pub async fn put_text_aliases(
+        &self,
+        replaced: &[&str],
+        aliases: &[(&str, &TextAlias)],
+    ) -> Result<u64> {
+        let uids: Vec<&str> = aliases.iter().map(|(uid, _)| *uid).collect();
+        let kinds: Vec<&str> = aliases.iter().map(|(_, a)| a.kind.as_str()).collect();
+        let langs: Vec<&str> = aliases.iter().map(|(_, a)| a.lang.as_str()).collect();
+        let values: Vec<&str> = aliases.iter().map(|(_, a)| a.value.as_str()).collect();
+        Ok(self
+            .conn
+            .execute(
+                "WITH named AS (
+                     SELECT u.t, u.k, u.l, u.v
+                     FROM unnest($1::text[], $2::text[], $3::text[], $4::text[]) AS u(t, k, l, v)
+                     WHERE EXISTS (SELECT 1 FROM legal_text lt WHERE lt.text_uid = u.t)
+                 ), gone AS (
+                     DELETE FROM legal_text_alias a
+                     WHERE a.text_uid = ANY($5::text[])
+                       AND NOT EXISTS (SELECT 1 FROM named n
+                                       WHERE (n.t, n.k, n.l, n.v) = (a.text_uid, a.kind, a.lang, a.value))
+                 )
+                 INSERT INTO legal_text_alias (text_uid, kind, lang, value)
+                 SELECT t, k, l, v FROM named
+                 ON CONFLICT DO NOTHING",
+                &[&uids, &kinds, &langs, &values, &replaced],
+            )
+            .await?)
+    }
+
+    /// `(text_uid, kind, lang, value)` of every text alias, for the `LinkSnapshot`.
+    #[tracing::instrument(name = "db.link_catalog_aliases", skip(self), fields(db.system = "postgresql"))]
+    pub async fn link_catalog_aliases(&self) -> Result<Vec<(String, String, String, String)>> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT text_uid, kind, lang, value FROM legal_text_alias",
+                &[],
+            )
+            .await?;
+        Ok(rows
+            .iter()
+            .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
+            .collect())
     }
 
     /// Recompute les arrays dénormalisés (`legal_instruments`/`legal_article_composite`,
@@ -791,6 +883,7 @@ impl DecisionRepository<'_> {
         num_keys: &[String],
         limit: i64,
         offset: i64,
+        lang: &str,
     ) -> Result<Vec<CitingDecisionRow>> {
         let terms: Vec<String> = num_keys.iter().map(|k| format!("{text_uid}|{k}")).collect();
         let citing_count: i64 = self
@@ -804,7 +897,7 @@ impl DecisionRepository<'_> {
             )
             .await?
             .get(0);
-        let params: [&(dyn ToSql + Sync); 3] = [&terms, &limit, &offset];
+        let params: [&(dyn ToSql + Sync); 4] = [&terms, &limit, &offset, &lang];
         let rows = if citing_count >= CITING_RECENCY_WALK_MIN_COUNT {
             // Marche par récence : l'EXISTS sur le blob n'est PAS indexable
             // (pas de `&&` sur l'expression GIN) — le planner ne peut que descendre
@@ -821,7 +914,7 @@ impl DecisionRepository<'_> {
                            ARRAY(SELECT DISTINCT el->>3
                                  FROM jsonb_array_elements(lc.spans) AS el
                                  WHERE (el->>2) || '|' || (el->>3) = ANY($1)),
-                           d.jurisdiction_code
+                           d.jurisdiction_code, {bounds} AS summary_bounds
                     FROM decisions d
                     JOIN legal_citation lc ON lc.decision_id = d.id
                     LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
@@ -832,7 +925,8 @@ impl DecisionRepository<'_> {
                     ORDER BY d.date_lecture DESC, d.id
                     LIMIT $2 OFFSET $3
                     ",
-                        summary = super::pick::text("p.summary", "d")
+                        summary = super::pick::summary("d", "$4"),
+                        bounds = super::pick::summary_bounds("d", "$4")
                     ),
                     &params,
                 )
@@ -852,7 +946,7 @@ impl DecisionRepository<'_> {
                                      FROM unnest(public.lj_cit_terms(lc.spans)) t
                                      WHERE t = ANY($1)),
                                {rank_expr} AS authority_rank,
-                               d.jurisdiction_code
+                               d.jurisdiction_code, {bounds} AS summary_bounds
                         FROM legal_citation lc
                         JOIN decisions d ON d.id = lc.decision_id
                         LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
@@ -861,7 +955,8 @@ impl DecisionRepository<'_> {
                         ORDER BY authority_rank, d.date_lecture::text DESC NULLS LAST, d.id
                         LIMIT $2 OFFSET $3
                         ",
-                        summary = super::pick::text("p.summary", "d")
+                        summary = super::pick::summary("d", "$4"),
+                        bounds = super::pick::summary_bounds("d", "$4")
                     ),
                     &params,
                 )
@@ -869,17 +964,22 @@ impl DecisionRepository<'_> {
         };
         Ok(rows
             .iter()
-            .map(|r| CitingDecisionRow {
-                id: r.get(0),
-                public_id: r.get(1),
-                jurisdiction_type: r.get(2),
-                jurisdiction_name: r.get(3),
-                jurisdiction_code: r.get("jurisdiction_code"),
-                date_lecture: r.get(4),
-                docket_numbers: r.get(5),
-                publication_codes: r.get(6),
-                summary: r.get(7),
-                cited_num_keys: r.get(8),
+            .map(|r| {
+                let (summary_quote, summary_body) = super::pick::bounds(r.get("summary_bounds"));
+                CitingDecisionRow {
+                    id: r.get(0),
+                    public_id: r.get(1),
+                    jurisdiction_type: r.get(2),
+                    jurisdiction_name: r.get(3),
+                    jurisdiction_code: r.get("jurisdiction_code"),
+                    date_lecture: r.get(4),
+                    docket_numbers: r.get(5),
+                    publication_codes: r.get(6),
+                    summary: r.get(7),
+                    summary_quote,
+                    summary_body,
+                    cited_num_keys: r.get(8),
+                }
             })
             .collect())
     }
@@ -1123,9 +1223,8 @@ impl DecisionRepository<'_> {
             .query(
                 "SELECT o.num_key, o.date_debut, c.char_start, c.char_end, lt.slug, \
                         c.ref_num_key, lt.title, lt.jurisdiction, \
-                        (EXISTS (SELECT 1 FROM legal_article a \
-                                 WHERE a.text_uid = lt.text_uid) \
-                         OR coalesce(length(lt.body), 0) > 0) AS readable \
+                        EXISTS (SELECT 1 FROM legal_article a \
+                                WHERE a.text_uid = lt.text_uid) AS readable \
                  FROM unnest($2::text[], $3::date[]) AS o(num_key, date_debut) \
                  JOIN text_legal_citation c \
                    ON c.owner_text_uid = $1 \
@@ -1164,9 +1263,8 @@ impl DecisionRepository<'_> {
             .query(
                 "SELECT c.char_start, c.char_end, lt.slug, c.ref_num_key, lt.title, \
                         lt.jurisdiction, \
-                        (EXISTS (SELECT 1 FROM legal_article a \
-                                 WHERE a.text_uid = lt.text_uid) \
-                         OR coalesce(length(lt.body), 0) > 0) AS readable \
+                        EXISTS (SELECT 1 FROM legal_article a \
+                                WHERE a.text_uid = lt.text_uid) AS readable \
                  FROM text_legal_citation c \
                  JOIN legal_text lt ON lt.text_uid = c.ref_text_uid \
                  WHERE c.owner_text_uid = $1 \

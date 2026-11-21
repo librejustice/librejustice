@@ -25,6 +25,30 @@
 	}
 }
 
+(app) {
+	# `app` publishes no host port and is reached by its service name on `infra_default`: a blue/green switch starts
+	# the new colour, waits for its `/admin/health`, then reloads.
+	reverse_proxy {$LIBREJUSTICE_CADDY_UPSTREAM:app:8300} {
+		# 10 s covers the worst upstream gap with margin, a hard cap past which the expiry gives 502; 250 ms bounds
+		# the retries at 40 over that window.
+		lb_try_duration 10s
+		lb_try_interval 250ms
+
+		# A dial failure is retried whatever the method; these two sets cover a failure after the connection, in the
+		# second the draining upstream still accepts then cuts. They are ORed: `method POST path /mcp*` on one line
+		# passes `caddy validate` reading `path` as a method, so it never matches, and `@name` does not resolve here.
+		lb_retry_match method GET
+		lb_retry_match {
+			method POST
+			path /mcp* /redact/mcp*
+		}
+
+		# Unbuffered, a POST body cannot be replayed: the retry leaves empty and the client ends on a 502. 128 KB
+		# covers every POST.
+		request_buffers 128KB
+	}
+}
+
 :443 {
 	tls /etc/librejustice/origin/cert.pem /etc/librejustice/origin/key.pem {
 		# Authenticated Origin Pulls de zone : l'edge présente un certificat
@@ -36,32 +60,12 @@
 		}
 	}
 
-	# L'amont se joint par son nom de service sur le réseau `infra_default` ;
-	# `app` n'a aucun port publié sur l'hôte, donc il n'est joignable que d'ici.
-	# Une bascule blue/green ne demande alors que de démarrer la couleur neuve,
-	# d'attendre son `/admin/health`, puis de recharger.
-	reverse_proxy {$LIBREJUSTICE_CADDY_UPSTREAM:app:8300} {
-		# 10 s couvre le pire trou d'amont avec de la marge, et le plafond est
-		# dur : au-delà, l'expiration rend 502. 250 ms borne les rejeux à 40 sur
-		# la fenêtre.
-		lb_try_duration 10s
-		lb_try_interval 250ms
+	import app
+}
 
-		# Un échec au dial est repris quelle que soit la méthode ; ces deux jeux
-		# ne couvrent que l'échec après connexion établie, pendant la seconde de
-		# drainage où l'amont accepte encore puis coupe. Ils sont en OU :
-		# `method POST path /mcp*` sur une seule ligne passe `caddy validate` en
-		# comptant `path` comme une méthode HTTP, donc ne matche jamais, et
-		# `@nom` n'est pas résolu ici.
-		lb_retry_match method GET
-		lb_retry_match {
-			method POST
-			path /mcp* /redact/mcp*
-		}
-
-		# Sans tampon, le corps d'un POST n'est pas rejouable : le rejeu part à
-		# corps vide et le client finit sur un 502. 128 Ko couvrent toute la
-		# surface POST.
-		request_buffers 128KB
-	}
+# The tunnel's connector shares this container's network namespace and nothing else reaches its loopback, so every
+# request here came through Cloudflare and the client address it forwards holds.
+http://:8300 {
+	bind 127.0.0.1
+	import app
 }

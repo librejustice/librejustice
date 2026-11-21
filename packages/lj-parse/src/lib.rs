@@ -12,30 +12,90 @@ use std::sync::LazyLock;
 
 use regex::Regex;
 
+mod a2aj;
+mod adala;
+mod adala_ar;
 mod adlc;
+mod amf;
+mod anbenin;
 mod ariane;
+mod bwb;
+mod cc_site;
+mod cce;
 mod ce_list;
 mod cnda;
+mod cnlegis;
+mod codex;
 mod comeu;
+mod consiliaweb;
+mod consolidated;
 mod contribution;
+mod court_sites;
 mod court_summary;
 mod court_summary_ocr;
 mod ddd;
+mod dglex;
 mod dila;
 mod dila_judi;
 mod doctrine_oai;
+mod ejo;
+mod elaws;
+mod entscheidsuche;
 mod european;
+mod fedlex;
 pub mod formex;
+mod gallilex;
 mod hal;
+mod juportal;
+mod juradm_site;
 mod juricaf;
+mod justel;
+mod justice_laws;
+mod justice_lu;
 mod lead;
+mod legalis;
+mod legilux;
+mod legimonaco;
+mod lexfind;
+mod lexwork;
+mod lims;
+mod opencaselaw;
+mod pdf_articles;
+mod peachjam;
+pub mod questions;
+mod rechtspraak;
 mod reflow;
+mod scc_csc;
 mod service_public;
+mod vd;
+mod wallex;
 mod wiki_names;
+pub use a2aj::{
+    a2aj_court, a2aj_names, a2aj_source_uid, parse_a2aj, A2ajCourt, A2ajDecision, A2ajLanguage,
+    A2ajRefused, A2AJ_COURTS,
+};
+pub use adala::{
+    adala_consolidated, adala_folder, adala_identity, adala_promulgation, AdalaFile, AdalaFolder,
+    AdalaIdentity,
+};
+pub use adala_ar::{
+    adala_arabic_articles, adala_arabic_body, adala_arabic_consolidated, adala_arabic_day,
+    adala_arabic_identity, adala_arabic_promulgation, adala_arabic_text,
+};
 pub use adlc::{adlc_is_decision, adlc_number, adlc_source_fields, adlc_text};
+pub use amf::{amf_decided, amf_named_until, amf_source_fields};
+pub use anbenin::{anbenin_laws, anbenin_pdfs, AnbeninLaw};
 pub use ariane::{
     analyse_body, build_ariane_source_fields, parse_ajce_html, parse_dce_html, AjceAnalysis,
     AjceEntry, AjceRubrique, DceParsed,
+};
+pub use bwb::{
+    bwb_abbreviations, bwb_manifest, bwb_sitemap, bwb_toestand, BwbListed, BwbState, BwbToestand,
+};
+pub use cc_site::{cc_site_decision, CcSiteDecision, CcSitePage, CcSiteRefused};
+pub use cce::{
+    cce_names, cce_source_uid, parse_cce, CceArret, CceLanguage, CceParsed, CceRefused, CCE_CODE,
+    CCE_LABEL, CCE_LANGUAGES, CCE_PLACE, CCE_TYPE,
 };
 pub use ce_list::{
     ce_list_names, is_pseudonymised, parse_ce_list_anchors, parse_ce_list_page, split_joint_name,
@@ -46,35 +106,113 @@ pub use cnda::{
     clean_ocr_markdown, cnda_solution_uid_from_source_fields, parse_cnda, reflow_cnda_pdf_text,
     CndaParsed,
 };
+pub use cnlegis::{cnlegis_court, cnlegis_nature, cnlegis_page, CnlegisPage, CnlegisText};
+pub use codex::{codex_state, CodexState, CodexVersion};
 pub use comeu::{comeu_court_code, comeu_first, COMEU_ADOPTION_DATE, COMEU_COURTS};
+pub use consiliaweb::{consiliaweb_date, consiliaweb_number, consiliaweb_source_fields};
+pub use consolidated::ConsolidatedArticle;
 pub use contribution::contribution_source_fields;
 use contribution::source_uid_is_contribution;
+pub use court_sites::{
+    african_court_advisories, african_court_advisory_pdf, african_court_listing,
+    cassation_ci_listing, cc_bj_listing, cc_ci_listing, cc_dj_listing, cc_ma_listing, cc_ma_page,
+    ccja_listing, cndj_ci_listing, ejo_ruling, garbled_layer, hcc_mg_listing, holds_a_decision,
+    html_text, jurisprudence_mg_listing, jurisprudence_mg_page, parse_site_decision, site_court,
+    site_court_of_uid, SiteBody, SiteCourt, SiteEntry, SiteListing, SiteParsed, CCJA_PAGE,
+    CC_MA_PAGE, SITE_COURTS,
+};
 pub use court_summary::{
     cassation_summary_for, cassation_summary_numbers_arrets, cedh_legal_summary,
-    cedh_legal_summary_pending, cjue_court_summary,
+    cedh_legal_summary_pending, cjue_court_summary, cjue_summary_without_head,
 };
 pub use court_summary_ocr::{cjue_case_number, cjue_court_summary_ocr, OcrBlock, OcrPage};
-pub use ddd::ddd_source_fields;
+pub use ddd::{
+    ddd_concerns_minor, ddd_jurisprudence_court, ddd_jurisprudence_source_uid, ddd_source_fields,
+};
+pub use dglex::{dglex_articles, dglex_listing, DglexList, DglexListed};
 use dila::source_fields_is_dila;
-pub use dila::{build_source_fields_dila, parse_dila_doc, parse_dila_xml, DilaDoc, DilaFond};
+pub use dila::{
+    build_source_fields_dila, cnil_doctrine, parse_dila_doc, parse_dila_xml, CnilDoctrine, DilaDoc,
+    DilaFond, CNIL_DOCTRINE_NATURES,
+};
 pub use dila_judi::judicial_record_uids;
 pub use doctrine_oai::{
     build_doctrine_source_fields, cairn_label_title, cairn_note, cited_decisions, openedition_note,
     page_dc_title, parse_oai_page, prairial_note, prairial_page_url, robots_allows, same_note,
     Citation, DoctrineNote, OaiPage, OaiRecord,
 };
+pub use ejo::{
+    ejo_council_ruling, ejo_effects, ejo_general, ejo_individual, ejo_issues, ejo_reference_key,
+    ejo_terms, ejo_texts, ejo_title_reference, journal_articles, journal_body, journal_number_key,
+    journal_text_articles, journal_text_body, EjoEffect, EjoIssue, EjoNature, EjoText,
+};
+pub use elaws::{elaws_articles, elaws_sitemap, elaws_title, ElawsKind, ElawsListed};
+pub use entscheidsuche::{
+    court_names, entscheidsuche_scan, parse_entscheidsuche, states_day, swiss_court,
+    EntscheidsucheParsed, SwissCourt, ENTSCHEIDSUCHE_PARSE_VERSION, SWISS_COURTS,
+};
 use european::source_uid_is_html_europe;
 pub use european::{
-    cedh_case_name, celex_to_case_number, cjue_case_name, cjue_title_case_name, eurlex_act_text,
-    parse_cedh, parse_cjue,
+    cedh_case_name, celex_is_opinion, celex_to_case_number, cjue_advocate_general, cjue_case_name,
+    cjue_title_case_name, eurlex_act_text, europe_names, parse_cedh, parse_cjue,
 };
+pub use fedlex::fedlex_articles;
+pub use gallilex::{gallilex_articles, gallilex_page, GallilexPage};
 pub use hal::{build_hal_source_fields, extract_dockets, extract_law_numbers, HalDeposit};
-pub use juricaf::{juricaf_country, parse_juricaf, JuricafParsed};
+pub use juportal::{
+    belgian_court, ecli_court_and_kind, is_juportal_page, juportal_feed, juportal_names,
+    juportal_page_lang, juportal_taken, parse_juportal, BelgianCourt, JuportalParsed,
+    BELGIAN_COURTS, BELGIAN_PLACE,
+};
+pub use juradm_site::{
+    juradm_court, juradm_decision, juradm_site_source_fields, parse_juradm_head, JuradmCourt,
+    JuradmHead, JuradmRefused, JURADM_COURTS,
+};
+pub use juricaf::{
+    archived_text, juricaf_article, ohadata_decision, parse_juricaf, JuricafParsed, Recovered,
+};
+pub use justel::{
+    justel_consolidated, justel_list, justel_page, JustelArticle, JustelConsolidated, JustelList,
+    JustelListed, JustelNoText, JustelPage, JustelUntil,
+};
+pub use justice_laws::{
+    justice_laws_articles, justice_laws_index, JusticeLawsEntry, JusticeLawsInstrument,
+    JusticeLawsKind,
+};
+pub use justice_lu::{
+    lu_court, parse_justice_lu, JusticeLuParsed, LuCourt, LuMember, LU_COURTS, LU_PLACE,
+};
 use lead::augment_lead;
+pub use legalis::{
+    legalis_court, legalis_date, legalis_decision, legalis_source_uid, LegalisCourt,
+    LegalisDecision, LegalisPage, LegalisRefused,
+};
+pub use legilux::legilux_articles;
+pub use legimonaco::{
+    monaco_court, parse_legimonaco, LegimonacoParsed, MonacoCourt, MONACO, MONACO_COURTS,
+};
+pub use lexfind::{lexfind_articles, LexfindLayout};
+pub use lexwork::lexwork_articles;
+pub use lims::{lims_document, LimsDocument};
+pub use opencaselaw::{
+    obwalden_names, parse_opencaselaw, OpenCaseLawParsed, OpenCaseLawRefused, OBWALDEN_COURTS,
+};
+pub use peachjam::{peachjam_page, peachjam_sitemap, PeachjamListed, PeachjamPage};
+pub use rechtspraak::{
+    dutch_court, parse_rechtspraak, rechtspraak_checksummed, rechtspraak_court_segment,
+    rechtspraak_dockets, rechtspraak_listing, rechtspraak_names, rechtspraak_taken, DutchCourt,
+    RechtspraakListing, RechtspraakParsed, DUTCH_COURTS, DUTCH_PLACE,
+};
 pub use reflow::reflow_page_text;
+pub use scc_csc::{
+    scc_decision, scc_page_url, scc_source_uid, SccDecision, SccPage, SccRefused, SCC_CODE,
+    SCC_LABEL, SCC_PLACE, SCC_TYPE,
+};
 pub use service_public::{
     parse_service_public_sheet, ArticleSpan, ServicePublicSheet, SheetReference,
 };
+pub use vd::vd_articles;
+pub use wallex::{wallex_page, WallexPage, WallexVersion};
 pub use wiki_names::{wiki_list_entries, wiki_page_entry, wiki_usage_name, WikiEntry};
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1603,7 +1741,7 @@ impl FromSourceFields for Decision {
     /// `build_source_fields*`, and the one path the ingest, the re-extraction
     /// and the display read a decision through. A French text in capitals is read
     /// recased, which is the text the ingest stores. Dispatches on the `source_uid`
-    /// prefix for the scraped fonds (`cedh/`, `cjue/`, `cnda/`, `ddd/`, `adlc/`, `comeu/`, `juricaf/`) and the contributions, then on
+    /// prefix for the scraped fonds (`cedh/`, `cjue/`, `cnda/`, `ddd/`, `ddd-jurisprudence/`, `amf/`, `adlc/`, `comeu/`, `consiliaweb/`, `juricaf/`, `entscheidsuche/`, `legalis/`, `legimonaco/`, `juportal/`, `rechtspraak/`, `justice-lu/`, `juradm-site/`, `scc-csc/`, `cce/`, `opencaselaw/`, `a2aj/`, a court site's source such as `cc-bj/`) and the contributions, then on
     /// the shape of `source_fields`: `Dossier`/`Audience` for the opendata XML,
     /// `META_COMMUN` and `META_JURI` for the DILA bulk, the Judilibre JSON otherwise.
     fn from_source_fields(full_text: &str, source_fields: &Value, source_uid: &str) -> Decision {
@@ -1621,12 +1759,42 @@ impl FromSourceFields for Decision {
             cnda::from_source_fields_cnda(full_text, source_fields, source_uid)
         } else if ddd::source_uid_is_ddd(source_uid) {
             ddd::from_source_fields_ddd(full_text, source_fields, source_uid)
+        } else if ddd::source_uid_is_ddd_jurisprudence(source_uid) {
+            ddd::from_source_fields_ddd_jurisprudence(full_text, source_fields, source_uid)
+        } else if amf::source_uid_is_amf(source_uid) {
+            amf::from_source_fields_amf(full_text, source_fields, source_uid)
         } else if adlc::source_uid_is_adlc(source_uid) {
             adlc::from_source_fields_adlc(full_text, source_fields, source_uid)
         } else if comeu::source_uid_is_comeu(source_uid) {
             comeu::from_source_fields_comeu(full_text, source_fields, source_uid)
+        } else if consiliaweb::source_uid_is_consiliaweb(source_uid) {
+            consiliaweb::from_source_fields_consiliaweb(full_text, source_fields, source_uid)
         } else if source_uid.starts_with("juricaf/") {
             juricaf::from_source_fields_juricaf(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("entscheidsuche/") {
+            entscheidsuche::from_source_fields_entscheidsuche(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("legalis/") {
+            legalis::from_source_fields_legalis(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("legimonaco/") {
+            legimonaco::from_source_fields_legimonaco(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("juportal/") {
+            juportal::from_source_fields_juportal(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("rechtspraak/") {
+            rechtspraak::from_source_fields_rechtspraak(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("justice-lu/") {
+            justice_lu::from_source_fields_justice_lu(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("juradm-site/") {
+            juradm_site::from_source_fields_juradm_site(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("scc-csc/") {
+            scc_csc::from_source_fields_scc(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("cce/") {
+            cce::from_source_fields_cce(full_text, source_fields, source_uid)
+        } else if court_sites::site_court_of_uid(source_uid).is_some() {
+            court_sites::from_source_fields_site(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("opencaselaw/") {
+            opencaselaw::from_source_fields_opencaselaw(full_text, source_fields, source_uid)
+        } else if source_uid.starts_with("a2aj/") {
+            a2aj::from_source_fields_a2aj(full_text, source_fields, source_uid)
         } else if source_uid_is_contribution(source_uid) {
             contribution::from_source_fields_contribution(full_text, source_fields, source_uid)
         } else if source_fields_is_xml(source_fields) {
@@ -1646,6 +1814,8 @@ impl FromSourceFields for Decision {
 /// recomputed, no rebasing). `raw == clean == full_text`; `date_mise_jour` is
 /// not carried in `source_fields` (hence `None`).
 fn from_source_fields_xml(full_text: &str, source_fields: &Value, source_uid: &str) -> Decision {
+    let restored = lj_core::lettered_par::restored_par(full_text);
+    let full_text = restored.as_deref().unwrap_or(full_text);
     let get = |parent: &str, key: &str| -> Option<String> {
         source_fields
             .get(parent)

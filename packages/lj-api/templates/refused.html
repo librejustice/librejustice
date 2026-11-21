@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light">
+<title>Trop de pages en peu de temps - LibreJustice</title>
+<style>
+@font-face{font-family:"Geist Variable";font-style:normal;font-display:swap;font-weight:100 900;src:url("/fonts/geist-latin-wght-normal.woff2") format("woff2-variations")}
+body{margin:0;background:oklch(98% 0.012 85);color:oklch(18% 0.04 255);font:16px/1.6 "Geist Variable",ui-sans-serif,system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+main{max-width:36rem;margin:0 auto;padding:4rem 1.5rem}
+.marque{display:inline-flex;align-items:baseline;font-size:1.25rem;line-height:1;text-decoration:none}
+.libre{color:oklch(45% 0.025 255);font-variation-settings:'wght' 300;letter-spacing:.02em}
+.justice{color:oklch(42% 0.14 25);font-variation-settings:'wght' 650;letter-spacing:-.02em}
+h1{margin:3rem 0 1rem;font-size:1.875rem;line-height:1.25;font-weight:500;letter-spacing:-.015em}
+p{margin:0 0 1.5rem;color:oklch(45% 0.025 255)}
+.bouton{display:inline-block;margin:0 0 1.5rem;padding:.625rem 1rem;border-radius:6px;background:oklch(42% 0.14 25);color:oklch(99% 0.005 85);font-size:.875rem;font-weight:500;text-decoration:none}
+.bouton:hover{opacity:.9}
+</style>
+</head>
+<body>
+<main>
+<a class="marque" href="/" aria-label="LibreJustice"><span class="libre">Libre</span><span class="justice">Justice</span></a>
+<h1>Vous avez ouvert beaucoup de pages en peu de temps.</h1>
+<p>Connectez-vous pour continuer à lire : un compte a sa propre limite.</p>
+<a class="bouton" href="/login?next={next}">Se connecter</a>
+<p>Sinon, réessayez dans une minute.</p>
+</main>
+</body>
+</html>

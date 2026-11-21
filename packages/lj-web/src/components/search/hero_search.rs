@@ -18,6 +18,8 @@ use leptos_router::hooks::use_navigate;
 use lj_dtos::UiAction;
 
 use crate::helpers::encode_query;
+use crate::i18n::{use_ui, HomeUi, ReaderLang, Ui};
+use crate::jurisdiction::{use_reader_scope, ReaderScope};
 
 use super::compact_search::query_state;
 use super::query_length::{truncate_to_cap, QueryLengthNotice};
@@ -30,17 +32,17 @@ use super::syntax_hint::{HelpCorpus, SyntaxHint};
 enum Scope {
     Decisions,
     Textes,
-    Annonces,
+    Journals,
     Annuaire,
 }
 
 impl Scope {
-    fn label(self) -> &'static str {
+    fn label(self, ui: &Ui) -> &'static str {
         match self {
-            Scope::Decisions => "Décisions",
-            Scope::Textes => "Textes",
-            Scope::Annonces => "Annonces",
-            Scope::Annuaire => "Annuaire",
+            Scope::Decisions => ui.shell.decisions,
+            Scope::Textes => ui.shell.texts,
+            Scope::Journals => ui.shell.notices,
+            Scope::Annuaire => ui.shell.directory,
         }
     }
 
@@ -50,27 +52,27 @@ impl Scope {
             Scope::Textes => "textes",
             // Le pot Annonces n'a pas d'index de suggestion : la fenêtre
             // vivante se renouvelle plus vite qu'un index de complétion.
-            Scope::Annonces => "",
+            Scope::Journals => "",
             Scope::Annuaire => "annuaire",
         }
     }
 
-    /// The engine's full page.
-    fn full_page_path(self) -> &'static str {
+    /// The engine's full page, the two searches under the reader's jurisdiction.
+    fn full_page_path(self, juris: ReaderScope, lang: ReaderLang) -> String {
         match self {
-            Scope::Decisions => "/decision-search",
-            Scope::Textes => "/norm-search",
-            Scope::Annonces => "/notice-search",
-            Scope::Annuaire => "/entity-search",
+            Scope::Decisions => juris.path("/decision-search"),
+            Scope::Textes => juris.path("/norm-search"),
+            Scope::Journals => juris.path("/journal-search"),
+            Scope::Annuaire => lang.path("/entity-search"),
         }
     }
 
     /// The label of the link under the bar, to the engine's full page: the
     /// search engines show their filters, the directory is browsed by category.
-    fn full_page_label(self) -> &'static str {
+    fn full_page_label(self, ui: &HomeUi) -> &'static str {
         match self {
-            Scope::Decisions | Scope::Textes | Scope::Annonces => "Recherche avancée",
-            Scope::Annuaire => "Parcourir l'annuaire",
+            Scope::Decisions | Scope::Textes | Scope::Journals => ui.advanced_search,
+            Scope::Annuaire => ui.browse_directory,
         }
     }
 }
@@ -78,7 +80,7 @@ impl Scope {
 const SCOPES: [Scope; 4] = [
     Scope::Decisions,
     Scope::Textes,
-    Scope::Annonces,
+    Scope::Journals,
     Scope::Annuaire,
 ];
 
@@ -90,38 +92,37 @@ struct ExampleGroup {
     examples: &'static [&'static str],
 }
 
-const EXAMPLE_GROUPS: &[ExampleGroup] = &[
-    ExampleGroup {
-        label: "Jurisprudence",
-        scope: Scope::Decisions,
-        examples: &[
-            "responsabilité médicale infection nosocomiale",
-            "trouble anormal de voisinage indemnisation",
-        ],
-    },
-    ExampleGroup {
-        label: "Lois, codes, conventions collectives",
-        scope: Scope::Textes,
-        examples: &[
-            "garantie des vices cachés code civil",
-            "jours fériés convention collective de la boulangerie",
-        ],
-    },
-    ExampleGroup {
-        label: "Marchés publics, vie des entreprises",
-        scope: Scope::Annonces,
-        examples: &["voirie communale", "redressement judiciaire"],
-    },
-    ExampleGroup {
-        label: "Annuaire",
-        scope: Scope::Annuaire,
-        examples: &["SNCF"],
-    },
-];
+fn example_groups(ui: &'static Ui, juris: &str) -> [ExampleGroup; 4] {
+    [
+        ExampleGroup {
+            label: ui.home.examples_case_law,
+            scope: Scope::Decisions,
+            examples: (ui.home.examples_case_law_queries)(juris),
+        },
+        ExampleGroup {
+            label: ui.home.examples_texts,
+            scope: Scope::Textes,
+            examples: (ui.home.examples_texts_queries)(juris),
+        },
+        ExampleGroup {
+            label: ui.home.examples_notices,
+            scope: Scope::Journals,
+            examples: (ui.home.examples_notices_queries)(juris),
+        },
+        ExampleGroup {
+            label: ui.shell.directory,
+            scope: Scope::Annuaire,
+            examples: (ui.home.examples_directory_queries)(juris),
+        },
+    ]
+}
 
 #[component]
 pub fn HeroSearch() -> impl IntoView {
+    let ui = use_ui();
     let navigate = use_navigate();
+    let juris = use_reader_scope();
+    let lang = crate::i18n::use_reader_lang();
     let query = RwSignal::new(String::new());
     let scope = RwSignal::new(Scope::Decisions);
     // Autocomplétion : le mode suit le sélecteur de portée.
@@ -134,7 +135,7 @@ pub fn HeroSearch() -> impl IntoView {
         // Le pot d'annonces répond sans requête — « ce qui est ouvert en ce
         // moment » est un résultat. Les autres portées n'ont rien à dire sans
         // mots.
-        if trimmed.is_empty() && target != Scope::Annonces {
+        if trimmed.is_empty() && target != Scope::Journals {
             return;
         }
         let href = match target {
@@ -146,12 +147,16 @@ pub fn HeroSearch() -> impl IntoView {
                     &trimmed,
                     None,
                 );
-                format!("/decision-search?{qs}")
+                juris.path_untracked(&format!("/decision-search?{qs}"))
             }
-            Scope::Textes => format!("/norm-search?q={}", encode_query(&trimmed)),
-            Scope::Annonces if trimmed.is_empty() => "/notice-search".to_string(),
-            Scope::Annonces => format!("/notice-search?q={}", encode_query(&trimmed)),
-            Scope::Annuaire => format!("/entity-search?q={}", encode_query(&trimmed)),
+            Scope::Textes => {
+                juris.path_untracked(&format!("/norm-search?q={}", encode_query(&trimmed)))
+            }
+            Scope::Journals if trimmed.is_empty() => juris.path_untracked("/journal-search"),
+            Scope::Journals => {
+                juris.path_untracked(&format!("/journal-search?q={}", encode_query(&trimmed)))
+            }
+            Scope::Annuaire => lang.path(&format!("/entity-search?q={}", encode_query(&trimmed))),
         };
         navigate(&href, Default::default());
     };
@@ -167,23 +172,22 @@ pub fn HeroSearch() -> impl IntoView {
     let intro = view! {
         <div class="flex flex-col gap-4">
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                "Accès libre et gratuit"
+                {ui.home.eyebrow}
             </p>
             <h1
                 class="text-balance font-sans text-3xl leading-[1.02] tracking-tight text-[var(--color-ink)] sm:text-5xl lg:text-[3.85rem]"
                 style="font-variation-settings: 'wght' 300"
             >
-                "Le droit français, "
+                {move || (ui.home.headline)((ui.law_adjective)(&juris.code()))}
                 <em
-                    class="not-italic text-[var(--color-accent)]"
+                    class="block not-italic text-[var(--color-accent)]"
                     style="font-variation-settings: 'wght' 750"
                 >
-                    "pour tous."
+                    {ui.home.headline_accent}
                 </em>
             </h1>
             <p class="max-w-2xl text-base leading-relaxed text-[var(--color-ink-muted)] sm:text-lg">
-                "Cherchez dans les décisions de justice, les lois, les codes, les conventions "
-                "collectives et les marchés publics, ou dans l'annuaire des parties et des avocats."
+                {ui.home.tagline}
             </p>
         </div>
     }
@@ -200,10 +204,10 @@ pub fn HeroSearch() -> impl IntoView {
                         <SearchIcon />
                     </span>
                     <input
-                        aria-label="Mots-clés ou question"
+                        aria-label=ui.home.query_label
                         size="1"
                         autocomplete="off"
-                        placeholder="Mots-clés, question, ou expression exacte…"
+                        placeholder=ui.home.query_placeholder
                         autofocus
                         prop:value=move || query.get()
                         on:input=move |ev| query.set(event_target_value(&ev))
@@ -223,14 +227,14 @@ pub fn HeroSearch() -> impl IntoView {
                 {move || match scope.get() {
                     Scope::Decisions => Some(view! { <SyntaxHint /> }),
                     Scope::Textes => Some(view! { <SyntaxHint corpus=HelpCorpus::Textes /> }),
-                    Scope::Annonces | Scope::Annuaire => None,
+                    Scope::Journals | Scope::Annuaire => None,
                 }}
                 <div class="ml-auto flex items-center gap-4">
                     {move || {
                         let s = scope.get();
                         view! {
                             <A
-                                href=s.full_page_path()
+                                href=s.full_page_path(juris, lang)
                                 attr:class="flex items-center gap-1.5 text-xs text-[var(--color-ink-muted)] underline-offset-2 transition-colors hover:text-[var(--color-ink)] hover:underline"
                             >
                                 <svg
@@ -247,7 +251,7 @@ pub fn HeroSearch() -> impl IntoView {
                                         stroke-linejoin="round"
                                     />
                                 </svg>
-                                {s.full_page_label()}
+                                {s.full_page_label(&ui.home)}
                             </A>
                         }
                     }}
@@ -261,8 +265,9 @@ pub fn HeroSearch() -> impl IntoView {
     // du sélecteur et soumet vers le moteur du groupe.
     let examples = view! {
         <div class="flex flex-col gap-3" data-usage=UiAction::HomeExample.as_str()>
-            {EXAMPLE_GROUPS
-                .iter()
+            {move || example_groups(ui, &juris.code())
+                .into_iter()
+                .filter(|group| !group.examples.is_empty())
                 .map(|group| {
                     let group_scope = group.scope;
                     let chips = group
@@ -289,7 +294,7 @@ pub fn HeroSearch() -> impl IntoView {
                         .collect_view();
                     view! {
                         <div class="flex flex-col gap-1.5 sm:flex-row sm:items-baseline sm:gap-3">
-                            <p class="shrink-0 text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)] sm:w-44">
+                            <p class="shrink-0 text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)] hyphens-auto sm:w-44">
                                 {group.label}
                             </p>
                             <ul class="flex flex-wrap gap-2">{chips}</ul>
@@ -317,6 +322,7 @@ pub fn HeroSearch() -> impl IntoView {
 /// les autres portées — la courante est déjà le libellé du bouton.
 #[component]
 fn ScopeDropdown(scope: RwSignal<Scope>) -> impl IntoView {
+    let ui = use_ui();
     let open = RwSignal::new(false);
     let container_ref = NodeRef::<leptos::html::Span>::new();
 
@@ -341,7 +347,7 @@ fn ScopeDropdown(scope: RwSignal<Scope>) -> impl IntoView {
         >
             <button
                 type="button"
-                aria-label="Portée de la recherche"
+                aria-label=ui.home.scope_label
                 aria-expanded=move || open.get().then_some("true")
                 on:click=move |_| open.update(|o| *o = !*o)
                 class="flex h-full cursor-pointer items-center gap-1.5 text-sm text-[var(--color-ink)] transition-colors hover:text-[var(--color-accent)]"
@@ -360,7 +366,7 @@ fn ScopeDropdown(scope: RwSignal<Scope>) -> impl IntoView {
                                     class="col-start-1 row-start-1"
                                     class:invisible=move || scope.get() != this
                                 >
-                                    {this.label()}
+                                    {this.label(ui)}
                                 </span>
                             }
                         })
@@ -410,7 +416,7 @@ fn ScopeDropdown(scope: RwSignal<Scope>) -> impl IntoView {
                                         }
                                         class="block w-full whitespace-nowrap px-[13px] py-2.5 text-left text-sm text-[var(--color-ink)] transition-colors hover:bg-[var(--color-vellum)]"
                                     >
-                                        {target.label()}
+                                        {target.label(ui)}
                                     </button>
                                 }
                             })

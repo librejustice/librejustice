@@ -22,7 +22,7 @@ mod directory;
 pub use directory::AnnuaireDirectoryPage;
 
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::use_query_map;
 use lj_dtos::AnnuaireStatsResponse;
@@ -51,16 +51,13 @@ pub fn AnnuairePage() -> impl IntoView {
 
     let term = query_term();
     let stats = stats_resource();
-
-    let title = "Annuaire des entités - LibreJustice";
-    let description = "Retrouvez les décisions où apparaît une entreprise, une personne publique, \
-                       une association, un avocat ou un cabinet.";
+    let ui = &crate::i18n::use_ui().directory;
     let url = format!("{CANONICAL_BASE}/entity-search");
 
     view! {
-        <Title text=title />
-        <Meta name="description" content=description />
-        <Link rel="canonical" href=url />
+        <Title text=ui.title />
+        <Meta name="description" content=ui.description />
+        <crate::seo::Canonical href=url />
 
         <div class=format!("{SHELL} flex-1")>
             // Gabarit commun /decisions · /textes · /texte : gouttière 240px,
@@ -72,15 +69,10 @@ pub fn AnnuairePage() -> impl IntoView {
                 <div class=CONTENT_COL>
                     <header class="flex flex-col gap-2">
                         <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                            "Annuaire"
+                            {ui.directory}
                         </p>
-                        <h1 class="font-sans text-3xl text-[var(--color-ink)]">
-                            "Entités des registres"
-                        </h1>
-                        <p class="max-w-prose text-[var(--color-ink-muted)]">
-                            "Les entreprises, personnes publiques, associations, avocats et cabinets "
-                            "des registres français."
-                        </p>
+                        <h1 class="font-sans text-3xl text-[var(--color-ink)]">{ui.heading}</h1>
+                        <p class="max-w-prose text-[var(--color-ink-muted)]">{ui.intro}</p>
                     </header>
 
                     <SearchForm term=term />
@@ -90,7 +82,7 @@ pub fn AnnuairePage() -> impl IntoView {
                         if q.is_empty() {
                             view! { <CategoryGrid stats=stats /> }.into_any()
                         } else if q.chars().count() < SEARCH_MIN_QUERY {
-                            status_note("Précisez au moins deux caractères pour lancer la recherche.")
+                            status_note(ui.min_query)
                         } else {
                             view! { <SearchResults term=term /> }.into_any()
                         }
@@ -105,22 +97,23 @@ pub fn AnnuairePage() -> impl IntoView {
 /// vers `/entity-search?q=`.
 #[component]
 fn SearchForm(term: Signal<String>) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().directory;
     view! {
         <form method="get" action="/entity-search" role="search" class="flex w-full gap-2">
             <input
                 type="search"
                 name="q"
                 value=move || term.get()
-                placeholder="Rechercher une entreprise, une association, un avocat…"
+                placeholder=ui.search_placeholder
                 autocomplete="off"
-                aria-label="Rechercher une entité"
+                aria-label=ui.search_label
                 class="min-w-0 flex-1 rounded-lg border border-[var(--color-rule)] bg-[var(--color-parchment)] px-4 py-2.5 text-sm text-[var(--color-ink)] outline-none focus:border-[var(--color-accent)]"
             />
             <button
                 type="submit"
                 class="shrink-0 rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
             >
-                "Rechercher"
+                {ui.search}
             </button>
         </form>
     }
@@ -138,7 +131,7 @@ fn CategoryGrid(stats: Resource<Option<AnnuaireStatsResponse>>) -> impl IntoView
         .collect_view();
 
     view! {
-        <section aria-label="Catégories">
+        <section aria-label=crate::i18n::use_ui().directory.categories>
             <ul class="grid grid-cols-1 gap-4 sm:grid-cols-2">{cards}</ul>
         </section>
     }
@@ -146,6 +139,9 @@ fn CategoryGrid(stats: Resource<Option<AnnuaireStatsResponse>>) -> impl IntoView
 
 #[component]
 fn CategoryCard(kind: Kind, stats: Resource<Option<AnnuaireStatsResponse>>) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
+    let ui = &crate::i18n::use_ui().directory;
+    let copy = kind.copy(ui);
     let href = format!("/entity-index/fr/{}", kind.slug());
     // Chiffres + barre streamés d'un bloc (part de la catégorie dans la somme
     // des registres) ; stats absentes (chargement / erreur) ⇒ bloc vide, la
@@ -162,17 +158,13 @@ fn CategoryCard(kind: Kind, stats: Resource<Option<AnnuaireStatsResponse>>) -> i
                 view! {
                     <span class="flex items-baseline gap-1.5">
                         <span class="font-sans text-2xl leading-none text-[var(--color-ink)] tabular-nums">
-                            {group_thousands(counts.registre)}
+                            {group_thousands(numbers, counts.registre)}
                         </span>
-                        <span class="text-xs text-[var(--color-ink-subtle)]">"au registre"</span>
+                        <span class="text-xs text-[var(--color-ink-subtle)]">{ui.in_register}</span>
                     </span>
                     {mini_bar(counts.registre, total)}
                     <span class="text-xs tabular-nums text-[var(--color-ink-muted)]">
-                        {format!(
-                            "dont {} {} à des décisions de justice",
-                            group_thousands(counts.contentieux),
-                            kind.liees(),
-                        )}
+                        {(ui.linked_to_decisions)(&group_thousands(numbers, counts.contentieux), copy.linked)}
                     </span>
                 }
             })
@@ -185,9 +177,9 @@ fn CategoryCard(kind: Kind, stats: Resource<Option<AnnuaireStatsResponse>>) -> i
                 attr:class="group flex h-full flex-col gap-1 rounded-lg border border-[var(--color-rule)] bg-[var(--color-vellum)]/40 p-4 no-underline transition-colors hover:border-[var(--color-accent)]"
             >
                 <span class="font-sans text-lg text-[var(--color-ink)] group-hover:text-[var(--color-accent)]">
-                    {kind.plural()}
+                    {copy.plural}
                 </span>
-                <span class="text-sm text-[var(--color-ink-muted)]">{kind.tagline()}</span>
+                <span class="text-sm text-[var(--color-ink-muted)]">{copy.tagline}</span>
                 <span class="mt-auto flex flex-col gap-1.5 pt-3">
                     <Suspense fallback=|| ()>{figures}</Suspense>
                 </span>
@@ -201,27 +193,28 @@ fn CategoryCard(kind: Kind, stats: Resource<Option<AnnuaireStatsResponse>>) -> i
 #[component]
 fn SearchResults(term: Signal<String>) -> impl IntoView {
     let results = Resource::new_blocking(move || term.get(), |q| sendable(fetch_search(q)));
+    let ui = &crate::i18n::use_ui().directory;
     // The parent renders one instance per term.
     #[cfg(feature = "hydrate")]
     Effect::new(move |_| crate::reads::report_entity_search(term.get_untracked()));
     view! {
-        <section aria-label="Résultats">
+        <section aria-label=ui.results>
             <Suspense fallback=list_skeleton>
                 {move || Suspend::new(async move {
                     match results.await {
                         Ok(items) if items.is_empty() => {
-                            status_note("Aucune entité ne correspond à cette recherche.")
+                            status_note(ui.no_match)
                         }
                         Ok(items) => {
                             let max = max_decision_count(&items);
                             let rows = items
                                 .into_iter()
-                                .map(|item| entity_row(item, max))
+                                .map(|item| entity_row(ui, item, max))
                                 .collect_view();
                             view! { <ul class="mt-2 flex flex-col gap-3">{rows}</ul> }.into_any()
                         }
                         Err(err) => {
-                            status_note(format!("Recherche indisponible ({}).", err.message))
+                            status_note((ui.search_unavailable)(&err.failure.text(&crate::i18n::use_ui().shell)))
                         }
                     }
                 })}

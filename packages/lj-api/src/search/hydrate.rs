@@ -118,11 +118,22 @@ pub(crate) fn facets_from_counters(c: &FacetCounters, refs: &Referential) -> Sea
     article_top.sort_by_key(|c| std::cmp::Reverse(c.count));
     article_top.truncate(LEGAL_ARTICLE_TOP_LIMIT);
 
+    let seat = seat_choices(&c.seats, refs);
     SearchFacets {
-        seat: seat_choices(&c.seats, refs),
+        seat_names: seat
+            .iter()
+            .map(|choice| {
+                (
+                    choice.value.clone(),
+                    refs.court_names_of_path(&choice.value),
+                )
+            })
+            .filter(|(_, names)| !names.is_empty())
+            .collect(),
+        seat,
         formation: formation_choices(&c.formation, refs),
         legal_domain: group_choices(&c.domain, refs),
-        solution: uid_choices(&c.solution, refs),
+        solution: uid_choices(&solution_roots(&c.solution), refs),
         publication: scale_choices(&c.publication, refs),
         date_lecture_year: ranked(&c.year)
             .into_iter()
@@ -185,6 +196,19 @@ fn ranked(counter: &HashMap<String, i64>) -> Vec<(String, i64)> {
 
 /// Choix d'une facette plate keyée par **uid complet** : `value` = suffixe
 /// d'uid, `label` résolu depuis le référentiel.
+/// The leaves' counts summed under their roots: the facet names the roots.
+fn solution_roots(leaves: &HashMap<String, i64>) -> HashMap<String, i64> {
+    let mut roots: HashMap<String, i64> = HashMap::new();
+    for (uid, count) in leaves {
+        if let Some(root) = lj_dtos::Solution::of_leaf(uid_suffix(uid)) {
+            *roots
+                .entry(super::filters::enum_uids("solution", &[root]).remove(0))
+                .or_default() += count;
+        }
+    }
+    roots
+}
+
 fn uid_choices(counter: &HashMap<String, i64>, refs: &Referential) -> Vec<FacetChoice> {
     ranked(counter)
         .into_iter()
@@ -415,6 +439,7 @@ fn most_common(counter: &HashMap<String, i64>, n: usize) -> Vec<(String, i64)> {
 pub(crate) async fn hydrate_decisions(
     conn: &Client,
     decision_ids: &[i64],
+    lang: &str,
 ) -> std::result::Result<HashMap<i64, DecisionMeta>, StoreError> {
     if decision_ids.is_empty() {
         return Ok(HashMap::new());
@@ -450,32 +475,65 @@ pub(crate) async fn hydrate_decisions(
                ORDER BY source = ANY($2) DESC, source_rank DESC, (lang = 'fra') IS TRUE DESC, (lang = 'eng') IS TRUE DESC, source_uid ASC \
                LIMIT 1) src ON true \
              WHERE d.id = ANY($1)",
-                text = lj_store::repository::pick::text(
-                    "p.summary, p.summary_quote_start, p.summary_quote_end, \
-                     p.summary_body_start, p.summary_body_end",
-                    "d"
+                text = lj_store::repository::pick::read_summary(
+                    lj_store::repository::pick::SUMMARY_COLUMNS,
+                    "d",
+                    "$3"
                 )
             ),
-            &[&decision_ids, &lj_core::official_url::LEGIFRANCE_SOURCES],
+            &[&decision_ids, &lj_core::official_url::LEGIFRANCE_SOURCES, &lang],
         )
         .await?;
+    let numbered: Vec<i64> = rows
+        .iter()
+        .filter(|r| {
+            r.get::<_, Option<&str>>(11)
+                .is_some_and(lj_parse::cassation_summary_numbers_arrets)
+        })
+        .map(|r| r.get(0))
+        .collect();
+    let arrets = if numbered.is_empty() {
+        HashMap::new()
+    } else {
+        lj_store::repository::DecisionRepository::new(conn)
+            .cassation_arrets(&numbered)
+            .await?
+    };
     let mut out = HashMap::new();
     for r in &rows {
+        let id: i64 = r.get(0);
         let public_id: String = r.get(1);
         let date_raw: Option<chrono::NaiveDate> = r.get(4);
+        let docket_numbers: Option<Vec<String>> = r.get(10);
         let chars: Option<i32> = r.get(12);
         let summary: Option<String> = r.get(11);
         let summary_quote = r
             .get::<_, Option<Vec<i32>>>(24)
             .map(|q| q[0] as usize..q[1] as usize);
-        let summary_body = summary.as_deref().and_then(|text| {
-            let stored = r
-                .get::<_, Option<Vec<i32>>>(25)
-                .map(|b| b[0] as usize..b[1] as usize);
-            lj_summary::summary_body(text, stored, summary_quote.clone())
-        });
+        let stored_body = r
+            .get::<_, Option<Vec<i32>>>(25)
+            .map(|b| b[0] as usize..b[1] as usize);
+        let (summary, summary_quote, stored_body) = match (summary, summary_quote) {
+            (Some(text), Some(quote)) if numbered.contains(&id) => {
+                let (head, twins) = arrets.get(&id).cloned().unwrap_or_default();
+                let (text, quote, body) =
+                    crate::decisions::requote(&text, quote, stored_body, |quoted: &str| {
+                        lj_parse::cassation_summary_for(
+                            quoted,
+                            &head,
+                            docket_numbers.as_deref().unwrap_or_default(),
+                            &twins,
+                        )
+                    });
+                (Some(text), Some(quote), body)
+            }
+            (summary, quote) => (summary, quote, stored_body),
+        };
+        let summary_body = summary
+            .as_deref()
+            .and_then(|text| lj_summary::summary_body(text, stored_body, summary_quote.clone()));
         out.insert(
-            r.get::<_, i64>(0),
+            id,
             DecisionMeta {
                 public_id,
                 jurisdiction_type: r.get(2),
@@ -486,7 +544,7 @@ pub(crate) async fn hydrate_decisions(
                 office_uid: r.get(7),
                 legal_domain_uid: r.get(8),
                 publication_codes: r.get(9),
-                docket_numbers: r.get(10),
+                docket_numbers,
                 summary,
                 summary_quote,
                 summary_body,
@@ -643,16 +701,12 @@ pub(crate) fn display_title(m: &DecisionMeta, refs: &Referential) -> String {
     )
 }
 
-/// Siège recomposé depuis les axes structurés (chambre · formation/office),
-/// rendu en 2ᵉ ligne sous le titre. `None` si aucun axe.
-pub(crate) fn display_seat(m: &DecisionMeta, refs: &Referential) -> Option<String> {
-    let jur_display = display_jurisdiction(m, refs);
-    crate::titles::decision_seat(
-        &jur_display,
-        m.seat
-            .as_ref()
-            .and_then(lj_core::chamber::Seat::label)
-            .as_deref(),
+/// The seat's parts (chamber · formation/office), shown on a second line under
+/// the title. `None` when no axis is left.
+pub(crate) fn display_seat(m: &DecisionMeta, refs: &Referential) -> Option<lj_dtos::SeatParts> {
+    crate::titles::seat_parts(
+        &display_jurisdiction(m, refs),
+        m.seat.as_ref(),
         m.formation_uid.as_deref(),
         m.office_uid.as_deref(),
     )
@@ -716,6 +770,7 @@ fn make_hit(
         .map(|s| lj_summary::summary_head(s).chars().count());
     let clip =
         |r: &std::ops::Range<usize>| head.filter(|&n| r.start < n).map(|n| r.start..r.end.min(n));
+    let seat_parts = display_seat(m, refs);
     SearchHit {
         id: m.public_id.clone(),
         jurisdiction_type: JurisdictionType::from_code(&m.jurisdiction_type)
@@ -726,8 +781,10 @@ fn make_hit(
             .as_deref()
             .and_then(|c| refs.jurisdiction(c))
             .map(|j| j.label.clone()),
+        court_names: refs.court_names(m.jurisdiction_code.as_deref()),
         title_html,
-        seat: display_seat(m, refs),
+        seat: seat_parts.as_ref().and_then(crate::titles::french_seat),
+        seat_parts,
         score,
         date_lecture: m.date_lecture.clone(),
         docket_numbers: m.docket_numbers.clone(),

@@ -11,31 +11,33 @@ pub fn Footer() -> impl IntoView {
     // Le signalement emporte la page d'où il part : depuis une décision, le
     // formulaire s'ouvre avec sa cible déjà remplie.
     let location = use_location();
+    let ui = &crate::i18n::use_ui().shell;
+    let lang = crate::i18n::use_reader_lang();
     let signaler = move || {
-        format!(
+        lang.path(&format!(
             "/feedback?from={}",
             chemin_en_query(&location.pathname.get())
-        )
+        ))
     };
 
     view! {
         <footer class="border-t border-[var(--color-rule)] bg-[var(--color-vellum)]">
             <div class="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-6 text-sm text-[var(--color-ink-muted)] sm:px-6 lg:flex-row lg:items-center lg:justify-between lg:px-8 lg:py-8">
                 <nav class="text-balance leading-7 [word-spacing:1rem] [&>a]:whitespace-nowrap [&>a]:[word-spacing:normal]">
-                    <a class="hover:text-[var(--color-ink)]" href="/sources">
-                        "Données"
+                    <a class="hover:text-[var(--color-ink)]" href=lang.path("/sources")>
+                        {ui.data}
                     </a>
                     " "
-                    <a class="hover:text-[var(--color-ink)]" href="/legal-notice">
-                        "Mentions légales"
+                    <a class="hover:text-[var(--color-ink)]" href=lang.path("/legal-notice")>
+                        {ui.legal_notice}
                     </a>
                     " "
-                    <a class="hover:text-[var(--color-ink)]" href="/privacy">
-                        "Confidentialité"
+                    <a class="hover:text-[var(--color-ink)]" href=lang.path("/privacy")>
+                        {ui.privacy}
                     </a>
                     " "
-                    <a class="hover:text-[var(--color-ink)]" href="/terms">
-                        "Conditions d'utilisation"
+                    <a class="hover:text-[var(--color-ink)]" href=lang.path("/terms")>
+                        {ui.terms}
                     </a>
                     " "
                     <a
@@ -44,7 +46,7 @@ pub fn Footer() -> impl IntoView {
                         target="_blank"
                         rel="noopener noreferrer"
                     >
-                        "Code source"
+                        {ui.source_code}
                     </a>
                     " "
                     <a
@@ -53,11 +55,11 @@ pub fn Footer() -> impl IntoView {
                         target="_blank"
                         rel="noopener noreferrer"
                     >
-                        "Soutenir"
+                        {ui.support}
                     </a>
                     " "
                     <a class="hover:text-[var(--color-ink)]" href=signaler>
-                        "Signaler un problème"
+                        {ui.report_problem}
                     </a>
                 </nav>
                 <p class="hidden text-base lg:block">

@@ -8,7 +8,7 @@ use lj_dtos::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::api::{ApiClient, PageParams};
+use crate::api::{ApiClient, Failure, PageParams};
 
 pub use crate::pages::decision_page::data::{sendable, PageError};
 
@@ -33,7 +33,7 @@ pub struct ArticleKey {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CitingResult {
     pub hits: Vec<CitingDecisionHit>,
-    pub error: Option<String>,
+    pub error: Option<crate::api::Failure>,
 }
 
 fn client() -> ApiClient {
@@ -43,14 +43,18 @@ fn client() -> ApiClient {
 /// Charge l'article à la date (ou en vigueur) + sa timeline (bloquant SSR pour le
 /// SEO). Le `LawArticleResponse` porte déjà la timeline (`versions`), donc un
 /// seul appel suffit pour l'en-tête, le corps et la timeline.
-pub async fn fetch_article(key: ArticleKey) -> Result<LawArticleResponse, PageError> {
+pub async fn fetch_article(
+    key: ArticleKey,
+    lang: crate::i18n::Lang,
+) -> Result<LawArticleResponse, PageError> {
+    let ui = &lang.ui().norm;
     if key.code.trim().is_empty() || key.num.trim().is_empty() {
         return Err(PageError {
             status: 400,
-            message: "Référence d'article invalide".to_string(),
+            failure: Failure::Said(ui.invalid_article.to_string()),
         });
     }
-    let article = client()
+    let mut article = client()
         .fetch_legi_article(
             &key.code,
             &key.num,
@@ -59,17 +63,27 @@ pub async fn fetch_article(key: ArticleKey) -> Result<LawArticleResponse, PageEr
             &key.juris,
         )
         .await?;
+    if let Some(applicability) = article.applicability.as_mut() {
+        crate::i18n::relabel_applicability(lang, applicability);
+    }
+    if let Some(title) = article.code_title.as_mut() {
+        crate::i18n::relabel_title(lang, title);
+    }
     Ok(article)
 }
 
 /// The place vocabulary of the picker. Never rejects: an error leaves
 /// the picker empty.
-pub async fn fetch_places() -> Vec<lj_dtos::PlaceNode> {
-    client()
+pub async fn fetch_places(lang: crate::i18n::Lang) -> Vec<lj_dtos::PlaceNode> {
+    let mut places = client()
         .fetch_places()
         .await
         .map(|r| r.places)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    for place in &mut places {
+        place.label = crate::i18n::place_name(lang, &place.uid, &place.label);
+    }
+    places
 }
 
 /// The reader's place of the current URL (`?place=PF`).
@@ -78,13 +92,10 @@ pub fn reader_place() -> Signal<Option<String>> {
     Signal::derive(move || key.get().place)
 }
 
-/// The query carrying the reader's place onto an internal href, empty for the
-/// default place so that one reading has one URL.
+/// The query carrying the place the address named onto an internal href: a
+/// text's own place, which it reads from unnamed, may differ from the linked one's.
 pub fn reader_suffix(place: Option<&str>) -> String {
-    match place {
-        Some(l) if l != lj_dtos::DEFAULT_READER_PLACE => format!("?place={l}"),
-        _ => String::new(),
-    }
+    place.map(|l| format!("?place={l}")).unwrap_or_default()
 }
 
 /// Charge les décisions citantes (non bloquant, streamé via `<Suspense>`).
@@ -96,6 +107,7 @@ pub async fn fetch_citing(
     num: String,
     date: Option<String>,
     place: Option<String>,
+    lang: crate::i18n::Lang,
 ) -> CitingResult {
     if code.trim().is_empty() || num.trim().is_empty() {
         return CitingResult {
@@ -108,13 +120,21 @@ pub async fn fetch_citing(
         offset: 0,
     };
     match client()
-        .fetch_legi_citing(&code, &num, date.as_deref(), place.as_deref(), &juris, page)
+        .fetch_legi_citing(
+            &code,
+            &num,
+            date.as_deref(),
+            place.as_deref(),
+            &juris,
+            page,
+            lang.code(),
+        )
         .await
     {
         Ok(hits) => CitingResult { hits, error: None },
         Err(err) => CitingResult {
             hits: Vec::new(),
-            error: Some(err.message),
+            error: Some(err.failure),
         },
     }
 }
@@ -128,6 +148,7 @@ pub async fn fetch_section_citing(
     code: String,
     path: String,
     date: Option<String>,
+    lang: crate::i18n::Lang,
 ) -> CitingResult {
     if code.trim().is_empty() || path.trim().is_empty() {
         return CitingResult {
@@ -140,13 +161,13 @@ pub async fn fetch_section_citing(
         offset: 0,
     };
     match client()
-        .fetch_law_section_citing(&code, &path, date.as_deref(), &juris, page)
+        .fetch_law_section_citing(&code, &path, date.as_deref(), &juris, page, lang.code())
         .await
     {
         Ok(hits) => CitingResult { hits, error: None },
         Err(err) => CitingResult {
             hits: Vec::new(),
-            error: Some(err.message),
+            error: Some(err.failure),
         },
     }
 }
@@ -179,7 +200,7 @@ pub struct TocResult {
     pub entries: Vec<TocEntry>,
     pub tree: Vec<TocNode>,
     pub reading: Vec<LawSectionItem>,
-    pub error: Option<String>,
+    pub error: Option<crate::api::Failure>,
 }
 
 /// Charge la table des matières d'un code (non bloquant, streamé via
@@ -208,7 +229,7 @@ pub async fn fetch_toc(juris: String, code: String, date: Option<String>) -> Toc
             entries: Vec::new(),
             tree: Vec::new(),
             reading: Vec::new(),
-            error: Some(err.message),
+            error: Some(err.failure),
         },
     }
 }
@@ -220,16 +241,20 @@ pub async fn fetch_section(
     code: String,
     path: String,
     date: Option<String>,
+    lang: crate::i18n::Lang,
 ) -> Result<LawSectionResponse, PageError> {
     if code.trim().is_empty() || path.trim().is_empty() {
         return Err(PageError {
             status: 400,
-            message: "Référence de section invalide".to_string(),
+            failure: Failure::Said(lang.ui().norm.invalid_section.to_string()),
         });
     }
-    let section = client()
+    let mut section = client()
         .fetch_law_section(&code, &path, date.as_deref(), &juris)
         .await?;
+    if let Some(title) = section.code_title.as_mut() {
+        crate::i18n::relabel_title(lang, title);
+    }
     Ok(section)
 }
 
@@ -247,17 +272,18 @@ pub enum ArticleOrSection {
 pub async fn fetch_article_or_section(
     key: ArticleKey,
     section_date: Option<String>,
+    lang: crate::i18n::Lang,
 ) -> Result<ArticleOrSection, PageError> {
-    match fetch_article(key.clone()).await {
+    let ui = &lang.ui().norm;
+    match fetch_article(key.clone(), lang).await {
         Ok(article) => Ok(ArticleOrSection::Article(article)),
         Err(err) if err.status == 404 && key.date.is_none() => {
-            fetch_section(key.juris, key.code, key.num, section_date)
+            fetch_section(key.juris, key.code, key.num, section_date, lang)
                 .await
                 .map(ArticleOrSection::Section)
                 .map_err(|mut err| {
                     if err.status == 404 {
-                        err.message =
-                            "Aucun article ni aucune division à cette adresse".to_string();
+                        err.failure = Failure::Said(ui.nothing_at_address.to_string());
                     }
                     err
                 })
@@ -344,14 +370,16 @@ pub fn section_key() -> Signal<(String, String, String)> {
 pub async fn fetch_code_summary(
     juris: String,
     code: String,
+    lang: crate::i18n::Lang,
 ) -> Result<lj_dtos::LawCodeSummary, PageError> {
     if code.trim().is_empty() {
         return Err(PageError {
             status: 400,
-            message: "Code invalide".to_string(),
+            failure: Failure::Said(lang.ui().norm.invalid_code.to_string()),
         });
     }
-    let summary = client().fetch_legi_code_summary(&code, &juris).await?;
+    let mut summary = client().fetch_legi_code_summary(&code, &juris).await?;
+    crate::i18n::relabel_title(lang, &mut summary.titre);
     Ok(summary)
 }
 
@@ -387,16 +415,22 @@ pub fn compare_key() -> Signal<CompareKey> {
 
 /// Charge la comparaison de deux versions (bloquant SSR). Le
 /// `LawCompareResponse` porte la timeline pour les sélecteurs — un seul appel.
-pub async fn fetch_compare(key: CompareKey) -> Result<lj_dtos::LawCompareResponse, PageError> {
+pub async fn fetch_compare(
+    key: CompareKey,
+    lang: crate::i18n::Lang,
+) -> Result<lj_dtos::LawCompareResponse, PageError> {
     if key.code.trim().is_empty() || key.num.trim().is_empty() {
         return Err(PageError {
             status: 400,
-            message: "Référence d'article invalide".to_string(),
+            failure: Failure::Said(lang.ui().norm.invalid_article.to_string()),
         });
     }
-    let cmp = client()
+    let mut cmp = client()
         .fetch_legi_compare(&key.code, &key.num, &key.de, &key.a, &key.juris)
         .await?;
+    if let Some(title) = cmp.code_title.as_mut() {
+        crate::i18n::relabel_title(lang, title);
+    }
     Ok(cmp)
 }
 

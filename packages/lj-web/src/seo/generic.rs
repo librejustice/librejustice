@@ -6,25 +6,6 @@ pub const CANONICAL_BASE: &str = lj_dtos::SITE_BASE;
 /// Carte Open Graph (1200x630).
 pub const OG_IMAGE: &str = "https://librejustice.fr/og-card-v3.png";
 
-/// Metadonnees d'une page, rendues via `leptos_meta`.
-pub struct PageMeta {
-    pub title: String,
-    pub description: String,
-    pub robots: Option<&'static str>,
-}
-
-/// Meta generiques du site (heritees par les pages sans `<Title>` propre).
-pub fn site_default() -> PageMeta {
-    PageMeta {
-        title: "LibreJustice".to_string(),
-        description: "Moteur de recherche libre sur le droit français : jurisprudence (Conseil \
-                      d'État, Cour de cassation, cours d'appel, tribunaux) et textes (codes, \
-                      lois, traités), mis à jour quotidiennement."
-            .to_string(),
-        robots: None,
-    }
-}
-
 /// JSON-LD d'entité, posé sur l'accueil : une `Organization` et un `WebSite`
 /// liés par `@id`. Les `sameAs` listent les endroits où le nom LibreJustice est
 /// déjà porté ailleurs (dépôt, réutilisation data.gouv, annuaire MCP), ce qui
@@ -58,15 +39,6 @@ pub const SITE_JSONLD: &str = r#"{
   ]
 }"#;
 
-/// Meta de la page 404 (noindex).
-pub fn not_found_meta() -> PageMeta {
-    PageMeta {
-        title: "Page introuvable - LibreJustice".to_string(),
-        description: site_default().description,
-        robots: Some("noindex"),
-    }
-}
-
 /// URL canonique d'une page decision.
 pub fn canonical_url(
     jurisdiction_type: lj_dtos::JurisdictionType,
@@ -77,4 +49,11 @@ pub fn canonical_url(
         "{CANONICAL_BASE}{}",
         lj_dtos::decision_path(jurisdiction_type, jurisdiction_code, id)
     )
+}
+
+/// The page's canonical address in the reader's language: each version is its own canonical.
+#[leptos::component]
+pub fn Canonical(#[prop(into)] href: String) -> impl leptos::IntoView {
+    let href = crate::i18n::in_lang(&href, crate::i18n::use_reader_lang().get());
+    leptos::view! { <leptos_meta::Link rel="canonical" href=href /> }
 }

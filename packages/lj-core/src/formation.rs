@@ -19,17 +19,14 @@ const KEYS: &[(&str, &str)] = &[
     ("JCP", "Juge des contentieux de la protection"),
     ("JUGE_ENFANTS", "Juge des enfants"),
     ("JUGE_EXPROPRIATION", "Juge de l'expropriation"),
-];
-
-/// The Cour de cassation's formations, with the codes its decisions print.
-const CC_LABELS: &[(&str, &str)] = &[
-    ("PLENIERE", "Formation plénière de chambre (FP)"),
-    ("SECTION", "Formation de section (FS)"),
-    ("RESTREINTE", "Formation restreinte (F)"),
+    ("APPEL", "Statuant en appel"),
+    ("SPECIALE", "Spécialement composée"),
 ];
 
 /// The court types the filter covers.
-const COURTS: &[&str] = &["CC", "CE", "CAA", "TA", "CA", "TJ", "TCOM", "CPH"];
+const COURTS: &[&str] = &[
+    "CC", "CE", "CAA", "TA", "CA", "TJ", "TCOM", "CPH", "ASSISES", "CJUE",
+];
 
 /// The paths `ORDER.TYPE.KEY` of a decision with their ancestors, as the seat
 /// unfolds its own, from the trunk of its seat paths and the three axes the
@@ -80,12 +77,8 @@ pub fn formation_paths(
 /// The label of a path's key, `None` outside the vocabulary.
 pub fn formation_label(path: &str) -> Option<&'static str> {
     let (trunk, key) = path.rsplit_once('.')?;
-    if trunk.ends_with(".CC") {
-        if let Some((_, label)) = CC_LABELS.iter().find(|(k, _)| *k == key) {
-            return Some(label);
-        }
-    }
     match (trunk.rsplit('.').next(), key) {
+        (Some("CC"), "PLENIERE") => return Some("Formation plénière de chambre"),
         (Some("CPH"), "JUGE_REFERES") => return Some("Formation de référé"),
         (Some("CA"), "MISE_EN_ETAT") => return Some("Conseiller de la mise en état"),
         _ => {}
@@ -103,14 +96,23 @@ pub fn is_formation_path(path: &str) -> bool {
         segments.next(),
         segments.next(),
     ) {
-        (Some("FR"), None, _, _) => true,
-        (Some("FR"), Some(court_type), None, _) => COURTS.contains(&court_type),
-        (Some("FR"), Some(court_type), Some(key), None) => {
+        (Some("FR" | "EU"), None, _, _) => true,
+        (Some(order), Some(court_type), None, _) => {
+            COURTS.contains(&court_type) && order_of(court_type) == order
+        }
+        (Some(order), Some(court_type), Some(key), None) if order_of(court_type) == order => {
             composition(court_type, key).is_some()
                 || function(court_type, key) == Some(key)
                 || (key == "JUGE_REFERES" && referes(court_type, Some("JUGE_UNIQUE")))
         }
         _ => false,
+    }
+}
+
+fn order_of(court_type: &str) -> &'static str {
+    match court_type {
+        "CJUE" => "EU",
+        _ => "FR",
     }
 }
 
@@ -130,10 +132,11 @@ fn composition<'a>(court_type: &str, key: &'a str) -> Option<&'a str> {
     let courts: &[&str] = match key {
         "PLENIERE" => &["CC", "CAA", "TA"],
         "SECTION" | "RESTREINTE" => &["CC"],
-        "A_CINQ" => &["CAA", "TA"],
+        "A_CINQ" => &["CAA", "TA", "CJUE"],
         "A_TROIS" => &["CAA", "TA", "CE"],
         "CHAMBRE_SEULE" => &["CE"],
-        "JUGE_UNIQUE" => COURTS,
+        "JUGE_UNIQUE" => &["CC", "CE", "CAA", "TA", "CA", "TJ", "TCOM", "CPH", "CJUE"],
+        "APPEL" | "SPECIALE" => &["ASSISES"],
         _ => &[],
     };
     courts.contains(&court_type).then_some(key)
@@ -176,19 +179,39 @@ mod tests {
             "FR.CC.RESTREINTE",
             "FR.CE.JUGE_REFERES",
             "FR.CA.MISE_EN_ETAT",
+            "FR.ASSISES.APPEL",
+            "EU",
+            "EU.CJUE",
+            "EU.CJUE.A_CINQ",
         ] {
             assert!(is_formation_path(path), "{path}");
         }
         for path in [
-            "EU",
+            "INTL",
+            "FR.CJUE",
+            "EU.CJUE.A_TROIS",
             "FR.CEDH",
             "FR.CA.JEX",
             "FR.CC.JUGE_REFERES",
             "FR.TA.CHAMBRE_SEULE",
             "FR.TJ.JEX.X",
+            "FR.ASSISES.JUGE_UNIQUE",
+            "FR.CA.APPEL",
         ] {
             assert!(!is_formation_path(path), "{path}");
         }
+    }
+
+    #[test]
+    fn a_cour_d_assises_sits_in_appeal_or_specially_composed() {
+        assert_eq!(
+            formation_paths(&seat("FR.ASSISES"), Some("formation:APPEL"), None, None),
+            ["FR", "FR.ASSISES", "FR.ASSISES.APPEL"]
+        );
+        assert_eq!(
+            formation_label("FR.ASSISES.SPECIALE"),
+            Some("Spécialement composée")
+        );
     }
 
     fn seat(trunk: &str) -> Vec<String> {
@@ -278,7 +301,11 @@ mod tests {
     fn a_composition_holds_in_its_courts_alone() {
         assert!(formation_paths(&seat("FR.CA"), Some("formation:A_TROIS"), None, None).is_empty());
         assert!(
-            formation_paths(&seat("EU.CJUE"), Some("formation:JUGE_UNIQUE"), None, None).is_empty()
+            formation_paths(&seat("EU.CJUE"), Some("formation:A_TROIS"), None, None).is_empty()
+        );
+        assert_eq!(
+            formation_paths(&seat("EU.CJUE"), Some("formation:A_CINQ"), None, None),
+            ["EU", "EU.CJUE", "EU.CJUE.A_CINQ"]
         );
     }
 
@@ -310,10 +337,14 @@ mod tests {
     }
 
     #[test]
-    fn the_cour_de_cassation_prints_its_codes() {
+    fn the_cour_de_cassation_names_its_formations() {
+        assert_eq!(
+            formation_label("FR.CC.PLENIERE"),
+            Some("Formation plénière de chambre")
+        );
         assert_eq!(
             formation_label("FR.CC.RESTREINTE"),
-            Some("Formation restreinte (F)")
+            Some("Formation restreinte")
         );
         assert_eq!(
             formation_label("FR.CAA.PLENIERE"),

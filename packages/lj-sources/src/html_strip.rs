@@ -9,9 +9,8 @@
 use regex::Regex;
 use std::sync::OnceLock;
 
-/// Aplatit un corps HTML/xhtml en texte FR : retire `<script>`/`<style>` avec
-/// leur contenu, mappe les balises de bloc/`<br>` sur des sauts de ligne, retire
-/// les balises restantes, décode les entités, puis collapse le whitespace.
+/// Flattens an HTML/xhtml body into the lines a browser lays out: a line break of the source is
+/// a space, the tags of a block element and `<br>` end a line, entities are decoded.
 pub fn strip_html(html: &str) -> String {
     static SCRIPT_STYLE_RE: OnceLock<Regex> = OnceLock::new();
     static BLOCK_RE: OnceLock<Regex> = OnceLock::new();
@@ -21,15 +20,17 @@ pub fn strip_html(html: &str) -> String {
         Regex::new(r"(?is)<(script|style)\b[^>]*>.*?</(script|style)>")
             .expect("regex script/style valide")
     });
-    // Balises dont la fermeture (ou l'auto-fermeture `<br/>`) marque une coupure
-    // de ligne : sans ça le strip plat colle deux paragraphes en un seul mot.
     let block = BLOCK_RE.get_or_init(|| {
-        Regex::new(r"(?is)<br\s*/?>|</(p|div|li|tr|h[1-6]|section|article|blockquote|td|th)\s*>")
-            .expect("regex balises de bloc valide")
+        Regex::new(
+            r"(?is)<br\s*/?>|</?(?:p|div|li|tr|h[1-6]|section|article|blockquote|td|th|title|head|body|html|table|thead|tbody|tfoot|caption|ul|ol|dl|dt|dd|hr|header|footer|nav|aside|main|figure|figcaption|address|form|fieldset|legend|center)\b[^>]*>",
+        )
+        .expect("regex balises de bloc valide")
     });
     let tag = TAG_RE.get_or_init(|| Regex::new(r"(?s)<[^>]+>").expect("regex tag valide"));
 
-    let no_script = script_style.replace_all(html, " ");
+    let no_script = script_style
+        .replace_all(html, " ")
+        .replace(['\r', '\n'], " ");
     let with_breaks = block.replace_all(&no_script, "\n");
     let no_tags = tag.replace_all(&with_breaks, "");
     let decoded = decode_entities(&no_tags);
@@ -192,6 +193,24 @@ mod tests {
     fn collapses_whitespace_and_blank_lines() {
         let html = "<p>un   deux</p>\n\n\n<p>  trois  </p>";
         assert_eq!(strip_html(html), "un deux\ntrois");
+    }
+
+    #[test]
+    fn a_footnote_call_written_over_several_source_lines_stays_in_its_sentence() {
+        let html = "<p>présentées le 26 mars 2009 (<span class=\"note\">\n   <a href=\"#t1\"\n      >1</a>\n   </span>)</p>\n<p class=\"subtitle\">\n  <span>Affaire C-32/08</span>\n</p>";
+        assert_eq!(
+            strip_html(html),
+            "présentées le 26 mars 2009 ( 1 )\nAffaire C-32/08"
+        );
+    }
+
+    #[test]
+    fn a_block_opening_ends_the_line_before_it() {
+        let html = "<head>\n<title>62008CC0032</title>\n</head>\n<body><div>Merits<h3>General principles</h3>The Court</div></body>";
+        assert_eq!(
+            strip_html(html),
+            "62008CC0032\nMerits\nGeneral principles\nThe Court"
+        );
     }
 
     #[test]

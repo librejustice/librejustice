@@ -5,7 +5,7 @@ use chrono::{Datelike, NaiveDate};
 use lj_pg::db::{build_pool, Connection};
 use lj_store::migrator::{apply_migrations, MigrationIntent};
 use lj_store::repository::{
-    DecisionRepository, Fraicheur, LegalArticleRow, LegalLinkOwner, LegalLinkRow,
+    DecisionRepository, Fraicheur, JorfPiece, LegalArticleRow, LegalLinkOwner, LegalLinkRow,
 };
 use tokio::sync::OnceCell;
 
@@ -259,4 +259,149 @@ async fn a_moved_version_takes_no_edge_with_it_from_its_old_date() {
         .unwrap()
         .get(0);
     assert_eq!(restants, 0);
+}
+
+#[tokio::test]
+#[ignore = "needs LIBREJUSTICE_TEST_DB_URL, an empty Postgres with ParadeDB and VectorChord"]
+async fn a_jo_piece_ends_the_day_before_the_consolidated_version_of_its_block() {
+    let (_pool, conn) = base().await;
+    let legi = LegalArticleRow {
+        num: String::new(),
+        num_key: "visas".to_string(),
+        ..version(
+            "JORFTEXT000000000002",
+            "LEGITEXT000000000002",
+            Some("2001-01-01"),
+        )
+    };
+    assert!(ecrire(&conn, &legi, Fraicheur::Autoritaire).await);
+    let jo = JorfPiece {
+        text_uid: "JORFTEXT000000000002".to_string(),
+        num_key: "visas".to_string(),
+        source_uid: "JORFTEXT000000000002".to_string(),
+        position: -1,
+        title_path: None,
+        date_debut: jour("1999-09-07"),
+        texte: Some("Vu".to_string()),
+        nota: None,
+        content_checksum: 1,
+    };
+    DecisionRepository::new(&conn)
+        .move_jorf_pieces(&[jo])
+        .await
+        .unwrap();
+    assert_eq!(
+        fenetres(&conn, "JORFTEXT000000000002").await,
+        attendu(&[
+            ("JORFTEXT000000000002", "1999-09-07", Some("2000-12-31")),
+            ("LEGITEXT000000000002", "2001-01-01", None),
+        ])
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs LIBREJUSTICE_TEST_DB_URL, an empty Postgres with ParadeDB and VectorChord"]
+async fn a_jo_number_changing_hands_leaves_each_article_one_row() {
+    let (_pool, conn) = base().await;
+    let text = "JORFTEXT000000000003";
+    let (first, later) = ("JORFARTI000000000009", "JORFARTI000000000004");
+    let jo = |id: &str, num_key: &str| LegalArticleRow {
+        num: "2".to_string(),
+        num_key: num_key.to_string(),
+        source: "jorf".to_string(),
+        ..version(text, id, Some("2000-01-01"))
+    };
+    assert!(ecrire(&conn, &jo(later, "2"), Fraicheur::Autoritaire).await);
+    assert!(
+        ecrire(
+            &conn,
+            &jo(first, &first.to_lowercase()),
+            Fraicheur::Autoritaire
+        )
+        .await
+    );
+
+    let repo = DecisionRepository::new(&conn);
+    assert_eq!(
+        repo.drop_rekeyed_jorf_rows(&[later.to_string()])
+            .await
+            .unwrap(),
+        1
+    );
+    assert!(ecrire(&conn, &jo(first, "2"), Fraicheur::Autoritaire).await);
+    assert!(
+        ecrire(
+            &conn,
+            &jo(later, &later.to_lowercase()),
+            Fraicheur::Autoritaire
+        )
+        .await
+    );
+
+    conn.execute(
+        "INSERT INTO legal_article (text_uid, num, num_key, status, date_debut, texte, \
+                                    content_checksum, source, source_uid, translation) \
+         SELECT text_uid, num, '1', status, date_debut, texte, content_checksum, source, \
+                source_uid, translation \
+         FROM legal_article WHERE source_uid = $1",
+        &[&later],
+    )
+    .await
+    .unwrap();
+    assert!(
+        !ecrire(
+            &conn,
+            &jo(later, &later.to_lowercase()),
+            Fraicheur::Autoritaire
+        )
+        .await
+    );
+
+    let rows: Vec<(String, String)> = conn
+        .query(
+            "SELECT source_uid, num_key FROM legal_article WHERE text_uid = $1 ORDER BY num_key",
+            &[&text],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1)))
+        .collect();
+    assert_eq!(
+        rows,
+        [
+            (first.to_string(), "2".to_string()),
+            (later.to_string(), later.to_lowercase()),
+        ]
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs LIBREJUSTICE_TEST_DB_URL, an empty Postgres with ParadeDB and VectorChord"]
+async fn a_treaty_record_keeps_every_article_cut_from_one_jo_article() {
+    let (_pool, conn) = base().await;
+    let (treaty, id) = ("INTL/CONVENTION-X-2019", "JORFARTI000000000007");
+    let cut = |num_key: &str| LegalArticleRow {
+        num_key: num_key.to_string(),
+        source: "jorf".to_string(),
+        texte: Some(num_key.to_string()),
+        content_checksum: num_key.len() as u64,
+        ..version(treaty, id, Some("2019-05-26"))
+    };
+    for key in ["annexe-1", "annexe-2", "annexe-10"] {
+        assert!(ecrire(&conn, &cut(key), Fraicheur::Autoritaire).await);
+    }
+    DecisionRepository::new(&conn)
+        .drop_rekeyed_jorf_rows(&[id.to_string()])
+        .await
+        .unwrap();
+    let n: i64 = conn
+        .query_one(
+            "SELECT count(*) FROM legal_article WHERE text_uid = $1",
+            &[&treaty],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(n, 3);
 }

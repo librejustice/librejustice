@@ -16,15 +16,17 @@ pub mod toc_spy;
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Script, Title};
+use leptos_meta::{Meta, Script, Title};
 use lj_dtos::UiAction;
 
 use crate::components::decision::{
     use_search_hits, DecisionActions, DecisionBody, DecisionCitantes, DecisionCommentaires,
-    DecisionHeader, DecisionLayout, DecisionMeta, DecisionParties, DecisionProvenance,
-    DecisionReferences, DecisionSimilar, DecisionSkeleton, DecisionToc,
+    DecisionConclusions, DecisionHeader, DecisionLayout, DecisionMeta, DecisionParties,
+    DecisionProvenance, DecisionReferences, DecisionSimilar, DecisionSkeleton, DecisionTextStatus,
+    DecisionToc,
 };
 use crate::components::own_page_description;
+use crate::i18n::use_reader_lang;
 use crate::seo::decision::{build_json_ld, meta_description, seo_title};
 use crate::seo::{canonical_url, OG_IMAGE};
 
@@ -44,8 +46,15 @@ pub fn DecisionPage() -> impl IntoView {
     let id = decision_id();
 
     // Détail bloquant (SEO dans le document initial).
-    let detail = Resource::new_blocking(move || id.get(), |id| sendable(fetch_detail(id)));
-    let similar = Resource::new(move || id.get(), |id| sendable(fetch_similar(id)));
+    let lang = use_reader_lang();
+    let detail = Resource::new_blocking(
+        move || (id.get(), lang.get()),
+        |(id, lang)| sendable(fetch_detail(id, lang)),
+    );
+    let similar = Resource::new(
+        move || (id.get(), lang.get()),
+        |(id, lang)| sendable(fetch_similar(id, lang)),
+    );
     let parties = Resource::new(move || id.get(), |id| sendable(fetch_parties(id)));
 
     view! {
@@ -106,14 +115,15 @@ fn DecisionError(err: PageError) -> impl IntoView {
     if err.status == 404 {
         crate::pages::not_found::signaler_lien_mort();
     }
+    let ui = &crate::i18n::use_ui().decision;
     let eyebrow = if err.status == 404 {
-        "Introuvable"
+        crate::i18n::use_ui().shell.not_found
     } else {
-        "Erreur"
+        crate::i18n::use_ui().shell.error
     };
     // Détail absent ⇒ noindex + titre « introuvable » (le cas « Chargement… »
     // correspond au fallback Suspense).
-    let title = "Décision introuvable - LibreJustice";
+    let title = ui.not_found_title;
     view! {
         <Title text=title />
         <Meta name="robots" content="noindex" />
@@ -121,7 +131,7 @@ fn DecisionError(err: PageError) -> impl IntoView {
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
                 {eyebrow}
             </p>
-            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.message}</h1>
+            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.failure.text(&crate::i18n::use_ui().shell)}</h1>
         </div>
     }
 }
@@ -135,6 +145,7 @@ fn DecisionLoaded(
     similar: Resource<SimilarResult>,
     parties: Resource<PartiesResult>,
 ) -> impl IntoView {
+    let ui = crate::i18n::use_ui();
     let title = detail.title.clone();
     let description = meta_description(&detail, &title);
     let url = canonical_url(
@@ -160,9 +171,9 @@ fn DecisionLoaded(
             .clone()
             .unwrap_or_else(|| code.clone());
         let mut items = vec![
-            ("Accueil", "https://librejustice.fr/".to_string()),
+            (ui.shell.home, "https://librejustice.fr/".to_string()),
             (
-                "Juridictions",
+                ui.decision.courts,
                 format!("https://librejustice.fr/decision-index/{juris}"),
             ),
             (
@@ -188,12 +199,12 @@ fn DecisionLoaded(
     let page_title = format!("{} - LibreJustice", seo_title(&detail));
     let references_full = build_decision_references(&detail).full;
 
-    let body_sections = resolve_decision_sections(&detail);
+    let body_sections = resolve_decision_sections(&detail, &ui.decision);
     // Décision sans texte intégral (lacune de la source) : la page rend « Texte
     // intégral non disponible » en 200 — noindex pour ne pas faire indexer une
     // coquille comme une vraie décision.
     let has_text = body_sections.iter().any(|s| !s.paragraphs.is_empty());
-    let toc = toc_sections(&detail, &body_sections);
+    let toc = toc_sections(&detail, &body_sections, &ui.decision);
     let hits = use_search_hits(&detail, &body_sections);
     let toc_hits = {
         let toc = toc.clone();
@@ -210,6 +221,7 @@ fn DecisionLoaded(
     let detail_header = detail.clone();
     let detail_meta = detail.clone();
     let detail_body = detail.clone();
+    let detail_texts = detail.clone();
     let detail_provenance = detail.clone();
     let detail_references = detail.clone();
     let detail_references_side = detail.clone();
@@ -274,7 +286,12 @@ fn DecisionLoaded(
                 <DecisionToc sections=toc_mobile chronology=chronology_mobile hits=toc_hits />
             </div>
             <div class="contents" data-usage=UiAction::DecisionText.as_str()>
+                <DecisionTextStatus detail=detail_texts />
                 <DecisionBody detail=detail_body sections=body_sections hits=hits />
+                <DecisionConclusions
+                    commentaires=detail.commentaires.clone()
+                    ruling_url=detail.ruling_url.clone()
+                />
             </div>
             <div class="contents" data-usage=UiAction::DecisionCommentaries.as_str()>
                 <DecisionCommentaires commentaires=detail.commentaires.clone() />
@@ -343,13 +360,16 @@ fn DecisionLoaded(
         <Meta property="og:title" content=title.clone() />
         <Meta property="og:description" content=description.clone() />
         <Meta property="og:url" content=url.clone() />
-        <Meta property="og:locale" content="fr_FR" />
+        <Meta
+            property="og:locale"
+            content=crate::i18n::use_reader_lang().get().og_locale()
+        />
         <Meta property="og:image" content=OG_IMAGE />
         <Meta property="og:image:width" content="1200" />
         <Meta property="og:image:height" content="630" />
         <Meta name="twitter:card" content="summary_large_image" />
         {(!has_text).then(|| view! { <Meta name="robots" content="noindex" /> })}
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <Script type_="application/ld+json">{jsonld}</Script>
         {breadcrumb_jsonld
             .map(|bc| view! { <Script type_="application/ld+json">{bc}</Script> })}

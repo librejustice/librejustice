@@ -19,6 +19,11 @@ pub fn jurisdiction_label(code: &str) -> Option<&'static str> {
         "FR" => "France",
         "EU" => "Union européenne",
         "INTL" => "International",
+        "OHADA" => "OHADA",
+        "UEMOA" => "UEMOA",
+        "CEMAC" => "CEMAC",
+        "CEDEAO" => "CEDEAO",
+        "CIMA" => "CIMA",
         "AM" => "Arménie",
         "AO" => "Angola",
         "AT" => "Autriche",
@@ -27,6 +32,7 @@ pub fn jurisdiction_label(code: &str) -> Option<&'static str> {
         "BG" => "Bulgarie",
         "BI" => "Burundi",
         "BJ" => "Bénin",
+        "CA" => "Canada",
         "CD" => "RD Congo",
         "CF" => "Centrafrique",
         "CG" => "Congo",
@@ -89,6 +95,8 @@ pub fn nature_label(nature: &str) -> Option<&'static str> {
     Some(match nature.to_uppercase().as_str() {
         "ACCORD" => "Accord",
         "ACCORD_FONCTION_PUBLIQUE" => "Accord fonction publique",
+        "ACPR" => "Instruction ou recommandation de l'ACPR",
+        "ACTE_UNIFORME" => "Acte uniforme",
         "AMENDEMENT" => "Amendement",
         "ANNEXE" => "Annexe",
         "ARRANGEMENT" => "Arrangement",
@@ -96,8 +104,10 @@ pub fn nature_label(nature: &str) -> Option<&'static str> {
         "AVENANT" => "Avenant",
         "AVIS" => "Avis",
         "BOFIP" => "BOFiP (doctrine fiscale)",
+        "BOSS" => "BOSS (doctrine sociale)",
         "CHARTE" => "Charte",
         "CIRCULAIRE" => "Circulaire",
+        "CNIL" => "Référentiel ou recommandation de la CNIL",
         "CODE" => "Code",
         "CODE_AUTRE" => "Code (autre)",
         "CODE_CIVIL" => "Code civil",
@@ -144,6 +154,8 @@ pub fn nature_label(nature: &str) -> Option<&'static str> {
         "PROJET" => "Projet",
         "PROPOSITION" => "Proposition",
         "PROTOCOLE" => "Protocole",
+        "QUESTION_ECRITE" => "Question écrite",
+        "QUESTION_ORALE" => "Question orale",
         "RAPPORT" => "Rapport",
         "RECOMMANDATION" => "Recommandation",
         "REGLEMENT" => "Règlement",
@@ -162,7 +174,10 @@ pub fn source_label(source: &str) -> Option<&'static str> {
     Some(match source {
         "legifrance" => "Légifrance",
         "bofip" => "BOFiP (DGFiP)",
+        "boss" => "BOSS (Sécurité sociale)",
         "circulaire" => "Circulaires (DILA)",
+        "bulletin" => "Bulletins officiels (ministères)",
+        "cnil" => "CNIL",
         "fiche_pratique" => "Service-Public.fr (DILA)",
         "kali" => "Conventions collectives (KALI)",
         "jorf" => "Journal officiel (JORF)",
@@ -175,11 +190,22 @@ pub fn source_label(source: &str) -> Option<&'static str> {
         "birosag-hu" => "Bíróság (Hongrie)",
         "ecoi" => "ECOI.net",
         "ejustice-be" => "Moniteur belge",
+        "vlaamse-codex" => "Vlaamse Codex",
+        "wallex" => "Wallex",
+        "gallilex" => "Gallilex",
+        "cnlegis" => "CNLEGIS (Madagascar)",
+        "anbenin" => "Assemblée nationale du Bénin",
+        "adala" => "Adala (Maroc)",
         "fedlex" => "Fedlex (Suisse)",
+        "justice_laws" => "Justice Laws (Canada)",
+        "elaws" => "Lois-en-ligne (Ontario)",
+        "legisquebec" => "LégisQuébec",
+        "gnb" => "Lois et règlements du Nouveau-Brunswick",
         "legilux" => "Légilux (Luxembourg)",
+        "lexwork" => "Recueils systématiques cantonaux (Suisse)",
         "legislatie-ro" => "Legislație (Roumanie)",
         "ris-at" => "RIS (Autriche)",
-        "wetten-nl" => "Wetten.nl (Pays-Bas)",
+        "wetten-nl" | "bwb" => "Wetten.nl (Pays-Bas)",
         _ => return None,
     })
 }
@@ -196,7 +222,10 @@ pub const NORM_FONDS: &[&str] = &[
     "traites",
     "circulaires",
     "bofip",
+    "boss",
+    "autorites",
     "fiches-pratiques",
+    "travaux-parlementaires",
     "autres",
 ];
 
@@ -212,36 +241,13 @@ pub fn norm_fond_label(fond: &str) -> Option<&'static str> {
         "traites" => "Traités et accords internationaux",
         "circulaires" => "Circulaires et instructions",
         "bofip" => "BOFiP (doctrine fiscale)",
+        "boss" => "BOSS (doctrine sociale)",
+        "autorites" => "Autorités indépendantes (référentiels, recommandations)",
         "fiches-pratiques" => "Fiches pratiques (Service-Public)",
+        "travaux-parlementaires" => "Questions parlementaires et réponses",
         "autres" => "Autres publications officielles",
         _ => return None,
     })
-}
-
-/// The administrative doctrine natures: the administration's official reading
-/// of a norm, invocable under its own regime, and not a norm itself.
-pub const DOCTRINE_ADMIN_NATURES: &[&str] = &[
-    "BOFIP",
-    "CIRCULAIRE",
-    "INSTRUCTION",
-    "REPONSE_MINISTERIELLE",
-    "RESCRIT",
-];
-
-/// The public information natures: the administration explaining the law to
-/// the public, binding nobody.
-pub const PUBLIC_INFO_NATURES: &[&str] = &["FICHE_PRATIQUE"];
-
-/// The scope of a nature: `norme` | `doctrine_administrative` | `information_publique`.
-pub fn nature_scope(nature: &str) -> &'static str {
-    let nature = nature.to_uppercase();
-    if DOCTRINE_ADMIN_NATURES.contains(&nature.as_str()) {
-        "doctrine_administrative"
-    } else if PUBLIC_INFO_NATURES.contains(&nature.as_str()) {
-        "information_publique"
-    } else {
-        "norme"
-    }
 }
 
 /// Nom d'un département français depuis son code canonique (`75` → « Paris »,
@@ -367,12 +373,18 @@ pub fn departement_label(code: &str) -> Option<&'static str> {
     })
 }
 
-/// Libellé FR d'une portée (facette `scope` du scope textes).
-pub fn scope_label(scope: &str) -> Option<&'static str> {
-    Some(match scope {
-        "norme" => "Normes",
+/// The French label of a category of the norms, [`lj_vocab::NORM_CATEGORIES`].
+pub fn category_label(category: &str) -> Option<&'static str> {
+    Some(match category {
+        "constitution" => "Constitutions",
+        "codes" => "Codes",
+        "legislation" => "Législation",
+        "reglementation" => "Réglementation",
+        "traites" => "Traités et accords",
+        "conventions_collectives" => "Conventions collectives",
         "doctrine_administrative" => "Doctrine administrative",
         "information_publique" => "Information du public",
+        "travaux_parlementaires" => "Travaux parlementaires",
         _ => return None,
     })
 }

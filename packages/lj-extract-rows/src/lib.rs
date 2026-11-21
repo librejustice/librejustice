@@ -11,6 +11,7 @@ use lj_extract::link::{LinkSnapshot, LinkTarget};
 use lj_store::repository::{
     CitationOccurrenceRow, ExtractedFields, NamedCaseRow, TextCaseCitationRow, TextLegalCitationRow,
 };
+use lj_vocab::DocumentKind;
 
 /// `canonical_ref` (citation légale) d'une décision déjà parsée, via son
 /// extracteur routé. `None` si la juridiction n'est pas routée ou si l'identité
@@ -50,10 +51,33 @@ pub struct Snapshots<'a> {
     pub chrono: &'a lj_extract::chrono::ChronoSnapshot,
     /// Source code to canonical code.
     pub jur_codes: &'a HashMap<String, String>,
+    /// See [`court_sources`].
+    pub jur_sources: &'a HashMap<String, String>,
     /// Closed court to the court that succeeded it, where the seat files it.
     pub successors: &'a HashMap<String, String>,
     pub case_names: &'a lj_extract::case_link::CaseNameSnapshot,
     pub seats: &'a lj_extract::seat_link::SeatVocabulary,
+    /// Source code to the court's place in the `geo:` vocabulary.
+    pub places: &'a HashMap<String, String>,
+}
+
+/// The forum a decision cites from: a court of another legal order from its place, the
+/// CJUE and the CEDH from their own texts.
+pub fn forum(
+    decision: &Decision,
+    places: &HashMap<String, String>,
+) -> Option<lj_extract::link::Forum> {
+    let place = decision
+        .jurisdiction_type
+        .as_deref()
+        .filter(|t| lj_vocab::courts::is_foreign(t))
+        .and_then(|_| places.get(decision.jurisdiction_source_code.as_deref()?));
+    lj_extract::link::Forum::of(
+        decision.jurisdiction_type.as_deref(),
+        decision.ecli.as_deref(),
+        place.map(String::as_str),
+        decision.date_lecture.as_deref(),
+    )
 }
 
 /// Champs structurés extraits d'une décision, prêts à persister.
@@ -67,15 +91,41 @@ pub fn extracted_fields(decision: &Decision, snap: &Snapshots<'_>) -> Result<Ext
         vocab,
         chrono,
         jur_codes,
+        jur_sources,
         successors,
         case_names,
         seats,
+        places,
     } = *snap;
     use lj_extract::extract as ex;
-    // La garde `routed` couvre la nomenclature FR/EU ; le fond international
-    // (JuriCAF, types propres `COUR_SUPREME`/`CCJA`…) passe par le traitement
-    // générique des extracteurs (champs métadonnées + citations texte).
-    if !decision.source_uid.starts_with("juricaf/") {
+    // `routed` knows the French and EU courts; a foreign court's own types
+    // (`COUR_SUPREME`, `CCJA`…) go through the generic extractors.
+    if ![
+        "juricaf/",
+        "entscheidsuche/",
+        "legimonaco/",
+        "juportal/",
+        "rechtspraak/",
+        "justice-lu/",
+        "scc-csc/",
+        "cce/",
+        "cc-bj/",
+        "cc-ci/",
+        "cc-dj/",
+        "cc-ma/",
+        "hcc-mg/",
+        "jurisprudence-mg/",
+        "african-court/",
+        "ccja/",
+        "cassation-ci/",
+        "cndj-ci/",
+        "journalofficiel-dj/",
+        "opencaselaw/",
+        "a2aj/",
+    ]
+    .iter()
+    .any(|p| decision.source_uid.starts_with(p))
+    {
         ex::routed(decision).map_err(|e| anyhow!("extract: {e}"))?;
     }
 
@@ -87,12 +137,7 @@ pub fn extracted_fields(decision: &Decision, snap: &Snapshots<'_>) -> Result<Ext
         NaiveDate::parse_from_str(&s, "%Y-%m-%d").ok()
     }
 
-    // Forum (parent implicite par juridiction) : CJUE/CEDH citent leurs textes
-    // propres sans les nommer — dérivé du type + ECLI (EU:C/T/F).
-    let forum = lj_extract::link::Forum::of(
-        decision.jurisdiction_type.as_deref(),
-        decision.ecli.as_deref(),
-    );
+    let forum = forum(decision, places);
     // Pas de texte porteur : une décision cite, elle ne revendique pas ses
     // propres numéraux nus.
     let docx = lj_extract::compiled::doc_extract(
@@ -124,7 +169,7 @@ pub fn extracted_fields(decision: &Decision, snap: &Snapshots<'_>) -> Result<Ext
     // Juridiction catégorielle : la ligne référentielle directe.
     let jurisdiction = ex::jurisdiction_scanned(decision, scan, &docket_numbers).map(|j| {
         lj_store::repository::JurisdictionRow {
-            source_code: j.code.clone(),
+            source_code: court_source(&j.code, jur_codes, jur_sources),
             code: j.code,
             jurisdiction_type: j.jurisdiction_type,
             city: j.city,
@@ -226,6 +271,7 @@ pub fn extracted_fields(decision: &Decision, snap: &Snapshots<'_>) -> Result<Ext
         jur_codes,
         successors,
     );
+    let kind = document_kind(decision);
     let mut fields = ExtractedFields {
         jurisdiction,
         date_lecture: parse_date(ex::extract_date_lecture(decision)),
@@ -247,7 +293,9 @@ pub fn extracted_fields(decision: &Decision, snap: &Snapshots<'_>) -> Result<Ext
         seat,
         formation_uid: axes.formation_uid.map(str::to_string),
         publication_codes: decision.publication_codes.clone(),
-        solution_uid: ex::solution_scanned(decision, scan),
+        solution_uid: (kind == DocumentKind::Decision)
+            .then(|| ex::solution_scanned(decision, scan))
+            .flatten(),
         // Le rôle lu dans la formation greffe (JLD, JCP, juge des référés…)
         // complète les scanners texte, qui priment quand ils ont parlé.
         procedure_uid: procedure
@@ -282,6 +330,7 @@ pub fn extracted_fields(decision: &Decision, snap: &Snapshots<'_>) -> Result<Ext
             .starts_with("cjue/")
             .then(|| lj_parse::cjue_case_name(&decision.texte_integral_clean))
             .flatten(),
+        kind,
         ..Default::default()
     };
     // The actors, derived from the final flat cells (mentions, nature,
@@ -370,6 +419,63 @@ fn seat_of(
     Some(seat)
 }
 
+/// A court's source code by its code, and by the code its place gives when the
+/// referential keeps it under a source number: `cph101132`, at Strasbourg, also
+/// answers to `cph_strasbourg`, the code a parser builds from its name.
+pub fn court_sources(rows: &[lj_store::repository::JurisdictionRow]) -> HashMap<String, String> {
+    let mut sources: HashMap<String, String> = rows
+        .iter()
+        .map(|j| (j.code.clone(), j.source_code.clone()))
+        .collect();
+    for j in rows {
+        let numbered = j.code == j.source_code
+            && j.code
+                .trim_start_matches(|c: char| c.is_ascii_lowercase())
+                .parse::<u64>()
+                .is_ok();
+        if let (true, Some(city)) = (numbered, j.city.as_deref()) {
+            sources
+                .entry(lj_store::repository::canonical_jurisdiction_code(
+                    &j.jurisdiction_type,
+                    Some(city),
+                    &j.code,
+                ))
+                .or_insert_with(|| j.code.clone());
+        }
+    }
+    sources
+}
+
+/// The source code a scanned court is written under: its own when the
+/// referential holds it, else the one [`court_sources`] gives its code.
+fn court_source(
+    code: &str,
+    jur_codes: &HashMap<String, String>,
+    jur_sources: &HashMap<String, String>,
+) -> String {
+    match jur_sources.get(code) {
+        Some(source) if !jur_codes.contains_key(code) => source.clone(),
+        _ => code.to_string(),
+    }
+}
+
+/// The canonical code of the court a parser names, the one [`extracted_fields`]
+/// writes for it.
+pub fn court_code(
+    j: &lj_extract::facets::JurisdictionRef,
+    jur_codes: &HashMap<String, String>,
+    jur_sources: &HashMap<String, String>,
+) -> String {
+    let source = court_source(&j.code, jur_codes, jur_sources);
+    jur_codes.get(&source).cloned().unwrap_or_else(|| {
+        lj_store::repository::canonical_jurisdiction_code(
+            &j.jurisdiction_type,
+            j.city.as_deref(),
+            &source,
+        )
+    })
+}
+
 /// The canonical code of a scanned court, the one `ensure_jurisdictions` will
 /// write and the one every address joins on.
 fn canonical_code(
@@ -416,6 +522,14 @@ pub fn compose_search_title(
                 .map(str::to_string)
         })?;
     let date = e.date_lecture.map(|d| d.to_string());
+    if e.kind == DocumentKind::Conclusions {
+        return Some(t::conclusions_title(
+            e.author.as_deref(),
+            date.as_deref(),
+            case_name,
+            t::docket_display(&e.docket_numbers).as_deref(),
+        ));
+    }
     Some(t::decision_title(
         &jurisdiction,
         None,
@@ -464,6 +578,71 @@ pub fn with_search_title(
     e
 }
 
+/// What `decision` is: an Advocate General's opinion is conclusions, which decide nothing.
+fn document_kind(decision: &Decision) -> DocumentKind {
+    if decision.jurisdiction_type.as_deref() == Some("CJUE")
+        && lj_parse::celex_is_opinion(&decision.member_name)
+    {
+        DocumentKind::Conclusions
+    } else {
+        DocumentKind::Decision
+    }
+}
+
+/// A provenance's fields read again from `(full_text, source_fields)`, as its ingest wrote them.
+pub fn reread_fields(
+    decision: &Decision,
+    source_fields: &serde_json::Value,
+    snap: &Snapshots<'_>,
+) -> Result<ExtractedFields> {
+    let mut fields = extracted_fields(decision, snap)?;
+    if let Some(pre) = prebuilt_from_source_fields(&decision.source_uid, source_fields) {
+        fields = merge_prebuilt(pre, fields);
+    }
+    if let Some(court) = foreign_court(decision)? {
+        fields = merge_prebuilt(court, fields);
+    }
+    Ok(fields)
+}
+
+/// The court a foreign parser named, seated with no chamber, as its ingest writes it.
+fn foreign_court(decision: &Decision) -> Result<Option<ExtractedFields>> {
+    let Some(jurisdiction_type) = decision
+        .jurisdiction_type
+        .as_deref()
+        .filter(|t| lj_vocab::courts::is_foreign(t))
+    else {
+        return Ok(None);
+    };
+    let (Some(code), Some(label)) = (
+        &decision.jurisdiction_source_code,
+        &decision.jurisdiction_name,
+    ) else {
+        anyhow::bail!(
+            "{}: a foreign court its parser did not name",
+            decision.source_uid
+        );
+    };
+    let seat = lj_core::chamber::Seat {
+        jurisdiction_type: jurisdiction_type.to_string(),
+        jurisdiction_code: Some(code.clone()),
+        ..Default::default()
+    };
+    Ok(Some(ExtractedFields {
+        seat_paths: seat.paths(),
+        seat: Some(seat),
+        jurisdiction: Some(lj_store::repository::JurisdictionRow {
+            code: code.clone(),
+            source_code: code.clone(),
+            jurisdiction_type: jurisdiction_type.to_string(),
+            city: None,
+            label: label.clone(),
+            place: None,
+        }),
+        ..Default::default()
+    }))
+}
+
 /// Couche préconstruite reconstruite depuis `(source_uid, source_fields)` — le
 /// pendant, en ré-extraction, de ce que le parser source pose à l'ingest via
 /// `prebuilt_extracted`.
@@ -493,12 +672,21 @@ pub fn prebuilt_from_source_fields(
             .get("expression_title")
             .and_then(|v| v.as_str())?;
         return Some(ExtractedFields {
-            case_name: Some(lj_parse::cjue_title_case_name(title)?),
+            case_name: lj_parse::cjue_title_case_name(title),
+            author: lj_parse::cjue_advocate_general(title)
+                .map(|(role, name)| format!("{role} {name}")),
             ..Default::default()
         });
     }
     if source_uid.starts_with("comeu/") {
         let title = lj_parse::comeu_first(source_fields, "caseTitle")?.trim();
+        return Some(ExtractedFields {
+            case_name: Some(title.to_string()).filter(|t| !t.is_empty()),
+            ..Default::default()
+        });
+    }
+    if source_uid.starts_with("scc-csc/") {
+        let title = source_fields.get("title").and_then(|v| v.as_str())?.trim();
         return Some(ExtractedFields {
             case_name: Some(title.to_string()).filter(|t| !t.is_empty()),
             ..Default::default()
@@ -556,6 +744,8 @@ pub fn merge_prebuilt(pre: ExtractedFields, full: ExtractedFields) -> ExtractedF
         decision_links: pre.decision_links.or(full.decision_links),
         case_citations: pre.case_citations.or(full.case_citations),
         parties: pre.parties.or(full.parties),
+        kind: full.kind,
+        author: pre.author.or(full.author),
     }
 }
 
@@ -620,6 +810,8 @@ pub fn fuse_provenances(
             (Some(rows), Some(more)) => Some(union_parties(rows, more)),
             (a, b) => a.or(b),
         },
+        kind: a.kind,
+        author: a.author.or(b.author),
     })
 }
 
@@ -1001,6 +1193,70 @@ fn arbitrate(
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_court_a_parser_names_is_the_one_the_referential_holds() {
+        let court = |code: &str, source: &str, kind: &str, city: Option<&str>| {
+            lj_store::repository::JurisdictionRow {
+                code: code.into(),
+                source_code: source.into(),
+                jurisdiction_type: kind.into(),
+                city: city.map(Into::into),
+                label: String::new(),
+                place: None,
+            }
+        };
+        let rows = [
+            court(
+                "tj_la_roche_sur_yon",
+                "tj85191",
+                "TJ",
+                Some("La Roche-sur-Yon"),
+            ),
+            court("cph101132", "cph101132", "CPH", Some("Strasbourg")),
+            court("cph101213", "cph101213", "CPH", None),
+            court("tj_strasbourg", "tj67482", "TJ", Some("Strasbourg")),
+            court(
+                "tass_strasbourg",
+                "tass_strasbourg",
+                "TJ",
+                Some("Strasbourg"),
+            ),
+        ];
+        let jur_codes: HashMap<String, String> = rows
+            .iter()
+            .map(|j| (j.source_code.clone(), j.code.clone()))
+            .collect();
+        let jur_sources = court_sources(&rows);
+        let code = |code: &str, kind: &str, city: Option<&str>| {
+            let j = lj_extract::facets::JurisdictionRef {
+                code: code.into(),
+                jurisdiction_type: kind.into(),
+                city: city.map(Into::into),
+                label: String::new(),
+            };
+            court_code(&j, &jur_codes, &jur_sources)
+        };
+        assert_eq!(
+            code("tj_la_roche_sur_yon", "TJ", Some("Roche sur Yon")),
+            "tj_la_roche_sur_yon"
+        );
+        assert_eq!(
+            code("tj85191", "TJ", Some("Roche sur Yon")),
+            "tj_la_roche_sur_yon"
+        );
+        assert_eq!(
+            code("cph_strasbourg", "CPH", Some("Strasbourg")),
+            "cph101132"
+        );
+        assert_eq!(
+            code("tj_strasbourg", "TJ", Some("Strasbourg")),
+            "tj_strasbourg"
+        );
+        assert_eq!(code("tass_strasbourg", "TJ", None), "tass_strasbourg");
+        assert_eq!(code("tass_valence", "TJ", None), "tass_valence");
+        assert_eq!(code("cph_bobigny", "CPH", Some("Bobigny")), "cph_bobigny");
+    }
+
     fn row(owner: &str, art: &str, num: &str, target: &str) -> (String, String, String, String) {
         (
             owner.to_string(),
@@ -1014,15 +1270,110 @@ mod tests {
     fn a_foreign_court_no_scanner_names_gets_no_extracted_seat() {
         let html = format!(
             "<html><head><meta content=\"urn:lex;sn;cour.supreme;arret;2024-11-14;57\">\
-             <meta name=\"dc.language\" content=\"FR\" /></head>\
-             <body><div id=\"arret\"><p>{}</p></div>Origine de la décision</body></html>",
+             <meta name=\"dc.language\" content=\"FR\" /></head><body>\
+             <article id=\"textArret\"><p>{}</p></article><h5>Synthèse</h5>\
+             Pays : <a>Sénégal</a><br>Juridiction : <a>Cour suprême</a><br/>\
+             Date de la décision : <span>14/11/2024</span><hr></body></html>",
             "LA COUR SUPRÊME, statuant en matière civile. ".repeat(10)
         );
-        let parsed = lj_parse::parse_juricaf("SENEGAL-COURSUPREME-20241114-57", html.as_bytes())
-            .expect("a juricaf page");
+        let parsed =
+            lj_parse::parse_juricaf("SENEGAL-COURSUPREME-20241114-57", html.as_bytes(), None)
+                .expect("a juricaf page");
         let axes = lj_extract::formation::FormationAxes::default();
         let none = HashMap::new();
         assert!(seat_of(&axes, &parsed.decision, None, &none, &none).is_none());
+    }
+
+    #[test]
+    fn a_foreign_court_read_again_is_the_one_its_ingest_wrote() {
+        use lj_parse::FromSourceFields;
+        let html = format!(
+            "<html><head><meta content=\"urn:lex;sn;cour.supreme;arret;2019-06-21;260.ca\">\
+             <meta name=\"dc.language\" content=\"FR\" /></head><body>\
+             <article id=\"textArret\"><p>{}</p></article><h5>Synthèse</h5>\
+             Pays : <a>Bénin</a><br>Juridiction : <a>Cour suprême</a><br/>\
+             Date de la décision : <span>21/06/2019</span><hr></body></html>",
+            "LA COUR SUPRÊME, statuant en matière civile. ".repeat(10)
+        );
+        let parsed =
+            lj_parse::parse_juricaf("BENIN-COURSUPREME-20190621-260CA", html.as_bytes(), None)
+                .expect("a juricaf page");
+        let reread = Decision::from_source_fields(
+            &parsed.decision.texte_integral_clean,
+            &parsed.source_fields,
+            &parsed.decision.source_uid,
+        );
+        let court = foreign_court(&reread)
+            .expect("a court its parser named")
+            .expect("a foreign court");
+        let seat = court.seat.expect("its seat");
+        assert_eq!(parsed.jurisdiction_code, "bj_cour_supreme");
+        assert_eq!(
+            court.jurisdiction.expect("its court").code,
+            "bj_cour_supreme"
+        );
+        assert_eq!(seat.jurisdiction_code.as_deref(), Some("bj_cour_supreme"));
+        assert_eq!(court.seat_paths, seat.paths());
+    }
+
+    #[test]
+    fn a_juportal_page_fused_with_its_juricaf_twin_keeps_the_court() {
+        use lj_parse::FromSourceFields;
+        let juportal = serde_json::json!({
+            "court": "GHCC",
+            "ecli": "ECLI:BE:GHCC:2025:ARR.120",
+            "date": "2025-09-18",
+            "dockets": ["120/2025"],
+            "chamber": null,
+            "lang": "fra",
+        });
+        let juricaf = serde_json::json!({
+            "urn_lex": "be;cour.constitutionnelle;arret;2025-09-18;120.2025",
+            "country": "Belgique",
+            "jurisdiction": "Cour constitutionnelle",
+            "tribunal": null,
+            "date": "2025-09-18",
+            "lang": "fra",
+        });
+        let link = LinkSnapshot::build(Vec::new(), Vec::new());
+        let vocab = lj_extract::compiled::CompiledVocab::build(&[], &link);
+        let chrono =
+            lj_extract::chrono::ChronoSnapshot::with_closed(std::iter::empty(), Default::default());
+        let case_names = lj_extract::case_link::CaseNameSnapshot::new(std::iter::empty());
+        let seats = lj_extract::seat_link::SeatVocabulary::default();
+        let none = HashMap::new();
+        let snap = Snapshots {
+            link: &link,
+            vocab: &vocab,
+            chrono: &chrono,
+            jur_codes: &none,
+            jur_sources: &none,
+            successors: &none,
+            case_names: &case_names,
+            seats: &seats,
+            places: &none,
+        };
+        let text = "La Cour constitutionnelle rend l'arrêt suivant. ".repeat(10);
+        let read = |uid: &str, source_fields: &serde_json::Value| {
+            let decision = Decision::from_source_fields(&text, source_fields, uid);
+            reread_fields(&decision, source_fields, &snap).expect("a reading")
+        };
+        let fused = fuse_provenances(
+            read("juportal/ECLI:BE:GHCC:2025:ARR.120", &juportal),
+            vec![read(
+                "juricaf/BELGIQUE-COURCONSTITUTIONNELLE-20250918-1202025",
+                &juricaf,
+            )],
+        );
+        assert_eq!(
+            fused.jurisdiction.map(|j| j.code).as_deref(),
+            Some("be_cour_constitutionnelle")
+        );
+        assert_eq!(
+            fused.seat.and_then(|s| s.jurisdiction_code).as_deref(),
+            Some("be_cour_constitutionnelle")
+        );
+        assert_eq!(fused.seat_paths, ["BE", "BE.COUR_CONSTITUTIONNELLE"]);
     }
 
     #[test]

@@ -202,7 +202,7 @@ fn text_node_chunks(text: &str) -> Vec<&str> {
     chunks
 }
 
-fn plain_text(text: String) -> AnyView {
+pub(crate) fn plain_text(text: String) -> AnyView {
     if text.len() <= TEXT_NODE_MAX_CHARS {
         return text.into_any();
     }

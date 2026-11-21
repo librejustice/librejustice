@@ -19,6 +19,7 @@ pub fn truncate_to_cap(query: &str) -> String {
 /// Renders nothing under the cap, which is every ordinary search.
 #[component]
 pub fn QueryLengthNotice(query: Signal<String>) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
     let over = Signal::derive(move || {
         let n = query.get().chars().count();
         (n > QUERY_MAX_CHARS).then_some(n)
@@ -28,9 +29,7 @@ pub fn QueryLengthNotice(query: Signal<String>) -> impl IntoView {
             <p role="status" class="text-xs text-[var(--color-ink-muted)]">
                 {move || {
                     let n = over.get().unwrap_or_default();
-                    format!(
-                        "{n} caractères saisis, le maximum est {QUERY_MAX_CHARS} : la recherche portera sur les {QUERY_MAX_CHARS} premiers. Gardez la question, retirez le texte collé autour.",
-                    )
+                    (ui.query_too_long)(n, QUERY_MAX_CHARS)
                 }}
             </p>
         </Show>

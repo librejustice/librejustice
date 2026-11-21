@@ -11,7 +11,7 @@
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use lj_dtos::{LawSectionItem, LawSectionRef, LawSectionResponse, TopCitedArticle};
 
@@ -46,15 +46,18 @@ pub fn LawSectionPage() -> impl IntoView {
     // Datée par `?date=` (Chronolégi) : sous-arbre et corps à la date demandée,
     // sinon en vigueur.
     let date = chrono_date();
+    let lang = crate::i18n::use_reader_lang().get();
     let section = Resource::new_blocking(
         move || (key.get(), date.get()),
-        |((juris, code, path), date)| sendable(fetch_section(juris, code, path, date)),
+        move |((juris, code, path), date)| sendable(fetch_section(juris, code, path, date, lang)),
     );
     // Décisions citant la division : non bloquantes, streamées sous la lecture —
     // la date choisit la composition du sous-arbre agrégé.
     let citing = Resource::new(
         move || (key.get(), date.get()),
-        |((juris, code, path), date)| sendable(fetch_section_citing(juris, code, path, date)),
+        move |((juris, code, path), date)| {
+            sendable(fetch_section_citing(juris, code, path, date, lang))
+        },
     );
 
     view! {
@@ -107,19 +110,20 @@ fn SectionError(err: PageError) -> impl IntoView {
     if err.status == 404 {
         crate::pages::not_found::signaler_lien_mort();
     }
+    let shell = &crate::i18n::use_ui().shell;
     let eyebrow = if err.status == 404 {
-        "Introuvable"
+        shell.not_found
     } else {
-        "Erreur"
+        shell.error
     };
     view! {
-        <Title text="Section introuvable - LibreJustice" />
+        <Title text=crate::i18n::use_ui().norm.section_not_found_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
                 {eyebrow}
             </p>
-            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.message}</h1>
+            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.failure.text(&crate::i18n::use_ui().shell)}</h1>
         </div>
     }
 }
@@ -145,17 +149,16 @@ pub(crate) fn LawSectionLoaded(
     #[prop(optional_no_strip)]
     date: Option<String>,
 ) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
     let code = section.code.clone();
     let text = lj_vocab::norm_path(&section.jurisdiction, &section.code);
     let code_title = section
         .code_title
         .clone()
         .unwrap_or_else(|| section.code.clone());
+    let ui = &crate::i18n::use_ui().norm;
     let page_title = format!("{} - {} - LibreJustice", section.title, code_title);
-    let description = format!(
-        "{} — {}. Lecture à la suite des articles de la division, texte consolidé en vigueur.",
-        section.title, code_title
-    );
+    let description = (ui.section_description)(&section.title, &code_title);
     let url = format!("https://librejustice.fr{text}/{}", section.path);
     #[cfg(feature = "hydrate")]
     {
@@ -173,12 +176,7 @@ pub(crate) fn LawSectionLoaded(
         .iter()
         .filter(|i| i.kind == "article" && i.etat != "VIGUEUR")
         .count();
-    let compte = match (en_vigueur, abroges) {
-        (1, 0) => "1 article en vigueur".to_string(),
-        (n, 0) => format!("{n} articles en vigueur"),
-        (n, 1) => format!("{n} en vigueur, 1 abrogé"),
-        (n, m) => format!("{n} en vigueur, {m} abrogés"),
-    };
+    let compte = (ui.section_count)(en_vigueur, abroges);
 
     // La date de consultation suit dans le fil (Chronolégi).
     let q = date
@@ -186,7 +184,11 @@ pub(crate) fn LawSectionLoaded(
         .map(|d| format!("?date={d}"))
         .unwrap_or_default();
     let breadcrumb = norm_trail(
-        section.jurisdiction_label.clone(),
+        crate::i18n::place_name(
+            crate::i18n::use_reader_lang().get(),
+            &section.jurisdiction,
+            &section.jurisdiction_label,
+        ),
         format!("{text}{q}"),
         code_title.clone(),
         section
@@ -233,9 +235,9 @@ pub(crate) fn LawSectionLoaded(
                     >
                         {move || {
                             if hide_abroges.get() {
-                                "Afficher les articles abrogés"
+                                ui.show_repealed
                             } else {
-                                "Masquer les articles abrogés"
+                                ui.hide_repealed
                             }
                         }}
                     </button>
@@ -254,13 +256,14 @@ pub(crate) fn LawSectionLoaded(
     // facette `legalArticle` sur les articles de tête, le repli plein-texte prend
     // le titre de la division.
     let subject = CitedBySubject {
-        name: "cette division",
+        name: crate::i18n::use_ui().norm.this_division,
         all_href: decisions_href(
             facet_values(&code, &section.items, &section.top_cited)
                 .into_iter()
                 .map(|value| ("legalArticle", value)),
         ),
         search_href: decisions_href([("q", section.title.clone())]),
+        scope: crate::jurisdiction::use_reader_scope(),
     };
     let citing_texts: Vec<CitedText> = section
         .citing_texts
@@ -271,17 +274,18 @@ pub(crate) fn LawSectionLoaded(
     // décision dise par quel article elle entre : l'API ne renvoie que les clés
     // canoniques, les numéros affichables sont dans la vue-lecture.
     let read_order = StoredValue::new(reading_articles(&section.items));
+    let copy = crate::i18n::use_ui();
     let cited_by = view! {
         <Suspense fallback=move || {
             view! {
-                <p class="text-sm text-[var(--color-ink-subtle)]">"Chargement des décisions…"</p>
+                <p class="text-sm text-[var(--color-ink-subtle)]">{copy.norm.loading_decisions}</p>
             }
         }>
             {move || {
                 let subject = subject.clone();
                 let texts = citing_texts.clone();
                 Suspend::new(async move {
-                    cited_by_section(citing.await, texts, &subject, &read_order.get_value())
+                    cited_by_section(citing.await, texts, &subject, &read_order.get_value(), copy)
                 })
             }}
         </Suspense>
@@ -294,7 +298,7 @@ pub(crate) fn LawSectionLoaded(
                 {format!(
                     "Division trop longue pour être lue d'un bloc : ses {} articles sont listés, \
                      chacun s'ouvre sur sa page.",
-                    group_thousands(n as i64),
+                    group_thousands(numbers, n as i64),
                 )}
             </p>
         }
@@ -341,7 +345,7 @@ pub(crate) fn LawSectionLoaded(
     .into_any();
     let similar = view! {
         <aside
-            aria-label="Articles et divisions liés"
+            aria-label=ui.related_articles_divisions
             class="flex flex-col gap-6 lg:sticky lg:top-20 lg:self-start"
         >
             {top_cited}
@@ -353,7 +357,7 @@ pub(crate) fn LawSectionLoaded(
     view! {
         <Title text=page_title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <DecisionLayout toc=toc main=main similar=similar />
     }
 }
@@ -421,7 +425,7 @@ fn division_rail(items: &[LawSectionItem]) -> Option<AnyView> {
             };
             (
                 format!("#art-{num_key}"),
-                format!("Article {}", format_article_num(&item.label)),
+                (crate::i18n::use_ui().norm.article_n)(&format_article_num(&item.label)),
                 "block text-xs leading-snug text-[var(--color-ink-muted)] no-underline hover:text-[var(--color-accent)] hover:underline",
             )
         };
@@ -433,8 +437,8 @@ fn division_rail(items: &[LawSectionItem]) -> Option<AnyView> {
     }
     Some(
         view! {
-            <nav aria-label="Dans cette division">
-                {rail_block("Dans cette division", entries)}
+            <nav aria-label=crate::i18n::use_ui().norm.in_this_division>
+                {rail_block(crate::i18n::use_ui().norm.in_this_division, entries)}
             </nav>
         }
         .into_any(),
@@ -453,17 +457,18 @@ fn neighbor_rail(
     if prev.is_none() && next.is_none() {
         return ().into_any();
     }
+    let ui = &crate::i18n::use_ui().norm;
     let q = date.map(|d| format!("?date={d}")).unwrap_or_default();
     let cards: Vec<AnyView> = [
-        prev.map(|t| neighbor_card(text, t, "← Bloc précédent", &q, STACKED)),
-        next.map(|t| neighbor_card(text, t, "Bloc suivant →", &q, STACKED)),
+        prev.map(|t| neighbor_card(text, t, ui.previous_block, &q, STACKED)),
+        next.map(|t| neighbor_card(text, t, ui.next_block, &q, STACKED)),
     ]
     .into_iter()
     .flatten()
     .collect();
     view! {
         <div class="flex flex-col gap-2">
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Divisions voisines"</h2>
+            <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.neighbour_divisions}</h2>
             <div class="flex flex-col gap-3">{cards}</div>
         </div>
     }
@@ -483,6 +488,7 @@ fn nav_footer(
     if prev.is_none() && next.is_none() {
         return ().into_any();
     }
+    let ui = &crate::i18n::use_ui().norm;
     let q = date.map(|d| format!("?date={d}")).unwrap_or_default();
     let card =
         |target: Option<LawSectionRef>, eyebrow: &'static str, layout: &'static str| match target {
@@ -491,11 +497,11 @@ fn nav_footer(
         };
     view! {
         <nav
-            aria-label="Divisions voisines"
+            aria-label=ui.neighbour_divisions
             class="mt-4 flex flex-col gap-3 border-t border-[var(--color-rule)] pt-6 sm:flex-row lg:hidden"
         >
-            {card(prev, "← Bloc précédent", PAIRED_LEFT)}
-            {card(next, "Bloc suivant →", PAIRED_RIGHT)}
+            {card(prev, ui.previous_block, PAIRED_LEFT)}
+            {card(next, ui.next_block, PAIRED_RIGHT)}
         </nav>
     }
     .into_any()
@@ -589,7 +595,12 @@ pub(crate) fn section_item_view(item: LawSectionItem, text: &str, date: Option<&
         None => format!("{text}/{num_key}"),
     };
     let id = format!("art-{num_key}");
-    let label = format!("Article {}", format_article_num(&item.label));
+    let piece = item.kind == "piece";
+    let label = if piece {
+        item.label
+    } else {
+        (crate::i18n::use_ui().norm.article_n)(&format_article_num(&item.label))
+    };
     let etat_badge = abroge.then(|| {
         view! {
             <span class="text-xs uppercase tracking-wide text-[var(--color-ink-subtle)]">
@@ -611,10 +622,10 @@ pub(crate) fn section_item_view(item: LawSectionItem, text: &str, date: Option<&
         view! {
             <div class="border-l-2 border-[var(--color-rule)] pl-3">
                 <p class="text-xs font-medium uppercase tracking-wide text-[var(--color-ink-subtle)]">
-                    "Nota"
+                    {crate::i18n::use_ui().norm.nota}
                 </p>
                 <div class="mt-1 whitespace-pre-line text-sm leading-relaxed text-[var(--color-ink-subtle)]">
-                    {n}
+                    {crate::components::search::compact_search::highlight::plain_text(n)}
                 </div>
             </div>
         }
@@ -624,17 +635,31 @@ pub(crate) fn section_item_view(item: LawSectionItem, text: &str, date: Option<&
     } else {
         "mt-6 flex scroll-mt-24 flex-col gap-2"
     };
+    let heading = match piece {
+        true => (!label.is_empty()).then(|| {
+            view! {
+                <p class="font-sans text-base font-medium text-[var(--color-ink)]">{label}</p>
+            }
+            .into_any()
+        }),
+        false => Some(
+            view! {
+                <p class="flex items-baseline gap-2">
+                    <A
+                        href=href
+                        attr:class="font-sans text-base font-medium text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
+                    >
+                        {label}
+                    </A>
+                    {etat_badge}
+                </p>
+            }
+            .into_any(),
+        ),
+    };
     view! {
         <article id=id class=cls>
-            <p class="flex items-baseline gap-2">
-                <A
-                    href=href
-                    attr:class="font-sans text-base font-medium text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
-                >
-                    {label}
-                </A>
-                {etat_badge}
-            </p>
+            {heading}
             {texte}
             {nota}
         </article>

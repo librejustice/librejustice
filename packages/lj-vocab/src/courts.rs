@@ -1,7 +1,7 @@
 //! The court types of the foreign orders, whose code starts with their place.
 
 /// The closed list of families a foreign court's type is one of.
-pub const FOREIGN_COURT_TYPES: [&str; 12] = [
+pub const FOREIGN_COURT_TYPES: [&str; 13] = [
     "COUR_SUPREME",
     "COUR_CASSATION",
     "COUR_CONSTITUTIONNELLE",
@@ -14,6 +14,7 @@ pub const FOREIGN_COURT_TYPES: [&str; 12] = [
     "COUR_JUSTICE",
     "CCJA",
     "COUR_DROITS_HOMME",
+    "AUTORITE_ADMINISTRATIVE",
 ];
 
 pub fn is_foreign(jurisdiction_type: &str) -> bool {
@@ -21,6 +22,7 @@ pub fn is_foreign(jurisdiction_type: &str) -> bool {
 }
 
 /// Place, type, then the words naming the court within its type: `sn_cour_appel_dakar`.
+/// A court code carries no hyphen, a compound place name taking an underscore for it.
 pub fn foreign_court_code(place: &str, jurisdiction_type: &str, name: &[&str]) -> String {
     let mut code = format!(
         "{}_{}",
@@ -29,7 +31,7 @@ pub fn foreign_court_code(place: &str, jurisdiction_type: &str, name: &[&str]) -
     );
     for word in name {
         code.push('_');
-        code.push_str(&word.to_ascii_lowercase());
+        code.push_str(&word.to_ascii_lowercase().replace('-', "_"));
     }
     code
 }
@@ -59,6 +61,10 @@ mod tests {
         assert_eq!(code, "sn_cour_appel_dakar");
         assert_eq!(foreign_order(&code), "SN");
         assert_eq!(foreign_court_rest(&code), "cour_appel_dakar");
+        assert_eq!(
+            foreign_court_code("cg", "COUR_APPEL", &["pointe-noire"]),
+            "cg_cour_appel_pointe_noire"
+        );
         assert_eq!(
             foreign_order(&foreign_court_code("ohada", "CCJA", &[])),
             "OHADA"

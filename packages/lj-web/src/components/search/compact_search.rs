@@ -115,11 +115,11 @@ pub fn CompactSearch() -> impl IntoView {
                     <SearchIcon />
                 </span>
                 <input
-                    aria-label="Rechercher"
+                    aria-label=crate::i18n::use_ui().search.search
                     name="q"
                     size="1"
                     autocomplete="off"
-                    placeholder=move || corpus.get().placeholder()
+                    placeholder=move || corpus.get().placeholder(&crate::i18n::use_ui().search)
                     prop:value=move || query.get()
                     on:input=move |ev| query.set(event_target_value(&ev))
                     on:keydown=suggest.on_keydown()
@@ -132,7 +132,7 @@ pub fn CompactSearch() -> impl IntoView {
                     <span class="text-[var(--color-ink-subtle)]">
                         <button
                             type="button"
-                            aria-label="Effacer la recherche"
+                            aria-label=crate::i18n::use_ui().search.clear_search
                             on:click=on_clear
                             class="flex items-center justify-center rounded text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
                         >

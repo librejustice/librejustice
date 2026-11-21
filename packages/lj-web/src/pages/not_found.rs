@@ -3,7 +3,6 @@ use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 
 use crate::components::app_shell::SuppressSiteDescription;
-use crate::seo::not_found_meta;
 
 /// Reports a 404 reached by internal navigation: a link of the site leads
 /// nowhere, or the router caught a click that was not its own. The pages whose
@@ -50,26 +49,24 @@ pub fn NotFound() -> impl IntoView {
         on_cleanup(move || suppress.0.set(false));
     }
 
-    let meta = not_found_meta();
-    let robots = meta.robots.expect("404 meta exposes a robots directive");
+    let ui = &crate::i18n::use_ui().shell;
 
     view! {
-        <Title text=meta.title />
-        <Meta name="robots" content=robots />
+        <Title text=ui.not_found_title />
+        <Meta name="robots" content="noindex" />
         <div class="mx-auto flex w-full max-w-2xl flex-1 flex-col items-start gap-4 px-4 py-24 sm:px-6 lg:px-8">
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                "Erreur 404"
+                {ui.error_404}
             </p>
-            <h1 class="font-sans text-4xl text-[var(--color-ink)]">"Page introuvable"</h1>
-            <p class="text-[var(--color-ink-muted)]">
-                "L'adresse demandée n'existe pas ou a été déplacée."
-            </p>
+            <h1 class="font-sans text-4xl text-[var(--color-ink)]">{ui.page_not_found}</h1>
+            <p class="text-[var(--color-ink-muted)]">{ui.not_found_body}</p>
             <A
-                href="/"
+                href=crate::jurisdiction::use_reader_scope().href("/")
                 attr:class="mt-auto inline-flex items-center gap-1.5 pt-6 text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)]"
             >
                 <span aria-hidden="true">"←"</span>
-                " Retour à l'accueil"
+                " "
+                {ui.back_home}
             </A>
         </div>
     }

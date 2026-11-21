@@ -22,14 +22,17 @@ pub fn LegalInstrumentPanel(
     #[prop(into)] on_toggle_instrument: Callback<String>,
     #[prop(into)] on_toggle_article: Callback<String>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
     let filter_text = RwSignal::new(String::new());
     let query_map = use_query_map();
+    let scope = crate::jurisdiction::use_reader_scope();
+    let lang = crate::i18n::use_reader_lang().get();
 
     // `FilterSearchInput` debounces, so the key turns once per pause and not
     // once per keystroke.
     let suggest = instruments_resource(Signal::derive(move || {
         (
-            key_from_map(&query_map.get()).count_key(),
+            key_from_map(&query_map.get(), scope.code(), lang.code()).count_key(),
             filter_text.get().trim().to_string(),
         )
     }));
@@ -130,14 +133,14 @@ pub fn LegalInstrumentPanel(
     let waiting = Signal::derive(move || suggest.get().is_none());
 
     view! {
-        <FilterSearchInput value=filter_text placeholder="Filtrer ou chercher un article…" />
+        <FilterSearchInput value=filter_text placeholder=crate::i18n::use_ui().search.filter_cited_texts_placeholder />
         <div
             class="filter-scroll flex min-h-0 flex-1 flex-col gap-1.5 overflow-y-auto overscroll-contain"
         >
             <Show when=move || visible.get().is_empty()>
                 <p class="px-2 py-1 text-xs text-[var(--color-ink-subtle)]">
                     {move || {
-                        if waiting.get() { "Recherche au catalogue…" } else { "Aucun résultat" }
+                        if waiting.get() { ui.catalogue_searching } else { ui.no_results }
                     }}
                 </p>
             </Show>
@@ -192,6 +195,7 @@ fn LegalInstrumentRow(
     #[prop(into)] on_toggle_instrument: Callback<()>,
     #[prop(into)] on_toggle_article: Callback<String>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
     let facet_value = value.clone();
     // Token de l'instrument (`ref_text_uid`), pour les clés d'article
     // composites « uid|numKey » dans `la` : un article est porté par SON
@@ -305,7 +309,7 @@ fn LegalInstrumentRow(
             <div class="flex items-center gap-1">
                 <button
                     type="button"
-                    aria-label=move || if expanded.get() { "Réduire" } else { "Développer" }
+                    aria-label=move || if expanded.get() { ui.collapse } else { ui.expand }
                     on:click=move |_| expanded.update(|v| *v = !*v)
                     class=chevron_class
                 >

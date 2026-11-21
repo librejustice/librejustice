@@ -12,7 +12,7 @@
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use lj_dtos::{LawCodeSummary, LawSectionItem, TocEntry, INLINE_READING_MAX};
 
@@ -35,9 +35,10 @@ pub fn LawCodePage() -> impl IntoView {
     own_page_description();
 
     let code = code_param();
+    let lang = crate::i18n::use_reader_lang().get();
     let summary = Resource::new_blocking(
         move || code.get(),
-        |(juris, code)| sendable(fetch_code_summary(juris, code)),
+        move |(juris, code)| sendable(fetch_code_summary(juris, code, lang)),
     );
     // Table des matières non bloquante (streamée via `<Suspense>`) : hors du chemin
     // critique du rendu SEO, qui n'attend que le sommaire. Datée par `?date=`
@@ -101,12 +102,13 @@ fn CodeError(err: PageError) -> impl IntoView {
     if err.status == 404 {
         crate::pages::not_found::signaler_lien_mort();
     }
+    let shell = &crate::i18n::use_ui().shell;
     let eyebrow = if err.status == 404 {
-        "Introuvable"
+        shell.not_found
     } else {
-        "Erreur"
+        shell.error
     };
-    let title = "Code introuvable - LibreJustice";
+    let title = crate::i18n::use_ui().norm.code_not_found_title;
     view! {
         <Title text=title />
         <Meta name="robots" content="noindex" />
@@ -114,7 +116,7 @@ fn CodeError(err: PageError) -> impl IntoView {
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
                 {eyebrow}
             </p>
-            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.message}</h1>
+            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{err.failure.text(&crate::i18n::use_ui().shell)}</h1>
         </div>
     }
 }
@@ -139,6 +141,7 @@ fn CodeSkeleton() -> impl IntoView {
 
 #[component]
 fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
     let title = summary.titre.clone();
     let code = summary.code.clone();
     let text = lj_vocab::norm_path(&summary.jurisdiction, &summary.code);
@@ -151,11 +154,10 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
     let publication = summary.publication.clone().unwrap_or_default();
     let noindex = summary.titre.contains(lj_vocab::PROTECTED_ACCESS_MARKER)
         || (!has_articles && body.is_none());
+    let ui = &crate::i18n::use_ui().norm;
+    let dates = &crate::i18n::use_ui().dates;
     let description = if has_articles {
-        format!(
-            "{} — {} articles. Référentiel consolidé, versions à date.",
-            summary.titre, summary.article_count
-        )
+        (ui.code_description)(&summary.titre, summary.article_count)
     } else {
         let excerpt: String = body
             .as_deref()
@@ -190,16 +192,19 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
             .clone()
             .unwrap_or_else(|| fond.to_string());
         let year = (fond != "codes").then(|| match summary.fond_year {
-            Some(y) => (format!("année {y}"), y.to_string()),
-            None => ("sans date".to_string(), "sans-date".to_string()),
+            Some(y) => ((ui.year_n)(y), y.to_string()),
+            None => (ui.undated.to_string(), "sans-date".to_string()),
         });
         let index = format!(
             "https://librejustice.fr/norm-index/{}",
             lj_vocab::url_segment(&summary.jurisdiction)
         );
         let mut items = vec![
-            ("Accueil", "https://librejustice.fr/".to_string()),
-            ("Normes", index.clone()),
+            (
+                crate::i18n::use_ui().shell.home,
+                "https://librejustice.fr/".to_string(),
+            ),
+            (ui.norms, index.clone()),
             (label.as_str(), format!("{index}/{fond}")),
         ];
         if let Some((ylabel, token)) = &year {
@@ -214,9 +219,9 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
     // page sources générale.
     let is_legi = summary.legitext.starts_with("LEGITEXT");
     let (source_href, source_label) = if is_legi {
-        ("/sources#dila", "Base LEGI · DILA")
+        ("/sources#dila", ui.source_legi)
     } else {
-        ("/sources", "Données & sources")
+        ("/sources", ui.data_sources)
     };
     // Bloc méta (articles / dernière modif / source / LEGITEXT), un item par ligne.
     // Bâti par une closure pour être rendu à deux endroits : la gouttière gauche sur
@@ -225,12 +230,12 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
     let modif_date = summary
         .derniere_modification
         .as_deref()
-        .map(|d| format_iso_date(Some(d)));
+        .map(|d| format_iso_date(dates, Some(d)));
     let signature_date = summary
         .date_texte
         .as_deref()
-        .map(|d| format_iso_date(Some(d)));
-    let published_in = publication.issue.clone();
+        .map(|d| format_iso_date(dates, Some(d)));
+    let published_in = summary.notice.clone();
     let nor = summary.nor.clone();
     let legitext_uid = is_legi.then(|| summary.legitext.clone());
     // Texte publié au JO (uid JORFTEXT) : lien composé vers sa page Légifrance
@@ -243,31 +248,27 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
     });
     let meta_line = move || {
         let count = has_articles.then(
-            || view! { <span>{format!("{} articles", group_thousands(article_count))}</span> },
+            || view! { <span>{(ui.n_articles)(&group_thousands(numbers, article_count))}</span> },
         );
         let modified = modif_date
             .clone()
-            .map(|d| view! { <span>{format!("Dernière modification le {d}")}</span> });
+            .map(|d| view! { <span>{(ui.last_modified_on)(&d)}</span> });
         let signed = signature_date
             .clone()
-            .map(|d| view! { <span>{format!("Date de signature : {d}")}</span> });
-        let published = published_in.clone().map(|i| match i.href {
-            Some(href) => view! {
-                <a
-                    href=href
-                    rel="external noopener"
-                    target="_blank"
-                    class="self-start underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
+            .map(|d| view! { <span>{(ui.signed_on)(&d)}</span> });
+        let published = published_in.clone().map(|n| {
+            view! {
+                <A
+                    href=n.href.unwrap_or_default()
+                    attr:class="self-start underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
                 >
-                    {format!("Publié au {}", i.label)}
-                </a>
+                    {(ui.published_in)(&n.label)}
+                </A>
             }
-            .into_any(),
-            None => view! { <span>{format!("Publié au {}", i.label)}</span> }.into_any(),
         });
         let nor = nor
             .clone()
-            .map(|n| view! { <span class="font-mono text-xs">{format!("NOR : {n}")}</span> });
+            .map(|n| view! { <span class="font-mono text-xs">{(ui.nor)(&n)}</span> });
         let legitext = legitext_uid
             .clone()
             .map(|uid| view! { <span class="font-mono text-xs">{uid}</span> });
@@ -279,7 +280,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
                     target="_blank"
                     class="self-start underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
                 >
-                    "Texte au JO — Légifrance"
+                    {ui.jo_text}
                 </a>
             }
         });
@@ -304,13 +305,13 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
     let upcoming = summary
         .upcoming_versions
         .first()
-        .map(|d| crate::pages::law_page::upcoming_banner("Ce texte sera modifié", d));
+        .map(|d| crate::pages::law_page::upcoming_banner(ui.text_will_change, d));
     // État de diffusion : les circulaires abrogées restent lisibles, le bandeau
     // signale l'abrogation.
     let abroge = (summary.status.as_deref() == Some("ABROGE")).then(|| {
         view! {
             <p class="mt-1 w-fit rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)]/60 px-3 py-1.5 text-sm text-[var(--color-ink-muted)]">
-                "Ce texte est abrogé."
+                {ui.text_repealed}
             </p>
         }
     });
@@ -327,7 +328,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
         let heading = has_articles.then(|| {
             view! {
                 <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "Texte"
+                    {ui.text_heading}
                 </h2>
             }
         });
@@ -335,7 +336,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
             <section class="flex min-w-0 flex-col gap-3">
                 {heading}
                 <div class="whitespace-pre-line text-base leading-relaxed text-[var(--color-ink)]">
-                    {b}
+                    {crate::components::search::compact_search::highlight::plain_text(b)}
                 </div>
             </section>
         }
@@ -349,10 +350,13 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
         <Meta property="og:title" content=title.clone() />
         <Meta property="og:description" content=description.clone() />
         <Meta property="og:url" content=url.clone() />
-        <Meta property="og:locale" content="fr_FR" />
+        <Meta
+            property="og:locale"
+            content=crate::i18n::use_reader_lang().get().og_locale()
+        />
         <Meta property="og:image" content=OG_IMAGE />
         {noindex.then(|| view! { <Meta name="robots" content="noindex" /> })}
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
         {breadcrumb
             .map(|bc| view! { <leptos_meta::Script type_="application/ld+json">{bc}</leptos_meta::Script> })}
@@ -394,9 +398,9 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
                         {publication_note(publication.repeal.clone())}
                     </header>
 
-                    {publication_block("Notice", publication.notice.clone())}
-                    {publication_block("Résumé", publication.summary.clone())}
-                    {publication_block("Visas", publication.visas.clone())}
+                    {publication_block(ui.pub_notice, publication.notice.clone())}
+                    {publication_block(ui.pub_summary, publication.summary.clone())}
+                    {publication_block(ui.pub_visas, publication.visas.clone())}
                     {body_section}
                     {has_articles.then(|| view! {
                         <CodeTocSection
@@ -406,8 +410,8 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
                             juris=juris.clone()
                         />
                     })}
-                    {publication_block("Signataires", publication.signatories.clone())}
-                    {publication_block("Travaux préparatoires", publication.preparatory_work.clone())}
+                    {publication_block(ui.pub_signatories, publication.signatories.clone())}
+                    {publication_block(ui.pub_preparatory, publication.preparatory_work.clone())}
                     <crate::components::decision::DecisionCommentaires commentaires=commentaires />
                 </div>
             }
@@ -415,7 +419,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
             similar=view! {
                 // Piste droite : les articles du texte que la jurisprudence travaille le plus.
                 <aside
-                    aria-label="Articles les plus cités"
+                    aria-label=ui.most_cited
                     class="flex flex-col gap-6 lg:sticky lg:top-20 lg:self-start"
                 >
                     {top_cited_block(summary.top_cited)}
@@ -427,7 +431,7 @@ fn LawCodeLoaded(summary: LawCodeSummary, toc: Resource<TocResult>) -> impl Into
 }
 
 /// A block the JO printed around a text's articles, under its heading.
-fn publication_block(heading: &'static str, text: Option<String>) -> Option<AnyView> {
+pub(crate) fn publication_block(heading: &'static str, text: Option<String>) -> Option<AnyView> {
     let text = text.filter(|t| !t.trim().is_empty())?;
     Some(
         view! {
@@ -436,7 +440,7 @@ fn publication_block(heading: &'static str, text: Option<String>) -> Option<AnyV
                     {heading}
                 </h2>
                 <div class="whitespace-pre-line text-base leading-relaxed text-[var(--color-ink)]">
-                    {text}
+                    {crate::components::search::compact_search::highlight::plain_text(text)}
                 </div>
             </section>
         }
@@ -445,7 +449,7 @@ fn publication_block(heading: &'static str, text: Option<String>) -> Option<AnyV
 }
 
 /// A one-line note the JO attached to a text: a corrigendum, a repeal.
-fn publication_note(text: Option<String>) -> Option<AnyView> {
+pub(crate) fn publication_note(text: Option<String>) -> Option<AnyView> {
     let text = text.filter(|t| !t.trim().is_empty())?;
     Some(
         view! {
@@ -457,13 +461,15 @@ fn publication_note(text: Option<String>) -> Option<AnyView> {
     )
 }
 
-/// Recherche bornée à ce code : formulaire GET nu vers `/norm-search?q=…&code={slug}` ,
+/// Recherche bornée à ce code : formulaire GET nu vers `/{juris}/norm-search?q=…&code={slug}`,
 /// la page textes lit `code` et borne le moteur au texte.
 #[component]
 fn CodeSearchForm(code: String) -> impl IntoView {
     use crate::components::search::compact_search::SearchIcon;
+    let action = crate::jurisdiction::use_reader_scope().href("/norm-search");
+    let ui = crate::i18n::use_ui();
     view! {
-        <form action="/norm-search" method="get" role="search" class="flex w-full max-w-2xl items-center gap-2">
+        <form action=action method="get" role="search" class="flex w-full max-w-2xl items-center gap-2">
             <input type="hidden" name="code" value=code />
             <div class="group flex h-11 w-full min-w-0 flex-1 items-center gap-2 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 transition-colors has-[:focus-visible]:border-[var(--color-ink)]">
                 <span class="text-[var(--color-ink-subtle)]" aria-hidden="true">
@@ -472,8 +478,8 @@ fn CodeSearchForm(code: String) -> impl IntoView {
                 <input
                     name="q"
                     size="1"
-                    aria-label="Rechercher dans ce code"
-                    placeholder="Rechercher dans ce code…"
+                    aria-label=ui.norm.search_in_code
+                    placeholder=ui.norm.search_in_code_placeholder
                     autocomplete="off"
                     class="h-full min-w-0 flex-1 bg-transparent text-[var(--color-ink)] outline-none placeholder:text-[var(--color-ink-subtle)]"
                 />
@@ -482,7 +488,7 @@ fn CodeSearchForm(code: String) -> impl IntoView {
                 type="submit"
                 class="inline-flex h-11 shrink-0 items-center justify-center whitespace-nowrap rounded-md border border-[var(--color-rule)] bg-[var(--color-ink)] px-4 text-sm font-medium text-[var(--color-parchment)] transition-colors hover:bg-[var(--color-ink-muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--color-ring)]"
             >
-                "Rechercher"
+                {ui.search.search}
             </button>
         </form>
     }
@@ -502,10 +508,11 @@ fn CodeTocSection(
     let text = StoredValue::new(text);
     let juris = StoredValue::new(juris);
     let date = chrono_date();
+    let ui = &crate::i18n::use_ui().norm;
     view! {
         <Suspense fallback=move || {
             view! {
-                <p class="text-sm text-[var(--color-ink-subtle)]">"Chargement du sommaire…"</p>
+                <p class="text-sm text-[var(--color-ink-subtle)]">{ui.loading_toc}</p>
             }
         }>
             {move || Suspend::new(async move {
@@ -516,6 +523,7 @@ fn CodeTocSection(
                     text.get_value(),
                     juris.get_value(),
                     date.get(),
+                    ui,
                 )
             })}
         </Suspense>
@@ -528,11 +536,12 @@ fn toc_view(
     text: String,
     juris: String,
     date: Option<String>,
+    ui: &'static crate::i18n::NormUi,
 ) -> AnyView {
     if let Some(err) = resolved.error {
         return view! {
             <p class="text-sm text-[var(--color-ink-subtle)]">
-                {format!("Sommaire indisponible ({err}).")}
+                {(ui.toc_unavailable)(&err.text(&crate::i18n::use_ui().shell))}
             </p>
         }
         .into_any();
@@ -548,7 +557,7 @@ fn toc_view(
             })
             .collect();
         return view! {
-            <section aria-label="Texte intégral" class="flex min-w-0 max-w-3xl flex-col">
+            <section aria-label=ui.full_text class="flex min-w-0 max-w-3xl flex-col">
                 {items}
             </section>
         }
@@ -609,10 +618,11 @@ fn plan_rail_view(resolved: &TocResult) -> Option<AnyView> {
 }
 
 fn toc_section(views: Vec<AnyView>) -> AnyView {
+    let ui = &crate::i18n::use_ui().norm;
     view! {
-        <section aria-label="Table des matières" class="flex min-w-0 flex-col gap-3">
+        <section aria-label=ui.toc class="flex min-w-0 flex-col gap-3">
             <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                "Table des matières"
+                {ui.toc}
             </h2>
             <div class="flex flex-col">{views}</div>
         </section>
@@ -645,8 +655,8 @@ fn plan_rail(items: &[lj_dtos::TocNode]) -> Option<AnyView> {
     }
     Some(
         view! {
-            <nav aria-label="Plan du texte" class="hidden lg:sticky lg:top-20 lg:block lg:self-start">
-                {rail_block("Plan du texte", entries)}
+            <nav aria-label=crate::i18n::use_ui().norm.text_plan class="hidden lg:sticky lg:top-20 lg:block lg:self-start">
+                {rail_block(crate::i18n::use_ui().norm.text_plan, entries)}
             </nav>
         }
         .into_any(),
@@ -687,6 +697,7 @@ fn section_details(
     inline: Option<InlineRead>,
     children: Vec<AnyView>,
 ) -> AnyView {
+    let numbers = &crate::i18n::use_ui().numbers;
     let (details_cls, summary_cls, label_cls, chevron_top) = if top {
         (
             "scroll-mt-24 border-t border-[var(--color-rule)] py-1 first:border-t-0",
@@ -705,7 +716,7 @@ fn section_details(
     let count = (article_count > 0).then(|| {
         view! {
             <span class="mt-0.5 shrink-0 text-xs tabular-nums text-[var(--color-ink-subtle)]">
-                {format!("{} art.", group_thousands(article_count as i64))}
+                {(crate::i18n::use_ui().norm.n_art)(&group_thousands(numbers, article_count as i64))}
             </span>
         }
     });
@@ -737,7 +748,7 @@ fn section_details(
                     href=href
                     attr:class="mt-0.5 shrink-0 text-xs text-[var(--color-accent)] no-underline hover:underline"
                 >
-                    "Lire"
+                    {crate::i18n::use_ui().norm.read}
                 </A>
             }
             .into_any(),
@@ -761,7 +772,7 @@ fn section_details(
                         .into_any(),
                     None => view! {
                         <p class="py-3 pl-2 text-sm text-[var(--color-ink-subtle)]">
-                            "Chargement…"
+                            {crate::i18n::use_ui().norm.loading}
                         </p>
                     }
                     .into_any(),
@@ -874,11 +885,12 @@ fn inline_read_control(
         let _ = (ctx, reading, loading);
         move |_: leptos::ev::MouseEvent| {}
     };
+    let ui = &crate::i18n::use_ui().norm;
     let label = move || {
         if open_reading.get() {
-            "Sommaire"
+            ui.contents
         } else {
-            "Lire"
+            ui.read
         }
     };
     view! {

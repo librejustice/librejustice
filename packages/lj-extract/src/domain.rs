@@ -133,9 +133,28 @@ pub fn nac_domain(nac: &str) -> Option<&'static str> {
     })
 }
 
-/// Parent de la taxonomie (`CIVIL_DROIT_LOCATIF` → `CIVIL`).
+const ROOTS: [&str; 9] = [
+    "CIVIL",
+    "COMMERCIAL",
+    "PUBLIC",
+    "SOCIAL",
+    "FISCAL",
+    "PROPRIETE_INTELLECTUELLE",
+    "EUROPEEN",
+    "CRIMINEL",
+    "CONSTITUTIONNEL",
+];
+
+/// Root of a code: `CIVIL_DROIT_LOCATIF` → `CIVIL`,
+/// `PROPRIETE_INTELLECTUELLE_INDUSTRIELLE` → `PROPRIETE_INTELLECTUELLE`.
 fn parent(d: &str) -> &str {
-    d.split('_').next().unwrap_or(d)
+    ROOTS
+        .into_iter()
+        .find(|root| {
+            d.strip_prefix(root)
+                .is_some_and(|rest| rest.is_empty() || rest.starts_with('_'))
+        })
+        .unwrap_or(d)
 }
 
 /// Raffine par le code NAC : il COMBLE un domaine absent ou parent nu, et
@@ -676,6 +695,14 @@ mod tests {
             Some("legal_domain:CIVIL_DROIT_BANCAIRE_BOURSIER")
         );
         assert_eq!(refine_with_nac(None, Some("99Z")), None);
+        assert_eq!(
+            refine_with_nac(
+                Some("legal_domain:PROPRIETE_INTELLECTUELLE".into()),
+                Some("3A1")
+            )
+            .as_deref(),
+            Some("legal_domain:PROPRIETE_INTELLECTUELLE_INDUSTRIELLE")
+        );
     }
 
     #[test]

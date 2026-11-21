@@ -51,10 +51,11 @@ futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["js", "std"] }
+half = { version = "2", features = ["num-traits"] }
 hashbrown = { version = "0.17" }
 hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
 hmac = { version = "0.13", default-features = false, features = ["zeroize"] }
-hyper = { version = "1", features = ["http1", "http2", "server"] }
+hyper = { version = "1", features = ["client", "http1", "http2", "server"] }
 hyper-util = { version = "0.1", features = ["server-auto", "service", "tokio"] }
 idna = { version = "1" }
 itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
@@ -105,7 +106,7 @@ thiserror = { version = "2" }
 time = { version = "0.3", features = ["macros", "serde-human-readable", "serde-well-known"] }
 tinyvec = { version = "1", features = ["rustc_1_57", "std"] }
 tokio = { version = "1", features = ["full"] }
-tokio-util = { version = "0.7", features = ["codec", "io"] }
+tokio-util = { version = "0.7", features = ["codec", "io", "rt"] }
 tower = { version = "0.5", default-features = false, features = ["log", "make", "retry", "timeout"] }
 tower-http = { version = "0.6", features = ["compression-br", "compression-gzip", "cors", "decompression-br", "decompression-gzip", "decompression-zstd", "fs", "set-header", "trace"] }
 tracing = { version = "0.1", features = ["log"] }
@@ -129,6 +130,7 @@ deranged = { version = "0.5", features = ["powerfmt", "serde"] }
 digest-93f6ce9d446188ac = { package = "digest", version = "0.10", features = ["mac", "oid", "std"] }
 either = { version = "1", features = ["use_std"] }
 getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-features = false, features = ["js", "std"] }
+half = { version = "2", features = ["num-traits"] }
 hashbrown = { version = "0.17" }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
@@ -165,7 +167,6 @@ xxhash-rust = { version = "0.8", default-features = false, features = ["const_xx
 [target.x86_64-unknown-linux-gnu.dependencies]
 bitflags = { version = "2", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
-hyper = { version = "1", default-features = false, features = ["client"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "tls12"] }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
 rustix = { version = "1", features = ["fs"] }

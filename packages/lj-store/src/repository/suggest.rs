@@ -71,7 +71,7 @@ impl DecisionRepository<'_> {
             .conn
             .query(
                 "SELECT id, texte FROM legal_article
-                 WHERE id > $1 AND id % $2 = 0 AND texte IS NOT NULL
+                 WHERE id > $1 AND id % $2 = 0 AND texte IS NOT NULL AND num <> ''
                  ORDER BY id LIMIT $3",
                 &[&after_id, &modulo, &limit],
             )

@@ -20,7 +20,7 @@ header "content-security-policy" contains "frame-ancestors 'none'"
 
 # Même socle sur une page HTML, où la CSP complète du document est posée par le
 # shell SSR avec son nonce : c'est ELLE qui doit répondre ici, pas le socle.
-GET {{base}}/
+GET {{base}}/fr
 HTTP 200
 [Asserts]
 header "strict-transport-security" contains "max-age=31536000"

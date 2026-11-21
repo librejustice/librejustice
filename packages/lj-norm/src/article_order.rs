@@ -127,9 +127,66 @@ pub fn sort_text_reading_order<T>(
     }
 }
 
+/// The blocks of a text's own prose that are pieces of it, by `num_key`.
+pub const BLOCKS: [&str; 4] = ["notice", "visas", "signataires", "tp"];
+
+/// A block's place, the same in every source: before the first article or after the last.
+pub fn block_position(key: &str) -> Option<i32> {
+    match key {
+        "notice" => Some(-2),
+        "visas" => Some(-1),
+        "signataires" => Some(i32::MAX - 1),
+        "tp" => Some(i32::MAX),
+        _ => None,
+    }
+}
+
+/// Places a text's pieces, its rows with no number sorted by `position`, among
+/// its `articles` already in reading order: by position when `printed`, every
+/// article holding its printed place, else those below zero before the articles
+/// and the others after.
+pub fn place_pieces<T>(
+    mut articles: Vec<T>,
+    pieces: Vec<T>,
+    printed: bool,
+    position: impl Fn(&T) -> Option<i32>,
+) -> Vec<T> {
+    if printed {
+        articles.extend(pieces);
+        articles.sort_by_key(|e| (position(e).is_none(), position(e)));
+        return articles;
+    }
+    let (before, after): (Vec<T>, Vec<T>) = pieces
+        .into_iter()
+        .partition(|e| position(e).is_some_and(|p| p < 0));
+    before.into_iter().chain(articles).chain(after).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pieces_take_their_printed_place() {
+        let pos = |e: &(&str, Option<i32>)| e.1;
+        let pieces = vec![
+            ("visas", Some(-1)),
+            ("annexe", Some(3)),
+            ("signataires", Some(5)),
+        ];
+        let printed = vec![("1", Some(1)), ("2", Some(2)), ("3", Some(4))];
+        let keys =
+            |v: Vec<(&'static str, Option<i32>)>| v.into_iter().map(|e| e.0).collect::<Vec<_>>();
+        assert_eq!(
+            keys(place_pieces(printed, pieces.clone(), true, pos)),
+            ["visas", "1", "2", "annexe", "3", "signataires"]
+        );
+        let consolidated = vec![("1", None), ("2", None), ("3", None)];
+        assert_eq!(
+            keys(place_pieces(consolidated, pieces, false, pos)),
+            ["visas", "1", "2", "3", "annexe", "signataires"]
+        );
+    }
 
     fn sorted(mut keys: Vec<&str>) -> Vec<&str> {
         keys.sort_by_key(|k| num_key_sort_key(k));

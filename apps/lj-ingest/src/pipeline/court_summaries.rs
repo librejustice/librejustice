@@ -13,7 +13,7 @@ use serde_json::{json, Value};
 
 use lj_parse::{
     cedh_legal_summary, cedh_legal_summary_pending, cjue_case_number, cjue_court_summary,
-    cjue_court_summary_ocr, OcrBlock, OcrPage,
+    cjue_court_summary_ocr, cjue_summary_without_head, OcrBlock, OcrPage,
 };
 use lj_sources::cedh::{parse_results, CedhClient, PAGE_SIZE};
 use lj_sources::cjue::{CjueClient, THROTTLE};
@@ -22,7 +22,7 @@ use lj_summary::{COURT_SUMMARY_ENGINE, COURT_SUMMARY_GENERATION};
 use lj_vocab::languages::eu_of_iso_639_1;
 
 use crate::config::Settings;
-use crate::ocr::Ocr;
+use crate::ocr::{Invented, Ocr};
 
 use super::europe::europe_pool;
 
@@ -178,7 +178,11 @@ async fn cjue(
                             Err(error) => Err(error),
                         };
                         return match read {
-                            Ok(Some(text)) => Outcome::Text(decision_id, lang, text),
+                            Ok(Some(text)) => Outcome::Text(
+                                decision_id,
+                                lang,
+                                cjue_summary_without_head(&text).to_string(),
+                            ),
                             Ok(None) => Outcome::Unread,
                             Err(error) => {
                                 tracing::warn!(summary, lang, %error, "cjue summary PDF unread");
@@ -192,7 +196,11 @@ async fn cjue(
                     }
                 };
                 match cjue_court_summary(&html) {
-                    Some(text) => Outcome::Text(decision_id, lang, text),
+                    Some(text) => Outcome::Text(
+                        decision_id,
+                        lang,
+                        cjue_summary_without_head(&text).to_string(),
+                    ),
                     None => Outcome::Titrage,
                 }
             }
@@ -310,7 +318,11 @@ async fn cjue_summary_ocr(
         return Ok(None);
     };
     let read = ocr.ocr.document_layout(&pdf, summary).await;
-    let read = read.inspect_err(|_| ocr.off.store(true, Ordering::Relaxed))?;
+    let read = read.inspect_err(|e| {
+        if !e.is::<Invented>() {
+            ocr.off.store(true, Ordering::Relaxed)
+        }
+    })?;
     ocr.pages.fetch_add(read.len(), Ordering::Relaxed);
     let pages: Vec<Value> = read
         .into_iter()
@@ -374,7 +386,7 @@ async fn cedh(
     from_year: i32,
     to_year: i32,
 ) -> Result<()> {
-    let client = CedhClient::new().with_body_cache(settings.cache_dir());
+    let client = CedhClient::new(&settings.egress_proxy)?.with_body_cache(settings.cache_dir());
     let mut decisions: HashMap<(String, String), Vec<i64>> = HashMap::new();
     for (docket, date, id) in repo.docket_date_index("CEDH").await? {
         decisions.entry((docket, date)).or_default().push(id);

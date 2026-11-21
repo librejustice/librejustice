@@ -3,7 +3,6 @@
 
 use crate::error::{Result, StoreError};
 use lj_pg::db::Connection;
-use lj_pg::error::PgError;
 use lj_pg::migrator::{applied_versions, apply_migrations_with, Migration};
 
 /// Liste statique des migrations embarquées, triées par version croissante.
@@ -45,6 +44,11 @@ pub fn embedded_migrations() -> Vec<Migration> {
             name: "0395_release_2026_11_07.sql",
             sql: include_str!("../migrations/0395_release_2026_11_07.sql"),
         },
+        Migration {
+            version: 476,
+            name: "0476_release_2026_11_21.sql",
+            sql: include_str!("../migrations/0476_release_2026_11_21.sql"),
+        },
     ]
 }
 
@@ -76,8 +80,8 @@ pub enum MigrationIntent {
 }
 
 /// The check of [`apply_migrations`] without its writing: raises when the base
-/// holds a version the binary lacks, then when the binary holds one the base
-/// lacks. It does not create `schema_migrations`, a check writing nothing.
+/// holds a version the binary lacks that [`newer_than_disk`](lj_pg::migrator::newer_than_disk)
+/// refuses, then when the binary holds one the base lacks. It does not create `schema_migrations`, a check writing nothing.
 async fn verify_schema_current(conn: &Connection) -> Result<()> {
     let table: Option<String> = conn
         .query_one(
@@ -91,13 +95,10 @@ async fn verify_schema_current(conn: &Connection) -> Result<()> {
         Some(_) => applied_versions(conn, SCHEMA_MIGRATIONS).await?,
         None => Vec::new(),
     };
-    let missing: Vec<i32> = applied
-        .iter()
-        .copied()
-        .filter(|v| !available.contains(v))
-        .collect();
-    if let Some(&version) = missing.first() {
-        return Err(PgError::UnknownMigrations { version, missing }.into());
+    let newer = lj_pg::migrator::newer_than_disk(&available, &applied)?;
+    if !newer.is_empty() {
+        tracing::warn!(?newer, "migrations: the database is ahead of this binary");
+        return Ok(());
     }
     let pending: Vec<i32> = available
         .into_iter()

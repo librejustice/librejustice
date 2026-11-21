@@ -9,8 +9,9 @@ Orders of magnitude (October 2026): ~1.5 million texts, ~2.1 million articles in
 - **Circulaires and instructions** (~44 000): the administration's own reading; never confuse with the norm itself.
 - **BOFiP** (6 288): the tax administration's doctrine, opposable under LPF art. L. 80 A; slugs like `bic-provisions-sort-et-surveillance-des-provisions`.
 - **Conventions collectives** (~1 400, ~242 000 articles, source `kali`): filter with the exact convention name in `code`.
+- **Service-Public practical sheets** (~3 700, source `fiche_pratique`): the « vos droits » sheets of service-public.fr for individuals and businesses, each linked to the articles it cites. Information for the public, never the norm itself.
 
-## European Union (`jurisdiction: UE`: ~149 000 texts)
+## European Union (`jurisdiction: EU`: ~149 000 texts)
 
 Regulations and directives, article by article (`directive-2008-115-ce-retour-des-ressortissants-en-sejour-irregulier`).
 
@@ -26,7 +27,7 @@ Foreign texts are **not versioned**: one curated version, `valid_from` empty. Ch
 
 ## Provenance: the `source` field
 
-Every article carries its source. Official publishers: `legifrance`, `jorf`, `kali`, `bofip`, `eu-law`, `official-fr`, `gesetze-im-internet.de` (DE), `fedlex` (CH), `legilux` (LU). Government sites that are official but not always current: `dri.gouv.sn` (SN, documentation site, not the JO), `sgg-mali.ml` (ML). Aggregators and secondary sources: `jafbase` (33 700 foreign family-law articles), `africa-laws.org`, `natlex.ilo.org`, `archive.org`. For a contested point of foreign law, say which source the text comes from; an aggregator or stale government copy may lag a reform ([external-sources.md](external-sources.md)).
+Every article carries its source. Official publishers: `legifrance`, `jorf`, `kali`, `bofip`, `eu-law`, `official-fr`, `gesetze-im-internet.de` (DE), `fedlex` (CH), `legilux` (LU), `justice_laws` (CA). Government sites that are official but not always current: `dri.gouv.sn` (SN, documentation site, not the JO), `sgg-mali.ml` (ML). Aggregators and secondary sources: `jafbase` (33 700 foreign family-law articles), `africa-laws.org`, `natlex.ilo.org`, `archive.org`. For a contested point of foreign law, say which source the text comes from; an aggregator or stale government copy may lag a reform ([external-sources.md](external-sources.md)).
 
 ## URL and key shapes
 

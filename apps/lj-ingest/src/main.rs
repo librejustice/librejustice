@@ -172,6 +172,10 @@ enum CredentialAction {
     },
     #[command(about = "Rend au pool une clé garée")]
     Enable { fingerprint: String },
+    #[command(
+        about = "Code HTTP de la clé d'une organisation sur la route où elle se dépense, garée sur un 402"
+    )]
+    Probe { provider: String, tenant: String },
 }
 
 #[derive(Subcommand)]
@@ -182,6 +186,10 @@ enum Command {
     Chain {
         #[arg(value_enum)]
         kind: chain::ChainKind,
+        /// Walks the plan without running a step: the branches on their threads, in their order,
+        /// after the schema check. Takes no lock and writes nothing.
+        #[arg(long)]
+        plan: bool,
     },
     /// Sync incrémental des sources (opendata ZIP + Judilibre).
     Sync,
@@ -329,6 +337,35 @@ enum Command {
         /// `k/n`: only the decisions with `id % n == k`, one machine each.
         #[arg(long, value_parser = pipeline::parse_shard, default_value = "0/1")]
         shard: (i64, i64),
+        /// Only the decisions the site shows each of whose texts the passages read
+        /// carries a summary at its generation, a collage or the court's own.
+        #[arg(long)]
+        summarised: bool,
+        /// The French courts first, then the CEDH, then the rest, each newest
+        /// first, where the queue otherwise runs by id.
+        #[arg(long)]
+        by_jurisdiction: bool,
+        /// Only the decisions whose passages read more than one text.
+        #[arg(long)]
+        multilingual: bool,
+        /// Starts no batch after this many seconds, writes those in flight and
+        /// ends with success.
+        #[arg(long = "stop-after", value_name = "SECS")]
+        stop_after: Option<u64>,
+    },
+    /// Cuts and embeds the article versions the norms search reads whose
+    /// passages are missing or were cut from another version of their text.
+    EmbedNorms {
+        /// Bounds the versions visited (default: all).
+        #[arg(long)]
+        limit: Option<usize>,
+        /// On the local hosts alone, never on Cloudflare.
+        #[arg(long)]
+        stock: bool,
+        /// Starts no batch after this many seconds, writes those in flight and
+        /// ends with success.
+        #[arg(long = "stop-after", value_name = "SECS")]
+        stop_after: Option<u64>,
     },
     /// Purge les liens de réversion (reverses).
     PurgeReverses,
@@ -348,10 +385,8 @@ enum Command {
     GenerateSummaries {
         #[arg(long)]
         limit: Option<usize>,
-        /// Régénère AUSSI les résumés dont le prompt est plus ancien que la
-        /// version courante (`summary_prompt_version < SUMMARY_PROMPT_VERSION`).
-        /// Sans ce flag, seuls les résumés manquants (`summary IS NULL`) sont
-        /// générés.
+        /// Also rewrites the summaries of French texts below their generation. A text
+        /// in another language keeps the summary it has, which may be French.
         #[arg(long)]
         refresh_stale: bool,
         #[arg(
@@ -372,6 +407,10 @@ enum Command {
         /// Credentials this run may spend, by tenant or fingerprint; every live one when absent.
         #[arg(long = "account")]
         accounts: Vec<String>,
+        /// `SEAT=PERCENT`: a luna seat, by tenant or fingerprint, fills each of its windows
+        /// up to this share only, and serves this run even when parked by hand.
+        #[arg(long = "seat-cap", value_parser = parse_seat_cap)]
+        seat_caps: Vec<(String, f64)>,
         /// Jurisdiction types the cited or tiered order takes, `CC` and `CE` for the
         /// supreme courts; every one when absent.
         #[arg(long = "jurisdiction")]
@@ -380,6 +419,24 @@ enum Command {
         /// or tiered order.
         #[arg(long)]
         named: bool,
+        /// Only the texts in these languages, `de,it`; every language a summary is
+        /// written in when absent.
+        #[arg(long, value_delimiter = ',', value_parser = parse_summary_lang)]
+        langs: Vec<String>,
+        /// Then writes, in this language, the reader summary of each read text in
+        /// another language that has none.
+        #[arg(long, value_parser = parse_summary_lang)]
+        reader: Option<String>,
+        /// Takes no new decision after this many seconds, writes the calls in flight
+        /// and ends with success.
+        #[arg(long = "stop-after", value_name = "SECS")]
+        stop_after: Option<u64>,
+    },
+    /// Moves the French summaries of the texts in another language than French to
+    /// their French reader summary, and requeues the decisions embedded behind them.
+    MoveReaderSummaries {
+        #[arg(long, default_value_t = 5_000)]
+        batch: i64,
     },
     /// Overwrites the summary of the decisions whose court has since published its
     /// own commentary, pasted rather than generated.
@@ -417,6 +474,12 @@ enum Command {
         /// Polls until no batch is left open.
         #[arg(long)]
         wait: bool,
+        /// Only the decisions of this jurisdiction type, `COUR_APPEL`, repeatable.
+        #[arg(long = "jurisdiction")]
+        jurisdictions: Vec<String>,
+        /// A file of decision ids, one per line, this run never submits.
+        #[arg(long)]
+        skip: Option<std::path::PathBuf>,
     },
     /// Replays the deterministic cleaning of `lj-core` over the stored summaries.
     /// Idempotent, a no-op in steady state; to be run after that cleaning gains a
@@ -533,6 +596,13 @@ enum Command {
     /// postponed, unknown date fixed later): the delivered date stays, the others
     /// go, the ends they capped reopen. Counts only, unless `--apply`.
     RedateDilaVersions {
+        /// Writes (without it: counters, no write).
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Deletes the LEGI versions whose text reads « en cours de traitement », and
+    /// reopens the JO rows they closed. Counts only, unless `--apply`.
+    LegiDropPlaceholders {
         /// Writes (without it: counters, no write).
         #[arg(long)]
         apply: bool,
@@ -769,26 +839,62 @@ enum Command {
     /// (data.economie.gouv.fr, snapshot des publications en vigueur) puis
     /// l'ingère. Idempotent.
     SyncBofip,
+    /// The Bulletin officiel de la sécurité sociale: every rubric a text of the norms, each numbered paragraph an article, every version the site's history offers kept.
+    SyncBoss {
+        /// Reads and counts, writes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// Sync du fond DILA CIRCULAIRES : stocks 2009-2014 + abrogations
     /// historiques + flux chronologiques (last-write-wins par ID) →
     /// `legal_text` nature=CIRCULAIRE (métadonnées + résumé ; corps = passe
     /// séparée sync-circulaires-bodies). Reprend au dernier fichier ingéré
     /// (manifest). Idempotent.
     SyncCirculaires,
-    /// Passe corps des circulaires : stocks PDF + PDF compagnons des flux
-    /// (last-write-wins par ID) → `legal_text.body` (pdftotext natif, OCR
-    /// Mistral cache-first en repli scanné). Reprend au dernier tarball rejoué
-    /// (manifest pdf). Idempotent.
-    SyncCirculairesBodies,
-    /// Ministerial bulletins: the circulars, instructions and notes each ministry published on its own site since 2019 and the DILA fonds lacks, written to `legal_text` with their PDF body. Lists the current and previous year.
+    /// The circulaires' bodies: the PDF stocks and the feeds' companion PDFs
+    /// (last write wins per id) → the `body` piece, native `pdftotext`, cache-first
+    /// Mistral OCR for a scan. Resumes at the last tarball replayed (PDF manifest).
+    /// Idempotent.
+    SyncCirculairesBodies {
+        /// Reads the scans on the Vibe keys whose tenant starts with this, every key otherwise.
+        #[arg(long)]
+        ocr_tenant: Option<String>,
+    },
+    /// Ministerial bulletins: every act each ministry published on its own site, a publication of its bulletin and, when it applies, a norm, its PDF kept in the bucket. Lists the current and previous year.
     SyncBulletins {
         /// One site only.
         #[arg(long, value_parser = lj_sources::bulletins::BulletinSite::parse)]
         site: Option<lj_sources::bulletins::BulletinSite>,
-        /// Every year since 2019.
+        /// Every year the site serves, and the files of the texts written before they were kept.
         #[arg(long)]
         full: bool,
         /// Lists and counts, writes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Rewrites the text a fonds read by OCR from Mistral's answers the bucket keeps, Mistral left uncalled: the circulaires' and the bulletins' bodies, the recueils' pages.
+    OcrRebuild {
+        #[arg(value_enum)]
+        fonds: OcrFonds,
+    },
+    /// Empties the pages of a fonds' kept OCR answers its scan leaves blank, the text the OCR wrote on them, and rewrites the fonds' text; only the pages whose answer looks invented are drawn again, and the circulaires' pages, whose PDFs stay at DILA, come from `--pages`.
+    OcrBlank {
+        #[arg(value_enum)]
+        fonds: OcrFonds,
+        /// The circulaires' pages to empty, `<id> <page>` a line.
+        #[arg(long)]
+        pages: Option<std::path::PathBuf>,
+        /// Counts, writes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The parliamentary questions with their answers, each a text of the norms: the Assemblée's current legislature and the Sénat's dump; `--full` adds the Assemblée's 14th to 16th and the JO pages DILA prints.
+    SyncQuestions {
+        #[arg(long, value_enum)]
+        source: Option<pipeline::QuestionSource>,
+        #[arg(long)]
+        full: bool,
+        /// Reads and counts, writes nothing.
         #[arg(long)]
         dry_run: bool,
     },
@@ -796,10 +902,10 @@ enum Command {
     /// re-downloaded, every sheet upserted with its Légifrance edges, the ones
     /// gone from the feeds turned `ABROGE`. Idempotent.
     SyncServicePublic,
-    /// Corps des traités (TRAITE) et accords interprofessionnels (TI) depuis
-    /// les blocs sans numéro des stocks bulk JORF/KALI du cache :
-    /// concaténation dans l'ordre du document → `legal_text.body` des fiches
-    /// sans articles ni corps. Aucun téléchargement. Idempotent.
+    /// The bodies of treaties (TRAITE) and interprofessional agreements (TI) from
+    /// the unnumbered blocks of the cached JORF and KALI stocks, joined in document
+    /// order → the `body` piece of each text with no article, a body still in the
+    /// column written again. Downloads nothing. Idempotent.
     BackfillTreatyBodies,
     /// Sync ArianeWeb, les trois fonds en un job : le recensement (une requête
     /// par fond, facette d'année comptée serveur) désigne les décisions CE que le
@@ -884,9 +990,10 @@ enum Command {
     /// stock/incréments DILA postérieurs au watermark puis les ingère (mécanique
     /// `sync-legi`). Idempotent, reprenable.
     SyncJorf,
-    /// Writes the text of the unnumbered JORF articles as the body of the texts
-    /// with neither body nor article, from every cached JORF archive. Replayable.
-    JorfBodies,
+    /// Writes what every French JO publication prints beside its numbered
+    /// articles, its unnumbered articles, notice, visas, signatures and
+    /// preparatory works, as pieces of its text. Replayable.
+    JorfUnnumbered,
     /// Replays every cached JORF archive into the JO issues and the publication
     /// of each text. Replayable.
     JorfPublications,
@@ -896,7 +1003,12 @@ enum Command {
         /// Prints what each treaty would get, writes nothing.
         #[arg(long)]
         dry_run: bool,
+        /// With `--dry-run`, the records already cut from the JO too, each with the keys it lacks.
+        #[arg(long)]
+        held: bool,
     },
+    /// Lists the states every treaty binds; writes only the lists that change.
+    TreatyParties,
     /// Rewrites the article texte and nota, and the JORF bodies, that an unchanged
     /// cached DILA member reads differently, with their citation spans. Replayable.
     BackfillArticleText {
@@ -948,14 +1060,17 @@ enum Command {
         #[arg(long)]
         exclude: Vec<String>,
     },
-    /// Re-frappe des uids de fiches par dataset JSONL
-    /// `{from, to, jurisdiction?}` (droit étranger par ordre juridique, stubs
-    /// EUR-Lex → EU/). Cascade articles/TOC/liens/citations texte, slug
-    /// inchangé ; suivre du drain reextract-fields --full --field
-    /// legal_references. Résumable.
+    /// Text identities curated from a JSONL dataset
+    /// `{from, to?, jurisdiction?, collapse?, version?, delete?, redirect?}`: a uid renamed
+    /// through its rows, a twin collapsed, a curated reading merged into the official text as
+    /// one of its versions, a text with no object deleted, a slug redirect dropped. Follow
+    /// with reextract-fields --field legal_references. Resumable.
     RenameTexts {
         /// Chemin du dataset JSONL de re-frappe.
         dataset: std::path::PathBuf,
+        /// Prints what each version merge would write, and writes nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Rebase les clés d'article (num_key et colonnes liées) vers la clé
     /// publique slug. One-shot, idempotent.
@@ -977,6 +1092,13 @@ enum Command {
         /// (chargement chirurgical, ex. `--only eu-rproc`). Défaut : tous les datasets.
         #[arg(long)]
         only: Option<String>,
+    },
+    /// Writes the hand-written names of texts no sync writes, from lj-norm's
+    /// `text_aliases.tsv`, replacing theirs.
+    TextAliases {
+        /// The texts, each with rows in the table.
+        #[arg(long = "uid", required = true)]
+        uids: Vec<String>,
     },
     /// Génère les datasets catalogue EUR-Lex (règlements/directives UE cités
     /// mais absents) sous `<state_dir>/ingest/corpus/`, via SPARQL Cellar,
@@ -1003,11 +1125,40 @@ enum Command {
         #[arg(long)]
         limit: Option<usize>,
     },
+    /// Takes the JO texts with neither body nor article that name their addressees
+    /// out of the norms, each slug leading to its notice. Counts only, without `--apply`.
+    MoveToJournal {
+        /// The measures of role `individuel` that have a body or articles instead.
+        #[arg(long, group = "selection")]
+        with_body: bool,
+        /// The texts of a nature that is no norm instead: avis, parliamentary
+        /// notices, results, lists, reports and the like.
+        #[arg(long, group = "selection")]
+        notices: bool,
+        /// The codes a codification act printed as its annex instead, LEGI
+        /// holding them consolidated.
+        #[arg(long, group = "selection")]
+        codes: bool,
+        /// The texts of every order that are no norm instead, a court's ruling
+        /// leading to its decision when the corpus holds it.
+        #[arg(long, group = "selection")]
+        no_norm: bool,
+        /// The texts listed in this file instead, one uid a line, whatever the
+        /// journal that published them.
+        #[arg(long, group = "selection")]
+        texts: Option<std::path::PathBuf>,
+        #[arg(long)]
+        apply: bool,
+    },
     /// Gives their CELLAR text, French HTML else the PDF's text layer, to the
     /// European acts with neither body nor article. Replayable.
     EuBodies {
         #[arg(long)]
         limit: Option<usize>,
+        /// Reads again every act with no numbered article whose body was not
+        /// written on or after this date, and writes over it.
+        #[arg(long)]
+        refresh: Option<chrono::NaiveDate>,
         /// Prints each body's length and head, writes nothing.
         #[arg(long)]
         dry_run: bool,
@@ -1099,7 +1250,8 @@ enum Command {
     /// Rewrites the decision texts an unchanged cached JADE, CONSTIT or CNIL member
     /// reads differently, and the CJUE texts holding a reference the strip now
     /// decodes or a table of contents, re-extracts their fields and leaves their passages to
-    /// `embed-missing`. Replayable.
+    /// `embed-missing`. A CJUE footnote call split over three lines is joined back in place,
+    /// fields and passages untouched. Replayable.
     BackfillDecisionText {
         /// One fond; all four when absent.
         #[arg(long, value_enum)]
@@ -1112,6 +1264,15 @@ enum Command {
     /// writes them, re-extracts the fields of the decisions read in them and
     /// leaves their passages to `embed-missing`. Replayable.
     RecaseTexts {
+        /// Counts what would change and writes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Writes « par » back in the opendata texts whose pseudonymiser lettered it
+    /// as a name, as the ingest now writes them, re-extracts the fields of the
+    /// decisions read in them and leaves their passages to `embed-missing`.
+    /// Replayable.
+    RestorePar {
         /// Counts what would change and writes nothing.
         #[arg(long)]
         dry_run: bool,
@@ -1153,6 +1314,17 @@ enum Command {
     /// décision multi-sources. Garde l'autorité (rang max), fusionne les autres
     /// dedans. Jamais de fusion intra-source. Aucun re-embed. Idempotent.
     MergeCrossSourceDuplicates,
+    /// Merges the decisions JuriCAF holds under two slug families of one court, every provenance kept, then the decisions the court's own site wrote beside such a pair; counts them without `--apply`.
+    MergeJuricafTwins {
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Merges decisions held once per language into one with each language's text, from a list of `KEEPER<TAB>ABSORBED` public ids; checks and counts without `--apply`.
+    MergeLanguagePairs {
+        pairs: std::path::PathBuf,
+        #[arg(long)]
+        apply: bool,
+    },
     /// Absorbs each Judilibre record holding no ruling into the decision of the
     /// same court, day and chamber that joins its number.
     AbsorbCopies {
@@ -1182,8 +1354,8 @@ enum Command {
         #[arg(long)]
         apply: bool,
     },
-    /// Bootstrap CEDH (HUDOC) : balaye toutes les années, fetch les arrêts FR
-    /// (HFJUD) et les ingère. Idempotent par `content_checksum`.
+    /// CEDH bootstrap (HUDOC): sweeps every year and ingests the judgments and
+    /// decisions in French and in English. Idempotent by `content_checksum`.
     IngestCedh {
         /// Première année balayée (défaut : 1960). Backfill ciblé d'un trou
         /// d'ingest sans re-lister le fonds ancien.
@@ -1207,7 +1379,11 @@ enum Command {
         short: bool,
     },
     /// Sync incrémental CEDH : ne balaye que l'année courante.
-    SyncCedh,
+    SyncCedh {
+        /// Only asks HUDOC again for the rows it served empty four weeks ago or more.
+        #[arg(long)]
+        stubs: bool,
+    },
     /// Sync incrémental CJUE : ne balaye que l'année courante.
     SyncCjue,
     /// Pastes the CJUE's and the CEDH's own summaries on the texts of their decisions,
@@ -1228,6 +1404,20 @@ enum Command {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Fetches through the egress gateway the rapporteur public's conclusions that the
+    /// ArianeWeb bundles name and `conclusions` never visited, their PDF and text to the bucket.
+    SyncCeConclusions {
+        #[arg(long)]
+        limit: Option<usize>,
+    },
+    /// Writes each CJUE opinion without a live page back as a page of kind conclusions,
+    /// under the address it had, its texts from the bucket and its summary kept.
+    PageCjueConclusions {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Reads again the Advocate General of each EUR-Lex conclusions from its title.
+    ConclusionsAuthors,
     /// Catches the CJUE corpus up on the CELLAR French title, whose second field
     /// names the parties. Poses no name: chain `reextract-fields
     /// --jurisdiction-type CJUE --field case_name`, then `--field search_title`.
@@ -1252,12 +1442,12 @@ enum Command {
     /// Sync incrémental CNDA : reprend le crawl à la page suivant le
     /// watermark.
     SyncCnda,
-    /// The Défenseur des droits decisions held in the cache, written without reading its catalogue.
+    /// The Défenseur des droits decisions and court decisions held in the cache, written without reading its catalogue.
     IngestDdd {
         #[arg(long, value_enum, default_value_t = pipeline::IngestMode::MissingHash)]
         mode: pipeline::IngestMode,
     },
-    /// The newest page of the Défenseur des droits decisions list, every page with `--full`: fetches the notices the cache lacks, then writes the decisions listed.
+    /// The newest page of the Défenseur des droits decisions list, then of its court decisions list, every page with `--full`: fetches the notices the cache lacks, then writes those listed.
     SyncDdd {
         #[arg(long)]
         full: bool,
@@ -1272,6 +1462,33 @@ enum Command {
         #[arg(long)]
         full: bool,
     },
+    /// The decisions of the AMF's Commission des sanctions whose page changed since it was last read, every page with `--full`.
+    SyncAmf {
+        #[arg(long)]
+        full: bool,
+    },
+    /// The decisions the tribunaux administratifs and cours administratives d'appel publish on their sites: every listing page, then the items not read yet; `--full` writes the items read before again.
+    SyncJuradmSite {
+        #[arg(long)]
+        full: bool,
+        /// Court codes, `ta_cergy_pontoise`; every court with a site by default.
+        #[arg(long = "court")]
+        courts: Vec<String>,
+        /// No item is started past this many minutes.
+        #[arg(long)]
+        minutes: Option<u64>,
+    },
+    /// The decisions of the Conseil constitutionnel its site's feed lists and no provenance names yet.
+    SyncCcSite,
+    /// The Conseil d'État's consultative opinions ConsiliaWeb lists and the base lacks, newest first until a page held whole; `--full` reads every page, `--from-base` rewrites those held from their stored text and census fields.
+    SyncConsiliaweb {
+        #[arg(long)]
+        full: bool,
+        #[arg(long, conflicts_with = "full")]
+        from_base: bool,
+    },
+    /// Withdraws the decisions whose source stops naming the persons they sanction within eight days.
+    ExpireNamed,
     /// The prefectures' recueils des actes administratifs: lists what Attrap dates since `--since`, then reads the queue newest first, each PDF from its prefecture through the egress proxy, the scanned pages through the `mistral-vibe` pool.
     Raa {
         /// First day listed, two weeks back by default.
@@ -1306,18 +1523,209 @@ enum Command {
         /// Reads every container again and rewrites the family, action or kind of each notice whose rules now give another.
         #[arg(long, conflicts_with = "dry_run")]
         reclass: bool,
+        /// Reads every container again and writes each one whose notice count is no longer the one stored, its notices with it.
+        #[arg(long, conflicts_with_all = ["dry_run", "verify", "reclass"])]
+        recount: bool,
     },
-    /// The JuriCAF decision pages of the fonds no primary source serves that appeared or changed since the last run, read from the sitemaps modified since and the country feeds, two seconds apart, each batch loaded then written to the folder; a 403, 429 or 503 stops it.
+    /// The JuriCAF decision pages of the fonds no primary source serves that the site imported since the last run, read from its imports page from the day of that run, two seconds apart, each batch loaded then written to the folder; a 403, 429 or 503 stops it.
     SyncJuricaf {
-        /// A slug head, `SENEGAL-` or `LUXEMBOURG-TRIBUNALADMINISTRATIF-`, repeatable.
-        #[arg(long = "prefix")]
-        prefixes: Vec<String>,
-        /// Reads every sitemap whole and fetches every page the folder lacks, with no time budget.
+        /// A country as JuriCAF names it, `Belgique` or `Burkina Faso`, repeatable.
+        #[arg(long = "country")]
+        countries: Vec<String>,
+        /// Reads the stock instead, every decision of each country listed by slices of dates, and fetches every page the folder lacks, with no time budget.
         #[arg(long)]
         full: bool,
-        /// Counts the sitemaps' slugs by country and court, and fetches no page.
-        #[arg(long, conflicts_with_all = ["prefixes", "full"])]
+        /// Counts the decisions by country and court, and fetches no page.
+        #[arg(long, conflicts_with_all = ["countries", "full"])]
         list: bool,
+    },
+    /// The decisions of the Swiss courts entscheidsuche.ch serves, read 200 at a time by id, each page loaded then kept; the stock resumes where it stopped, then each run reads the days scraped since.
+    SyncEntscheidsuche {
+        /// Spends no time budget.
+        #[arg(long)]
+        full: bool,
+        /// Stops after this many documents.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// A court's id in the index, `VD_TC`, or a chamber's, `VD_TC_031`, repeatable; each set keeps its own cursor.
+        #[arg(long = "court")]
+        courts: Vec<String>,
+        /// Lists the index's ids instead, and reads every document the base lacks, holds from an older scrape, or holds cut where the index cut it.
+        #[arg(long)]
+        missing: bool,
+        /// With `--missing` and `--court`: reads every listed document again and rewrites its decision, for a court whose row in the table changed.
+        #[arg(long, requires_all = ["missing", "courts"])]
+        rewrite: bool,
+    },
+    /// One-shot, for an entscheidsuche spider that renamed its documents: pairs each new id with the old ids of the same file, read from two of the spider's job files, or with the old id of the same docket a day apart, and merges their decisions into one under the new id; or, with `--twins`, merges the decisions of one text held under several ids of a docket into one holding every provenance. Dry run by default.
+    #[command(group = clap::ArgGroup::new("pairing").required(true).args(["spider", "shifted", "twins"]))]
+    EntscheidsucheRekey {
+        /// The spider whose job files pair the ids, `VD_FindInfo`.
+        #[arg(long, requires_all = ["before", "after"])]
+        spider: Option<String>,
+        /// The job file from before the renaming, `Job_<time>_<id>.json`.
+        #[arg(long)]
+        before: Option<String>,
+        /// The job file from after it.
+        #[arg(long)]
+        after: Option<String>,
+        /// The court whose ids moved by a day, `ZH_SVG`.
+        #[arg(long)]
+        shifted: Option<String>,
+        /// Every court: one text held as several decisions under ids of one docket.
+        #[arg(long)]
+        twins: bool,
+        /// Writes; without it, counts and writes nothing.
+        #[arg(long)]
+        apply: bool,
+    },
+    /// The decisions of Monaco's courts Légimonaco serves, read 200 at a time by the day the portal deployed them, each page loaded then kept; the first run reads the stock, each next one what was deployed since.
+    SyncLegimonaco {
+        /// Spends no time budget.
+        #[arg(long)]
+        full: bool,
+        /// Stops after this many documents.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Fetches and parses from the start, counts the decisions by court, and loads nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// One country's norms read from its official consolidations, every dated state of a text written as the versions of its articles. A run reads the states never visited and those the listing says were modified since their visit, and rebuilds a text they moved from the base for the states it did not read.
+    SyncNorms {
+        country: pipeline::NormsCountry,
+        /// Which visited states are read again: those modified since, or every one not visited for six days too.
+        #[arg(long, value_enum, default_value_t = pipeline::NormsScan::Daily)]
+        scan: pipeline::NormsScan,
+        /// Reads only the act with this key at its publisher (RS number at Fedlex, `FR/121.1` for a canton, eJO post ids or CNLEGIS ids separated by commas, a Justice Laws folder such as `C-46` or `DORS-2007-151`, an e-Laws key such as `92c06` or `900194`, a LégisQuébec or New Brunswick key such as `A-2.1-r2` or `2011-c23`), or every act under a key (`FR`).
+        #[arg(long)]
+        only: Option<String>,
+        /// Lists at most this many texts at each publisher host.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Reads every state again and rebuilds each text from it, as if none had been visited.
+        #[arg(long)]
+        fresh: bool,
+        /// Reads no act never visited once this many minutes have passed, and says how many each publisher has left: a first read carries over to the next run.
+        #[arg(long)]
+        minutes: Option<u64>,
+        /// Reads the states a run would read and rebuilds the texts it would write, and writes nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The French decisions of the Belgian courts juportal.be publishes, each page fetched 2 s apart then loaded and kept; each run reads the portal's feeds since the last one.
+    SyncJuportal {
+        /// Lists the stock instead, by the ECLI search engine and the feeds since 2024, and spends no time budget.
+        #[arg(long)]
+        full: bool,
+        /// Stops after this many pages.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Fetches and parses `--limit` pages, 20 by default, and prints a line for each, without the database.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The rulings of the Dutch courts data.rechtspraak.nl publishes, each document read 1 s apart then loaded, none kept; each run reads the documents modified since the last one.
+    SyncRechtspraak {
+        /// Walks the stock instead, decision month by month newest first, skipping what the base holds, and spends no time budget.
+        #[arg(long)]
+        full: bool,
+        /// The month (`YYYY-MM`) the stock walk starts at, the current one by default.
+        #[arg(long, requires = "full")]
+        month: Option<String>,
+        /// Stops after this many documents.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Reads and parses `--limit` documents, 20 by default, and prints a line for each, without the database.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The Canadian decisions of A2AJ's dataset, each language a row holds: each court file whose checksum moved since its last load is fetched through the egress gateway, kept under `<cache>/a2aj/`, and read row by row.
+    SyncA2aj {
+        /// Reads only these courts, by their code in the dataset: `SCC`, `FC`, `RAD`, `NSCA`, `ONCA`, `ONLTB`, `BCSC`.
+        #[arg(long, value_delimiter = ',')]
+        court: Vec<String>,
+        /// Fetches the files and counts what each court would load and refuse, without the database.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The Obwalden decisions of OpenCaseLaw's dataset, its court file read whole through the egress gateway: each entry naming a ruling of a body the table holds is loaded, the opinions, reports, rule texts and essays refused.
+    SyncOpencaselaw {
+        /// Reads the file and prints what it would load and refuse, without the database.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The arrêts of the Belgian Conseil du contentieux des étrangers, from rvv-cce.be, French then Dutch then German, one request every 10 s through the egress gateway: the months whose count moved are listed again, then each arrêt's PDF the base lacks, kept in the bucket.
+    SyncCce {
+        /// Spends no time budget: the stock.
+        #[arg(long)]
+        full: bool,
+        /// Stops after this many PDFs fetched.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Lists each language's newest month's first page, fetches and parses `--limit` PDFs of it, 3 by default, and prints a line for each, without the database or the bucket.
+        #[arg(long)]
+        dry_run: bool,
+        /// Writes these arrêts over, read again from the bucket and the kept months, without asking the site.
+        #[arg(long, value_delimiter = ',', conflicts_with_all = ["full", "limit", "dry_run"])]
+        only: Vec<u32>,
+    },
+    /// The decisions African courts publish on their own sites (cc-bj, hcc-mg, jurisprudence-mg), each listing walked newest first through the egress gateway, each new decision read once, loaded, then kept under `<state_dir>/ingest/court-sites/`; a PDF without a text layer is counted with its pages, and left.
+    SyncCourtSites {
+        /// A site, repeatable; by default every site still publishing.
+        #[arg(long = "site")]
+        sites: Vec<String>,
+        /// Walks each listing to its end, with no time budget.
+        #[arg(long)]
+        full: bool,
+        /// Stops after this many decisions.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Starts no listing page of a site past this many minutes after its first, `--full` aside.
+        #[arg(long, default_value_t = 10)]
+        minutes: u64,
+        /// Reads each site's first listing page and `--limit` of its decisions, 5 by default, and prints a line for each, without the database.
+        #[arg(long)]
+        dry_run: bool,
+        /// Reads the scans on the Vibe keys whose tenant starts with this, every key otherwise.
+        #[arg(long)]
+        ocr_tenant: Option<String>,
+    },
+    /// The decisions of Luxembourg's judicial order the Administration judiciaire publishes on data.public.lu, one archive per dataset and year, each archive uploaded again since its last load read whole, two seconds between requests.
+    SyncJusticeLu {
+        /// Reads every archive, with no time budget.
+        #[arg(long)]
+        full: bool,
+        /// A dataset's slug, `cour-de-cassation-1`, repeatable.
+        #[arg(long = "dataset")]
+        datasets: Vec<String>,
+        /// Counts the archives and megabytes of each dataset, and loads nothing.
+        #[arg(long, conflicts_with = "full")]
+        list: bool,
+    },
+    /// The decisions Legalis publishes, from legalis.net, one request every 3 s through the egress gateway: its sitemap, then each page new or modified since its last visit, kept under `<state_dir>/ingest/legalis/html/`.
+    SyncLegalis {
+        /// Spends no time budget.
+        #[arg(long)]
+        full: bool,
+        /// Stops after this many pages fetched.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Fetches and keeps the pages, tells what the load would do, loads nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The French judgments of the Supreme Court of Canada, from decisions.scc-csc.ca, one request every 30 s through the egress gateway: the newest until a listing page holds none the base lacks, each page kept under `<state_dir>/ingest/scc-csc/html/`.
+    SyncSccCsc {
+        /// Walks every year from the newest down, with no time budget, and resumes below the last year walked whole.
+        #[arg(long)]
+        full: bool,
+        /// Stops after this many judgments fetched.
+        #[arg(long)]
+        limit: Option<usize>,
+        /// Fetches and parses, keeps the pages, loads nothing.
+        #[arg(long)]
+        dry_run: bool,
     },
     /// Loads the JuriCAF pages fetched by `sync-juricaf`, under `<state_dir>/ingest/juricaf-probe/html/`.
     JuricafProbe {
@@ -1326,6 +1734,16 @@ enum Command {
         dir: Option<std::path::PathBuf>,
         #[arg(long, value_enum, default_value_t = pipeline::IngestMode::MissingHash)]
         mode: pipeline::IngestMode,
+        /// Writes nothing, and counts where each page would go.
+        #[arg(long)]
+        dry_run: bool,
+        /// `SLUG`: a page of an attach-only court written as a decision of its own, one its
+        /// court's site lacks.
+        #[arg(long = "create")]
+        creates: Vec<String>,
+        /// `SLUG=PUBLIC_ID`: a page of an attach-only court written, or moved, onto this decision.
+        #[arg(long = "attach", value_parser = parse_attach)]
+        attaches: Vec<(String, String)>,
     },
     /// Backfill `article_scope` depuis les compteurs d'applicabilité
     /// outre-mer : `etend`/`ecarte` vers NC/PF/WF/TF, version cible résolue par
@@ -1412,6 +1830,14 @@ enum Command {
     Db(DbCommand),
 }
 
+/// A fonds whose text `ocr-rebuild` rewrites.
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum OcrFonds {
+    Circulaires,
+    Bulletins,
+    Raa,
+}
+
 #[derive(Subcommand, Clone)]
 enum AssertionsCommand {
     /// Compiles the texts never compiled or modified within `--days` days;
@@ -1480,9 +1906,11 @@ impl Command {
             Command::ResolveSeats { .. } => "resolve-seats",
             Command::ResolveFormations { .. } => "resolve-formations",
             Command::EmbedMissing { .. } => "embed-missing",
+            Command::EmbedNorms { .. } => "embed-norms",
             Command::PurgeReverses => "purge-reverses",
             Command::Withdraw { .. } => "withdraw",
             Command::GenerateSummaries { .. } => "generate-summaries",
+            Command::MoveReaderSummaries { .. } => "move-reader-summaries",
             Command::UpgradeSummariesCommentaries { .. } => "upgrade-summaries-commentaries",
             Command::RecollageSummaries { .. } => "recollage-summaries",
             Command::RecleanSummaries => "reclean-summaries",
@@ -1504,6 +1932,7 @@ impl Command {
             Command::SyncLegi => "sync-legi",
             Command::AuditLegiVersions { .. } => "audit-legi-versions",
             Command::RedateDilaVersions { .. } => "redate-dila-versions",
+            Command::LegiDropPlaceholders { .. } => "legi-drop-placeholders",
             Command::BackfillLinks { .. } => "backfill-links",
             Command::BackfillToc { .. } => "backfill-toc",
             Command::BackfillTextes { .. } => "backfill-textes",
@@ -1523,9 +1952,13 @@ impl Command {
             Command::AnnoncesJumeler { .. } => "annonces-jumeler",
             Command::Bofip { .. } => "bofip",
             Command::SyncBofip => "sync-bofip",
+            Command::SyncBoss { .. } => "sync-boss",
             Command::SyncCirculaires => "sync-circulaires",
-            Command::SyncCirculairesBodies => "sync-circulaires-bodies",
+            Command::SyncCirculairesBodies { .. } => "sync-circulaires-bodies",
             Command::SyncBulletins { .. } => "sync-bulletins",
+            Command::OcrRebuild { .. } => "ocr-rebuild",
+            Command::OcrBlank { .. } => "ocr-blank",
+            Command::SyncQuestions { .. } => "sync-questions",
             Command::SyncServicePublic => "sync-service-public",
             Command::BackfillTreatyBodies => "backfill-treaty-bodies",
             Command::SyncAriane { .. } => "sync-ariane",
@@ -1538,12 +1971,14 @@ impl Command {
             Command::ExtractTextRefs => "extract-text-refs",
             Command::Jorf { .. } => "jorf",
             Command::SyncJorf => "sync-jorf",
-            Command::JorfBodies => "jorf-bodies",
+            Command::JorfUnnumbered => "jorf-unnumbered",
             Command::JorfPublications => "jorf-publications",
             Command::TreatyArticles { .. } => "treaty-articles",
+            Command::TreatyParties => "treaty-parties",
             Command::BackfillArticleText { .. } => "backfill-article-text",
             Command::BackfillDecisionText { .. } => "backfill-decision-text",
             Command::RecaseTexts { .. } => "recase-texts",
+            Command::RestorePar { .. } => "restore-par",
             Command::AnnexStarts => "annex-starts",
             Command::HeadnoteTags => "headnote-tags",
             Command::AssignSlugs => "assign-slugs",
@@ -1559,9 +1994,11 @@ impl Command {
             Command::RekeyIdentityKeys => "rekey-identity-keys",
             Command::DestarArticleKeys { .. } => "destar-article-keys",
             Command::LoadLegalCorpus { .. } => "load-legal-corpus",
+            Command::TextAliases { .. } => "text-aliases",
             Command::IngestEuCatalog { .. } => "ingest-eu-catalog",
             Command::SyncEuCatalog { .. } => "sync-eu-catalog",
             Command::EuBodies { .. } => "eu-bodies",
+            Command::MoveToJournal { .. } => "move-to-journal",
             Command::SyncEuJorf { .. } => "sync-eu-jorf",
             Command::MergeEuSwappedUids { .. } => "merge-eu-swapped-uids",
             Command::SyncEuLaw { .. } => "sync-eu-law",
@@ -1578,16 +2015,21 @@ impl Command {
             Command::BackfillCanonicalRef { .. } => "backfill-canonical-ref",
             Command::MergeCrossSourceDuplicates => "merge-cross-source-duplicates",
             Command::AbsorbCopies { .. } => "absorb-copies",
+            Command::MergeJuricafTwins { .. } => "merge-juricaf-twins",
+            Command::MergeLanguagePairs { .. } => "merge-language-pairs",
             Command::AnalyzeFalseMerges => "analyze-false-merges",
             Command::ProbeIdentity { .. } => "probe-identity",
             Command::SeedJurisdictions => "seed-jurisdictions",
             Command::IngestCedh { .. } => "ingest-cedh",
             Command::CacheCedh { .. } => "cache-cedh",
             Command::IngestCjue { .. } => "ingest-cjue",
-            Command::SyncCedh => "sync-cedh",
+            Command::SyncCedh { .. } => "sync-cedh",
             Command::SyncCjue => "sync-cjue",
             Command::SyncCourtSummaries { .. } => "sync-court-summaries",
             Command::BackfillCjueJoinedCases { .. } => "backfill-cjue-joined-cases",
+            Command::SyncCeConclusions { .. } => "sync-ce-conclusions",
+            Command::PageCjueConclusions { .. } => "page-cjue-conclusions",
+            Command::ConclusionsAuthors => "conclusions-authors",
             Command::BackfillCjueTitles { .. } => "backfill-cjue-titles",
             Command::IngestCnda { .. } => "ingest-cnda",
             Command::SyncCnda => "sync-cnda",
@@ -1595,9 +2037,27 @@ impl Command {
             Command::SyncDdd { .. } => "sync-ddd",
             Command::SyncAdlc { .. } => "sync-adlc",
             Command::SyncComeu { .. } => "sync-comeu",
+            Command::SyncAmf { .. } => "sync-amf",
+            Command::SyncJuradmSite { .. } => "sync-juradm-site",
+            Command::SyncCcSite => "sync-cc-site",
+            Command::SyncConsiliaweb { .. } => "sync-consiliaweb",
+            Command::ExpireNamed => "expire-named",
             Command::Raa { .. } => "raa",
             Command::Gazette { .. } => "gazette",
             Command::SyncJuricaf { .. } => "sync-juricaf",
+            Command::SyncEntscheidsuche { .. } => "sync-entscheidsuche",
+            Command::EntscheidsucheRekey { .. } => "entscheidsuche-rekey",
+            Command::SyncLegimonaco { .. } => "sync-legimonaco",
+            Command::SyncNorms { .. } => "sync-norms",
+            Command::SyncJuportal { .. } => "sync-juportal",
+            Command::SyncRechtspraak { .. } => "sync-rechtspraak",
+            Command::SyncJusticeLu { .. } => "sync-justice-lu",
+            Command::SyncCce { .. } => "sync-cce",
+            Command::SyncOpencaselaw { .. } => "sync-opencaselaw",
+            Command::SyncA2aj { .. } => "sync-a2aj",
+            Command::SyncCourtSites { .. } => "sync-court-sites",
+            Command::SyncSccCsc { .. } => "sync-scc-csc",
+            Command::SyncLegalis { .. } => "sync-legalis",
             Command::JuricafProbe { .. } => "juricaf-probe",
             Command::ScopeBackfillCompteurs { .. } => "scope-backfill-compteurs",
             Command::ScopeBackfillAlsace { .. } => "scope-backfill-alsace",
@@ -1630,7 +2090,8 @@ async fn main() -> Result<()> {
     lj_sources_annonces::poser_sortie(Some(settings.egress_proxy.clone()));
 
     let result = match cli.command {
-        Command::Chain { kind } => chain::run(kind).await,
+        Command::Chain { kind, plan: false } => chain::run(kind).await,
+        Command::Chain { kind, plan: true } => chain::walk(kind).await,
         command => run_with_watchdog(command, settings.watchdog_secs).await,
     };
     arm_teardown_sentinel();
@@ -1687,7 +2148,10 @@ async fn run_with_watchdog(command: Command, watchdog_secs: u64) -> Result<()> {
     let result = if watchdog_secs == 0 {
         dispatch(command).await.map(Some)
     } else {
-        match tokio::time::timeout(Duration::from_secs(watchdog_secs), dispatch(command)).await {
+        let watchdog = Duration::from_secs(watchdog_secs);
+        let command =
+            lj_sources::publisher::GIVE_UP_BY.scope(started + watchdog, dispatch(command));
+        match tokio::time::timeout(watchdog, command).await {
             Ok(inner) => inner.map(Some),
             Err(_) => Ok(None),
         }
@@ -1815,6 +2279,9 @@ async fn dispatch(command: Command) -> Result<()> {
                 until_enabled,
             } => credential::disable(&fingerprint, status, until_enabled).await,
             CredentialAction::Enable { fingerprint } => credential::enable(&fingerprint).await,
+            CredentialAction::Probe { provider, tenant } => {
+                credential::probe(&provider, &tenant).await
+            }
             CredentialAction::Login => credential::login().await,
             CredentialAction::Refresh => credential::refresh().await,
             CredentialAction::Usage => credential::usage().await,
@@ -1862,7 +2329,32 @@ async fn dispatch(command: Command) -> Result<()> {
             limit,
             stock,
             shard,
-        } => pipeline::embed_missing(limit, stock, shard).await,
+            summarised,
+            by_jurisdiction,
+            multilingual,
+            stop_after,
+        } => {
+            pipeline::embed_missing(
+                limit,
+                stock,
+                shard,
+                lj_store::repository::EmbedScope {
+                    summarised,
+                    by_jurisdiction,
+                    multilingual,
+                },
+                stop_after.map(std::time::Duration::from_secs),
+            )
+            .await
+        }
+        Command::EmbedNorms {
+            limit,
+            stock,
+            stop_after,
+        } => {
+            pipeline::embed_norms(limit, stock, stop_after.map(std::time::Duration::from_secs))
+                .await
+        }
         Command::PurgeReverses => cmd_purge_reverses().await,
         Command::Withdraw {
             public_id,
@@ -1877,8 +2369,12 @@ async fn dispatch(command: Command) -> Result<()> {
             reverse,
             models,
             accounts,
+            seat_caps,
             jurisdictions,
             named,
+            langs,
+            reader,
+            stop_after,
         } => {
             let order = match (cited_min, by_jurisdiction) {
                 (Some(min), _) => summary::Order::Cited {
@@ -1898,8 +2394,20 @@ async fn dispatch(command: Command) -> Result<()> {
                     )
                 }
             };
-            summary_pipeline_generate(limit, refresh_stale, order, models, accounts).await
+            summary_pipeline_generate(
+                limit,
+                refresh_stale,
+                order,
+                models,
+                accounts,
+                seat_caps,
+                langs,
+                reader,
+                stop_after.map(std::time::Duration::from_secs),
+            )
+            .await
         }
+        Command::MoveReaderSummaries { batch } => summary::move_reader_summaries(batch).await,
         Command::UpgradeSummariesCommentaries { limit } => {
             summary::upgrade_summaries_commentaries(500, limit.map(|l| l as i64)).await?;
             pipeline::sync_court_summaries(None, None).await
@@ -1922,7 +2430,9 @@ async fn dispatch(command: Command) -> Result<()> {
             limit,
             reverse,
             wait,
-        } => summary_batch::run(limit, reverse, wait).await,
+            jurisdictions,
+            skip,
+        } => summary_batch::run(limit, reverse, wait, &jurisdictions, skip.as_deref()).await,
         Command::ResyncLegalArrays => citations_maintenance::resync_arrays().await,
         Command::Precompute => pipeline::precompute_all().await,
         Command::ResyncJurisdictionCounts => pipeline::resync_jurisdiction_counts().await,
@@ -1947,6 +2457,7 @@ async fn dispatch(command: Command) -> Result<()> {
             pipeline::audit_legi_versions(&text, &paths).await
         }
         Command::RedateDilaVersions { apply } => pipeline::redate_dila_versions(apply).await,
+        Command::LegiDropPlaceholders { apply } => pipeline::drop_legi_placeholders(apply).await,
         Command::BackfillLinks { paths } => pipeline::backfill_links(&paths).await,
         Command::BackfillToc { paths } => pipeline::backfill_toc(&paths).await,
         Command::BackfillTextes { paths } => pipeline::backfill_textes(&paths).await,
@@ -2009,13 +2520,38 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::AnnoncesJumeler { applique } => pipeline::annonces_jumeler(applique).await,
         Command::Bofip { path } => pipeline::ingest_bofip(&path).await,
         Command::SyncBofip => pipeline::sync_bofip().await,
+        Command::SyncBoss { dry_run } => pipeline::sync_boss(dry_run).await,
         Command::SyncCirculaires => pipeline::sync_circulaires().await,
-        Command::SyncCirculairesBodies => pipeline::sync_circulaires_bodies().await,
+        Command::SyncCirculairesBodies { ocr_tenant } => {
+            pipeline::sync_circulaires_bodies(ocr_tenant.as_deref().unwrap_or_default()).await
+        }
         Command::SyncBulletins {
             site,
             full,
             dry_run,
         } => pipeline::sync_bulletins(site, full, dry_run).await,
+        Command::OcrRebuild { fonds } => match fonds {
+            OcrFonds::Circulaires => pipeline::rebuild_circulaires_ocr().await,
+            OcrFonds::Bulletins => pipeline::rebuild_bulletins_ocr().await,
+            OcrFonds::Raa => pipeline::rebuild_raa_ocr().await,
+        },
+        Command::OcrBlank {
+            fonds,
+            pages,
+            dry_run,
+        } => match fonds {
+            OcrFonds::Circulaires => {
+                let list = pages.ok_or_else(|| anyhow!("ocr-blank circulaires takes --pages"))?;
+                pipeline::blank_circulaires_ocr(&list, dry_run).await
+            }
+            OcrFonds::Bulletins => pipeline::blank_bulletins_ocr(dry_run).await,
+            OcrFonds::Raa => pipeline::blank_raa_ocr(dry_run).await,
+        },
+        Command::SyncQuestions {
+            source,
+            full,
+            dry_run,
+        } => pipeline::sync_questions(source, full, dry_run).await,
         Command::SyncServicePublic => pipeline::sync_service_public().await,
         Command::BackfillTreatyBodies => pipeline::backfill_treaty_bodies().await,
         Command::SyncAriane {
@@ -2038,16 +2574,22 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::ExtractTextRefs => pipeline::extract_text_refs().await,
         Command::Jorf { paths } => pipeline::ingest_jorf(&paths).await,
         Command::SyncJorf => pipeline::sync_jorf().await,
-        Command::JorfBodies => pipeline::backfill_jorf_bodies().await,
+        Command::JorfUnnumbered => pipeline::backfill_jorf_pieces().await,
         Command::JorfPublications => pipeline::backfill_jorf_publications().await,
-        Command::TreatyArticles { dry_run } => pipeline::treaty_articles(dry_run).await,
+        Command::TreatyArticles { dry_run, held } => pipeline::treaty_articles(dry_run, held).await,
+        Command::TreatyParties => pipeline::treaty_parties().await,
         Command::BackfillArticleText { fond, dry_run } => {
             pipeline::backfill_article_text(fond, dry_run).await
         }
         Command::BackfillDecisionText { fond, dry_run } => {
             pipeline::backfill_decision_text(fond, dry_run).await
         }
-        Command::RecaseTexts { dry_run } => pipeline::recase_texts(dry_run).await,
+        Command::RecaseTexts { dry_run } => {
+            pipeline::repair_texts(pipeline::TextRepair::Recase, dry_run).await
+        }
+        Command::RestorePar { dry_run } => {
+            pipeline::repair_texts(pipeline::TextRepair::Par, dry_run).await
+        }
         Command::AnnexStarts => pipeline::annex_starts().await,
         Command::HeadnoteTags => pipeline::headnote_tags().await,
         Command::AssignSlugs => pipeline::assign_slugs().await,
@@ -2060,14 +2602,39 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::MoveChronicle { vehicle, exclude } => {
             pipeline::move_chronicle(&vehicle, &exclude).await
         }
-        Command::RenameTexts { dataset } => pipeline::rename_texts(&dataset).await,
+        Command::RenameTexts { dataset, dry_run } => {
+            pipeline::rename_texts(&dataset, dry_run).await
+        }
         Command::RekeyArticleKeys => pipeline::rekey_article_keys().await,
         Command::RekeyIdentityKeys => pipeline::rekey_identity_keys().await,
         Command::DestarArticleKeys { applique } => pipeline::destar_article_keys(applique).await,
         Command::LoadLegalCorpus { only } => pipeline::load_legal_corpus(only.as_deref()).await,
+        Command::TextAliases { uids } => pipeline::write_text_aliases(&uids).await,
         Command::IngestEuCatalog { limit } => pipeline::ingest_eu_catalog(limit).await,
         Command::SyncEuCatalog { full, limit } => pipeline::sync_eu_catalog(full, limit).await,
-        Command::EuBodies { limit, dry_run } => pipeline::fill_eu_bodies(limit, dry_run).await,
+        Command::EuBodies {
+            limit,
+            refresh,
+            dry_run,
+        } => pipeline::fill_eu_bodies(limit, refresh, dry_run).await,
+        Command::MoveToJournal {
+            with_body,
+            notices,
+            codes,
+            no_norm,
+            texts,
+            apply,
+        } => {
+            let selection = match texts {
+                Some(path) => pipeline::MoveSelection::Listed(path),
+                None if with_body => pipeline::MoveSelection::Measures,
+                None if notices => pipeline::MoveSelection::Notices,
+                None if codes => pipeline::MoveSelection::Codes,
+                None if no_norm => pipeline::MoveSelection::NoNorm,
+                None => pipeline::MoveSelection::Bare,
+            };
+            pipeline::move_to_journal(selection, apply).await
+        }
         Command::SyncEuJorf { limit } => pipeline::sync_eu_jorf(limit).await,
         Command::MergeEuSwappedUids { apply } => pipeline::merge_eu_swapped_uids(apply).await,
         Command::SyncEuLaw {
@@ -2095,6 +2662,10 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::BackfillCanonicalRef { force } => pipeline::backfill_canonical_ref(force).await,
         Command::MergeCrossSourceDuplicates => pipeline::merge_cross_source_duplicates().await,
         Command::AbsorbCopies { days } => pipeline::absorb_copies(days).await,
+        Command::MergeJuricafTwins { apply } => pipeline::merge_juricaf_twins(apply).await,
+        Command::MergeLanguagePairs { pairs, apply } => {
+            pipeline::merge_language_pairs(&pairs, apply).await
+        }
         Command::AnalyzeFalseMerges => pipeline::analyze_false_merges().await,
         Command::ProbeIdentity {
             days,
@@ -2106,7 +2677,8 @@ async fn dispatch(command: Command) -> Result<()> {
         Command::IngestCedh { from_year } => pipeline::ingest_cedh(from_year).await,
         Command::CacheCedh { from_year } => pipeline::cache_cedh(from_year).await,
         Command::IngestCjue { short } => pipeline::ingest_cjue(short).await,
-        Command::SyncCedh => pipeline::sync_cedh().await,
+        Command::SyncCedh { stubs: false } => pipeline::sync_cedh().await,
+        Command::SyncCedh { stubs: true } => pipeline::sync_cedh_stubs().await,
         Command::SyncCjue => pipeline::sync_cjue().await,
         Command::SyncCourtSummaries { from_year, to_year } => {
             pipeline::sync_court_summaries(from_year, to_year).await
@@ -2115,12 +2687,27 @@ async fn dispatch(command: Command) -> Result<()> {
             pipeline::backfill_cjue_joined_cases(dry_run).await
         }
         Command::BackfillCjueTitles { dry_run } => pipeline::backfill_cjue_titles(dry_run).await,
+        Command::SyncCeConclusions { limit } => pipeline::sync_ce_conclusions(limit).await,
+        Command::PageCjueConclusions { dry_run } => pipeline::page_cjue_conclusions(dry_run).await,
+        Command::ConclusionsAuthors => pipeline::conclusions_authors().await,
         Command::IngestCnda { mode, only } => pipeline::ingest_cnda(mode, only).await,
         Command::SyncCnda => pipeline::sync_cnda().await,
         Command::IngestDdd { mode } => pipeline::ingest_ddd(mode).await,
         Command::SyncDdd { full } => pipeline::sync_ddd(full).await,
         Command::SyncAdlc { mode } => pipeline::sync_adlc(mode).await,
         Command::SyncComeu { full } => pipeline::sync_comeu(full).await,
+        Command::SyncAmf { full } => pipeline::sync_amf(full).await,
+        Command::SyncJuradmSite {
+            full,
+            courts,
+            minutes,
+        } => pipeline::sync_juradm_site(full, &courts, minutes).await,
+        Command::SyncCcSite => pipeline::sync_cc_site().await,
+        Command::SyncConsiliaweb {
+            from_base: true, ..
+        } => pipeline::rewrite_consiliaweb().await,
+        Command::SyncConsiliaweb { full, .. } => pipeline::sync_consiliaweb(full).await,
+        Command::ExpireNamed => pipeline::expire_named().await,
         Command::Raa {
             since,
             pace,
@@ -2142,21 +2729,126 @@ async fn dispatch(command: Command) -> Result<()> {
             dry_run,
             verify,
             reclass,
+            recount,
         } => {
-            let mode = match (dry_run, verify, reclass) {
-                (true, _, _) => pipeline::GazetteMode::DryRun,
-                (_, true, _) => pipeline::GazetteMode::Verify,
-                (_, _, true) => pipeline::GazetteMode::Reclass,
+            let mode = match (dry_run, verify, reclass, recount) {
+                (true, ..) => pipeline::GazetteMode::DryRun,
+                (_, true, ..) => pipeline::GazetteMode::Verify,
+                (_, _, true, _) => pipeline::GazetteMode::Reclass,
+                (.., true) => pipeline::GazetteMode::Recount,
                 _ => pipeline::GazetteMode::Import,
             };
             pipeline::gazette(source, stock, offline, mode).await
         }
         Command::SyncJuricaf {
-            prefixes,
+            countries,
             full,
             list,
-        } => pipeline::sync_juricaf(&prefixes, full, list).await,
-        Command::JuricafProbe { dir, mode } => pipeline::juricaf_probe(dir, mode).await,
+        } => pipeline::sync_juricaf(&countries, full, list).await,
+        Command::JuricafProbe {
+            dir,
+            mode,
+            dry_run,
+            creates,
+            attaches,
+        } => pipeline::juricaf_probe(dir, mode, dry_run, creates, attaches).await,
+        Command::SyncEntscheidsuche {
+            full,
+            limit,
+            courts,
+            missing,
+            rewrite,
+        } => pipeline::sync_entscheidsuche(full, limit, &courts, missing, rewrite).await,
+        Command::EntscheidsucheRekey {
+            spider,
+            before,
+            after,
+            shifted,
+            twins,
+            apply,
+        } => {
+            let pairing = match (spider, before, after, shifted, twins) {
+                (Some(spider), Some(before), Some(after), None, false) => {
+                    pipeline::RekeyPairing::Jobs {
+                        spider,
+                        before,
+                        after,
+                    }
+                }
+                (None, None, None, Some(court), false) => pipeline::RekeyPairing::Shifted { court },
+                (None, None, None, None, true) => pipeline::RekeyPairing::Twins,
+                _ => anyhow::bail!(
+                    "entscheidsuche-rekey: --spider with --before and --after, --shifted, or --twins"
+                ),
+            };
+            pipeline::entscheidsuche_rekey(pairing, apply).await
+        }
+        Command::SyncLegimonaco {
+            full,
+            limit,
+            dry_run,
+        } => pipeline::sync_legimonaco(full, limit, dry_run).await,
+        Command::SyncNorms {
+            country,
+            scan,
+            only,
+            limit,
+            fresh,
+            minutes,
+            dry_run,
+        } => pipeline::sync_norms(country, scan, only, limit, fresh, minutes, dry_run).await,
+        Command::SyncJuportal {
+            full,
+            limit,
+            dry_run,
+        } => pipeline::sync_juportal(full, limit, dry_run).await,
+        Command::SyncRechtspraak {
+            full,
+            month,
+            limit,
+            dry_run,
+        } => pipeline::sync_rechtspraak(full, month, limit, dry_run).await,
+        Command::SyncJusticeLu {
+            full,
+            datasets,
+            list,
+        } => pipeline::sync_justice_lu(full, &datasets, list).await,
+        Command::SyncCce {
+            full,
+            limit,
+            dry_run,
+            only,
+        } => pipeline::sync_cce(full, limit, dry_run, &only).await,
+        Command::SyncOpencaselaw { dry_run } => pipeline::sync_opencaselaw(dry_run).await,
+        Command::SyncA2aj { court, dry_run } => pipeline::sync_a2aj(court, dry_run).await,
+        Command::SyncCourtSites {
+            sites,
+            full,
+            limit,
+            minutes,
+            dry_run,
+            ocr_tenant,
+        } => {
+            pipeline::sync_court_sites(
+                &sites,
+                full,
+                limit,
+                minutes,
+                dry_run,
+                ocr_tenant.as_deref().unwrap_or_default(),
+            )
+            .await
+        }
+        Command::SyncSccCsc {
+            full,
+            limit,
+            dry_run,
+        } => pipeline::sync_scc_csc(full, limit, dry_run).await,
+        Command::SyncLegalis {
+            full,
+            limit,
+            dry_run,
+        } => pipeline::sync_legalis(full, limit, dry_run).await,
         Command::ScopeBackfillCompteurs {
             collectivite,
             text_uid,
@@ -2484,12 +3176,17 @@ async fn cmd_withdraw(public_id: &str, reason: Option<&str>, lift: bool) -> Resu
 // generate-summaries
 // ─────────────────────────────────────────────────────────────────────────────
 
+#[allow(clippy::too_many_arguments)]
 async fn summary_pipeline_generate(
     limit: Option<usize>,
     refresh_stale: bool,
     order: summary::Order,
     models: Vec<summary::Model>,
     accounts: Vec<String>,
+    seat_caps: Vec<(String, f64)>,
+    langs: Vec<String>,
+    reader: Option<String>,
+    stop_after: Option<std::time::Duration>,
 ) -> Result<()> {
     summary::backfill_summaries(
         lj_summary::SUMMARY_PROMPT_VERSION,
@@ -2509,8 +3206,39 @@ async fn summary_pipeline_generate(
             &models
         },
         &accounts,
+        &seat_caps,
+        &langs,
+        reader.as_deref(),
+        stop_after,
     )
     .await
+}
+
+fn parse_summary_lang(raw: &str) -> Result<String, String> {
+    lj_summary::SUMMARY_LANGUAGES
+        .iter()
+        .any(|(code, _)| *code == raw)
+        .then(|| raw.to_owned())
+        .ok_or_else(|| format!("no summary is written in `{raw}`"))
+}
+
+fn parse_attach(raw: &str) -> Result<(String, String), String> {
+    raw.split_once('=')
+        .map(|(slug, public_id)| (slug.to_owned(), public_id.to_owned()))
+        .ok_or_else(|| format!("`{raw}`: SLUG=PUBLIC_ID expected"))
+}
+
+fn parse_seat_cap(raw: &str) -> Result<(String, f64), String> {
+    let (seat, percent) = raw
+        .split_once('=')
+        .ok_or_else(|| format!("`{raw}` : attendu SIEGE=POURCENTAGE"))?;
+    let percent: f64 = percent
+        .parse()
+        .map_err(|_| format!("`{percent}` n'est pas un pourcentage"))?;
+    if !(0.0..100.0).contains(&percent) {
+        return Err(format!("{percent} hors de [0, 100["));
+    }
+    Ok((seat.to_string(), percent))
 }
 
 async fn summary_pipeline_recollage(
@@ -2540,6 +3268,10 @@ async fn summary_pipeline_recollage(
             &models
         },
         &[],
+        &[],
+        &[],
+        None,
+        None,
     )
     .await
 }
@@ -2657,7 +3389,7 @@ async fn cmd_sitemap(dry_run: bool) -> Result<()> {
         // Annonces : la fenêtre ouverte + l'archive récente pour les fiches, et
         // les départements qui ont au moins une consultation ouverte pour les
         // hubs — au-delà, la page répond 404.
-        let fond = lj_vocab::ANNONCE_FOND_MARCHE;
+        let fond = lj_vocab::JOURNAL_FOND_MARCHE;
         let fiches = repo
             .annonces_sitemap(fond, ANNONCES_SITEMAP_ARCHIVE_JOURS)
             .await
@@ -2762,7 +3494,7 @@ async fn cmd_indexnow(since_hours: f64, max_urls: usize) -> Result<()> {
             .await
             .map_err(|e| anyhow!("iter_public_ids_ingested_since: {e}"))?;
         let annonces = repo
-            .annonces_vues_depuis(lj_vocab::ANNONCE_FOND_MARCHE, since, max_urls as i64)
+            .annonces_vues_depuis(lj_vocab::JOURNAL_FOND_MARCHE, since, max_urls as i64)
             .await
             .map_err(|e| anyhow!("annonces_vues_depuis: {e}"))?;
         // Les consultations passent devant : leur fenêtre utile est l'échéance, à
@@ -2808,8 +3540,9 @@ const REINDEX_STATEMENT_TIMEOUT: &str = "4h";
 async fn cmd_db(command: DbCommand) -> Result<()> {
     let settings = Settings::from_env()?;
     // The shared connection below, one per parallel table of `db vacuum-full`
-    // and `db reindex-search`, and the blocker sweep the latter holds throughout.
-    let pool = pool_only(&settings, SEARCH_TABLES.len() + 2).await?;
+    // and `db reindex-search`, and the blocker sweep and the vacuum of
+    // `VACUUM_TABLES` the latter holds throughout.
+    let pool = pool_only(&settings, SEARCH_TABLES.len() + 3).await?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
     // Relève le statement_timeout pour les ops lourdes. `gc-mcp` (DELETE borné)
     // garde le garde-fou 30 s.
@@ -2954,6 +3687,8 @@ async fn cancel_blocking_transactions(conn: &lj_pg::db::Connection) -> Result<()
 /// Le `VACUUM` simple qui suit rend l'espace mort du heap réutilisable sur
 /// place et entretient la visibility map ; il ne rend rien à l'OS.
 ///
+/// Alongside, `VACUUM_TABLES` get a `VACUUM (ANALYZE)` alone, one after the other.
+///
 /// `CONCURRENTLY` ne peut pas tourner dans un bloc transactionnel →
 /// `batch_execute` (protocole simple, hors transaction implicite des
 /// requêtes paramétrées). Un échec ne coûte que sa semaine : les index en
@@ -3000,11 +3735,36 @@ async fn db_reindex_search(pool: &deadpool_postgres::Pool) -> Result<()> {
             Ok::<(), anyhow::Error>(())
         }));
     }
+    let vacuum = {
+        let pool = pool.clone();
+        tokio::spawn(async move {
+            let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+            conn.batch_execute(&format!(
+                "SET statement_timeout = '{REINDEX_STATEMENT_TIMEOUT}'"
+            ))
+            .await?;
+            for table in VACUUM_TABLES {
+                let started = std::time::Instant::now();
+                println!("VACUUM (ANALYZE) {table} …");
+                conn.batch_execute(&format!("VACUUM (ANALYZE) {table}"))
+                    .await
+                    .map_err(|e| anyhow!("VACUUM {table} : {e}"))?;
+                println!(
+                    "VACUUM (ANALYZE) {table} done in {} s.",
+                    started.elapsed().as_secs()
+                );
+            }
+            Ok::<(), anyhow::Error>(())
+        })
+    };
     let mut failures = Vec::new();
     for (table, handle) in SEARCH_TABLES.iter().zip(handles) {
         if let Err(e) = handle.await? {
             failures.push(format!("{table}: {e}"));
         }
+    }
+    if let Err(e) = vacuum.await? {
+        failures.push(e.to_string());
     }
     sweeper.abort();
     if !failures.is_empty() {
@@ -3015,6 +3775,16 @@ async fn db_reindex_search(pool: &deadpool_postgres::Pool) -> Result<()> {
     }
     Ok(())
 }
+
+/// Tables the JORF and gazette imports append to, vacuumed by `db reindex-search` and never
+/// reindexed: autovacuum reaches an append-only table late, and their counts read its visibility map.
+const VACUUM_TABLES: [&str; 5] = [
+    "text_publication",
+    "bodacc_notice",
+    "joafe_notice",
+    "bodacc_officer",
+    "gazette_address",
+];
 
 /// Tables porteuses d'index de recherche, couvertes par la maintenance
 /// hebdomadaire `db reindex-search` et par le repli manuel `db vacuum-full`.

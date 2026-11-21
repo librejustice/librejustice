@@ -10,12 +10,12 @@ use lj_dtos::Commentaire;
 pub fn DecisionCommentaires(commentaires: Vec<Commentaire>) -> impl IntoView {
     let liens: Vec<Commentaire> = commentaires
         .into_iter()
-        .filter(|c| c.url.is_some())
+        .filter(|c| c.url.is_some() && !super::decision_conclusions::annexed(c))
         .collect();
     if liens.is_empty() {
         return ().into_any();
     }
-    let title = "Commentaires";
+    let title = crate::i18n::use_ui().decision.commentaries;
     let items = liens
         .into_iter()
         .map(|c| view! { <CommentaireLien commentaire=c /> })
@@ -54,7 +54,12 @@ fn CommentaireLien(commentaire: Commentaire) -> impl IntoView {
     } = commentaire;
     let url = url.unwrap_or_default();
     // Conclusions CRP : aucune donnée du document n'est stockée → libellé fixe.
-    let label = title.unwrap_or_else(|| "Conclusions du rapporteur public".to_string());
+    let label = title.unwrap_or_else(|| {
+        crate::i18n::use_ui()
+            .decision
+            .public_rapporteur_conclusions
+            .to_string()
+    });
     let source = publisher.unwrap_or_else(|| "ArianeWeb".to_string());
     view! {
         <p class="flex flex-wrap items-baseline gap-x-2 gap-y-1 border-t border-[var(--color-rule)] pt-5 first:border-t-0 first:pt-0">

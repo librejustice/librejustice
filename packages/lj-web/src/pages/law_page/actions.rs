@@ -5,6 +5,7 @@ use lj_dtos::UiAction;
 
 #[component]
 pub(crate) fn ArticleActions(reference: String) -> impl IntoView {
+    let ui = crate::i18n::use_ui();
     let copied = RwSignal::new(false);
     #[cfg(feature = "hydrate")]
     let reference = StoredValue::new(reference);
@@ -30,8 +31,8 @@ pub(crate) fn ArticleActions(reference: String) -> impl IntoView {
                 type="button"
                 on:click=copy
                 aria-live="polite"
-                aria-label="Copier la référence"
-                title="Copier la référence"
+                aria-label=ui.norm.copy_reference
+                title=ui.norm.copy_reference
                 data-usage=UiAction::NormCopyReference.as_str()
                 class="inline-flex shrink-0 items-center gap-2 rounded-sm border border-[var(--color-rule)] px-3 py-1.5 text-xs text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
             >
@@ -39,12 +40,14 @@ pub(crate) fn ArticleActions(reference: String) -> impl IntoView {
                     if copied.get() {
                         view! {
                             <CheckIcon />
-                            " Copié"
+                            " "
+                            {ui.decision.copied}
                         }
                             .into_any()
                     } else {
                         view! {
-                            "Référence "
+                            {ui.decision.reference}
+                            " "
                             <CopyIcon />
                         }
                             .into_any()

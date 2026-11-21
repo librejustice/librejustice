@@ -5,6 +5,7 @@ use lj_dtos::{DecisionDetail, FacetTag, UiAction};
 use crate::components::decision::selection::{SelState, SelectionToolbar};
 use crate::components::ui::{shown_summary, SummaryBadge, SummaryFold};
 use crate::helpers::{format_iso_date, format_juridiction};
+use crate::i18n::{use_ui, DecisionUi, ReferentialUi};
 use crate::pages::decision_page::labels::publication_label;
 
 /// A Synthèse field: its label, its value in a monospace font when `mono`, the action a copy counts.
@@ -16,11 +17,12 @@ struct MetaField {
     usage: UiAction,
 }
 
-fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
+fn build_fields(detail: &DecisionDetail, ui: &DecisionUi) -> Vec<MetaField> {
+    let dates = &crate::i18n::use_ui().dates;
     let mut fields: Vec<MetaField> = Vec::new();
     // 1. Juridiction (toujours).
     fields.push(MetaField {
-        label: "Juridiction",
+        label: ui.jurisdiction,
         value: detail
             .jurisdiction_name
             .clone()
@@ -31,7 +33,7 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     // Nom d'usage : c'est par lui que la décision se cite.
     if let Some(nom) = detail.case_name.clone() {
         fields.push(MetaField {
-            label: "Nom d'usage",
+            label: ui.case_name,
             value: nom,
             mono: false,
             usage: UiAction::DecisionMetaCopyCaseName,
@@ -40,7 +42,7 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     // 2. Numéros de dossier (si non vide).
     if let Some(dockets) = detail.docket_numbers.as_ref().filter(|d| !d.is_empty()) {
         fields.push(MetaField {
-            label: "Numéros de dossier",
+            label: ui.dockets,
             value: dockets.join(", "),
             mono: true,
             usage: UiAction::DecisionMetaCopyDockets,
@@ -49,31 +51,37 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     // 3. Date de la décision.
     if let Some(date) = detail.date_lecture.as_deref() {
         fields.push(MetaField {
-            label: detail.jurisdiction_type.date_label(),
-            value: format_iso_date(Some(date)),
+            label: match detail.jurisdiction_type.dated_by_reading() {
+                true => ui.reading_date,
+                false => ui.decision_date,
+            },
+            value: format_iso_date(dates, Some(date)),
             mono: false,
             usage: UiAction::DecisionMetaCopyDate,
         });
     }
     // 4-7. Tags référentiels résolus par l'API : rendu direct des libellés
     // servis.
-    let tags: [(&'static str, &Option<FacetTag>, UiAction); 2] = [
+    let referential = &crate::i18n::use_ui().referential;
+    let tags: [(&'static str, &Option<FacetTag>, _, UiAction); 2] = [
         (
-            "Solution",
+            ui.solution,
             &detail.solution,
+            referential.solution,
             UiAction::DecisionMetaCopySolution,
         ),
         (
-            "Domaine",
+            ui.domain,
             &detail.legal_domain,
+            referential.legal_domain,
             UiAction::DecisionMetaCopyDomain,
         ),
     ];
-    for (label, tag, usage) in tags {
+    for (label, tag, table, usage) in tags {
         if let Some(tag) = tag {
             fields.push(MetaField {
                 label,
-                value: tag.label.clone(),
+                value: ReferentialUi::label(table, tag),
                 mono: false,
                 usage,
             });
@@ -82,16 +90,20 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     // 9. Siège (position de chambre qualifiée).
     if let Some(seat) = detail.seat.clone() {
         fields.push(MetaField {
-            label: "Chambre",
+            label: ui.chamber,
             value: seat,
             mono: false,
             usage: UiAction::DecisionMetaCopyChamber,
         });
     }
     if !detail.formation.is_empty() {
-        let labels: Vec<&str> = detail.formation.iter().map(|t| t.label.as_str()).collect();
+        let labels: Vec<String> = detail
+            .formation
+            .iter()
+            .map(|tag| ReferentialUi::label(referential.formation, tag))
+            .collect();
         fields.push(MetaField {
-            label: "Formation",
+            label: ui.formation,
             value: labels.join(", "),
             mono: false,
             usage: UiAction::DecisionMetaCopyFormation,
@@ -100,17 +112,17 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     // 10. Date d'audience.
     if let Some(date) = detail.date_audience.as_deref() {
         fields.push(MetaField {
-            label: "Date d'audience",
-            value: format_iso_date(Some(date)),
+            label: ui.hearing_date,
+            value: format_iso_date(dates, Some(date)),
             mono: false,
             usage: UiAction::DecisionMetaCopyHearingDate,
         });
     }
     // 11. Publication + portée : lecture normalisée des codes au rang le plus
     // fort ; indéterminée = pas de champ.
-    if let Some(pub_label) = publication_label(&detail.publication_codes) {
+    if let Some(pub_label) = publication_label(&detail.publication_codes, ui) {
         fields.push(MetaField {
-            label: "Publication",
+            label: ui.publication,
             value: pub_label,
             mono: false,
             usage: UiAction::DecisionMetaCopyPublication,
@@ -119,7 +131,7 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     // 12. Nomenclature (nac, code brut).
     if let Some(nac) = detail.nac.clone() {
         fields.push(MetaField {
-            label: "Nomenclature",
+            label: ui.nomenclature,
             value: nac,
             mono: true,
             usage: UiAction::DecisionMetaCopyNomenclature,
@@ -128,16 +140,14 @@ fn build_fields(detail: &DecisionDetail) -> Vec<MetaField> {
     fields
 }
 
-/// Past this length a summary folds.
-const SUMMARY_FOLD_AT: usize = 1_500;
-
 #[component]
 pub fn DecisionMeta(
     detail: DecisionDetail,
     #[prop(optional, into)] section_id: Option<String>,
 ) -> impl IntoView {
     let section_id = section_id.unwrap_or_else(|| "synthese".to_string());
-    let fields = build_fields(&detail);
+    let ui = &use_ui().decision;
+    let fields = build_fields(&detail, ui);
 
     // Résumé garanti en base et porté par le détail : rendu direct, aucun fetch.
     // Absent (cas résiduel) ⇒ bloc masqué.
@@ -160,12 +170,8 @@ pub fn DecisionMeta(
         view! {
             <SummaryFold
                 text=shown.text
-                court=shown.court
                 node_ref=summary_ref
-                fold_at=SUMMARY_FOLD_AT
-                clamp="line-clamp-12"
                 class="mt-3 whitespace-pre-line text-sm leading-relaxed text-[var(--color-ink-muted)]"
-                unfold="Lire le résumé entier"
             />
         }
     });
@@ -178,12 +184,12 @@ pub fn DecisionMeta(
     view! {
         // Never printed: the sheet goes into a case file, where only the court's own text counts.
         <section
-            aria-label="Synthèse"
+            aria-label=ui.summary
             class="rounded-lg border border-[var(--color-rule)] bg-[var(--color-vellum)]/40 p-6 print:hidden"
         >
             <div id=section_id class="relative -top-24" aria-hidden="true" />
             <div class="flex flex-wrap items-center gap-3">
-                <h2 class="font-sans text-base text-[var(--color-ink)]">"Synthèse"</h2>
+                <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.summary}</h2>
                 {summary_badge}
             </div>
             {summary_view}

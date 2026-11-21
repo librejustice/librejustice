@@ -16,7 +16,7 @@ use crate::repository::DecisionRepository;
 #[derive(Debug)]
 pub struct AnnonceWriteItem {
     pub uid: String,
-    /// Fond of the pot, one of `lj_vocab::ANNONCE_FOND_*`.
+    /// Fond of the pot, one of `lj_vocab::JOURNAL_FOND_*`.
     pub fond: String,
     pub famille_uid: Option<String>,
     pub titre: String,

@@ -25,16 +25,12 @@ pub async fn backfill_text_roles() -> Result<()> {
     let repo = DecisionRepository::new(&conn);
     let (individuel, habilitation, vehicule, modificatif) = repo.backfill_text_roles().await?;
     let verbs = repo.normalize_link_verbs().await?;
-    // `legal_article.searchable` dépend du rôle : un rôle reclassé doit
-    // re-dénormaliser les articles du texte.
-    let denorm = repo.refresh_article_denorm(None).await?;
     tracing::info!(
         individuel,
         habilitation,
         vehicule,
         modificatif,
         verbs_alignes = verbs,
-        denorm,
         "text roles backfilled"
     );
     Ok(())

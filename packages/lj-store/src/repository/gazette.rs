@@ -134,6 +134,26 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
+    /// The dictionary entries named by `(kind, code)`.
+    pub async fn gazette_dict_entries(
+        &self,
+        codes: &[(i16, i32)],
+    ) -> Result<HashMap<(i16, i32), String>> {
+        let kinds: Vec<i16> = codes.iter().map(|c| c.0).collect();
+        let values: Vec<i32> = codes.iter().map(|c| c.1).collect();
+        Ok(self
+            .conn
+            .query(
+                "SELECT d.kind, d.code, d.value FROM gazette_dict d
+                 JOIN unnest($1::smallint[], $2::int[]) AS c(kind, code) USING (kind, code)",
+                &[&kinds, &values],
+            )
+            .await?
+            .iter()
+            .map(|r| ((r.get(0), r.get(1)), r.get(2)))
+            .collect())
+    }
+
     pub async fn gazette_last_address(&self) -> Result<i32> {
         Ok(self
             .conn
@@ -155,16 +175,17 @@ impl DecisionRepository<'_> {
             .collect())
     }
 
-    pub async fn gazette_files(&self, source: Source) -> Result<HashMap<String, i64>> {
+    /// `(checksum, notices)` of each container, by its key.
+    pub async fn gazette_files(&self, source: Source) -> Result<HashMap<String, (i64, i32)>> {
         Ok(self
             .conn
             .query(
-                "SELECT key, checksum FROM gazette_file WHERE source = $1",
+                "SELECT key, checksum, notices FROM gazette_file WHERE source = $1",
                 &[&(source as i16)],
             )
             .await?
             .iter()
-            .map(|r| (r.get(0), r.get(1)))
+            .map(|r| (r.get(0), (r.get(1), r.get(2))))
             .collect())
     }
 
@@ -316,7 +337,7 @@ pub struct GazetteFilter {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GazetteAxis {
+enum GazetteAxis {
     Class,
     Dept,
 }
@@ -357,19 +378,65 @@ impl GazetteFilter {
         empty(GazetteAxis::Class, &self.classes) || empty(GazetteAxis::Dept, &self.depts)
     }
 
+    fn column(&self, axis: GazetteAxis) -> &'static str {
+        match axis {
+            GazetteAxis::Class => self.class_column(),
+            GazetteAxis::Dept => "dept",
+        }
+    }
+
+    /// The codes each narrowed axis keeps, `without` one of them.
+    fn narrowed(&self, without: Option<GazetteAxis>) -> Vec<(&'static str, &Vec<i16>)> {
+        [
+            (GazetteAxis::Class, &self.classes),
+            (GazetteAxis::Dept, &self.depts),
+        ]
+        .into_iter()
+        .filter(|(axis, _)| without != Some(*axis))
+        .filter_map(|(axis, codes)| Some((self.column(axis), codes.as_ref()?)))
+        .collect()
+    }
+
     /// The axes' predicates over `n`, `without` one of them.
     fn axes(&self, without: Option<GazetteAxis>, params: &mut Params) -> Vec<String> {
         let mut clauses = Vec::new();
-        for (axis, column, codes) in [
-            (GazetteAxis::Class, self.class_column(), &self.classes),
-            (GazetteAxis::Dept, "dept", &self.depts),
-        ] {
-            if let (Some(codes), false) = (codes, without == Some(axis)) {
-                params.push(Box::new(codes.clone()));
-                clauses.push(format!("n.{column} = ANY(${}::smallint[])", params.len()));
-            }
+        for (column, codes) in self.narrowed(without) {
+            params.push(Box::new(codes.clone()));
+            clauses.push(format!("n.{column} = ANY(${}::smallint[])", params.len()));
         }
         clauses
+    }
+
+    /// Every word of `q` in one text field of the source.
+    fn words(&self, q: &str, params: &mut Params) -> String {
+        params.push(Box::new(q.to_string()));
+        let fields = match self.source {
+            Source::Bodacc => BODACC_TEXT,
+            Source::Joafe => JOAFE_TEXT,
+        };
+        let matches: Vec<String> = fields
+            .iter()
+            .map(|f| {
+                format!(
+                    "paradedb.match('{f}', ${}, conjunction_mode => true)", // sql-splice-ok: a field of BODACC_TEXT or JOAFE_TEXT
+                    params.len()
+                )
+            })
+            .collect();
+        format!("paradedb.boolean(should => ARRAY[{}])", matches.join(", "))
+    }
+
+    /// The words of `q` and the axes, `without` one, as one index query: an aggregate takes no SQL clause.
+    fn indexed(&self, q: &str, without: Option<GazetteAxis>, params: &mut Params) -> String {
+        let mut must = vec![self.words(q, params)];
+        for (column, codes) in self.narrowed(without) {
+            params.push(Box::new(codes.clone()));
+            must.push(format!(
+                "paradedb.term_set('{column}', ${}::smallint[])", // sql-splice-ok: a column of `column`
+                params.len()
+            ));
+        }
+        format!("paradedb.boolean(must => ARRAY[{}])", must.join(", "))
     }
 
     /// The predicate over the table itself; an empty one when neither a query nor an axis narrows it.
@@ -378,26 +445,7 @@ impl GazetteFilter {
         let query = match &self.query {
             GazetteQuery::All if clauses.is_empty() => None,
             GazetteQuery::All => Some("n.id @@@ paradedb.all()".to_string()),
-            GazetteQuery::Text(q) => {
-                params.push(Box::new(q.clone()));
-                let fields = match self.source {
-                    Source::Bodacc => BODACC_TEXT,
-                    Source::Joafe => JOAFE_TEXT,
-                };
-                let matches: Vec<String> = fields
-                    .iter()
-                    .map(|f| {
-                        format!(
-                            "paradedb.match('{f}', ${}, conjunction_mode => true)", // sql-splice-ok: a field of BODACC_TEXT or JOAFE_TEXT
-                            params.len()
-                        )
-                    })
-                    .collect();
-                Some(format!(
-                    "n.id @@@ paradedb.boolean(should => ARRAY[{}])",
-                    matches.join(", ")
-                ))
-            }
+            GazetteQuery::Text(q) => Some(format!("n.id @@@ {}", self.words(q, params))),
             GazetteQuery::Siren(siren) => {
                 params.push(Box::new(*siren));
                 Some(format!(
@@ -427,6 +475,49 @@ impl GazetteFilter {
             params.len()
         )
     }
+
+    /// A `terms` aggregation per axis, keyed by its column.
+    fn terms(&self, axes: &[GazetteAxis]) -> serde_json::Value {
+        let terms = axes.iter().map(|axis| {
+            let column = self.column(*axis);
+            let terms = serde_json::json!({"terms": {"field": column, "size": AXIS_SIZE}});
+            (column.to_string(), terms)
+        });
+        serde_json::Value::Object(terms.collect())
+    }
+}
+
+/// Above the codes of either axis: 11 BODACC families, 6 JOAFE actions, 119 department codes.
+const AXIS_SIZE: usize = 1000;
+
+/// The matching notices of a search counted by the codes of each axis.
+#[derive(Debug, PartialEq, Eq)]
+pub struct GazetteFacets {
+    pub classes: Vec<(i16, i64)>,
+    pub depts: Vec<(i16, i64)>,
+}
+
+/// The buckets of the `terms` aggregation keyed `column`, none when it was not asked.
+fn buckets(counted: &serde_json::Value, column: &str) -> Result<Vec<(i16, i64)>> {
+    let Some(terms) = counted.get(column) else {
+        return Ok(Vec::new());
+    };
+    if terms["sum_other_doc_count"].as_i64() != Some(0) {
+        return Err(StoreError::Invalid(format!(
+            "gazette axis {column} truncated"
+        )));
+    }
+    terms["buckets"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|b| match (b["key"].as_i64(), b["doc_count"].as_i64()) {
+            (Some(code), Some(count)) => Ok((code as i16, count)),
+            _ => Err(StoreError::Invalid(format!(
+                "gazette axis {column}: bucket {b}"
+            ))),
+        })
+        .collect()
 }
 
 fn where_of(clauses: &[String]) -> String {
@@ -551,19 +642,43 @@ impl DecisionRepository<'_> {
         Ok(self.conn.query_one(&sql, &refs(&params)).await?.get(0))
     }
 
-    /// The matching notices counted by the codes of one axis, that axis left free.
-    pub async fn gazette_facet(
-        &self,
-        f: &GazetteFilter,
-        axis: GazetteAxis,
-    ) -> Result<Vec<(i16, i64)>> {
+    /// The matching notices counted by class and by department, each axis left free of its own filter.
+    pub async fn gazette_facets(&self, f: &GazetteFilter) -> Result<GazetteFacets> {
+        let GazetteQuery::Text(q) = &f.query else {
+            return Ok(GazetteFacets {
+                classes: self.gazette_facet(f, GazetteAxis::Class).await?,
+                depts: self.gazette_facet(f, GazetteAxis::Dept).await?,
+            });
+        };
+        let axes = [GazetteAxis::Class, GazetteAxis::Dept];
+        let mut params = Params::new();
+        // Neither axis narrowed, both count the same notices: one pass.
+        let calls = match (&f.classes, &f.depts) {
+            (None, None) => vec![(f.indexed(q, None, &mut params), f.terms(&axes).to_string())],
+            _ => axes
+                .into_iter()
+                .filter(|axis| !f.void(Some(*axis)))
+                .map(|axis| {
+                    (
+                        f.indexed(q, Some(axis), &mut params),
+                        f.terms(&[axis]).to_string(),
+                    )
+                })
+                .collect(),
+        };
+        let counted = self.gazette_aggregates(f, calls, params).await?;
+        Ok(GazetteFacets {
+            classes: buckets(&counted, f.column(GazetteAxis::Class))?,
+            depts: buckets(&counted, f.column(GazetteAxis::Dept))?,
+        })
+    }
+
+    /// The matching notices counted by the codes of one axis, that axis left free, outside the index.
+    async fn gazette_facet(&self, f: &GazetteFilter, axis: GazetteAxis) -> Result<Vec<(i16, i64)>> {
         if f.void(Some(axis)) {
             return Ok(Vec::new());
         }
-        let column = match axis {
-            GazetteAxis::Class => f.class_column(),
-            GazetteAxis::Dept => "dept",
-        };
+        let column = f.column(axis);
         let mut params = Params::new();
         let sql = match f.query {
             GazetteQuery::All => format!(
@@ -584,6 +699,44 @@ impl DecisionRepository<'_> {
             .iter()
             .filter_map(|r| Some((r.get::<_, Option<i16>>(0)?, r.get(1))))
             .collect())
+    }
+
+    /// One `paradedb.aggregate` on the source's BM25 index per `(predicate, aggregation)`, in one statement.
+    async fn gazette_aggregates(
+        &self,
+        f: &GazetteFilter,
+        calls: Vec<(String, String)>,
+        mut params: Params,
+    ) -> Result<serde_json::Value> {
+        if calls.is_empty() {
+            return Ok(serde_json::json!({}));
+        }
+        params.push(Box::new(format!("{}_bm25", f.table())));
+        let index = params.len();
+        let mut columns = Vec::new();
+        for (predicate, aggregation) in calls {
+            params.push(Box::new(aggregation));
+            columns.push(format!(
+                "paradedb.aggregate(${index}::text::regclass, {predicate}, ${}::text::json)::text",
+                params.len()
+            ));
+        }
+        let row = self
+            .conn
+            .query_one(&format!("SELECT {}", columns.join(", ")), &refs(&params))
+            .await?;
+        let mut merged = serde_json::Map::new();
+        for i in 0..row.len() {
+            match serde_json::from_str(row.get::<_, &str>(i)) {
+                Ok(serde_json::Value::Object(answer)) => merged.extend(answer),
+                other => {
+                    return Err(StoreError::Invalid(format!(
+                        "gazette aggregate answered {other:?}"
+                    )))
+                }
+            }
+        }
+        Ok(serde_json::Value::Object(merged))
     }
 
     /// `(code, value)` of each department the source writes.

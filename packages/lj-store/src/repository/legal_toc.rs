@@ -44,6 +44,122 @@ pub struct ArticleBody {
     pub date_debut: NaiveDate,
 }
 
+/// Bounds the walk against a cycle in the source data.
+const TOC_MAX_DEPTH: i32 = 32;
+
+struct TocEdge {
+    child_kind: String,
+    child_uid: String,
+    child_cid: Option<String>,
+    child_num_key: Option<String>,
+    label: String,
+    etat: String,
+    date_debut: Option<NaiveDate>,
+    date_fin: Option<NaiveDate>,
+}
+
+impl TocEdge {
+    fn covers(&self, at: NaiveDate) -> bool {
+        self.date_debut.is_none_or(|d| d <= at) && self.date_fin.is_none_or(|f| f > at)
+    }
+}
+
+/// Every edge of one text, all versions, each owner's children in `seq` order.
+pub struct TocEdges {
+    root: String,
+    edges: Vec<TocEdge>,
+    children: HashMap<String, Vec<usize>>,
+    /// Every date an edge opens or closes on, sorted.
+    breaks: Vec<NaiveDate>,
+}
+
+impl TocEdges {
+    fn new(root: &str, owned: Vec<(String, i32, TocEdge)>) -> Self {
+        let mut children: HashMap<String, Vec<usize>> = HashMap::new();
+        let mut breaks = Vec::new();
+        let mut edges = Vec::with_capacity(owned.len());
+        for (i, (owner, _, edge)) in owned.into_iter().enumerate() {
+            breaks.extend(edge.date_debut);
+            breaks.extend(edge.date_fin);
+            children.entry(owner).or_default().push(i);
+            edges.push(edge);
+        }
+        breaks.sort_unstable();
+        breaks.dedup();
+        Self {
+            root: root.to_string(),
+            edges,
+            children,
+            breaks,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.edges.is_empty()
+    }
+
+    /// The first day of the run of days `at` belongs to, over which the tree
+    /// does not change.
+    pub fn epoch(&self, at: NaiveDate) -> NaiveDate {
+        match self.breaks.partition_point(|b| *b <= at) {
+            0 => NaiveDate::MIN,
+            i => self.breaks[i - 1],
+        }
+    }
+
+    /// The tree at `at` in reading order, a section before its children; an
+    /// article without a key is left out.
+    pub fn tree_at(&self, at: NaiveDate) -> Vec<TocTreeRow> {
+        let mut out = Vec::new();
+        self.walk(&self.root, 1, at, &mut out);
+        out
+    }
+
+    fn walk(&self, owner: &str, depth: i32, at: NaiveDate, out: &mut Vec<TocTreeRow>) {
+        let Some(kids) = self.children.get(owner) else {
+            return;
+        };
+        for e in kids.iter().map(|&i| &self.edges[i]) {
+            if !e.covers(at) {
+                continue;
+            }
+            let section = e.child_kind == "section";
+            if section || e.child_num_key.as_deref().is_some_and(|k| !k.is_empty()) {
+                out.push(TocTreeRow {
+                    depth,
+                    child_kind: e.child_kind.clone(),
+                    child_uid: e.child_uid.clone(),
+                    child_cid: e.child_cid.clone(),
+                    child_num_key: e.child_num_key.clone(),
+                    label: e.label.clone(),
+                    etat: e.etat.clone(),
+                });
+            }
+            if section && depth < TOC_MAX_DEPTH {
+                self.walk(&e.child_uid, depth + 1, at, out);
+            }
+        }
+    }
+
+    /// Approximate bytes held, for a cache's weigher.
+    pub fn weight(&self) -> usize {
+        let edges: usize = self
+            .edges
+            .iter()
+            .map(|e| {
+                160 + e.child_kind.len()
+                    + e.child_uid.len()
+                    + e.child_cid.as_ref().map_or(0, String::len)
+                    + e.child_num_key.as_ref().map_or(0, String::len)
+                    + e.label.len()
+                    + e.etat.len()
+            })
+            .sum();
+        let owners: usize = self.children.keys().map(|k| k.len() + 80).sum();
+        edges + owners + 8 * self.edges.len() + 4 * self.breaks.len()
+    }
+}
+
 impl DecisionRepository<'_> {
     /// Remplace les arêtes de chaque propriétaire du batch : DELETE par clés
     /// puis COPY binaire, `seq` = ordre du `Vec`. Un propriétaire présent
@@ -146,43 +262,43 @@ impl DecisionRepository<'_> {
         Ok(written)
     }
 
-    /// L'arbre structurel complet d'un texte **à une date**, aplati en ordre de
-    /// lecture (chemin de `seq`). Ancre : `owner_uid = text_uid` (le premier
-    /// niveau vient du fichier `texte/struct`). Vide si le texte n'a pas de
-    /// structure ingérée (l'appelant replie sur le sommaire à plat).
-    /// `depth < 32` : garde-fou contre un cycle dans la donnée externe.
-    #[tracing::instrument(name = "db.toc_tree", skip(self), fields(db.system = "postgresql"))]
     pub async fn toc_tree(&self, text_uid: &str, at: NaiveDate) -> Result<Vec<TocTreeRow>> {
-        let sql = concat!(
-            "WITH RECURSIVE tree AS ( \
-                 SELECT e.child_kind, e.child_uid, e.child_cid, e.child_num_key, \
-                        e.label, e.etat, 1 AS depth, ARRAY[e.seq] AS path \
-                 FROM legal_toc_edge e \
-                 WHERE e.owner_uid = $1 AND ",
-            window!("e", "$2"),
-            "    UNION ALL \
-                 SELECT c.child_kind, c.child_uid, c.child_cid, c.child_num_key, \
-                        c.label, c.etat, t.depth + 1, t.path || c.seq \
-                 FROM tree t \
-                 JOIN legal_toc_edge c ON c.owner_uid = t.child_uid \
-                 WHERE t.child_kind = 'section' AND t.depth < 32 AND ",
-            window!("c", "$2"),
-            ") SELECT child_kind, child_uid, child_cid, child_num_key, label, etat, depth \
-              FROM tree WHERE child_kind = 'section' OR child_num_key <> '' ORDER BY path",
-        );
-        let rows = self.conn.query(sql, &[&text_uid, &at]).await?;
-        Ok(rows
+        Ok(self.toc_edges(text_uid).await?.tree_at(at))
+    }
+
+    /// Every edge of a text's tree, all versions.
+    #[tracing::instrument(name = "db.toc_edges", skip(self), fields(db.system = "postgresql"))]
+    pub async fn toc_edges(&self, text_uid: &str) -> Result<TocEdges> {
+        let rows = self
+            .conn
+            .query(
+                "SELECT owner_uid, seq, child_kind, child_uid, child_cid, child_num_key, \
+                        label, etat, date_debut, date_fin \
+                 FROM legal_toc_edge WHERE text_uid = $1",
+                &[&text_uid],
+            )
+            .await?;
+        let mut owned: Vec<(String, i32, TocEdge)> = rows
             .iter()
-            .map(|r| TocTreeRow {
-                child_kind: r.get("child_kind"),
-                child_uid: r.get("child_uid"),
-                child_cid: r.get("child_cid"),
-                child_num_key: r.get("child_num_key"),
-                label: r.get("label"),
-                etat: r.get("etat"),
-                depth: r.get("depth"),
+            .map(|r| {
+                (
+                    r.get(0),
+                    r.get(1),
+                    TocEdge {
+                        child_kind: r.get(2),
+                        child_uid: r.get(3),
+                        child_cid: r.get(4),
+                        child_num_key: r.get(5),
+                        label: r.get(6),
+                        etat: r.get(7),
+                        date_debut: r.get(8),
+                        date_fin: r.get(9),
+                    },
+                )
             })
-            .collect())
+            .collect();
+        owned.sort_unstable_by(|a, b| (&a.0, a.1).cmp(&(&b.0, b.1)));
+        Ok(TocEdges::new(text_uid, owned))
     }
 
     /// The body and note of the article versions `source_uids`, by uid.
@@ -342,5 +458,84 @@ impl DecisionRepository<'_> {
             )
             .await?;
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{TocEdge, TocEdges};
+    use chrono::NaiveDate;
+
+    fn day(s: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    fn edge(
+        owner: &str,
+        seq: i32,
+        kind: &str,
+        uid: &str,
+        key: Option<&str>,
+        window: (Option<&str>, Option<&str>),
+    ) -> (String, i32, TocEdge) {
+        (
+            owner.to_string(),
+            seq,
+            TocEdge {
+                child_kind: kind.to_string(),
+                child_uid: uid.to_string(),
+                child_cid: None,
+                child_num_key: key.map(str::to_string),
+                label: uid.to_string(),
+                etat: "VIGUEUR".to_string(),
+                date_debut: window.0.map(day),
+                date_fin: window.1.map(day),
+            },
+        )
+    }
+
+    #[test]
+    fn tree_at_a_date_reads_each_window_and_keeps_reading_order() {
+        let always = (None, None);
+        let edges = TocEdges::new(
+            "T",
+            vec![
+                edge("T", 0, "section", "S1", None, always),
+                edge("T", 1, "section", "S2", None, (Some("2010-01-01"), None)),
+                edge(
+                    "S1",
+                    0,
+                    "article",
+                    "A1",
+                    Some("1"),
+                    (None, Some("2010-01-01")),
+                ),
+                edge(
+                    "S1",
+                    1,
+                    "article",
+                    "A2",
+                    Some("2"),
+                    (Some("2010-01-01"), None),
+                ),
+                edge("S1", 2, "article", "A0", Some(""), always),
+                edge("S2", 0, "article", "A3", Some("3"), always),
+            ],
+        );
+        let uids = |at: &str| -> Vec<(i32, String)> {
+            edges
+                .tree_at(day(at))
+                .into_iter()
+                .map(|r| (r.depth, r.child_uid))
+                .collect()
+        };
+        let row = |depth: i32, uid: &str| (depth, uid.to_string());
+        assert_eq!(uids("2009-12-31"), vec![row(1, "S1"), row(2, "A1")]);
+        assert_eq!(
+            uids("2010-01-01"),
+            vec![row(1, "S1"), row(2, "A2"), row(1, "S2"), row(2, "A3")]
+        );
+        assert_eq!(edges.epoch(day("2015-06-01")), day("2010-01-01"));
+        assert_eq!(edges.epoch(day("1990-06-01")), NaiveDate::MIN);
     }
 }

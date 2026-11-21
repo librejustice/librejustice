@@ -191,3 +191,94 @@ async fn another_day_or_chamber_makes_no_pair() {
     let repo = DecisionRepository::new(&conn);
     assert!(pairs_of(&repo, copy).await.is_empty());
 }
+
+#[tokio::test]
+#[ignore = "needs LIBREJUSTICE_TEST_DB_URL, an empty Postgres with ParadeDB and VectorChord"]
+async fn a_judgment_held_once_per_language_keeps_both_texts_under_its_keeper() {
+    let (_pool, conn) = base().await;
+    let mut ids = Vec::new();
+    for (public_id, lang, uid, text) in [
+        (
+            "lang-keeper",
+            "fr",
+            "juricaf/lang-fr",
+            "La Cour suprême rejette le pourvoi.",
+        ),
+        (
+            "lang-copy",
+            "ar",
+            "juricaf/lang-ar",
+            "إن المجلس الأعلى يرفض الطلب",
+        ),
+    ] {
+        let id: i64 = conn
+            .query_one(
+                "INSERT INTO decisions (jurisdiction_type, jurisdiction_code, public_id, date_lecture, lang) \
+                 VALUES ('CA', 'ca_absorb', $1, '2003-02-27', $2) RETURNING id",
+                &[&public_id, &lang],
+            )
+            .await
+            .unwrap()
+            .get(0);
+        conn.execute(
+            "INSERT INTO decision_sources (decision_id, source, source_uid, content_checksum, payload_format, source_fields, lang) \
+             VALUES ($1, 'juricaf', $2, 'x', 'html', '{}', $3)",
+            &[&id, &uid, &lang],
+        )
+        .await
+        .unwrap();
+        conn.execute(
+            "SELECT decision_text_put($1, $2, $3, $4, NULL)",
+            &[&id, &uid, &lang, &text],
+        )
+        .await
+        .unwrap();
+        ids.push(id);
+    }
+    let [keeper, copy] = ids[..] else {
+        unreachable!()
+    };
+    conn.execute(
+        "UPDATE decision_text SET summary = 'ملخص' WHERE decision_id = $1",
+        &[&copy],
+    )
+    .await
+    .unwrap();
+
+    let repo = DecisionRepository::new(&conn);
+    assert_eq!(repo.absorb_language_into(copy, keeper).await.unwrap(), 1);
+
+    let texts: Vec<(String, String, bool, Option<String>)> = conn
+        .query(
+            "SELECT lang, text_status, counted, summary FROM decision_text \
+             WHERE decision_id = $1 ORDER BY lang",
+            &[&keeper],
+        )
+        .await
+        .unwrap()
+        .iter()
+        .map(|r| (r.get(0), r.get(1), r.get(2), r.get(3)))
+        .collect();
+    assert_eq!(
+        texts,
+        [
+            ("ar".into(), "official".into(), false, Some("ملخص".into())),
+            ("fr".into(), "authentic".into(), true, None),
+        ]
+    );
+    let on: i64 = conn
+        .query_one(
+            "SELECT decision_id FROM decision_sources WHERE source_uid = 'juricaf/lang-ar'",
+            &[],
+        )
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(on, keeper);
+    let gone: i64 = conn
+        .query_one("SELECT count(*) FROM decisions WHERE id = $1", &[&copy])
+        .await
+        .unwrap()
+        .get(0);
+    assert_eq!(gone, 0);
+}

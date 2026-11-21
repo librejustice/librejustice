@@ -82,6 +82,7 @@
                   "CNIL",
                   "DDD",
                   "ADLC",
+                  "AMF",
                   "CEDH",
                   "CJUE",
                   "COMEU"
@@ -251,7 +252,7 @@
           {
             "name": "search_in",
             "in": "query",
-            "description": "Partie de la décision où chercher : `headnote` (le sommaire ou l'analyse de la juridiction), `judgment` (la décision sans ses moyens annexés), `annexes` (les moyens annexés des arrêts de la Cour de cassation). Toutes en l'absence du paramètre. Répétable.",
+            "description": "Partie de la décision où chercher : `headnote` (le sommaire ou l'analyse de la juridiction), `judgment` (la décision sans ses moyens annexés), `annexes` (les moyens annexés des arrêts de la Cour de cassation), `conclusions` (les conclusions de l'avocat général ou du rapporteur public, qui ne tranchent rien). Les trois parties de la décision en l'absence du paramètre. Répétable.",
             "schema": {
               "type": "array",
               "items": {
@@ -259,7 +260,8 @@
                 "enum": [
                   "headnote",
                   "judgment",
-                  "annexes"
+                  "annexes",
+                  "conclusions"
                 ]
               }
             },
@@ -374,6 +376,17 @@
                             ],
                             "default": null
                           },
+                          "court_summary_kind": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
                           "date": {
                             "anyOf": [
                               {
@@ -433,6 +446,17 @@
                               "type": "string"
                             },
                             "type": "array"
+                          },
+                          "ruling": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
                           },
                           "seat": {
                             "anyOf": [
@@ -565,6 +589,25 @@
             "description": "Pays ou ordre juridique, en code ISO 3166 alpha-2 (`FR`, `SN`, `MA`…), plus `EU` pour le droit de l'Union et `INTL` pour les traités. Un chemin à points restreint à un type de texte : `FR.LOI`, `FR.DECRET`, `EU.DIRECTIVE`, `INTL.TREATY`, comme dans `facets.jurisdiction`.",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "scope",
+            "in": "query",
+            "description": "Catégorie de normes. Absente : toutes sauf `travaux_parlementaires` (questions parlementaires et leurs réponses), que `facets.scope` compte.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "constitution",
+                "codes",
+                "legislation",
+                "reglementation",
+                "traites",
+                "conventions_collectives",
+                "doctrine_administrative",
+                "information_publique",
+                "travaux_parlementaires"
+              ]
             }
           },
           {
@@ -775,6 +818,17 @@
                             ],
                             "default": null
                           },
+                          "ruling": {
+                            "anyOf": [
+                              {
+                                "type": "string"
+                              },
+                              {
+                                "type": "null"
+                              }
+                            ],
+                            "default": null
+                          },
                           "solution": {
                             "anyOf": [
                               {
@@ -824,17 +878,6 @@
                             ],
                             "default": null
                           },
-                          "body": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
                           "date": {
                             "anyOf": [
                               {
@@ -860,7 +903,6 @@
                           },
                           "kind": {
                             "enum": [
-                              "summary",
                               "conclusions",
                               "note"
                             ],
@@ -928,6 +970,28 @@
                         "type": "object"
                       },
                       "type": "array"
+                    },
+                    "court_summary": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
+                    "court_summary_kind": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
                     },
                     "date": {
                       "anyOf": [
@@ -1003,6 +1067,17 @@
                       },
                       "type": "array"
                     },
+                    "ruling": {
+                      "anyOf": [
+                        {
+                          "type": "string"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ],
+                      "default": null
+                    },
                     "seat": {
                       "anyOf": [
                         {
@@ -1025,6 +1100,15 @@
                       ],
                       "default": null
                     },
+                    "standing": {
+                      "enum": [
+                        "QUASHED",
+                        "UPHELD",
+                        "FINAL",
+                        "NO_KNOWN_REVIEW"
+                      ],
+                      "type": "string"
+                    },
                     "text": {
                       "type": "string"
                     },
@@ -1039,6 +1123,7 @@
                     "title",
                     "url",
                     "jurisdiction_type",
+                    "standing",
                     "text"
                   ],
                   "type": "object"
@@ -1136,17 +1221,6 @@
                             ],
                             "default": null
                           },
-                          "body": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
                           "date": {
                             "anyOf": [
                               {
@@ -1172,7 +1246,6 @@
                           },
                           "kind": {
                             "enum": [
-                              "summary",
                               "conclusions",
                               "note"
                             ],
@@ -1573,17 +1646,6 @@
                             ],
                             "default": null
                           },
-                          "body": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
                           "date": {
                             "anyOf": [
                               {
@@ -1609,7 +1671,6 @@
                           },
                           "kind": {
                             "enum": [
-                              "summary",
                               "conclusions",
                               "note"
                             ],
@@ -2014,17 +2075,6 @@
                             ],
                             "default": null
                           },
-                          "body": {
-                            "anyOf": [
-                              {
-                                "type": "string"
-                              },
-                              {
-                                "type": "null"
-                              }
-                            ],
-                            "default": null
-                          },
                           "date": {
                             "anyOf": [
                               {
@@ -2050,7 +2100,6 @@
                           },
                           "kind": {
                             "enum": [
-                              "summary",
                               "conclusions",
                               "note"
                             ],

@@ -10,7 +10,7 @@ use lj_gazette::rows::{parse_container, Codes, Rows, ADDRESS, BODACC};
 use lj_gazette::Source;
 use lj_pg::db::build_pool;
 use lj_store::migrator::{apply_migrations, MigrationIntent};
-use lj_store::repository::{DecisionRepository, GazetteAxis, GazetteFilter, GazetteQuery};
+use lj_store::repository::{DecisionRepository, GazetteFacets, GazetteFilter, GazetteQuery};
 
 const RCS_B: &str = r#"<?xml version="1.0" encoding="utf-8"?>
 <RCS-B_REDIFF>
@@ -105,16 +105,40 @@ async fn a_written_file_comes_back_whole() {
         ..by(GazetteQuery::Text("dentaire parc".into()))
     };
     assert_eq!(repo.bodacc_search(&words, 10, 0).await.unwrap().len(), 1);
+    assert_eq!(repo.gazette_total(&words).await.unwrap(), 1);
+    let paris = repo
+        .gazette_depts(Source::Bodacc)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|(_, value)| value == "75")
+        .expect("Paris written")
+        .0;
+    let facets = |classes, depts| GazetteFacets { classes, depts };
+    let modification = (Famille::Modification as i16, 1);
+    assert_eq!(
+        repo.gazette_facets(&by(GazetteQuery::Text("dentaire parc".into())))
+            .await
+            .unwrap(),
+        facets(vec![modification], vec![(paris, 1)]),
+    );
     let other_family = GazetteFilter {
         classes: Some(vec![Famille::Radiation as i16]),
         ..words.clone()
     };
     assert_eq!(repo.gazette_total(&other_family).await.unwrap(), 0);
     assert_eq!(
-        repo.gazette_facet(&other_family, GazetteAxis::Class)
-            .await
-            .unwrap(),
-        [(Famille::Modification as i16, 1)],
-        "an axis is counted without its own filter"
+        repo.gazette_facets(&other_family).await.unwrap(),
+        facets(vec![modification], Vec::new()),
+        "an axis is counted without its own filter, under the other's"
+    );
+    let nowhere = GazetteFilter {
+        depts: Some(Vec::new()),
+        ..words.clone()
+    };
+    assert_eq!(repo.gazette_total(&nowhere).await.unwrap(), 0);
+    assert_eq!(
+        repo.gazette_facets(&nowhere).await.unwrap(),
+        facets(Vec::new(), vec![(paris, 1)]),
     );
 }

@@ -5,7 +5,6 @@
 use leptos::prelude::*;
 use lj_dtos::CitingDecisionHit;
 
-use crate::helpers::group_thousands;
 use crate::pages::law_page::cited_by::CitedDecisionRow;
 
 #[component]
@@ -13,14 +12,12 @@ pub fn DecisionCitantes(citantes: Vec<CitingDecisionHit>, total: Option<i64>) ->
     if citantes.is_empty() {
         return ().into_any();
     }
-    let title = "Citée par";
+    let ui = &crate::i18n::use_ui().decision;
+    let title = ui.cited_by;
     let reste = total
         .map(|t| t - citantes.len() as i64)
         .filter(|r| *r > 0)
-        .map(|r| match r {
-            1 => "Une autre décision la cite.".to_string(),
-            r => format!("{} autres décisions la citent.", group_thousands(r)),
-        });
+        .map(ui.cited_by_more);
     let lignes = citantes
         .into_iter()
         .map(|hit| view! { <CitedDecisionRow hit=hit cited=None /> })

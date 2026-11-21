@@ -85,12 +85,11 @@ pub fn build_pool(dsn: &str, pool_max: usize) -> Result<Pool> {
 /// `pool.get()` returning the measured wait, logged past [`POOL_WAIT_LOG`].
 /// Without it, [`POOL_WAIT_TIMEOUT`] lets a request wait up to 30 s with no
 /// trace telling the queue from a slow handler.
-pub async fn get_timed(pool: &Pool) -> Result<(Connection, Duration)> {
+pub async fn get_timed(
+    pool: &Pool,
+) -> std::result::Result<(Connection, Duration), deadpool_postgres::PoolError> {
     let started = std::time::Instant::now();
-    let conn = pool
-        .get()
-        .await
-        .map_err(|e| PgError::Pool(format!("{e}")))?;
+    let conn = pool.get().await?;
     let attente = started.elapsed();
     if attente >= POOL_WAIT_LOG {
         let ms = attente.as_millis();

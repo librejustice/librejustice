@@ -3,10 +3,11 @@
 use std::collections::BTreeMap;
 
 use anyhow::{anyhow, bail, Result};
+use chrono::NaiveDate;
 
 use lj_norm::text_identity::text_uid_celex;
 use lj_sources::cjue::CjueClient;
-use lj_store::repository::DecisionRepository;
+use lj_store::repository::{BodyWrite, DecisionRepository};
 
 use crate::config::Settings;
 
@@ -15,8 +16,13 @@ const BODY_FLOOR: usize = 300;
 const LOT: usize = 200;
 const FAILURE_STREAK: usize = 20;
 
-/// Gives their CELLAR text to the `EU/REG` and `EU/DIR` texts with neither body nor article, newest first.
-pub async fn fill_eu_bodies(limit: Option<usize>, dry_run: bool) -> Result<()> {
+/// Gives their CELLAR text to the `EU/REG` and `EU/DIR` texts with neither body nor article, newest first;
+/// with `refresh`, to every one with no numbered article, over its body.
+pub async fn fill_eu_bodies(
+    limit: Option<usize>,
+    refresh: Option<NaiveDate>,
+    dry_run: bool,
+) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
         lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
@@ -30,16 +36,35 @@ pub async fn fill_eu_bodies(limit: Option<usize>, dry_run: bool) -> Result<()> {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => BTreeMap::new(),
         Err(e) => bail!("{}: {e}", visited_path.display()),
     };
-    let queue: Vec<(String, String)> = repo
-        .eu_texts_without_body()
-        .await
-        .map_err(|e| anyhow!("eu_texts_without_body: {e}"))?
+    let uids: Vec<String> = if let Some(since) = refresh {
+        let done = repo
+            .eu_bodies_written_since(since)
+            .await
+            .map_err(|e| anyhow!("eu_bodies_written_since: {e}"))?;
+        repo.eu_texts_without_articles()
+            .await
+            .map_err(|e| anyhow!("eu_texts_without_articles: {e}"))?
+            .into_iter()
+            .map(|(uid, _)| uid)
+            .filter(|uid| !done.contains(uid))
+            .collect()
+    } else {
+        repo.eu_texts_without_body()
+            .await
+            .map_err(|e| anyhow!("eu_texts_without_body: {e}"))?
+    };
+    let queue: Vec<(String, String)> = uids
         .into_iter()
         .filter_map(|uid| Some((text_uid_celex(&uid)?, uid)))
-        .filter(|(celex, _)| !visited.contains_key(celex))
+        .filter(|(celex, _)| refresh.is_some() || !visited.contains_key(celex))
         .take(limit.unwrap_or(usize::MAX))
         .collect();
-    tracing::info!(queue = queue.len(), dry_run, "eu-bodies: queue");
+    let mode = if refresh.is_some() {
+        BodyWrite::Replace
+    } else {
+        BodyWrite::IfAbsent
+    };
+    tracing::info!(queue = queue.len(), refresh = ?refresh, dry_run, "eu-bodies: queue");
 
     let client = CjueClient::new();
     let today = chrono::Utc::now().date_naive().to_string();
@@ -79,11 +104,11 @@ pub async fn fill_eu_bodies(limit: Option<usize>, dry_run: bool) -> Result<()> {
             }
         }
         if lot.len() == LOT {
-            written += write_lot(&repo, &mut lot, &visited, &visited_path).await?;
+            written += write_lot(&repo, &mut lot, mode, &visited, &visited_path).await?;
         }
     }
     if !dry_run {
-        written += write_lot(&repo, &mut lot, &visited, &visited_path).await?;
+        written += write_lot(&repo, &mut lot, mode, &visited, &visited_path).await?;
     }
     tracing::info!(
         queue = queue.len(),
@@ -101,13 +126,15 @@ pub async fn fill_eu_bodies(limit: Option<usize>, dry_run: bool) -> Result<()> {
 async fn write_lot(
     repo: &DecisionRepository<'_>,
     lot: &mut Vec<(String, String)>,
+    mode: BodyWrite,
     visited: &BTreeMap<String, String>,
     visited_path: &std::path::Path,
 ) -> Result<u64> {
     let n = repo
-        .fill_empty_legal_text_bodies(lot)
+        .write_text_bodies("eu-law", lot, mode)
         .await
-        .map_err(|e| anyhow!("fill_empty_legal_text_bodies: {e}"))?;
+        .map_err(|e| anyhow!("write_text_bodies: {e}"))?
+        .len() as u64;
     lot.clear();
     std::fs::write(visited_path, serde_json::to_vec(visited)?)
         .map_err(|e| anyhow!("{}: {e}", visited_path.display()))?;

@@ -31,12 +31,21 @@ pub static SPEC: Spec = Spec::new(&[
     Column {
         name: "compl",
         codec: Codec::Text,
-        paths: &["france/complGeographique", "complGeographique"],
+        paths: &[
+            "france/complGeographique",
+            "complGeographique",
+            "immeubleBatimentResidence",
+            "etageEscalierAppartement",
+        ],
     },
     Column {
         name: "localite",
         codec: Codec::Text,
-        paths: &["france/localite", "localite"],
+        paths: &[
+            "france/localite",
+            "localite",
+            "BP_ou_Lieudit_ou_CommununeDeleguee",
+        ],
     },
     Column {
         name: "bp",
@@ -66,6 +75,6 @@ pub static SPEC: Spec = Spec::new(&[
     Column {
         name: "line",
         codec: Codec::Text,
-        paths: &[""],
+        paths: &["", "unstructured_address"],
     },
 ]);

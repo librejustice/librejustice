@@ -5,6 +5,9 @@
 //! composeur canonique [`lj_core::titles`] — le même qui écrit
 //! `search_title` à l'ingest.
 
+use lj_core::chamber::{ChamberId, Container, Joined, Seat, Solemn};
+use lj_dtos::{SeatChamber, SeatContainer, SeatJoined, SeatParts};
+
 /// Nom de juridiction affichable : `jurisdiction_name` assaini, sinon
 /// `type_label` — le libellé du `jurisdiction_type` déjà résolu par l'appelant
 /// (référentiel `jurisdiction_type:*`), ou le code brut faute de référentiel chargé.
@@ -19,20 +22,111 @@ pub fn decision_jurisdiction(type_label: &str, jurisdiction_name: Option<&str>) 
     type_label.to_string()
 }
 
-/// Siège composé depuis les axes structurés : délègue à
-/// [`lj_core::titles::seat_display`] avec les labels référentiels des uids.
-pub fn decision_seat(
+/// A decision's seat by its parts: the axes its title shows once
+/// [`lj_core::titles::seat_axes`] has dropped what `jurisdiction` already says.
+pub fn seat_parts(
     jurisdiction: &str,
-    chamber_label: Option<&str>,
+    seat: Option<&Seat>,
     formation_uid: Option<&str>,
     office_uid: Option<&str>,
-) -> Option<String> {
-    lj_core::titles::seat_display(
+) -> Option<SeatParts> {
+    let chamber = seat.and_then(Seat::title_label);
+    let axes = lj_core::titles::seat_axes(
         jurisdiction,
-        chamber_label,
+        chamber.as_deref(),
         formation_uid.and_then(lj_core::titles::formation_label),
         office_uid.and_then(lj_core::titles::office_label),
-    )
+    );
+    let mut parts = match (axes.chamber, seat) {
+        (Some(_), Some(seat)) => room_parts(seat),
+        _ => SeatParts::default(),
+    };
+    parts.formation = axes.formation.and(formation_uid).map(key);
+    parts.office = axes.office.and(office_uid).map(key);
+    (parts != SeatParts::default()).then_some(parts)
+}
+
+/// The seat in French, composed from its parts: « pôle 4, 1re chambre · juge unique ».
+pub fn french_seat(parts: &SeatParts) -> Option<String> {
+    let chamber = room_seat(parts).title_label();
+    lj_core::titles::SeatAxes {
+        chamber: chamber.as_deref(),
+        formation: parts
+            .formation
+            .as_deref()
+            .and_then(|f| lj_core::titles::formation_label(&format!("formation:{f}"))),
+        office: parts
+            .office
+            .as_deref()
+            .and_then(|o| lj_core::titles::office_label(&format!("office:{o}"))),
+    }
+    .display()
+}
+
+/// A referential uid's key, without its facet: `formation:A_TROIS` is `A_TROIS`.
+fn key(uid: &str) -> String {
+    uid.split_once(':').map_or(uid, |(_, key)| key).to_string()
+}
+
+fn room_parts(seat: &Seat) -> SeatParts {
+    SeatParts {
+        container: seat.container.map(|container| match container {
+            Container::Pole(n) => SeatContainer::Pole(n),
+            Container::Section(n) => SeatContainer::Section(n),
+            Container::Tribunal => SeatContainer::Tribunal,
+            Container::TribunalFonctionPublique => SeatContainer::TribunalFonctionPublique,
+        }),
+        chamber: seat.chamber.map(|chamber| match chamber {
+            ChamberId::Number(n) => SeatChamber::Number(n),
+            ChamberId::Letter(l) => SeatChamber::Letter(l),
+            ChamberId::Composed(a, b) => SeatChamber::Composed(a, b),
+        }),
+        solemn: seat.solemn.map(|solemn| solemn.token().to_string()),
+        matters: seat.specialty.iter().map(|uid| key(uid)).collect(),
+        section: seat.section,
+        letter: seat.letter,
+        joined: seat.joined.clone().map(|joined| match joined {
+            Joined::SubSections(v) => SeatJoined::SubSections(v),
+            Joined::Chambers(v) => SeatJoined::Chambers(v),
+        }),
+        formation: None,
+        office: None,
+    }
+}
+
+/// The parts read back into the stored seat they came from.
+fn room_seat(parts: &SeatParts) -> Seat {
+    Seat {
+        container: parts.container.map(|container| match container {
+            SeatContainer::Pole(n) => Container::Pole(n),
+            SeatContainer::Section(n) => Container::Section(n),
+            SeatContainer::Tribunal => Container::Tribunal,
+            SeatContainer::TribunalFonctionPublique => Container::TribunalFonctionPublique,
+        }),
+        chamber: parts.chamber.map(|chamber| match chamber {
+            SeatChamber::Number(n) => ChamberId::Number(n),
+            SeatChamber::Letter(l) => ChamberId::Letter(l),
+            SeatChamber::Composed(a, b) => ChamberId::Composed(a, b),
+        }),
+        solemn: parts.solemn.as_deref().map(|token| {
+            Solemn::from_token(token).expect("a seat part's solemn comes from a stored seat")
+        }),
+        specialty: parts
+            .matters
+            .iter()
+            .map(|matter| {
+                lj_core::chamber::static_specialty(matter)
+                    .expect("a seat part's matter comes from a stored seat")
+            })
+            .collect(),
+        section: parts.section,
+        letter: parts.letter,
+        joined: parts.joined.clone().map(|joined| match joined {
+            SeatJoined::SubSections(v) => Joined::SubSections(v),
+            SeatJoined::Chambers(v) => Joined::Chambers(v),
+        }),
+        ..Seat::default()
+    }
 }
 
 /// The « Formation » keys of a decision as tags: the path the `formation` filter
@@ -60,9 +154,8 @@ pub fn seat_path_tag(paths: &[String]) -> Option<lj_dtos::FacetTag> {
     })
 }
 
-/// Titre lisible « <juridiction>[, <siège>], <date FR>, <numéro> »
-/// (siège/date/numéro optionnels). `seat` est le siège DÉJÀ composé
-/// ([`decision_seat`]) — jamais une chaîne source.
+/// Readable title « <court>[, <seat>], <French date>, <number> », the last three
+/// optional. `seat` is already composed, [`french_seat`], never a source string.
 pub fn decision_title(
     type_label: &str,
     jurisdiction_name: Option<&str>,
@@ -134,37 +227,110 @@ mod tests {
         );
     }
 
+    fn seat(
+        jurisdiction: &str,
+        seat: Seat,
+        formation: Option<&str>,
+        office: Option<&str>,
+    ) -> Option<String> {
+        seat_parts(jurisdiction, Some(&seat), formation, office)
+            .as_ref()
+            .and_then(french_seat)
+    }
+
     #[test]
     fn seat_cc_deja_dans_la_juridiction() {
         // Le label cass_civ2 porte déjà la chambre : le siège composé tombe.
-        let jur = "Cour de cassation, 2e chambre civile";
-        let seat = decision_seat(
-            jur,
-            Some("2e chambre civile"),
+        let room = Seat {
+            chamber: Some(ChamberId::Number(2)),
+            specialty: vec!["matiere:CIVILE"],
+            ..Default::default()
+        };
+        let parts = seat_parts(
+            "Cour de cassation, 2e chambre civile",
+            Some(&room),
             Some("formation:RESTREINTE"),
             None,
         );
-        assert_eq!(seat.as_deref(), Some("formation restreinte"));
+        assert_eq!(
+            parts,
+            Some(SeatParts {
+                formation: Some("RESTREINTE".to_string()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            parts.as_ref().and_then(french_seat).as_deref(),
+            Some("formation restreinte")
+        );
     }
 
     #[test]
     fn seat_office_depuis_les_axes() {
         // A room nothing qualifies: the label is the number alone.
-        let label = lj_core::chamber::Seat {
-            chamber: Some(lj_core::chamber::ChamberId::Number(7)),
+        let room = Seat {
+            chamber: Some(ChamberId::Number(7)),
             ..Default::default()
-        }
-        .label();
-        let seat = decision_seat(
-            "Tribunal judiciaire de Nanterre",
-            label.as_deref(),
-            None,
-            Some("office:JLD"),
-        );
+        };
         assert_eq!(
-            seat.as_deref(),
+            seat(
+                "Tribunal judiciaire de Nanterre",
+                room,
+                None,
+                Some("office:JLD")
+            )
+            .as_deref(),
             Some("7e chambre · juge des libertés et de la détention")
         );
+    }
+
+    /// The French seat composed from the parts is the one composed from the stored seat.
+    #[test]
+    fn the_french_seat_is_composed_from_its_parts() {
+        let cases = [
+            (
+                "Cour d'appel de Paris",
+                Seat {
+                    container: Some(Container::Pole(4)),
+                    chamber: Some(ChamberId::Number(1)),
+                    ..Default::default()
+                },
+                None,
+                "pôle 4, 1re chambre",
+            ),
+            (
+                "Cour d'appel de Lyon",
+                Seat {
+                    chamber: Some(ChamberId::Number(3)),
+                    letter: Some('A'),
+                    ..Default::default()
+                },
+                None,
+                "3e chambre, section A",
+            ),
+            (
+                "Cour d'appel de Douai",
+                Seat {
+                    specialty: vec!["matiere:SOCIALE"],
+                    ..Default::default()
+                },
+                Some("formation:JUGE_UNIQUE"),
+                "chambre sociale · juge unique",
+            ),
+        ];
+        for (jurisdiction, room, formation, french) in cases {
+            let stored = lj_core::titles::seat_display(
+                jurisdiction,
+                room.title_label().as_deref(),
+                formation.and_then(lj_core::titles::formation_label),
+                None,
+            );
+            assert_eq!(stored.as_deref(), Some(french));
+            assert_eq!(
+                seat(jurisdiction, room, formation, None).as_deref(),
+                Some(french)
+            );
+        }
     }
 
     #[test]

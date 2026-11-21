@@ -338,6 +338,24 @@ pub fn notice_id(kind: Kind, parution: u32, number: i64) -> i64 {
     kind.publication() * 100_000_000_000_000 + i64::from(parution) * 1_000_000 + number
 }
 
+/// The notice id a BODACC reference names: its publication letter, its parution, its number
+/// (`A20260100042`).
+pub fn parse_reference(reference: &str) -> Option<i64> {
+    let publication = match reference.get(..1)? {
+        "A" => 1,
+        "B" => 2,
+        "C" => 3,
+        _ => return None,
+    };
+    if !reference[1..].bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    let parution: i64 = reference.get(1..9)?.parse().ok()?;
+    let number: i64 = reference.get(9..)?.parse().ok()?;
+    (number < 1_000_000)
+        .then_some(publication * 100_000_000_000_000 + parution * 1_000_000 + number)
+}
+
 /// `(publication letter, parution, number)` of a notice id.
 pub fn split_id(id: i64) -> (char, u32, u32) {
     let publication = match id / 100_000_000_000_000 {

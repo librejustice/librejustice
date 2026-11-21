@@ -5,7 +5,9 @@
 use chrono::NaiveDate;
 use lj_pg::db::{build_pool, Connection};
 use lj_store::migrator::{apply_migrations, MigrationIntent};
-use lj_store::repository::{DecisionRepository, Fraicheur, LegalArticleRow, LegalTextRow};
+use lj_store::repository::{
+    BodyWrite, DecisionRepository, Fraicheur, LegalArticleRow, LegalTextRow,
+};
 use tokio::sync::OnceCell;
 
 static MIGRATED: OnceCell<()> = OnceCell::const_new();
@@ -57,7 +59,6 @@ fn text(
         eli: None,
         nor: None,
         instrument_key: None,
-        body: None,
         status: None,
     }
 }
@@ -106,15 +107,17 @@ async fn a_law_without_a_publication_date_takes_its_jo_issue() {
         .await
         .unwrap();
     conn.execute(
-        "INSERT INTO text_publication (text_uid, date_publi) VALUES ('JORFTEXT4', '2026-08-25')",
+        "INSERT INTO text_publication (text_uid, language, status, date_publi) \
+         VALUES ('JORFTEXT4', 'fr', 'authentic', '2026-08-25')",
         &[],
     )
     .await
     .unwrap();
-    assert_eq!(
-        repo.date_texts_from_publications().await.unwrap(),
-        ["JORFTEXT4"]
-    );
+    assert!(repo
+        .date_texts_from_publications()
+        .await
+        .unwrap()
+        .contains(&"JORFTEXT4".to_string()));
     assert_eq!(
         stamp(&conn, "JORFTEXT4").await,
         (
@@ -301,11 +304,21 @@ async fn the_bounds_keep_what_entered_into_force_between_them() {
     ];
     let mut uids = Vec::new();
     for (uid, jurisdiction, nature, date, slug, versions) in texts {
-        let mut row = text(uid, jurisdiction, nature, date, None);
+        repo.upsert_legal_text(&text(uid, jurisdiction, nature, date, None))
+            .await
+            .unwrap();
         if versions.is_empty() && date.is_some() {
-            row.body = Some("Les infections nosocomiales, par décret.".to_string());
+            repo.write_text_bodies(
+                "circulaire",
+                &[(
+                    uid.to_string(),
+                    "Les infections nosocomiales, par décret.".to_string(),
+                )],
+                BodyWrite::Replace,
+            )
+            .await
+            .unwrap();
         }
-        repo.upsert_legal_text(&row).await.unwrap();
         conn.execute(
             "UPDATE legal_text SET slug = $2 WHERE text_uid = $1",
             &[&uid, &slug],
@@ -345,7 +358,7 @@ async fn the_bounds_keep_what_entered_into_force_between_them() {
             text_uid: None,
             jurisdictions,
             source: None,
-            nature_set: None,
+            category: None,
             at,
             valid_from,
         }

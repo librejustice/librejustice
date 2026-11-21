@@ -84,10 +84,10 @@ pub fn build_decision_story(detail: &DecisionDetail) -> Vec<PdfBlock> {
             style: PdfBlockStyle::Spacer,
             content: String::new(),
         });
-        for (label, value) in provenance {
+        for (field, value) in provenance {
             story.push(PdfBlock {
                 style: PdfBlockStyle::Meta,
-                content: xml_escape(&format!("{label} : {value}")),
+                content: xml_escape(&format!("{} : {value}", field.label())),
             });
         }
     }
@@ -635,6 +635,7 @@ mod tests {
 
     fn detail() -> DecisionDetail {
         DecisionDetail {
+            court_names: Default::default(),
             id: "abc123".to_string(),
             jurisdiction_type: JurisdictionType::Cc,
             title: "Cour de cassation, chambre sociale, 29 mai 2026, 24-17.384".to_string(),
@@ -645,6 +646,7 @@ mod tests {
             summary: None,
             summary_quote: None,
             summary_body: None,
+            summary_lang: None,
             jurisdiction_code: None,
             jurisdiction_name: Some("Cour de cassation".to_string()),
             court_place: None,
@@ -656,6 +658,7 @@ mod tests {
             date_audience: None,
             docket_numbers: Some(vec!["24-17.384".to_string()]),
             seat: Some("Chambre sociale".to_string()),
+            seat_parts: None,
             seat_path: None,
             legal_references: None,
             source_xml: None,
@@ -666,8 +669,11 @@ mod tests {
             official_url: None,
             chronology: Vec::new(),
             commentaires: vec![],
+            ruling_url: None,
             citantes: vec![],
             citantes_total: None,
+            lang: None,
+            texts: Vec::new(),
         }
     }
 

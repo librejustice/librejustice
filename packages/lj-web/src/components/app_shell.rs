@@ -5,8 +5,8 @@ use leptos::prelude::*;
 use leptos_meta::Meta;
 
 use crate::components::decision_bar::provide_decision_bar_contexts;
+use crate::components::language::{LangAlternates, LangOffer};
 use crate::components::{Footer, TopBar};
-use crate::seo::site_default;
 
 /// Drapeau de suppression de la `<meta description>` generique du site, lu par
 /// `AppShell` et pose par les pages qui n'en veulent pas ou qui posent la leur
@@ -34,6 +34,8 @@ pub struct FillViewport(pub RwSignal<bool>);
 #[component]
 pub fn AppShell(children: Children) -> impl IntoView {
     provide_decision_bar_contexts();
+    crate::i18n::provide_reader_lang();
+    crate::jurisdiction::provide_reader_scope();
 
     let fill = RwSignal::new(false);
     provide_context(FillViewport(fill));
@@ -46,9 +48,11 @@ pub fn AppShell(children: Children) -> impl IntoView {
     // appelle `own_page_description()`, qui leve `suppress`.
     let suppress = RwSignal::new(false);
     provide_context(SuppressSiteDescription(suppress));
+    let site_description = crate::i18n::use_ui().shell.site_description;
+    let scope = crate::jurisdiction::use_reader_scope();
     let default_description = move || {
         (!suppress.get()).then(|| {
-            view! { <Meta name="description" content=site_default().description /> }
+            view! { <Meta name="description" content=site_description(&scope.code()) /> }
         })
     };
 
@@ -58,8 +62,9 @@ pub fn AppShell(children: Children) -> impl IntoView {
                 href="#main"
                 class="sr-only focus:not-sr-only focus:absolute focus:z-50 focus:px-4 focus:py-2 focus:text-sm focus:text-[var(--color-ink)]"
             >
-                "Aller au contenu principal"
+                {crate::i18n::use_ui().shell.skip_to_content}
             </a>
+            <LangOffer />
             <TopBar />
             <main id="main" class="flex min-h-0 min-w-0 flex-1 flex-col">
                 {children()}
@@ -71,5 +76,6 @@ pub fn AppShell(children: Children) -> impl IntoView {
         // Apres `children()` : une page qui pose `suppress` pendant son rendu synchrone
         // est ainsi vue par cette cloture au moment de la serialisation SSR.
         {default_description}
+        <LangAlternates />
     }
 }

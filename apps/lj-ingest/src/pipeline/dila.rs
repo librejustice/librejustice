@@ -439,6 +439,7 @@ async fn ingest_dila_tarball(
         Empty,
         ParseErr,
         Delete(Vec<String>),
+        Norm(Box<lj_parse::CnilDoctrine>),
     }
 
     // Pré-passe : IDs sous `/publie/` (winner publie/inedit). Faite avant le
@@ -493,6 +494,14 @@ async fn ingest_dila_tarball(
                 vec![DilaMsg::Empty]
             } else {
                 let repaired = lj_sources::dila::repair_dila(&raw, fond.source());
+                let doctrine = (fond == Fond::Cnil)
+                    .then(|| lj_parse::cnil_doctrine(&repaired))
+                    .flatten();
+                if let Some(d) = doctrine {
+                    return tx
+                        .blocking_send(DilaMsg::Norm(Box::new(d)))
+                        .map_err(|_| anyhow!("canal DILA fermé (consumer arrêté)"));
+                }
                 match classify_dila(repaired, &raw, fond) {
                     // JADE non routé : skip non fatal.
                     Ok(classified) if classified.is_empty() => vec![DilaMsg::Skip],
@@ -523,6 +532,8 @@ async fn ingest_dila_tarball(
     let mut dat_ids: Vec<String> = Vec::new();
     let mut dup_skipped = 0usize;
     let mut superseded = 0usize;
+    let repo = DecisionRepository::new(conn);
+    let mut doctrine = super::cnil_doctrine::Written::default();
 
     while let Some(msg) = rx.recv().await {
         match msg {
@@ -556,6 +567,7 @@ async fn ingest_dila_tarball(
             }
             DilaMsg::ParseErr => counts.errors += 1,
             DilaMsg::Delete(ids) => dat_ids.extend(ids),
+            DilaMsg::Norm(d) => super::cnil_doctrine::write(&repo, &d, &mut doctrine).await?,
         }
     }
     // Canal fermé = lecteur fini : remonter une éventuelle erreur de lecture/parse.
@@ -577,7 +589,6 @@ async fn ingest_dila_tarball(
     // Suppressions appliquées APRÈS les upserts (un incrément ajoute ET retire)
     // via `delete` provenance-aware sur le `source_uid` reconstruit
     // `dila-<fond>/<ID>`.
-    let repo = DecisionRepository::new(conn);
     let mut deleted_total: u64 = 0;
     for dila_id in dat_ids {
         let uids = if fond.is_judicial() {
@@ -607,8 +618,13 @@ async fn ingest_dila_tarball(
         held = counts.held,
         dup_skipped,
         superseded,
+        doctrine = doctrine.texts,
+        doctrine_jo_copies = doctrine.jo_copies,
         "ingest_dila"
     );
+    if doctrine.texts > 0 {
+        super::slugs::assign_text_slugs(&repo).await?;
+    }
     Ok((counts, deleted_total))
 }
 

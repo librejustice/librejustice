@@ -26,6 +26,8 @@ const ATTEMPTS: u32 = 5;
 /// The catalogue's view of the decisions, the former authorities' included.
 const DECISIONS_VIEW: u32 = 9;
 const PER_PAGE: usize = 200;
+/// The catalogue's code for the document type « Jurisprudences ».
+const JURISPRUDENCES_TYPDOC: &str = "c";
 
 /// A notice of the catalogue: its fields by label, and the ids of its files.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,8 +39,23 @@ pub struct DddNotice {
 
 impl DddNotice {
     pub fn is_decision(&self) -> bool {
-        self.fields.get("Type de document").map(|t| t.trim()) == Some("Décisions")
+        self.kind() == Some("Décisions")
     }
+
+    pub fn is_jurisprudence(&self) -> bool {
+        self.kind() == Some("Jurisprudences")
+    }
+
+    fn kind(&self) -> Option<&str> {
+        self.fields.get("Type de document").map(|t| t.trim())
+    }
+}
+
+/// A row of a result list, with the first author it shows.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedNotice {
+    pub id: u64,
+    pub author: String,
 }
 
 pub struct DddClient {
@@ -103,29 +120,50 @@ impl DddClient {
     /// The notice ids of the decisions list, newest first, over its first `pages` pages of 200;
     /// every page with `None`.
     pub async fn decision_ids(&self, pages: Option<usize>) -> Result<Vec<u64>> {
-        self.text(self.http.get(format!(
-            "{BASE_URL}/index.php?lvl=cmspage&pageid=12&opac_view={DECISIONS_VIEW}"
-        )))
-        .await?;
+        let rows = self
+            .listing(
+                &format!("{BASE_URL}/index.php?lvl=cmspage&pageid=12&opac_view={DECISIONS_VIEW}"),
+                &[("look_AUTHPERSO_1#", "1"), ("look_AUTHPERSO_2#", "1")],
+                pages,
+            )
+            .await?;
+        Ok(rows.into_iter().map(|row| row.id).collect())
+    }
+
+    /// The court decisions of the whole catalogue, newest first, over its first `pages` pages of
+    /// 200; every page with `None`.
+    pub async fn jurisprudence_rows(&self, pages: Option<usize>) -> Result<Vec<ListedNotice>> {
+        self.listing(
+            &format!("{BASE_URL}/index.php?opac_view=-1"),
+            &[("typdoc", JURISPRUDENCES_TYPDOC)],
+            pages,
+        )
+        .await
+    }
+
+    /// The rows of the list `home` opens: every notice of its view, past the `filters`.
+    async fn listing(
+        &self,
+        home: &str,
+        filters: &[(&str, &str)],
+        pages: Option<usize>,
+    ) -> Result<Vec<ListedNotice>> {
+        self.text(self.http.get(home)).await?;
+        let mut query = vec![("user_query", "*"), ("look_TITLE", "1"), ("look_ALL", "1")];
+        query.extend_from_slice(filters);
         let mut page = self
             .text(
                 self.http
                     .post(format!(
                         "{BASE_URL}/index.php?lvl=more_results&autolevel1=1"
                     ))
-                    .form(&[
-                        ("user_query", "*"),
-                        ("look_TITLE", "1"),
-                        ("look_ALL", "1"),
-                        ("look_AUTHPERSO_1#", "1"),
-                        ("look_AUTHPERSO_2#", "1"),
-                    ]),
+                    .form(&query),
             )
             .await?;
         let total = result_count(&page)
-            .ok_or_else(|| SourceError::Invalid("the decisions list gives no count".into()))?;
+            .ok_or_else(|| SourceError::Invalid(format!("{home}: the list gives no count")))?;
         let last = total.div_ceil(PER_PAGE);
-        let mut ids: Vec<u64> = Vec::new();
+        let mut rows: Vec<ListedNotice> = Vec::new();
         for n in 1..=pages.map_or(last, |p| p.min(last)) {
             let mut form: Vec<(String, String)> = form_values(&page)
                 .into_iter()
@@ -140,19 +178,19 @@ impl DddClient {
                         .form(&form),
                 )
                 .await?;
-            for id in notice_ids(&page) {
-                if !ids.contains(&id) {
-                    ids.push(id);
+            for row in listed_notices(&page) {
+                if !rows.iter().any(|r| r.id == row.id) {
+                    rows.push(row);
                 }
             }
         }
-        if pages.is_none() && ids.len() != total {
+        if pages.is_none() && rows.len() != total {
             return Err(SourceError::Invalid(format!(
-                "the decisions list counts {total} and lists {}",
-                ids.len()
+                "{home}: the list counts {total} and lists {}",
+                rows.len()
             )));
         }
-        Ok(ids)
+        Ok(rows)
     }
 
     /// The notice `id`, `None` when the catalogue has none under it.
@@ -209,16 +247,27 @@ fn form_values(page: &str) -> Vec<(String, String)> {
         .collect()
 }
 
-fn notice_ids(page: &str) -> Vec<u64> {
-    static ID: OnceLock<Regex> = OnceLock::new();
-    let mut ids: Vec<u64> = Vec::new();
-    for c in regex(&ID, r"notice_display(?:&amp;|&)id=(\d+)").captures_iter(page) {
-        let id = c[1].parse().unwrap();
-        if !ids.contains(&id) {
-            ids.push(id);
+fn listed_notices(page: &str) -> Vec<ListedNotice> {
+    static RECORD: OnceLock<Regex> = OnceLock::new();
+    static AUTHOR: OnceLock<Regex> = OnceLock::new();
+    let starts: Vec<(usize, u64)> = regex(&RECORD, r#"<div id="record_container_(\d+)""#)
+        .captures_iter(page)
+        .map(|c| (c.get(0).unwrap().end(), c[1].parse().unwrap()))
+        .collect();
+    let mut rows: Vec<ListedNotice> = Vec::new();
+    for (k, &(start, id)) in starts.iter().enumerate() {
+        let end = starts.get(k + 1).map_or(page.len(), |&(next, _)| next);
+        let author = regex(
+            &AUTHOR,
+            r#"(?s)class="auteur_notCourte">\s*<a[^>]*>(.*?)</a>"#,
+        )
+        .captures(&page[start..end])
+        .map_or(String::new(), |c| cell_text(&c[1]));
+        if !rows.iter().any(|r| r.id == id) {
+            rows.push(ListedNotice { id, author });
         }
     }
-    ids
+    rows
 }
 
 /// The text of an HTML fragment, its pieces between tags joined by a space.
@@ -328,5 +377,33 @@ mod tests {
         assert!(notice.is_decision());
         assert_eq!(notice.explnum, vec![23420]);
         assert!(parse_notice("<html><body>Aucune notice</body></html>", 1).is_none());
+    }
+
+    #[test]
+    fn a_result_page_lists_each_notice_once_with_its_first_author() {
+        let page = r#"<div id="record_container_61515" class="parentNotCourte uk-clearfix">
+            <p class="typeDoc_notCourte">Jurisprudences</p>
+            <h3><a href="./index.php?lvl=notice_display&amp;id=61515&amp;opac_view=-1">Arrêt relatif à un licenciement</a></h3>
+            <span class="auteur_notCourte">
+                <a href="./index.php?lvl=author_see&amp;id=88&amp;opac_view=-1">Cour d&#039;appel d&#039;Aix-en-Provence</a>, Auteur</span>
+            <a href="./index.php?lvl=notice_display&amp;id=61515">Plus d'information...</a>
+            </div>
+            <div id="record_container_59407" class="parentNotCourte uk-clearfix">
+            <span class="auteur_notCourte"><a href="./index.php?lvl=author_see&amp;id=1145">Cour européenne des droits de l'homme</a>, Auteur ;
+            <a href="./index.php?lvl=author_see&amp;id=7">Grande chambre</a>, Auteur</span>
+            </div>"#;
+        assert_eq!(
+            listed_notices(page),
+            vec![
+                ListedNotice {
+                    id: 61515,
+                    author: "Cour d'appel d'Aix-en-Provence".into()
+                },
+                ListedNotice {
+                    id: 59407,
+                    author: "Cour européenne des droits de l'homme".into()
+                },
+            ]
+        );
     }
 }

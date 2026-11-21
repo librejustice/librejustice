@@ -100,7 +100,7 @@ jsonpath "$.result" exists
 jsonpath "$.error" not exists
 
 # -----------------------------------------------------------------------------
-# tools/list: four tools, exact names, ordering, strict inputSchema
+# tools/list: six tools, exact names, ordering, strict inputSchema
 # -----------------------------------------------------------------------------
 POST {{base}}/mcp/
 Accept: application/json, text/event-stream
@@ -116,11 +116,13 @@ HTTP 200
 jsonpath "$.jsonrpc" == "2.0"
 jsonpath "$.id" == 3
 jsonpath "$.result.tools" isCollection
-jsonpath "$.result.tools" count == 4
+jsonpath "$.result.tools" count == 6
 jsonpath "$.result.tools[0].name" == "search_decisions"
 jsonpath "$.result.tools[1].name" == "get_decision"
 jsonpath "$.result.tools[2].name" == "get_norm"
 jsonpath "$.result.tools[3].name" == "search_norms"
+jsonpath "$.result.tools[4].name" == "search_notices"
+jsonpath "$.result.tools[5].name" == "get_notice"
 # Every tool: description + inputSchema, no title-bearing $ref/$defs leakage.
 jsonpath "$.result.tools[0].description" isString
 jsonpath "$.result.tools[0].inputSchema" exists

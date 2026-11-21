@@ -27,7 +27,12 @@ FR	PROTOCOLE	traites
 FR	CIRCULAIRE	circulaires
 FR	INSTRUCTION	circulaires
 FR	BOFIP	bofip
+FR	BOSS	boss
 FR	FICHE_PRATIQUE	fiches-pratiques
+FR	QUESTION_ECRITE	travaux-parlementaires
+FR	QUESTION_ORALE	travaux-parlementaires
+FR	CNIL	autorites
+FR	ACPR	autorites
 EU	*	textes-ue
 INTL	CODE	codes
 INTL	CONSTITUTION	codes
@@ -36,3 +41,7 @@ INTL	*	traites
 *	CONSTITUTION	codes
 *	LAW	lois
 *	DECREE	decrets
+*	ORDER	arretes
+*	CIRCULAR	circulaires
+*	TREATY	traites
+*	PROTOCOL	traites

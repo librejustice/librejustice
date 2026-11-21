@@ -40,6 +40,17 @@ fn starts_with_folded(s: &str, prefix: &str) -> bool {
     prefix.chars().all(|pc| it.next() == Some(pc))
 }
 
+/// A numeral in brackets right after an article's own, « l'article 23 (1) des statuts »: a
+/// paragraph, not an article.
+fn bracketed_paragraph(chars: &[char], s: usize, e: usize) -> bool {
+    let mut before = chars[..s].iter().rev().filter(|c| **c != ' ');
+    e - s <= 2
+        && chars[s..e].iter().all(char::is_ascii_digit)
+        && chars.get(e) == Some(&')')
+        && before.next() == Some(&'(')
+        && before.next().is_some_and(char::is_ascii_digit)
+}
+
 /// Pliage canonique de comparaison : `fold_chars` + espaces réduits à un.
 /// Forme des clés de `full_titles` / `code_titles` et des candidats du walker.
 fn canon_fold(s: &str) -> String {
@@ -216,13 +227,13 @@ pub struct CompiledVocab {
     code_titles: FxHashMap<String, String>,
     /// `num_key` → uids porteurs — résolution des articles nus par unicité.
     by_num_key: FxHashMap<String, Vec<String>>,
-    /// Cache INTER-décisions de `link_citation_analyzed` — fonction pure de
-    /// `(instrument, text_key, article_key, owner_iso)` sur le snapshot du run.
+    /// Cross-decision cache of `link_citation_analyzed`, a pure function of
+    /// `(instrument, text_key, article_key, owner_place)` over the run's snapshot.
     link_cache: std::sync::RwLock<FxHashMap<LinkCacheKey, LinkTarget>>,
 }
 
-/// Clé du cache de link inter-décisions : `(instrument, text_key,
-/// article_key, owner_iso)`. Le for du corps émetteur fait partie de la clé.
+/// Key of the cross-decision link cache: `(instrument, text_key, article_key, owner_place)`,
+/// the citing body's place included.
 type LinkCacheKey = (String, String, Option<String>, Option<String>);
 
 /// Mots trop génériques pour être des surfaces d'alias seules (les ancres les
@@ -2847,6 +2858,7 @@ pub fn extract_citations_norm(
         &norm.chars,
         &norm.folded,
         &norm.char2byte,
+        &norm.breaks,
         vocab,
         snap,
         forum,
@@ -2904,11 +2916,21 @@ pub fn doc_extract(
         &norm.chars,
         &norm.folded,
         &norm.char2byte,
+        &norm.breaks,
         vocab,
         snap,
         forum,
         owner_text_uid,
     );
+    if let Some(Forum::Foreign(place, _)) = forum {
+        let own = crate::foreign::foreign_cases(&norm.chars, place.as_str());
+        cases.retain(|c| {
+            !own.iter()
+                .any(|o| c.char_start < o.char_end && o.char_start < c.char_end)
+        });
+        cases.extend(own);
+        cases.sort_by_key(|c| c.char_start);
+    }
     DocExtract {
         scan: crate::scan::docscan_from_parts(norm, marks),
         citations,
@@ -3142,8 +3164,9 @@ fn circ_tail_target(
 struct Resolver<'a> {
     snap: &'a LinkSnapshot,
     vocab: &'a CompiledVocab,
-    /// For du corps émetteur — constant sur tout le document.
-    owner_iso: Option<&'a str>,
+    /// The place of the body's legal order when it is not France's, constant over the
+    /// document.
+    owner_place: Option<&'a str>,
     analyses: FxHashMap<String, std::sync::Arc<KeyAnalysis>>,
     memo: FxHashMap<(String, Option<String>), LinkTarget>,
 }
@@ -3187,7 +3210,7 @@ impl Resolver<'_> {
             instrument.to_string(),
             text_key.to_string(),
             ak.map(str::to_string),
-            self.owner_iso.map(str::to_string),
+            self.owner_place.map(str::to_string),
         );
         if let Some(t) = self.vocab.link_cache.read().unwrap().get(&gk) {
             self.memo.insert(k, t.clone());
@@ -3199,7 +3222,7 @@ impl Resolver<'_> {
             instrument,
             &self.analyses[text_key],
             ak,
-            self.owner_iso,
+            self.owner_place,
         );
         self.memo.insert(k, target.clone());
         self.vocab
@@ -3221,15 +3244,23 @@ fn compose(
     chars: &[char],
     folded: &str,
     char2byte: &[usize],
+    breaks: &[bool],
     vocab: &CompiledVocab,
     snap: &LinkSnapshot,
     forum: Option<Forum>,
     owner_text_uid: Option<&str>,
 ) -> Vec<CompiledCitation> {
+    let (place, date) = match forum {
+        Some(Forum::Foreign(place, date)) => (Some(place), date),
+        _ => (None, None),
+    };
     let mut resolver = Resolver {
         snap,
         vocab,
-        owner_iso: owner_text_uid.and_then(|u| snap.foreign_iso(u)),
+        owner_place: match &place {
+            Some(place) => Some(place.as_str()),
+            None => owner_text_uid.and_then(|u| snap.foreign_territory(u)),
+        },
         analyses: FxHashMap::default(),
         memo: FxHashMap::default(),
     };
@@ -3401,6 +3432,7 @@ fn compose(
     let orphan_after = |e: usize| {
         let rest = &folded[char2byte[e]..];
         RE_ORPHAN.is_match(rest)
+            || (place.is_some() && RE_POSSESSIVE_GEN.is_match(rest))
             || RE_ZONE_STEP
                 .captures(rest)
                 .is_some_and(|c| !matches!(&c[1], "ou" | "ni" | "et"))
@@ -3481,6 +3513,9 @@ fn compose(
         if instr_emits.iter().any(|&(is, ie)| *s >= is && *s < ie) {
             continue;
         }
+        if place.is_some() && bracketed_paragraph(chars, *s, *e) {
+            continue;
+        }
         let ak = Some(num_key.clone());
 
         // 2. Anaphore collée (« R. 57-1 du même livre ») — porte la nature.
@@ -3547,6 +3582,23 @@ fn compose(
                 }
             }
         }
+        // A foreign court takes up a nature (« du Traité susvisé »): the last instrument of that
+        // nature carrying the article, else none.
+        let mut named_nature = false;
+        if resolved.is_none() && !adjacent && same_nat.is_none() && place.is_some() {
+            if let Some(c) = RE_NATURE_ANAPHORA.captures(&folded[char2byte[*e]..]) {
+                named_nature = true;
+                let nat = c[1].split_whitespace().collect::<Vec<_>>().join(" ");
+                resolved = (0..i).rev().find_map(|j| {
+                    let (surface, tk, uid) = instr_resolved.get(&j)?;
+                    (starts_with_folded(tk, &nat)
+                        && uid.as_deref().is_some_and(|u| {
+                            snap.has_article(u, num_key) || !snap.has_article_info(u)
+                        }))
+                    .then(|| (surface.clone(), tk.clone()))
+                });
+            }
+        }
         // 3bis. Article DANS une quote : il appartient au texte quoté — le cadre
         //       prime sur l'antécédent et sur l'unicité. Cadre = dernière citation
         //       d'article émise ≤ 120 chars avant l'ouvrante, instrument résolu.
@@ -3600,8 +3652,9 @@ fn compose(
         // Génitif ORPHELIN : un connecteur suit mais aucun instrument n'a été
         // reconnu. L'article appartient syntaxiquement à cet inconnu : le span sort
         // sans cible, les têtes d'énumération héritent (`orphan_heads`).
-        let orphan =
-            resolved.is_none() && !adjacent && (orphan_heads.contains(&i) || orphan_after(*e));
+        let orphan = resolved.is_none()
+            && !adjacent
+            && (named_nature || orphan_heads.contains(&i) || orphan_after(*e));
 
         // 3ter. Désignation DÉICTIQUE du porteur (« … 33, 50, 51, 53, 69 et 91 du
         //       présent Code ») : le génitif ne pointe pas un instrument inconnu, il
@@ -3818,6 +3871,9 @@ fn compose(
                 bare: false,
             });
         }
+    }
+    if let Some(place) = &place {
+        crate::foreign::apply(&mut out, chars, breaks, snap, place.as_str(), date);
     }
     out.sort_by_key(|c| c.char_start);
     out
@@ -4287,6 +4343,22 @@ static RE_FORUM_GEN: LazyLock<Regex> = LazyLock::new(|| {
 static RE_ORPHAN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
         r"^[\s,]*(?:et\s+)?(?:(?:alineas?|alienas?|al\.?|§|paragraphes?|points?)\s*\d*\s*,?\s*|\([^)]{1,60}\)\s*)*(?:(?:du|de\s+la|des|dudit|de\s+ladite)\s|de\s+l')",
+    )
+    .unwrap()
+});
+/// A possessive after the numeral, « l'article 12 de leur convention » : the parties' own
+/// instrument, which a foreign court's antecedent never names.
+static RE_POSSESSIVE_GEN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^[\s,]*(?:(?:alineas?|al\.?|§|paragraphes?|points?)\s*\d*\s*,?\s*|\([^)]{1,60}\)\s*)*de\s+(?:leurs?|son|sa|ses)\s",
+    )
+    .unwrap()
+});
+/// A nature taken up after the numeral, « l'article 14, alinéas 3 et 4 du Traité susvisé » :
+/// the last instrument of that nature the decision named.
+static RE_NATURE_ANAPHORA: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"^[\s,]*(?:(?:alineas?|al\.?|§§?|paragraphes?|points?)\s*(?:\d+(?:er)?(?:\s*,\s*\d+|\s+et\s+\d+)*)?\s*,?\s*|\([^)]{1,60}\)\s*)*(?:du|de\s+la|de\s+l'\s*)(traite|acte\s+uniforme|reglement|code|loi|decret|ordonnance|convention|accord|protocole)(?:\s+ohada)?\s+(?:sus[\s-]?vise|precite|sus[\s-]?enonce|sus[\s-]?evoque|sus[\s-]?mentionne|sus[\s-]?indique|suscite)e?s?\b",
     )
     .unwrap()
 });
@@ -6439,6 +6511,401 @@ mod tests {
     }
 
     #[test]
+    fn a_swiss_court_never_cites_a_french_text() {
+        let texts = vec![
+            text(
+                "LEGITEXT000006070716",
+                "Code de procédure civile",
+                "Code de procédure civile",
+                "CODE",
+                900,
+            ),
+            text(
+                "JORFTEXT000000537611",
+                "Loi n° 91-647 du 10 juillet 1991 relative à l'aide juridique",
+                "Loi du 10 juillet 1991 relative à l'aide juridique",
+                "LOI",
+                60,
+            ),
+        ];
+        let articles: Vec<(String, String)> = [
+            ("LEGITEXT000006070716", "106"),
+            ("JORFTEXT000000537611", "75"),
+        ]
+        .iter()
+        .map(|(u, n)| (u.to_string(), n.to_string()))
+        .collect();
+        let snap = LinkSnapshot::build(texts.clone(), articles);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        let federal_court = Forum::of(Some("COUR_SUPREME"), None, Some("geo:CH"), None);
+        assert!(matches!(federal_court, Some(Forum::Foreign(p, None)) if p.as_str() == "CH"));
+        let cpc = "les frais sont répartis selon l'article 106 du code de procédure civile";
+        let out = extract_citations(cpc, &vocab, &snap, federal_court);
+        assert_eq!(target_of(&out), (None, None));
+        let out = extract_citations(cpc, &vocab, &snap, None);
+        assert_eq!(target_of(&out).0, Some("LEGITEXT000006070716"));
+        let out = extract_citations(
+            "au titre de l'article 75 de la loi du 10 juillet 1991",
+            &vocab,
+            &snap,
+            federal_court,
+        );
+        assert_eq!(target_of(&out), (None, None));
+    }
+
+    #[test]
+    fn a_foreign_forum_keeps_its_spans_sorted_and_apart() {
+        let text =
+            "12 Article 16-3 du Règlement (UE) 2024/1351 elle fait suite à un rejet définitif";
+        for (vocab, snap) in [engine(), eu_engine()] {
+            for place in ["BE", "CH", "LU"] {
+                let forum = Some(Forum::Foreign(
+                    crate::link::Place::new(place).unwrap(),
+                    None,
+                ));
+                let out = extract_citations(text, &vocab, &snap, forum);
+                assert!(!out.is_empty());
+                assert!(
+                    out.windows(2).all(|w| w[0].char_end <= w[1].char_start),
+                    "{place}: {:?}",
+                    out.iter()
+                        .map(|c| (c.char_start, c.char_end))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn an_act_cited_by_its_number_takes_the_act_of_the_place_carrying_it() {
+        let law = |uid: &str, title: &str, title_key: &str, signed: Option<jiff::civil::Date>| {
+            let mut t = text(uid, title, title_key, "LOI", 60);
+            t.jurisdiction = Some(uid[..2].to_string());
+            t.date_texte = signed;
+            t
+        };
+        let texts = vec![
+            law(
+                "BJ/LOI-2004-07",
+                "Loi n° 2004-07 du 23 octobre 2007 portant composition de la Cour suprême",
+                "Loi du 23 octobre 2007",
+                None,
+            ),
+            law(
+                "BJ/LOI-2007-27",
+                "Loi N° 2007-27 du 23 octobre 2007 portant institution du service militaire",
+                "Loi du 23 octobre 2007",
+                None,
+            ),
+            law(
+                "BJ/LOI-2008-07",
+                "Loi N° 2008-07 du 28 février 2008 portant code de procédure civile",
+                "Loi du 28 février 2008",
+                Some(jiff::civil::date(2011, 2, 28)),
+            ),
+            law(
+                "MA/CODE-FAMILLE",
+                "Code de la famille",
+                "Code de la famille",
+                None,
+            ),
+        ];
+        let articles: Vec<(String, String)> = ["BJ/LOI-2004-07", "BJ/LOI-2007-27"]
+            .iter()
+            .map(|u| (u.to_string(), "51".to_string()))
+            .collect();
+        let snap = LinkSnapshot::build(texts.clone(), articles).with_aliases(vec![(
+            "MA/CODE-FAMILLE".to_string(),
+            "number".to_string(),
+            String::new(),
+            "70-03".to_string(),
+        )]);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        let at = |place: &str| {
+            Some(Forum::Foreign(
+                crate::link::Place::new(place).unwrap(),
+                None,
+            ))
+        };
+        let linked = |cite: &str, place: &str| {
+            let out = extract_citations(cite, &vocab, &snap, at(place));
+            out[0].target.ref_text_uid.clone()
+        };
+        for (cite, place, uid) in [
+            (
+                "l'article 51 de la loi n° 2004-07 du 23 octobre 2007",
+                "BJ",
+                Some("BJ/LOI-2004-07"),
+            ),
+            (
+                "Vu la loi n°2007-27 du 23 octobre 2007",
+                "BJ",
+                Some("BJ/LOI-2007-27"),
+            ),
+            (
+                "l'article 51 de la loi n° 2004-07",
+                "BJ",
+                Some("BJ/LOI-2004-07"),
+            ),
+            (
+                "l'article 51 de la loi n° 2004-07 du 5 mai 1999",
+                "BJ",
+                None,
+            ),
+            (
+                "la loi n° 2008-07 du 28 février 2011",
+                "BJ",
+                Some("BJ/LOI-2008-07"),
+            ),
+            (
+                "l'article 49 de la loi n° 70-03",
+                "MA",
+                Some("MA/CODE-FAMILLE"),
+            ),
+            ("l'article 49 de la loi n° 70-03", "SN", None),
+        ] {
+            assert_eq!(linked(cite, place).as_deref(), uid, "{place}: {cite}");
+        }
+    }
+
+    #[test]
+    fn a_title_the_place_carries_links_a_capture_that_reads_as_a_fragment() {
+        let mut ncpc = text(
+            "LU/CODE-PROCEDURE-CIVILE",
+            "Nouveau Code de procédure civile luxembourgeois",
+            "code de procédure civile luxembourgeois",
+            "code_procedure_civile",
+            1421,
+        );
+        ncpc.jurisdiction = Some("LU".to_string());
+        let texts = vec![
+            ncpc,
+            text(
+                "LEGITEXT000006070716",
+                "Code de procédure civile",
+                "Code de procédure civile",
+                "CODE",
+                900,
+            ),
+        ];
+        let snap = LinkSnapshot::build(texts.clone(), vec![]).with_aliases(vec![(
+            "LU/CODE-PROCEDURE-CIVILE".to_string(),
+            "title".to_string(),
+            "fr".to_string(),
+            "Nouveau code de procédure civile".to_string(),
+        )]);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        let out = extract_citations(
+            "comme visant le Nouveau code de procédure civile (NCPC)",
+            &vocab,
+            &snap,
+            Some(Forum::Foreign(crate::link::Place::new("LU").unwrap(), None)),
+        );
+        assert_eq!(target_of(&out).0, Some("LU/CODE-PROCEDURE-CIVILE"));
+    }
+
+    #[test]
+    fn a_uniform_act_replaced_under_its_name_reads_by_the_decision_date() {
+        let (old, new) = (
+            "OHADA/ACTE-UNIFORME-1997-DROIT-COMMERCIAL-GENERAL",
+            "OHADA/ACTE-UNIFORME-2010-DROIT-COMMERCIAL-GENERAL",
+        );
+        let texts: Vec<CatalogText> = [
+            (old, "Acte uniforme portant sur le droit commercial général"),
+            (
+                new,
+                "Acte uniforme révisé portant sur le droit commercial général",
+            ),
+        ]
+        .iter()
+        .map(|(uid, title)| {
+            let mut t = text(uid, title, title, "ACTE_UNIFORME", 300);
+            t.jurisdiction = Some("OHADA".to_string());
+            t
+        })
+        .collect();
+        let articles = ["95", "101", "116"]
+            .iter()
+            .flat_map(|n| {
+                [
+                    (old.to_string(), n.to_string()),
+                    (new.to_string(), n.to_string()),
+                ]
+            })
+            .collect();
+        let snap = LinkSnapshot::build(texts.clone(), articles).with_aliases(vec![(
+            new.to_string(),
+            "abbreviation".to_string(),
+            "fr".to_string(),
+            "AUDCG".to_string(),
+        )]);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        let linked = |cite: &str, date: Option<&str>| {
+            let out = extract_citations(
+                cite,
+                &vocab,
+                &snap,
+                Forum::of(None, None, Some("OHADA"), date),
+            );
+            target_of(&out).0.map(str::to_string)
+        };
+        let generic = "l'article 95 de l'Acte uniforme relatif au droit commercial général";
+        let dated = "l'article 101 de l'Acte uniforme portant sur le droit commercial général du 17 avril 1997";
+        let revised =
+            "l'article 116 de l'Acte uniforme révisé portant sur le droit commercial général";
+        let sigle = "l’article 95 de l’AUDCG";
+        let defined =
+            "l’article 116 de l’Acte uniforme révisé portant sur le droit commercial général (AUXX)";
+        for (cite, date, uid) in [
+            (generic, Some("2009-02-26"), Some(old)),
+            (generic, Some("2014-11-11"), None),
+            (generic, Some("2021-10-28"), Some(new)),
+            (generic, None, None),
+            (dated, Some("2014-11-11"), Some(old)),
+            (revised, Some("2014-11-11"), Some(new)),
+            (sigle, Some("2009-02-26"), Some(old)),
+            (sigle, Some("2023-04-27"), Some(new)),
+            (defined, Some("2014-11-11"), Some(new)),
+        ] {
+            assert_eq!(linked(cite, date).as_deref(), uid, "{date:?}: {cite}");
+        }
+    }
+
+    #[test]
+    fn the_1998_enforcement_act_reads_by_its_date_or_the_decision_date() {
+        let old = "OHADA/ACTE-UNIFORME-1998-ORGANISATION-DES-PROCEDURES-SIMPLIFIEES-DE-RECOUVREMENT-ET-DES-VOIES-D-EXECUTION";
+        let new = "OHADA/ACTE-UNIFORME-2023-ORGANISATION-DES-PROCEDURES-SIMPLIFIEES-DE-RECOUVREMENT-ET-DES-VOIES-D-EXECUTION";
+        let name = "Acte uniforme portant organisation des procédures simplifiées de recouvrement et des voies d'exécution";
+        let texts: Vec<CatalogText> = [
+            (old, format!("{name} du 10 avril 1998")),
+            (new, name.to_string()),
+        ]
+        .iter()
+        .map(|(uid, title)| {
+            let mut t = text(uid, title, title, "ACTE_UNIFORME", 300);
+            t.jurisdiction = Some("OHADA".to_string());
+            t
+        })
+        .collect();
+        let articles = ["15", "49", "153"]
+            .iter()
+            .flat_map(|n| {
+                [
+                    (old.to_string(), n.to_string()),
+                    (new.to_string(), n.to_string()),
+                ]
+            })
+            .collect();
+        let snap = LinkSnapshot::build(texts.clone(), articles).with_aliases(vec![(
+            new.to_string(),
+            "abbreviation".to_string(),
+            "fr".to_string(),
+            "AUPSRVE".to_string(),
+        )]);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        let linked = |cite: &str, date: Option<&str>| {
+            let out = extract_citations(
+                cite,
+                &vocab,
+                &snap,
+                Forum::of(None, None, Some("OHADA"), date),
+            );
+            target_of(&out).0.map(str::to_string)
+        };
+        let generic = "l'article 49 de l'Acte uniforme portant organisation des procédures simplifiées de recouvrement et des voies d'exécution";
+        let dated_first = "l'article 153 de l'Acte uniforme du 10 avril 1998 portant organisation des procédures simplifiées de recouvrement et des voies d'exécution";
+        let dated_last = "l'article 15 de l'Acte uniforme OHADA portant organisation des procédures simplifiées de recouvrement et des voies d'exécution du 10 avril 1998";
+        let dated_bare = "l'article 49 de l'Acte uniforme 10 avril 1998 portant organisation des procédures simplifiées de recouvrement et des voies d'exécution";
+        let revised = "l'article 49 de l'Acte uniforme révisé portant organisation des procédures simplifiées de recouvrement et des voies d'exécution";
+        let sigle = "l'article 49 de l'AUPSRVE";
+        for (cite, date, uid) in [
+            (generic, Some("2011-03-15"), Some(old)),
+            (generic, Some("2026-06-25"), None),
+            (generic, Some("2029-02-16"), Some(new)),
+            (generic, None, None),
+            (dated_first, Some("2026-06-25"), Some(old)),
+            (dated_last, Some("2026-06-25"), Some(old)),
+            (dated_bare, Some("2026-06-25"), Some(old)),
+            (revised, Some("2026-06-25"), Some(new)),
+            (sigle, Some("2013-06-03"), Some(old)),
+            (sigle, Some("2026-06-25"), None),
+        ] {
+            assert_eq!(linked(cite, date).as_deref(), uid, "{date:?}: {cite}");
+        }
+    }
+
+    #[test]
+    fn a_dutch_court_cites_by_title_book_and_its_own_abbreviations() {
+        let (awb, bw6, iw) = ("NL/BWBR0005537", "NL/BWBR0005289", "NL/BWBR0004770");
+        let cedh = "INTL/CEDH";
+        let texts: Vec<CatalogText> = [
+            (awb, "Algemene wet bestuursrecht", "NL"),
+            (bw6, "Burgerlijk Wetboek Boek 6", "NL"),
+            (iw, "Invorderingswet 1990", "NL"),
+            (cedh, "Convention européenne des droits de l'homme", "INTL"),
+        ]
+        .iter()
+        .map(|(uid, title, iso)| {
+            let mut t = text(uid, title, title, "LOI", 300);
+            t.jurisdiction = Some(iso.to_string());
+            t
+        })
+        .collect();
+        let articles = [(awb, "8:29"), (bw6, "119"), (iw, "7"), (cedh, "6")]
+            .iter()
+            .map(|(uid, n)| (uid.to_string(), n.to_string()))
+            .collect();
+        let alias = |uid: &str, value: &str| {
+            (
+                uid.to_string(),
+                "abbreviation".to_string(),
+                "nl".to_string(),
+                value.to_string(),
+            )
+        };
+        let snap = LinkSnapshot::build(texts.clone(), articles).with_aliases(vec![
+            alias(bw6, "BW"),
+            alias(bw6, "BW6"),
+            alias(iw, "Iw"),
+        ]);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        let linked = |cite: &str| -> Vec<Option<String>> {
+            extract_citations(cite, &vocab, &snap, Forum::of(None, None, Some("NL"), None))
+                .iter()
+                .map(|c| c.target.ref_text_uid.clone())
+                .collect()
+        };
+        let some = |uid: &str| Some(uid.to_string());
+        assert_eq!(
+            linked("artikel 8:29, derde lid, van de Algemene wet bestuursrecht"),
+            [some(awb)]
+        );
+        assert_eq!(linked("artikel 6:119 lid 1 BW"), [some(bw6)]);
+        assert_eq!(linked("artikel 7 van de Iw"), [some(iw)]);
+        assert_eq!(
+            linked(
+                "artikel 6, eerste lid, van het Europees Verdrag tot bescherming van de Rechten \
+                 van de Mens en de fundamentele vrijheden ten aanzien van de termijn"
+            ),
+            [some(cedh)]
+        );
+        assert_eq!(
+            linked(
+                "Bijlage\nAlgemene wet bestuursrecht\nArtikel 8:29\nPartijen die verplicht zijn.\n\
+                 Artikel 8:29\nTwee.\nParticipatiewet\nArtikel 35\nOnverminderd het bepaalde."
+            ),
+            [some(awb), some(awb)]
+        );
+        assert_eq!(
+            linked(
+                "de artikelen 7, eerste lid, en 12w van de Instellingswet Autoriteit Consument \
+                 en Markt (Iw) en artikel 7 van de Iw. Artikel 7 van de Iw."
+            ),
+            [None, None, None, None]
+        );
+    }
+
+    #[test]
     fn forum_cedh_annex_style_and_english() {
         let (vocab, snap) = forum_engine();
         let out = extract_citations(
@@ -6632,6 +7099,77 @@ mod tests {
         assert_eq!(
             targets("Condamne X au titre de l'article 700"),
             vec![Some("LEGITEXT000006070716".to_string())]
+        );
+    }
+
+    #[test]
+    fn a_foreign_court_s_article_takes_the_instrument_its_genitive_names() {
+        let (traite, aua, aupsrve) = (
+            "OHADA/TRAITE-1993-OHADA",
+            "OHADA/ACTE-UNIFORME-2017-DROIT-DE-L-ARBITRAGE",
+            "OHADA/ACTE-UNIFORME-2023-RECOUVREMENT",
+        );
+        let texts: Vec<CatalogText> = [
+            (traite, "Traité OHADA", "TRAITE"),
+            (
+                aua,
+                "Acte uniforme relatif au droit de l'arbitrage",
+                "ACTE_UNIFORME",
+            ),
+            (
+                aupsrve,
+                "Acte uniforme portant organisation des procédures simplifiées de recouvrement",
+                "ACTE_UNIFORME",
+            ),
+        ]
+        .iter()
+        .map(|(uid, title, nature)| {
+            let mut t = text(uid, title, title, nature, 300);
+            t.jurisdiction = Some("OHADA".to_string());
+            t
+        })
+        .collect();
+        let articles = [(traite, "1"), (traite, "14"), (aua, "12"), (aupsrve, "14")]
+            .iter()
+            .map(|(uid, n)| (uid.to_string(), n.to_string()))
+            .collect();
+        let snap = LinkSnapshot::build(texts.clone(), articles);
+        let vocab = CompiledVocab::build(&texts, &snap);
+        let linked = |cite: &str| -> Vec<(String, Option<String>)> {
+            let chars: Vec<char> = cite.chars().collect();
+            extract_citations(cite, &vocab, &snap, Forum::of(None, None, Some("CM"), None))
+                .iter()
+                .filter(|c| c.article.is_some())
+                .map(|c| {
+                    (
+                        chars[c.char_start..c.char_end].iter().collect(),
+                        c.target.ref_text_uid.clone(),
+                    )
+                })
+                .collect()
+        };
+        let none = |n: &str| (n.to_string(), None);
+        assert_eq!(
+            linked(
+                "l'article 12 de l'Acte uniforme relatif au droit de l'arbitrage ; renvoyons \
+                 les parties à l'exécution de l'article 12 de leur convention"
+            )[1],
+            none("12")
+        );
+        assert_eq!(
+            linked(
+                "l'article 1 du Traité OHADA ; les protagonistes ont prévu à l'article 23 (1) \
+                 des statuts de la société une clause"
+            )[1..],
+            [none("23")]
+        );
+        let recovery = "l'article 14 de l'Acte uniforme portant organisation des procédures \
+                        simplifiées de recouvrement ; aux termes de l'article 14, alinéas 3 et 4 \
+                        du Traité susvisé";
+        assert_eq!(linked(recovery)[1], none("14"));
+        assert_eq!(
+            linked(&format!("l'article 1 du Traité OHADA ; {recovery}"))[2],
+            ("14".to_string(), Some(traite.to_string()))
         );
     }
 }

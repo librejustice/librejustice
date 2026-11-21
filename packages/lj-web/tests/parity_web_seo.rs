@@ -2,9 +2,8 @@
 //!
 //! Verrouille le `<head>` SEO du front Rust (Leptos SSR). Deux niveaux :
 //!
-//! - Shell générique : `<title>` posé par `App()` ; `<meta description>` posée par
-//!   `AppShell` depuis `seo::site_default()`, supprimée sur `/decision/*` où la
-//!   page émet la sienne.
+//! - Generic shell: `<title>` set by `App()`; `<meta description>` set by `AppShell` from
+//!   the catalogue, dropped on `/decision/*` where the page sets its own.
 //! - Routes dynamiques : `/decision/:id` (title/desc/OG/canonical/JSON-LD dans le
 //!   HTML initial) et `/decision-search` (hérite du shell).
 //!
@@ -15,8 +14,9 @@
 #![cfg(feature = "ssr")]
 
 use lj_dtos::{DecisionDetail, JurisdictionType};
+use lj_web::i18n::Lang;
 use lj_web::seo::decision::{build_json_ld, meta_description, seo_title};
-use lj_web::seo::{canonical_url, site_default, OG_IMAGE};
+use lj_web::seo::{canonical_url, OG_IMAGE};
 
 fn extract_title(head_html: &str) -> Option<&str> {
     let start = head_html.find("<title>")? + "<title>".len();
@@ -36,6 +36,7 @@ fn extract_meta_description(head_html: &str) -> Option<&str> {
 
 fn fixture_detail() -> DecisionDetail {
     DecisionDetail {
+        court_names: Default::default(),
         id: "ce-2024-470537".to_string(),
         jurisdiction_type: JurisdictionType::Ce,
         title: "Conseil d'État, 12 mars 2024, n° 470537".to_string(),
@@ -50,6 +51,7 @@ fn fixture_detail() -> DecisionDetail {
         ),
         summary_quote: None,
         summary_body: None,
+        summary_lang: None,
         jurisdiction_code: None,
         jurisdiction_name: Some("Conseil d'État".to_string()),
         court_place: None,
@@ -61,6 +63,7 @@ fn fixture_detail() -> DecisionDetail {
         date_audience: None,
         docket_numbers: None,
         seat: None,
+        seat_parts: None,
         seat_path: None,
         legal_references: None,
         source_xml: None,
@@ -71,40 +74,41 @@ fn fixture_detail() -> DecisionDetail {
         source: None,
         chronology: Vec::new(),
         commentaires: vec![],
+        ruling_url: None,
         citantes: vec![],
         citantes_total: None,
+        lang: None,
+        texts: Vec::new(),
     }
 }
 
 // ── Shell générique ──────────────────────────────────────────────────────────
 
 #[test]
-fn site_default_locks_generic_title_and_description() {
-    let meta = site_default();
-    assert_eq!(meta.title, "LibreJustice");
+fn site_description_locks_generic_description() {
     assert_eq!(
-        meta.description,
+        (Lang::Fr.ui().shell.site_description)("fr"),
         "Moteur de recherche libre sur le droit français : jurisprudence (Conseil \
          d'État, Cour de cassation, cours d'appel, tribunaux) et textes (codes, \
          lois, traités), mis à jour quotidiennement."
     );
-    assert!(meta.robots.is_none());
+    assert_eq!(
+        (Lang::De.ui().shell.site_description)("ch"),
+        "Freie Suchmaschine für das schweizerische Recht: Rechtsprechung und Erlasse, \
+         täglich aktualisiert."
+    );
 }
 
 #[test]
-fn head_extraction_matches_site_default() {
-    let meta = site_default();
+fn head_extraction_matches_site_description() {
+    let description = (Lang::Fr.ui().shell.site_description)("fr");
     let head = format!(
-        "<head><meta charset=\"utf-8\"/><title>{}</title>\
-         <meta name=\"description\" content=\"{}\"/></head>",
-        meta.title, meta.description
+        "<head><meta charset=\"utf-8\"/><title>LibreJustice</title>\
+         <meta name=\"description\" content=\"{description}\"/></head>"
     );
 
-    assert_eq!(extract_title(&head), Some(meta.title.as_str()));
-    assert_eq!(
-        extract_meta_description(&head),
-        Some(meta.description.as_str())
-    );
+    assert_eq!(extract_title(&head), Some("LibreJustice"));
+    assert_eq!(extract_meta_description(&head), Some(description.as_str()));
 }
 
 // ── Route /decision/:id : SEO-critique ───────────────────────────────────────

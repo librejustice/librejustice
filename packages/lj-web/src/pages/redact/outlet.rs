@@ -5,15 +5,17 @@ use std::pin::Pin;
 
 use leptos::prelude::*;
 
+use super::fault::Fault;
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum Handover {
     Idle,
     Busy,
     Done(&'static str),
-    Failed(String),
+    Failed(Fault),
 }
 
-type Sending = Pin<Box<dyn Future<Output = Result<Option<&'static str>, String>>>>;
+type Sending = Pin<Box<dyn Future<Output = Result<Option<&'static str>, Fault>>>>;
 
 #[derive(Clone, Copy)]
 pub struct Outlet {
@@ -27,7 +29,7 @@ impl Outlet {
     pub fn new<F, S>(label: &'static str, send: F) -> Self
     where
         F: Fn(String, Vec<u8>) -> S + Send + Sync + 'static,
-        S: Future<Output = Result<Option<&'static str>, String>> + 'static,
+        S: Future<Output = Result<Option<&'static str>, Fault>> + 'static,
     {
         Self {
             label,
@@ -37,13 +39,16 @@ impl Outlet {
     }
 
     pub fn device() -> Self {
-        Self::new("Exporter", |name, bytes| async move {
-            #[cfg(feature = "hydrate")]
-            super::engine::save(&name, &bytes);
-            #[cfg(not(feature = "hydrate"))]
-            let _ = (name, bytes);
-            Ok(None)
-        })
+        Self::new(
+            crate::i18n::use_ui().redact.export,
+            |name, bytes| async move {
+                #[cfg(feature = "hydrate")]
+                super::engine::save(&name, &bytes);
+                #[cfg(not(feature = "hydrate"))]
+                let _ = (name, bytes);
+                Ok(None)
+            },
+        )
     }
 
     pub fn fire(self) {

@@ -351,3 +351,131 @@ fn a_joafe_department_reads_as_the_official_code() {
         assert_eq!(canonical_dept(written), code);
     }
 }
+
+const JOAFE_JSON: &str = r#"{"parution": {
+  "dateParution": "2026-11-10",
+  "numParution": "20260045",
+  "listeAnnonces": {
+    "annonce": [{
+      "metadonnees": {
+        "dirigeants": [],
+        "dept": "01",
+        "numAnnonce": "1",
+        "page": 1,
+        "themes": {"theme": [{"code": "024026", "Libelle": "protection des animaux"}]},
+        "type": {"@code": "1"},
+        "idAssoc": "W011006719",
+        "identifiant": "202600450001"
+      },
+      "contenu": {
+        "assoLoi1901": {
+          "creation": {
+            "objet": "garder des chiens",
+            "siegeSocial": {"codePostal": "01470", "commune": "Briord", "pays": "", "numeroVoie": "13", "typeVoie": "rue", "nomVoie": "de la Cité", "immeubleBatimentResidence": "Bât. B"},
+            "siteWeb": "",
+            "titre": "LA PASSERELLE"
+          },
+          "dateDeclaration": "2026-10-20",
+          "lieuDeclaration": {"lieuPref": {"description": "PREFECTURE DE L'AIN", "libelle": "Ain"}}
+        },
+        "refAvisInitial": {}
+      },
+      "fichierJoint": "JOAFE_PDF_Unitaire_20260045_00001.pdf"
+    }],
+    "annulation": [{
+      "metadonnees": {"numAnnonce": "2", "page": 1, "type": {"@code": "222"}, "identifiant": "202600450002"},
+      "contenu": {
+        "assoLoi1901": {"modification": {"titre": "B"}},
+        "refAvisInitial": {"dateParution": "2025-11-25", "numAnnonce": "156", "numParution": "47"}
+      }
+    }]
+  }
+}}"#;
+
+#[test]
+fn a_joafe_json_value_keeps_its_kind_in_its_element() {
+    let json = r#"{"r": {"s": "x", "e": "", "n": 7, "o": {}, "a": [], "l": [{"@c": "1"}, "y"]}}"#;
+    let root = crate::json::parse(json).unwrap();
+    let names: Vec<&str> = root.children().iter().map(|c| c.name.as_str()).collect();
+    assert_eq!(names, ["s", "e", "n#", "o{}", "a[]", "l[]"]);
+    let texts: Vec<Option<&str>> = root.children().iter().map(Node::text).collect();
+    assert_eq!(texts, [Some("x"), None, Some("7"), None, None, None]);
+    let items = root.children()[5].children();
+    assert_eq!(
+        (items[0].name.as_str(), items[0].attr("c")),
+        ("l", Some("1"))
+    );
+    assert_eq!((items[1].name.as_str(), items[1].text()), ("l", Some("y")));
+    for bad in [
+        r#"{"r": 1.5}"#,
+        r#"{"r": null}"#,
+        r#"{"r": {"a": "1", "@b": "2"}}"#,
+        r#"{"r": {"a/b": "1"}}"#,
+        r#"{"r": "1", "s": "2"}"#,
+    ] {
+        assert!(crate::json::parse(bad).is_err(), "{bad}");
+    }
+}
+
+#[test]
+fn a_joafe_json_parution_fills_the_xml_columns_and_comes_back_whole() {
+    let raw = JOAFE_JSON.as_bytes().to_vec();
+    let parsed = rows::parse_container(
+        Source::Joafe,
+        "ASS20260045.taz".into(),
+        std::slice::from_ref(&raw),
+    )
+    .unwrap();
+    let rows::Doc::Joafe(doc) = &parsed.docs[0] else {
+        panic!()
+    };
+    assert_eq!(
+        (doc.parution, format_date(doc.date).as_str()),
+        (20260045, "2026-11-10")
+    );
+    assert_eq!(
+        doc.notices.iter().map(|n| n.id).collect::<Vec<_>>(),
+        [202600450001, 202600450002]
+    );
+    let spec = &crate::joafe::SPEC;
+    let rec = &doc.notices[0].record;
+    assert_eq!(rec.int(spec.column("page")), Some(1));
+    assert_eq!(rec.int(spec.column("theme1")), Some(24026));
+    assert_eq!(
+        rec.text(spec.column("theme1_label")),
+        Some("protection des animaux")
+    );
+    assert_eq!(rec.text(spec.column("lieu")), Some("Ain"));
+    assert_eq!(rec.text(spec.column("titre")), Some("LA PASSERELLE"));
+    assert_eq!(rec.text(spec.column("rna")), Some("W011006719"));
+    let Some(Cell::Address(siege)) = &rec.cells[spec.column("siege")] else {
+        panic!()
+    };
+    let addr = &crate::address::SPEC;
+    assert_eq!(siege.text(addr.column("ville")), Some("Briord"));
+    assert_eq!(siege.text(addr.column("compl")), Some("Bât. B"));
+    assert_eq!(doc.notices[1].action, crate::joafe::Action::Modification);
+    let header = doc.header.clone();
+    let stored: HashMap<i64, record::Record> = doc
+        .notices
+        .iter()
+        .map(|n| (n.id, n.record.clone()))
+        .collect();
+    let c = crate::census::compare(
+        Source::Joafe,
+        &[raw],
+        &parsed,
+        &|id| stored.get(&id).cloned(),
+        header.as_ref(),
+    )
+    .unwrap();
+    assert_eq!(
+        (
+            c.notices,
+            c.missing.len(),
+            c.differing.len(),
+            c.headers_differing.len()
+        ),
+        (2, 0, 0, 0)
+    );
+}

@@ -90,15 +90,14 @@ pub fn sync_opendata(data_dir: &Path, force: bool) -> Result<Manifest> {
                 fully_ingested: false,
             });
 
-            // Fraîcheur pilotée par le registry : un ZIP déjà `ok` n'est re-téléchargé
-            // que si le registry porte un reversement plus récent que le watermark
-            // stocké. Absent du registry ⇒ aucun reversement ⇒ mois stable ⇒ skip sans
-            // réseau.
+            // A ZIP already `ok` is fetched again only when the registry dates a
+            // republication after the stored watermark, whether it is still on disk
+            // or was deleted once ingested.
             let reg_rev = registry.get(yyyymm).map(String::as_str);
             let abs_path = source_dir.join(&rel);
             if entry.status == "ok"
                 && !force
-                && abs_path.exists()
+                && (entry.fully_ingested || abs_path.exists())
                 && entry.last_reversement.as_deref() == reg_rev
             {
                 continue;

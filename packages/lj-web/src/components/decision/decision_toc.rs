@@ -9,6 +9,7 @@ use lj_dtos::{ChronologyEntry, UiAction};
 
 use crate::components::hover_preview::{HoverPreview, PreviewKind};
 use crate::helpers::{cn, format_iso_date};
+use crate::i18n::{use_ui, DecisionUi};
 use crate::pages::decision_page::sections::TocEntry;
 
 #[component]
@@ -19,10 +20,11 @@ pub fn DecisionToc(
     #[prop(into)]
     hits: Signal<Vec<usize>>,
 ) -> impl IntoView {
-    let chronology_view = chronology_block(chronology);
+    let ui = &use_ui().decision;
+    let chronology_view = chronology_block(chronology, ui);
     if sections.is_empty() {
         return view! {
-            <nav aria-label="Sommaire de la décision" class="flex flex-col gap-6">
+            <nav aria-label=ui.contents_label class="flex flex-col gap-6">
                 {chronology_view}
             </nav>
         }
@@ -73,11 +75,7 @@ pub fn DecisionToc(
             };
             let count = move || {
                 hits.with(|h| h.get(i).copied()).filter(|&n| n > 0).map(|n| {
-                    let title = if n == 1 {
-                        "1 occurrence des termes recherchés".to_string()
-                    } else {
-                        format!("{n} occurrences des termes recherchés")
-                    };
+                    let title = (ui.hits_in_section)(n);
                     let label = title.clone();
                     view! {
                         <span
@@ -121,10 +119,10 @@ pub fn DecisionToc(
     // Le collage (`lg:sticky`) est porté par le conteneur du rail dans
     // `decision_page.rs` — actions + sommaire collent d'un seul bloc.
     view! {
-        <nav aria-label="Sommaire de la décision" class="flex flex-col gap-6">
+        <nav aria-label=ui.contents_label class="flex flex-col gap-6">
             <div class="flex flex-col gap-3">
                 <p class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "Sommaire"
+                    {ui.contents}
                 </p>
                 <div class="relative">
                     <div class="absolute left-[7px] top-2 bottom-2 w-[2px] rounded-full bg-[var(--color-rule)]" />
@@ -143,11 +141,12 @@ pub fn DecisionToc(
 /// Libellé de la nature d'un lien de chronologie (`decision_links.link_type`),
 /// lu entre l'étape qui le porte et la décision attaquée en dessous :
 /// « CE — sur pourvoi contre — CAA ».
-fn link_label(key: &str) -> Option<&'static str> {
+fn link_label(key: &str, ui: &DecisionUi) -> Option<&'static str> {
     match key {
-        "APPEL_DE" => Some("sur appel de"),
-        "POURVOI_CONTRE" => Some("sur pourvoi contre"),
-        "RENVOI_APRES_CASSATION" => Some("sur renvoi après cassation par"),
+        "APPEL_DE" => Some(ui.on_appeal_from),
+        "POURVOI_CONTRE" => Some(ui.on_cassation_appeal_against),
+        "RENVOI_APRES_CASSATION" => Some(ui.on_remand_after_cassation_by),
+        "REQUETE_CEDH_CONTRE" => Some(ui.on_application_against),
         _ => None,
     }
 }
@@ -158,13 +157,17 @@ fn link_label(key: &str) -> Option<&'static str> {
 /// La décision courante porte le point plein accent (non cliquable) ; les autres
 /// naviguent et portent la hover card de décision. La nature du lien (appel /
 /// pourvoi / renvoi) s'affiche en italique entre les étapes. Vide ⇒ pas de bloc.
-fn chronology_block(chronology: Vec<ChronologyEntry>) -> Option<impl IntoView> {
+fn chronology_block(
+    chronology: Vec<ChronologyEntry>,
+    ui: &'static DecisionUi,
+) -> Option<impl IntoView> {
+    let dates = &crate::i18n::use_ui().dates;
     (!chronology.is_empty()).then(|| {
         let steps = chronology
             .into_iter()
             .map(|entry| {
                 let date = entry.date.as_deref().map(|d| {
-                    let d = format_iso_date(Some(d));
+                    let d = format_iso_date(dates, Some(d));
                     view! {
                         <span class="block text-xs text-[var(--color-ink-subtle)]">{d}</span>
                     }
@@ -208,17 +211,33 @@ fn chronology_block(chronology: Vec<ChronologyEntry>) -> Option<impl IntoView> {
                         </span>
                     }
                     .into_any(),
-                    None => view! {
-                        <span class="block" title="Décision non disponible">
-                            <span class="block text-sm leading-snug text-[var(--color-ink-muted)]">
-                                {entry.label}
+                    None => match entry.external_url {
+                        Some(href) => view! {
+                            <a
+                                href=href
+                                rel="external noopener"
+                                target="_blank"
+                                class="group block no-underline"
+                            >
+                                <span class="block text-sm leading-snug text-[var(--color-accent)] group-hover:underline">
+                                    {entry.label}
+                                </span>
+                                {date}
+                            </a>
+                        }
+                        .into_any(),
+                        None => view! {
+                            <span class="block" title=ui.decision_unavailable>
+                                <span class="block text-sm leading-snug text-[var(--color-ink-muted)]">
+                                    {entry.label}
+                                </span>
+                                {date}
                             </span>
-                            {date}
-                        </span>
-                    }
-                    .into_any(),
+                        }
+                        .into_any(),
+                    },
                 };
-                let relation = entry.link.as_deref().and_then(link_label).map(|l| {
+                let relation = entry.link.as_deref().and_then(|key| link_label(key, ui)).map(|l| {
                     view! {
                         <span class="mt-1.5 block text-xs italic text-[var(--color-ink-subtle)]">
                             {l}
@@ -237,7 +256,7 @@ fn chronology_block(chronology: Vec<ChronologyEntry>) -> Option<impl IntoView> {
         view! {
             <div class="flex flex-col gap-3" data-usage=UiAction::DecisionChronology.as_str()>
                 <p class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "Chronologie de l'affaire"
+                    {ui.chronology}
                 </p>
                 <div class="relative">
                     <div

@@ -8,17 +8,6 @@
 # The disposable mail domains.
 0 12 * * * cd /app && lj-ingest disposable-domains
 
-# The whole list of the Défenseur des droits decisions, outside the chain.
-0 13 * * 6 cd /app && lj-ingest sync-ddd --full
-
-# The Autorité de la concurrence's dataset, written when it is a new one.
-30 13 * * * cd /app && lj-ingest sync-adlc
-
-# The European Commission's competition decisions: the week's documents every day,
-# the whole listing once a week.
-0 14 * * 0-5 cd /app && lj-ingest sync-comeu
-0 14 * * 6 cd /app && lj-ingest sync-comeu --full
-
 # The prefectures' recueils, beside the chain, one run at a time under an advisory lock.
 0 3 * * * cd /app && lj-ingest raa --minutes 230
 

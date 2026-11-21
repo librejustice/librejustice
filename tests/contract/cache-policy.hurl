@@ -31,16 +31,33 @@ HTTP 303
 [Asserts]
 header "Location" == "/login?next=%2Fprofile"
 
-# Pages publiques : cache déclaré, 5 min.
+# Without a jurisdiction, the home page and the searches send the reader to
+# theirs: a target that differs per reader stays out of every cache.
 GET {{base}}/
+HTTP 307
+[Asserts]
+header "Location" matches /^\/[a-z]{2}$/
+header "Cache-Control" == "private, no-store"
+
+GET {{base}}/decision-search?q=bail
+HTTP 307
+[Asserts]
+header "Location" matches /^\/[a-z]{2}\/decision-search\?q=bail$/
+header "Cache-Control" == "private, no-store"
+
+# Pages publiques : cache déclaré, 5 min.
+GET {{base}}/fr
 HTTP 200
 [Asserts]
 header "Cache-Control" == "public, max-age=0, must-revalidate, s-maxage=300"
 
-GET {{base}}/decision-search
+GET {{base}}/fr/decision-search
 HTTP 200
 [Asserts]
 header "Cache-Control" == "public, max-age=0, must-revalidate, s-maxage=300"
+
+GET {{base}}/zz
+HTTP 404
 
 # Page document : publique dans tous les cas — 7 j de CDN, ou 5 min tant que le
 # résumé manque (decision_page.rs), d'où l'assertion sur le préfixe.

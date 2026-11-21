@@ -1,95 +1,66 @@
-//! Libellés des codes de publication bruts (`publication_codes`). Les autres
-//! libellés métier (solution, voie, office, domaine, juridictions) arrivent
-//! résolus par l'API en `FacetTag`.
+//! The labels of the raw publication codes (`publication_codes`), from the catalogue. The other
+//! labels of a decision (solution, office, domain, courts) arrive resolved by the API as `FacetTag`.
 
-/// Table `code → libellé` des publications.
-const PUBLICATION_LABELS: &[(&str, &str)] = &[
-    ("b", "Publié au bulletin"),
-    ("r", "Publié au rapport"),
-    ("l", "Lettre de chambre"),
-    ("c", "Communiqué"),
-    ("n", "Inédit"),
-    ("A", "Recueil Lebon"),
-    ("B", "Tables du recueil Lebon"),
-    ("C+", "Signalée"),
-    ("R", "Signalée"),
-    ("C", "Inédit au recueil Lebon"),
-    ("D", "Inédit au recueil Lebon"),
-    ("Z", "Inédit au recueil Lebon"),
-];
+use crate::i18n::DecisionUi;
 
-fn publication_code_label(code: &str) -> Option<&'static str> {
-    PUBLICATION_LABELS
-        .iter()
-        .find(|(c, _)| *c == code)
-        .map(|(_, label)| *label)
-}
+/// The codes of a decision left out of every collection.
+const UNPUBLISHED: [&str; 4] = ["n", "C", "D", "Z"];
 
-/// Libellé joint depuis les codes (« Publié au bulletin · Rapport »), dédupliqué,
-/// ordre préservé, codes inconnus ignorés. `None` si
-/// vide / aucun code connu.
-pub fn publication_label(codes: &[String]) -> Option<String> {
-    if codes.is_empty() {
-        return None;
-    }
+/// The labels of `codes` joined, « Publié au bulletin · Publié au rapport », each once, in
+/// order, unknown codes left out; `None` when none is known.
+pub fn publication_label(codes: &[String], ui: &DecisionUi) -> Option<String> {
     let mut labels: Vec<&'static str> = Vec::new();
-    for code in codes {
-        if let Some(label) = publication_code_label(code) {
-            if !labels.contains(&label) {
-                labels.push(label);
-            }
+    for label in codes.iter().filter_map(|code| (ui.publication_label)(code)) {
+        if !labels.contains(&label) {
+            labels.push(label);
         }
     }
-    if labels.is_empty() {
-        None
-    } else {
-        Some(labels.join(" · "))
-    }
+    (!labels.is_empty()).then(|| labels.join(" · "))
 }
 
-/// Libellé des seules publications notables (exclut les « Inédit… ») : filtre
-/// les codes dont le label commence par `"Inédit"`, puis applique
-/// `publication_label`.
-pub fn publication_badge(codes: &[String]) -> Option<String> {
+/// The label of the notable publications alone, the unpublished codes left out.
+pub fn publication_badge(codes: &[String], ui: &DecisionUi) -> Option<String> {
     let notable: Vec<String> = codes
         .iter()
-        .filter(|c| {
-            publication_code_label(c)
-                .map(|label| !label.starts_with("Inédit"))
-                .unwrap_or(false)
-        })
+        .filter(|c| !UNPUBLISHED.contains(&c.as_str()))
         .cloned()
         .collect();
-    publication_label(&notable)
+    publication_label(&notable, ui)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Lang;
 
     #[test]
     fn publication_label_joins_and_dedups() {
+        let ui = &Lang::Fr.ui().decision;
         let c = vec!["b".to_string(), "r".to_string()];
         assert_eq!(
-            publication_label(&c).as_deref(),
+            publication_label(&c, ui).as_deref(),
             Some("Publié au bulletin · Publié au rapport")
         );
         // C/D/Z partagent un libellé : dédup.
         let c = vec!["C".to_string(), "D".to_string(), "Z".to_string()];
         assert_eq!(
-            publication_label(&c).as_deref(),
+            publication_label(&c, ui).as_deref(),
             Some("Inédit au recueil Lebon")
         );
-        assert_eq!(publication_label(&[]), None);
+        assert_eq!(publication_label(&[], ui), None);
     }
 
     #[test]
     fn publication_badge_drops_inedit() {
+        let ui = &Lang::Fr.ui().decision;
         // "n" = "Inédit", "b" = notable.
         let c = vec!["n".to_string(), "b".to_string()];
-        assert_eq!(publication_badge(&c).as_deref(), Some("Publié au bulletin"));
+        assert_eq!(
+            publication_badge(&c, ui).as_deref(),
+            Some("Publié au bulletin")
+        );
         // Que des inédits → None.
         let c = vec!["n".to_string(), "C".to_string()];
-        assert_eq!(publication_badge(&c), None);
+        assert_eq!(publication_badge(&c, ui), None);
     }
 }

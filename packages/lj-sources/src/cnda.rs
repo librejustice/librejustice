@@ -565,18 +565,6 @@ pub fn load_cached_ocr(data_dir: &Path, numero: &str) -> Result<Option<String>> 
     }
 }
 
-/// Écrit le markdown OCR dans le cache (write atomique via fichier temporaire + rename).
-pub fn save_cached_ocr(data_dir: &Path, numero: &str, markdown: &str) -> Result<()> {
-    let path = ocr_path(data_dir, numero);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let tmp = path.with_extension("md.tmp");
-    fs::write(&tmp, markdown)?;
-    fs::rename(&tmp, &path)?;
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

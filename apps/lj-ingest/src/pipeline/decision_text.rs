@@ -1,14 +1,19 @@
-//! Rewrites the decision texts an unchanged DILA member now reads differently, or the CJUE texts stored with references the strip now decodes or a table of contents, and the fields extracted from them. A DILA member that no longer reads as a decision retires its provenance. The French texts stored in capitals are recased in place.
+//! Rewrites the decision texts an unchanged DILA member now reads differently, or the CJUE texts stored with references the strip now decodes or a table of contents, and the fields extracted from them. A CJUE footnote call an old strip split over three lines is joined back in place, at the same length. A DILA member that no longer reads as a decision retires its provenance. The French texts stored in capitals are recased in place, and the opendata texts whose « par » a pseudonymiser lettered get it back.
 
 use std::collections::{HashMap, HashSet};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::LazyLock;
 
 use anyhow::{anyhow, Result};
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use lj_store::repository::{
-    CapitalText, DecisionRepository, DecisionTextDrift, DecisionTextRead, ExtractedFields,
+    DecisionRepository, DecisionTextDrift, DecisionTextRead, ExtractedFields, RepairText,
     StoredText,
 };
 use rayon::prelude::*;
+use regex::Regex;
 use serde_json::Value;
 use tokio::sync::mpsc;
 
@@ -90,13 +95,106 @@ pub async fn backfill_decision_text(fond: Option<TextFond>, dry_run: bool) -> Re
     Ok(())
 }
 
-/// Decisions whose texts are read per round trip of the recasing.
-const RECASE_WINDOW: i64 = 20_000;
+/// Decisions whose texts are read per round trip of a repair.
+const REPAIR_WINDOW: i64 = 20_000;
 
-/// Recases the French texts stored in capitals, as the ingest now writes them,
-/// with the fields of the decisions read in them; `dry_run` counts them and
-/// writes nothing.
-pub async fn recase_texts(dry_run: bool) -> Result<()> {
+/// A rewrite of the stored texts the ingest now writes differently.
+#[derive(Debug, Clone, Copy)]
+pub enum TextRepair {
+    /// The French texts stored in capitals, recased.
+    Recase,
+    /// The opendata texts whose « par » a pseudonymiser took for a name, with it written back.
+    Par,
+}
+
+impl TextRepair {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Recase => "recase-texts",
+            Self::Par => "restore-par",
+        }
+    }
+
+    async fn window(
+        self,
+        repo: &DecisionRepository<'_>,
+        after: i64,
+        upto: i64,
+    ) -> Result<Vec<RepairText>> {
+        match self {
+            Self::Recase => repo.texts_in_capitals(after, upto).await,
+            Self::Par => repo.texts_lettering_par(after, upto).await,
+        }
+        .map_err(|e| anyhow!("{} window: {e}", self.name()))
+    }
+
+    fn repaired(self, text: &str) -> Option<String> {
+        match self {
+            Self::Recase => lj_core::truecase::recased_text(text),
+            Self::Par => lj_core::lettered_par::restored_par(text),
+        }
+    }
+}
+
+/// The stored versions of the texts a repair rewrites, a gzip member per window
+/// written before it, under the state's `backup/` and copied to the bucket.
+struct Trace {
+    name: String,
+    path: PathBuf,
+    file: std::fs::File,
+}
+
+impl Trace {
+    fn open(settings: &Settings, repair: TextRepair) -> Result<Self> {
+        let name = format!(
+            "{}-{}.jsonl.gz",
+            repair.name(),
+            chrono::Utc::now().format("%Y%m%dT%H%M%SZ")
+        );
+        let dir = settings.paths().root().join("backup");
+        std::fs::create_dir_all(&dir).map_err(|e| anyhow!("{}: {e}", dir.display()))?;
+        let path = dir.join(&name);
+        let file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .append(true)
+            .open(&path)
+            .map_err(|e| anyhow!("{}: {e}", path.display()))?;
+        Ok(Self { name, path, file })
+    }
+
+    fn write(&mut self, repaired: &[(RepairText, String)]) -> Result<()> {
+        let mut gz = GzEncoder::new(&mut self.file, Compression::default());
+        for (t, _) in repaired {
+            let line = serde_json::json!({
+                "text_id": t.text_id,
+                "decision_id": t.decision_id,
+                "full_text": t.full_text,
+            });
+            serde_json::to_writer(&mut gz, &line)?;
+            gz.write_all(b"\n")?;
+        }
+        gz.finish()?;
+        self.file.sync_data()?;
+        Ok(())
+    }
+
+    async fn upload(self, settings: &Settings) -> Result<()> {
+        let bytes =
+            std::fs::read(&self.path).map_err(|e| anyhow!("{}: {e}", self.path.display()))?;
+        settings
+            .bucket()?
+            .put(&format!("backup/{}", self.name), bytes)
+            .await
+            .map_err(|e| anyhow!("bucket put {}: {e}", self.name))?;
+        tracing::info!(trace = %self.path.display(), "repair-texts: trace kept");
+        Ok(())
+    }
+}
+
+/// Rewrites the stored texts `repair` changes, as the ingest now writes them,
+/// with the fields of the decisions read in them, each traced before it is
+/// written; `dry_run` counts them and writes nothing.
+pub async fn repair_texts(repair: TextRepair, dry_run: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
         lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
@@ -117,25 +215,33 @@ pub async fn recase_texts(dry_run: bool) -> Result<()> {
         .max_decision_id()
         .await
         .map_err(|e| anyhow!("max_decision_id: {e}"))?;
+    let mut trace = ctx
+        .is_some()
+        .then(|| Trace::open(&settings, repair))
+        .transpose()?;
     let mut tally = Tally::default();
-    let (mut candidates, mut fields_kept) = (0usize, 0u64);
+    let (mut candidates, mut fields_kept, mut bytes_added) = (0usize, 0u64, 0i64);
     let mut after = 0;
     while after < upto {
-        let window: Vec<CapitalText> = repo
-            .texts_in_capitals(after, after + RECASE_WINDOW)
-            .await
-            .map_err(|e| anyhow!("texts_in_capitals: {e}"))?;
-        after += RECASE_WINDOW;
+        let window = repair.window(&repo, after, after + REPAIR_WINDOW).await?;
+        after += REPAIR_WINDOW;
         candidates += window.len();
-        let recased: Vec<(CapitalText, String)> = tokio::task::spawn_blocking(move || {
+        let repaired: Vec<(RepairText, String)> = tokio::task::spawn_blocking(move || {
             window
                 .into_par_iter()
-                .filter_map(|t| lj_core::truecase::recased_text(&t.full_text).map(|r| (t, r)))
+                .filter_map(|t| repair.repaired(&t.full_text).map(|r| (t, r)))
                 .collect()
         })
         .await
-        .map_err(|e| anyhow!("recase-texts join: {e}"))?;
-        let (read, held): (Vec<_>, Vec<_>) = recased
+        .map_err(|e| anyhow!("{} join: {e}", repair.name()))?;
+        bytes_added += repaired
+            .iter()
+            .map(|(t, r)| r.len() as i64 - t.full_text.len() as i64)
+            .sum::<i64>();
+        if let Some(trace) = trace.as_mut().filter(|_| !repaired.is_empty()) {
+            trace.write(&repaired)?;
+        }
+        let (read, held): (Vec<_>, Vec<_>) = repaired
             .into_iter()
             .map(|(t, full_text)| {
                 tally.drifted.insert(t.text_id);
@@ -159,27 +265,38 @@ pub async fn recase_texts(dry_run: bool) -> Result<()> {
             held.len() as u64
         };
         tracing::info!(
+            repair = repair.name(),
             after,
             upto,
-            recased = tally.drifted.len(),
-            "recase-texts: window read"
+            repaired = tally.drifted.len(),
+            bytes_added,
+            "repair-texts: window read"
         );
+    }
+    if let Some(trace) = trace {
+        trace.upload(&settings).await?;
     }
     if ctx.is_some() {
         let annuaire = repo
             .refresh_annuaire_scoped(&tally.written)
             .await
             .map_err(|e| anyhow!("refresh_annuaire_scoped: {e}"))?;
-        tracing::info!(annuaire, "recase-texts: directory recounted");
+        tracing::info!(
+            repair = repair.name(),
+            annuaire,
+            "repair-texts: directory recounted"
+        );
     }
     tracing::warn!(
+        repair = repair.name(),
         dry_run,
         candidates,
-        recased = tally.drifted.len(),
+        repaired = tally.drifted.len(),
         written = tally.written.len(),
         unextracted = tally.unextracted,
         fields_kept,
-        "recase-texts"
+        bytes_added,
+        "repair-texts"
     );
     Ok(())
 }
@@ -311,6 +428,10 @@ struct Tally {
     translations: u64,
     /// The provenances whose member, in its last version, gives no decision.
     retired: usize,
+    /// The footnote calls joined back into their line.
+    calls: usize,
+    /// The texts whose only change is a joined call, written in place, every offset unchanged.
+    joined: u64,
 }
 
 /// What a member gives as the ingest reads it.
@@ -349,6 +470,8 @@ async fn backfill_fond(
         written = tally.written.len(),
         translations = tally.translations,
         retired = tally.retired,
+        calls = tally.calls,
+        joined = tally.joined,
         "backfill-decision-text"
     );
     Ok(tally.written)
@@ -375,38 +498,65 @@ async fn decode_cjue(
         tally.members += page.len();
         let mut read = Vec::new();
         let mut translations = Vec::new();
+        let mut in_place = Vec::new();
         for text in page {
             let decoded = lj_sources::cjue::drop_contents(
                 &lj_sources::html_strip::decode_stripped(&text.full_text),
             )
             .to_string();
-            if decoded == text.full_text {
-                continue;
-            }
-            if text.read {
+            let (joined, calls) = join_footnote_calls(&decoded);
+            tally.calls += calls;
+            let drift = DecisionTextDrift {
+                text_id: text.text_id,
+                decision_id: text.decision_id,
+                stored: text.full_text,
+                full_text: joined,
+            };
+            if decoded == drift.stored {
+                if calls > 0 {
+                    in_place.push(drift);
+                }
+            } else if text.read {
                 read.push(DecisionTextRead {
                     source_uid: text.source_uid,
                     content_checksum: text.content_checksum,
-                    full_text: decoded,
+                    full_text: drift.full_text,
                 });
             } else {
-                translations.push(DecisionTextDrift {
-                    text_id: text.text_id,
-                    decision_id: text.decision_id,
-                    stored: text.full_text,
-                    full_text: decoded,
-                });
+                translations.push(drift);
             }
         }
         rewrite_texts(repo, read, ctx, tally).await?;
-        tally.translations += if ctx.is_some() {
-            repo.overwrite_texts(&translations)
-                .await
-                .map_err(|e| anyhow!("overwrite_texts: {e}"))?
-        } else {
-            translations.len() as u64
-        };
+        tally.translations += overwrite(repo, &translations, ctx).await?;
+        tally.joined += overwrite(repo, &in_place, ctx).await?;
     }
+}
+
+/// Writes `drifts` over their stored texts, fields and passages untouched, and counts them;
+/// a dry run only counts.
+async fn overwrite(
+    repo: &DecisionRepository<'_>,
+    drifts: &[DecisionTextDrift],
+    ctx: Option<&'static ExtractCtx>,
+) -> Result<u64> {
+    if ctx.is_none() {
+        return Ok(drifts.len() as u64);
+    }
+    repo.overwrite_texts(drifts)
+        .await
+        .map_err(|e| anyhow!("overwrite_texts: {e}"))
+}
+
+/// A footnote call an old strip split over three lines, `(`, `1`, `)`, joined back into its
+/// line as `( 1 )`, two spaces for two line breaks; returns the text and the calls joined.
+fn join_footnote_calls(text: &str) -> (String, usize) {
+    static CALL: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"\(\n(\*?[0-9]{1,3}|\*|[ivx]{1,4})\n\)").unwrap());
+    let calls = CALL.find_iter(text).count();
+    if calls == 0 {
+        return (text.to_string(), 0);
+    }
+    (CALL.replace_all(text, "( $1 )").into_owned(), calls)
 }
 
 async fn reread_archives(
@@ -659,4 +809,20 @@ fn extract(
         case_name.as_deref(),
         ctx,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_split_footnote_call_joins_its_line_at_the_same_length() {
+        let text = "présentées le 26 mars 2009 (\n1\n)\nAffaire C-32/08\n(\n*1\n) Langue de procédure\n(\n\n2\n)";
+        let (joined, calls) = join_footnote_calls(text);
+        assert_eq!(
+            joined,
+            "présentées le 26 mars 2009 ( 1 )\nAffaire C-32/08\n( *1 ) Langue de procédure\n(\n\n2\n)"
+        );
+        assert_eq!((calls, joined.len()), (2, text.len()));
+    }
 }

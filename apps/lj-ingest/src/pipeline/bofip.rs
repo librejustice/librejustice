@@ -48,11 +48,6 @@ pub async fn ingest_bofip(path: &Path) -> Result<()> {
 
     let (docs, upserted, skipped, errors) = ingest_bofip_file(&repo, path).await?;
 
-    // Titre du document dénormalisé sur ses § (`search_title`).
-    let retitled = repo
-        .refresh_article_denorm(None)
-        .await
-        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     // Ordre de lecture des textes touchés : l'écriture n'a fait qu'invalider les
     // rangs, ce finisseur les recalcule.
     let (ranked_texts, ranked_rows) = repo
@@ -68,7 +63,6 @@ pub async fn ingest_bofip(path: &Path) -> Result<()> {
         upserted,
         skipped,
         errors,
-        retitled,
         slugged,
         "ingest_bofip"
     );
@@ -155,15 +149,24 @@ async fn ingest_bofip_doc(
         eli: None,
         nor: None,
         instrument_key: None,
-        body: doc.preambule,
         // Le snapshot `bofip-vigueur` ne contient que des publications en vigueur.
         status: Some("VIGUEUR".to_string()),
     })
     .await
     .map_err(|e| anyhow!("upsert_legal_text {}: {e}", doc.identifiant))?;
+    let mut keep_num_keys: Vec<String> = Vec::with_capacity(doc.paragraphs.len() + 1);
+    if let Some(preambule) = doc.preambule {
+        repo.write_text_bodies(
+            "bofip",
+            &[(doc.identifiant.clone(), preambule)],
+            lj_store::repository::BodyWrite::Replace,
+        )
+        .await
+        .map_err(|e| anyhow!("write_text_bodies {}: {e}", doc.identifiant))?;
+        keep_num_keys.push("body".to_string());
+    }
 
     let (mut upserted, mut skipped) = (0usize, 0usize);
-    let mut keep_num_keys: Vec<String> = Vec::with_capacity(doc.paragraphs.len());
     let mut toc_articles: Vec<super::corpus_toc::TocArticle> =
         Vec::with_capacity(doc.paragraphs.len());
     for (i, p) in doc.paragraphs.into_iter().enumerate() {

@@ -444,7 +444,7 @@
 /*
  * Dark mode — pendant nuit du parchemin (papier noirci, sépia, burgundy).
  * Active quand <html> porte la classe .dark (posée par le script inline de
- * index.html selon localStorage 'lj-theme' + prefers-color-scheme).
+ * app.rs selon localStorage 'lj-theme' + prefers-color-scheme).
  */
 :root.dark {
   /* Dark mode façon Wikipedia (Vector 2022) : gris neutres, accent bleu lien. */

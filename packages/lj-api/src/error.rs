@@ -124,14 +124,23 @@ impl ApiError {
     /// `statement_timeout` (SQLSTATE 57014) / lock non obtenu (55P03) — le cas
     /// d'une fenêtre de maintenance type `VACUUM FULL`. La réponse passe en
     /// 503 + `Retry-After` au lieu d'un 500.
-    fn is_db_busy(&self) -> bool {
+    pub(crate) fn is_db_busy(&self) -> bool {
         match self {
             ApiError::DbBusy(_) => true,
-            ApiError::Store(lj_store::error::StoreError::Postgres(e)) => e
-                .as_db_error()
-                .is_some_and(|db| matches!(db.code().code(), "57014" | "55P03")),
+            ApiError::Store(e) => cancelled_by_base(e),
             _ => false,
         }
+    }
+}
+
+/// A statement the base cancelled: `statement_timeout` (57014) or a lock not
+/// obtained (55P03).
+pub(crate) fn cancelled_by_base(e: &lj_store::error::StoreError) -> bool {
+    match e {
+        lj_store::error::StoreError::Postgres(e) => e
+            .as_db_error()
+            .is_some_and(|db| matches!(db.code().code(), "57014" | "55P03")),
+        _ => false,
     }
 }
 

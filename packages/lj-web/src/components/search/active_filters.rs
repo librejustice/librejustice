@@ -11,9 +11,10 @@ use leptos_router::hooks::use_query_map;
 use leptos_router::params::ParamsMap;
 use lj_dtos::{SearchFacets, UiAction};
 
-use super::annonce_results::date_fr;
 use super::compact_search::{query_state, DraftQuery};
 use super::facet_widgets::{filter_keys, Nav};
+use super::journal_results::numeric_date;
+use crate::i18n::SearchUi;
 
 /// Chip de filtre actif. `key`/`value` = mutation URL du ✕ (`key == "dates"` :
 /// chip fusionnée `from`+`to`, retrait = vider les deux bornes).
@@ -25,7 +26,12 @@ pub struct ActiveChip {
 }
 
 /// Chips des filtres décisions actifs, dans l'ordre des clés de `filter_keys`.
-pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<ActiveChip> {
+pub fn decision_chips(
+    map: &ParamsMap,
+    facets: Option<&SearchFacets>,
+    ui: &SearchUi,
+    dates: &crate::i18n::DatesUi,
+) -> Vec<ActiveChip> {
     let all = |key: &str| map.get_all(key).unwrap_or_default();
     let mut chips = Vec::new();
 
@@ -105,11 +111,7 @@ pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<Act
     };
     for v in all("legalArticle") {
         let label = match v.split_once('|') {
-            Some((uid, art)) => format!(
-                "{} · art. {}",
-                instrument_label(uid),
-                article_label(uid, art)
-            ),
+            Some((uid, art)) => (ui.chip_article)(&instrument_label(uid), &article_label(uid, art)),
             None => v.clone(),
         };
         chips.push(ActiveChip {
@@ -120,26 +122,26 @@ pub fn decision_chips(map: &ParamsMap, facets: Option<&SearchFacets>) -> Vec<Act
     }
 
     let parts = query_state::parts_searched(map);
-    if parts.len() < query_state::PARTS.len() {
+    if parts != query_state::DECISION_PARTS {
         let labels: Vec<&str> = query_state::PARTS
             .iter()
-            .filter(|(v, _, _)| parts.contains(v))
-            .map(|(_, l, _)| *l)
+            .filter(|v| parts.contains(v))
+            .map(|v| query_state::part_copy(v, ui).0)
             .collect();
         chips.push(ActiveChip {
             key: "searchIn",
             value: String::new(),
-            label: format!("Dans : {}", labels.join(", ")),
+            label: (ui.chip_search_in)(&labels.join(", ")),
         });
     }
 
     let from = map.get("dateFrom").unwrap_or_default();
     let to = map.get("dateTo").unwrap_or_default();
-    let jour = |iso: &str| date_fr(iso).unwrap_or_else(|| iso.to_string());
+    let jour = |iso: &str| numeric_date(dates, iso).unwrap_or_else(|| iso.to_string());
     let date_label = match (from.is_empty(), to.is_empty()) {
-        (false, false) => Some(format!("Du {} au {}", jour(&from), jour(&to))),
-        (false, true) => Some(format!("Depuis le {}", jour(&from))),
-        (true, false) => Some(format!("Jusqu'au {}", jour(&to))),
+        (false, false) => Some((ui.chip_dates_between)(&jour(&from), &jour(&to))),
+        (false, true) => Some((ui.chip_dates_from)(&jour(&from))),
+        (true, false) => Some((ui.chip_dates_to)(&jour(&to))),
         (true, true) => None,
     };
     if let Some(label) = date_label {
@@ -174,7 +176,10 @@ pub fn ActiveFilterChips(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> 
         map
     };
 
-    let chips = Memo::new(move |_| decision_chips(&query_map.get(), facets.get().as_ref()));
+    let ui = &crate::i18n::use_ui().search;
+    let dates = &crate::i18n::use_ui().dates;
+    let chips =
+        Memo::new(move |_| decision_chips(&query_map.get(), facets.get().as_ref(), ui, dates));
 
     let remove = move |chip: &ActiveChip| {
         let qs = if chip.key == "dates" {
@@ -210,7 +215,7 @@ pub fn ActiveFilterChips(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> 
                                 <span class="max-w-56 truncate">{label}</span>
                                 <button
                                     type="button"
-                                    aria-label="Retirer ce filtre"
+                                    aria-label=ui.remove_filter
                                     on:click=on_remove
                                     class="flex h-4 w-4 items-center justify-center rounded-full transition-colors hover:bg-[var(--color-accent)] hover:text-[var(--color-accent-foreground)]"
                                 >
@@ -233,7 +238,7 @@ pub fn ActiveFilterChips(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> 
                     on:click=clear_all
                     class="text-xs text-[var(--color-ink-subtle)] underline-offset-2 hover:text-[var(--color-accent)] hover:underline"
                 >
-                    "Tout effacer"
+                    {ui.clear_all}
                 </button>
             </div>
         </Show>
@@ -243,6 +248,7 @@ pub fn ActiveFilterChips(#[prop(into)] facets: Signal<Option<SearchFacets>>) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::Lang;
     use lj_dtos::{FacetChoice, LegalInstrumentFacet};
 
     fn map_of(pairs: &[(&str, &str)]) -> ParamsMap {
@@ -318,6 +324,7 @@ mod tests {
                 }],
             }],
             legal_article_top: Vec::new(),
+            seat_names: Default::default(),
         }
     }
 
@@ -330,7 +337,12 @@ mod tests {
             ("formation", "FR.TJ.JEX"),
             ("legalDomain", "civil"),
         ]);
-        let chips = decision_chips(&m, Some(&facets()));
+        let chips = decision_chips(
+            &m,
+            Some(&facets()),
+            &Lang::Fr.ui().search,
+            &Lang::Fr.ui().dates,
+        );
         let labels: Vec<&str> = chips.iter().map(|c| c.label.as_str()).collect();
         assert_eq!(
             labels,
@@ -347,7 +359,12 @@ mod tests {
     #[test]
     fn orphan_falls_back_to_raw_value() {
         let m = map_of(&[("seat", "XX"), ("legalInstrument", "code-inconnu")]);
-        let chips = decision_chips(&m, Some(&facets()));
+        let chips = decision_chips(
+            &m,
+            Some(&facets()),
+            &Lang::Fr.ui().search,
+            &Lang::Fr.ui().dates,
+        );
         assert_eq!(chips[0].label, "XX");
         assert_eq!(chips[1].label, "code-inconnu");
     }
@@ -355,11 +372,21 @@ mod tests {
     #[test]
     fn composite_article_labelled_with_instrument() {
         let m = map_of(&[("legalArticle", "code-civil|1240")]);
-        let chips = decision_chips(&m, Some(&facets()));
+        let chips = decision_chips(
+            &m,
+            Some(&facets()),
+            &Lang::Fr.ui().search,
+            &Lang::Fr.ui().dates,
+        );
         assert_eq!(chips[0].label, "Code civil · art. 1240");
         assert_eq!(chips[0].value, "code-civil|1240");
         let m = map_of(&[("legalArticle", "code-civil|l433-1")]);
-        let chips = decision_chips(&m, Some(&facets()));
+        let chips = decision_chips(
+            &m,
+            Some(&facets()),
+            &Lang::Fr.ui().search,
+            &Lang::Fr.ui().dates,
+        );
         assert_eq!(chips[0].label, "Code civil · art. L. 433-1");
     }
 
@@ -370,12 +397,17 @@ mod tests {
             ("dateTo", "2021-06-30"),
             ("seat", "TJ"),
         ]);
-        let chips = decision_chips(&m, Some(&facets()));
+        let chips = decision_chips(
+            &m,
+            Some(&facets()),
+            &Lang::Fr.ui().search,
+            &Lang::Fr.ui().dates,
+        );
         let dates: Vec<&ActiveChip> = chips.iter().filter(|c| c.key == "dates").collect();
         assert_eq!(dates.len(), 1);
         assert_eq!(dates[0].label, "Du 01/01/2020 au 30/06/2021");
         let m = map_of(&[("dateFrom", "2020-01-01")]);
-        let chips = decision_chips(&m, None);
+        let chips = decision_chips(&m, None, &Lang::Fr.ui().search, &Lang::Fr.ui().dates);
         assert_eq!(chips[0].label, "Depuis le 01/01/2020");
     }
 }

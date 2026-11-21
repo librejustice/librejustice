@@ -1,17 +1,22 @@
 //! Ministerial bulletins, the sites art. D. 312-11 CRPA names: one connector per
 //! site lists its notices, each body is fetched from the notice's own link.
 
+pub mod acpr;
 pub mod agri;
 pub mod armees;
 pub mod culture;
 pub mod dgafp;
+pub mod douane;
 pub mod economie;
 pub mod education;
+pub mod esr;
 pub mod interieur;
 mod issue;
 pub mod justice;
+pub mod meae;
 pub mod mte;
 pub mod social;
+pub mod sports;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -19,7 +24,7 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 use std::time::Duration;
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use regex::Regex;
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware};
 use reqwest_tracing::TracingMiddleware;
@@ -36,8 +41,16 @@ const GATEWAY_HOSTS: &[&str] = &[
     "www.economie.gouv.fr",
     "sante.gouv.fr",
     "travail-emploi.gouv.fr",
+    "www.enseignementsup-recherche.gouv.fr",
+    "boss.gouv.fr",
 ];
 const GATEWAY_THROTTLE: Duration = Duration::from_secs(5);
+/// Hosts read one request every two seconds.
+const SLOW_HOSTS: &[&str] = &["www.douane.gouv.fr"];
+const SLOW_THROTTLE: Duration = Duration::from_secs(2);
+/// A gated host's files, which its challenge leaves open, are read through the
+/// egress gateway: the page gateway stalls on a body over 100 MB.
+const GATED_FILES: &str = "/sites/default/files/";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum BulletinSite {
@@ -51,11 +64,21 @@ pub enum BulletinSite {
     /// The civil service directorate, which publishes no bulletin.
     Dgafp,
     Culture,
+    /// Europe and foreign affairs.
+    Meae,
     /// National education, youth and sports.
     Education,
     Interieur,
     /// Economy and finance, the central administration's bulletin.
     Economie,
+    /// Higher education and research.
+    Esr,
+    /// Sports, youth and community life, until 2020.
+    Sports,
+    /// The prudential supervision and resolution authority's official register.
+    Acpr,
+    /// Customs, the administrative decisions of its bulletin.
+    Douane,
 }
 
 impl BulletinSite {
@@ -67,10 +90,24 @@ impl BulletinSite {
         BulletinSite::Social,
         BulletinSite::Dgafp,
         BulletinSite::Culture,
+        BulletinSite::Meae,
         BulletinSite::Education,
         BulletinSite::Interieur,
         BulletinSite::Economie,
+        BulletinSite::Esr,
+        BulletinSite::Sports,
+        BulletinSite::Acpr,
+        BulletinSite::Douane,
     ];
+
+    /// The first year `--full` lists: 1970 for the customs listing, 1998, the
+    /// health bulletin's first year, for the others.
+    pub fn first_year(self) -> i32 {
+        match self {
+            BulletinSite::Douane => 1970,
+            _ => 1998,
+        }
+    }
 
     pub fn slug(self) -> &'static str {
         match self {
@@ -81,9 +118,14 @@ impl BulletinSite {
             BulletinSite::Social => "social",
             BulletinSite::Dgafp => "dgafp",
             BulletinSite::Culture => "culture",
+            BulletinSite::Meae => "meae",
             BulletinSite::Education => "education",
             BulletinSite::Interieur => "interieur",
             BulletinSite::Economie => "economie",
+            BulletinSite::Esr => "esr",
+            BulletinSite::Sports => "sports",
+            BulletinSite::Acpr => "acpr",
+            BulletinSite::Douane => "douane",
         }
     }
 
@@ -175,42 +217,73 @@ impl BulletinNotice {
 
 pub struct BulletinClient {
     client: ClientWithMiddleware,
+    files: Option<ClientWithMiddleware>,
     page_gateway: Option<String>,
     cache: PathBuf,
 }
 
 impl BulletinClient {
-    pub fn new(page_gateway: Option<String>, cache: PathBuf) -> Self {
+    pub fn new(
+        page_gateway: Option<String>,
+        egress_proxy: Option<String>,
+        cache: PathBuf,
+    ) -> Result<Self> {
         let client = ClientBuilder::new(
             reqwest::Client::builder()
                 .user_agent("Mozilla/5.0 (X11; Linux x86_64) librejustice-bulletins/0.1")
                 .connect_timeout(Duration::from_secs(15))
                 .timeout(Duration::from_secs(120))
+                // Under the 5 s a Node server keeps an idle connection, which the
+                // gateway's 5 s throttle would otherwise race.
+                .pool_idle_timeout(Duration::from_secs(2))
                 .build()
                 .expect("reqwest client build"),
         )
         .with(TracingMiddleware::default())
         .build();
-        Self {
+        let files = match egress_proxy {
+            Some(proxy) => Some(
+                ClientBuilder::new(
+                    reqwest::Client::builder()
+                        .user_agent("LibreJusticeBot/0.1 (+https://librejustice.fr)")
+                        .proxy(reqwest::Proxy::all(proxy)?)
+                        .connect_timeout(Duration::from_secs(15))
+                        .timeout(Duration::from_secs(600))
+                        .build()?,
+                )
+                .with(TracingMiddleware::default())
+                .build(),
+            ),
+            None => None,
+        };
+        Ok(Self {
             client,
+            files,
             page_gateway,
             cache,
-        }
+        })
     }
 
-    /// Every notice the site published from `since_year` on.
-    pub async fn list(&self, site: BulletinSite, since_year: i32) -> Result<Vec<BulletinNotice>> {
+    /// Every notice the site published from `since` on, the sites listed by year
+    /// from the first day of its year.
+    pub async fn list(&self, site: BulletinSite, since: NaiveDate) -> Result<Vec<BulletinNotice>> {
+        let since_year = since.year();
         match site {
             BulletinSite::Mte => mte::list(self, since_year).await,
             BulletinSite::Justice => justice::list(self, since_year).await,
             BulletinSite::Armees => armees::list(self, since_year).await,
             BulletinSite::Agri => agri::list(self, since_year).await,
-            BulletinSite::Social => social::list(self, since_year).await,
+            BulletinSite::Social => social::list(self, since).await,
             BulletinSite::Dgafp => dgafp::list(self, since_year).await,
             BulletinSite::Culture => culture::list(self, since_year).await,
+            BulletinSite::Meae => meae::list(self, since).await,
             BulletinSite::Education => education::list(self, since_year).await,
             BulletinSite::Interieur => interieur::list(self, since_year).await,
-            BulletinSite::Economie => economie::list(self, since_year).await,
+            BulletinSite::Economie => economie::list(self, since).await,
+            BulletinSite::Esr => esr::list(self, since).await,
+            BulletinSite::Sports => sports::list(self, since_year).await,
+            BulletinSite::Acpr => acpr::list(self, since).await,
+            BulletinSite::Douane => douane::list(self, since).await,
         }
     }
 
@@ -220,13 +293,18 @@ impl BulletinClient {
             BulletinSite::Agri => agri::enrich(self, notice).await,
             BulletinSite::Social => social::enrich(self, notice).await,
             BulletinSite::Education => education::enrich(self, notice).await,
+            BulletinSite::Acpr => acpr::enrich(self, notice).await,
+            BulletinSite::Douane => douane::enrich(self, notice).await,
             BulletinSite::Mte
             | BulletinSite::Justice
             | BulletinSite::Armees
             | BulletinSite::Dgafp
             | BulletinSite::Culture
+            | BulletinSite::Meae
             | BulletinSite::Interieur
-            | BulletinSite::Economie => Ok(()),
+            | BulletinSite::Economie
+            | BulletinSite::Esr
+            | BulletinSite::Sports => Ok(()),
         }
     }
 
@@ -237,52 +315,76 @@ impl BulletinClient {
             .unwrap_or(false)
     }
 
-    /// The gateway answers the origin's status; a timeout or a 5xx is retried, four
-    /// attempts at most.
-    async fn through_gateway(&self, url: &str) -> Result<(u16, Vec<u8>)> {
-        let Some(gateway) = &self.page_gateway else {
-            return Err(SourceError::Invalid(format!(
-                "LIBREJUSTICE_PAGE_GATEWAY is empty: {url} is read through the page gateway"
-            )));
+    fn gated_file(url: &str) -> bool {
+        Self::gated(url)
+            && reqwest::Url::parse(url).is_ok_and(|u| u.path().starts_with(GATED_FILES))
+    }
+
+    /// A gated host's page is asked of the gateway, which answers the origin's
+    /// status. A request that fails to send or a 5xx is retried, four attempts
+    /// at most.
+    async fn send(&self, url: &str) -> Result<reqwest::Response> {
+        let (client, target, throttle) = if Self::gated_file(url) {
+            let Some(files) = &self.files else {
+                return Err(SourceError::Invalid(format!(
+                    "LIBREJUSTICE_EGRESS_PROXY is empty: {url} is read through the egress gateway"
+                )));
+            };
+            let target = reqwest::Url::parse(url)
+                .map_err(|e| SourceError::Invalid(format!("bulletin {url}: {e}")))?;
+            (files, target, GATEWAY_THROTTLE)
+        } else if Self::gated(url) {
+            let Some(gateway) = &self.page_gateway else {
+                return Err(SourceError::Invalid(format!(
+                    "LIBREJUSTICE_PAGE_GATEWAY is empty: {url} is read through the page gateway"
+                )));
+            };
+            let target =
+                reqwest::Url::parse_with_params(&format!("{gateway}/fetch"), [("url", url)])
+                    .map_err(|e| SourceError::Invalid(format!("page gateway {gateway}: {e}")))?;
+            (&self.client, target, GATEWAY_THROTTLE)
+        } else {
+            let target = reqwest::Url::parse(url)
+                .map_err(|e| SourceError::Invalid(format!("bulletin {url}: {e}")))?;
+            let slow = target.host_str().is_some_and(|h| SLOW_HOSTS.contains(&h));
+            (
+                &self.client,
+                target,
+                if slow { SLOW_THROTTLE } else { THROTTLE },
+            )
         };
-        let target = reqwest::Url::parse_with_params(&format!("{gateway}/fetch"), [("url", url)])
-            .map_err(|e| SourceError::Invalid(format!("page gateway {gateway}: {e}")))?;
         let mut attempt = 1;
         loop {
-            tokio::time::sleep(GATEWAY_THROTTLE).await;
-            let resp = match self.client.get(target.clone()).send().await {
-                Err(e) if e.is_timeout() && attempt < 4 => {
-                    tracing::warn!(url, attempt, "bulletin: page gateway busy, retried");
-                    attempt += 1;
-                    continue;
+            tokio::time::sleep(throttle).await;
+            match client.get(target.clone()).send().await {
+                Err(e) if attempt < 4 => {
+                    tracing::warn!(url, attempt, error = %e, "bulletin: request failed, retried");
                 }
-                resp => resp.map_err(|e| SourceError::Invalid(format!("bulletin {url}: {e}")))?,
-            };
-            let status = resp.status().as_u16();
-            if status >= 500 && attempt < 4 {
-                tracing::warn!(url, status, attempt, "bulletin: origin error, retried");
-                tokio::time::sleep(Duration::from_secs(20 * attempt)).await;
-                attempt += 1;
-                continue;
+                Err(e) => return Err(SourceError::Invalid(format!("bulletin {url}: {e}"))),
+                Ok(resp) if resp.status().is_server_error() && attempt < 4 => {
+                    tracing::warn!(
+                        url,
+                        status = resp.status().as_u16(),
+                        attempt,
+                        "bulletin: origin error, retried"
+                    );
+                }
+                Ok(resp) => return Ok(resp),
             }
-            return Ok((status, resp.bytes().await?.to_vec()));
+            tokio::time::sleep(Duration::from_secs(20 * attempt)).await;
+            attempt += 1;
         }
     }
 
     pub(crate) async fn get_page(&self, url: &str) -> Result<(u16, String)> {
-        if Self::gated(url) {
-            let (status, bytes) = self.through_gateway(url).await?;
-            return Ok((status, String::from_utf8_lossy(&bytes).into_owned()));
-        }
-        tokio::time::sleep(THROTTLE).await;
-        let resp = self
-            .client
-            .get(url)
-            .send()
-            .await
-            .map_err(|e| SourceError::Invalid(format!("bulletin {url}: {e}")))?;
+        let resp = self.send(url).await?;
         let status = resp.status().as_u16();
-        Ok((status, resp.text().await?))
+        let text = if Self::gated(url) {
+            String::from_utf8_lossy(&resp.bytes().await?).into_owned()
+        } else {
+            resp.text().await?
+        };
+        Ok((status, text))
     }
 
     pub(crate) async fn get_text(&self, url: &str) -> Result<String> {
@@ -295,26 +397,51 @@ impl BulletinClient {
         Ok(text)
     }
 
-    /// `None` on 404, a notice whose document the site lost.
-    pub async fn get_bytes(&self, url: &str) -> Result<Option<Vec<u8>>> {
-        let (status, bytes) = if Self::gated(url) {
-            self.through_gateway(url).await?
-        } else {
-            tokio::time::sleep(THROTTLE).await;
-            let resp = self
-                .client
-                .get(url)
-                .send()
-                .await
-                .map_err(|e| SourceError::Invalid(format!("bulletin {url}: {e}")))?;
-            (resp.status().as_u16(), resp.bytes().await?.to_vec())
+    /// An issue does not change once published: one read once is kept beside
+    /// its site's state, so an interrupted run resumes where it stopped.
+    pub(crate) async fn frozen_issue(
+        &self,
+        site: BulletinSite,
+        url: &str,
+    ) -> Result<Option<Vec<u8>>> {
+        let dir = site_dir(&self.cache, site).join("issues");
+        let path = dir.join(url.trim_start_matches("https://").replace('/', "_"));
+        match tokio::fs::read(&path).await {
+            Ok(bytes) => return Ok(Some(bytes)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => return Err(e.into()),
+        }
+        let Some(bytes) = self.get_bytes(url).await? else {
+            return Ok(None);
         };
-        match status {
-            200 => Ok(Some(bytes)),
-            404 => Ok(None),
-            status => Err(SourceError::Invalid(format!(
-                "bulletin status {status} {url}"
-            ))),
+        tokio::fs::create_dir_all(&dir).await?;
+        tokio::fs::write(&path, &bytes).await?;
+        Ok(Some(bytes))
+    }
+
+    /// `None` on 404, a notice whose document the site lost. A body cut short
+    /// is asked again, four attempts at most.
+    pub async fn get_bytes(&self, url: &str) -> Result<Option<Vec<u8>>> {
+        let mut attempt = 1;
+        loop {
+            let resp = self.send(url).await?;
+            match resp.status().as_u16() {
+                200 => match resp.bytes().await {
+                    Ok(bytes) => return Ok(Some(bytes.to_vec())),
+                    Err(e) if attempt < 4 => {
+                        tracing::warn!(url, attempt, error = %e, "bulletin: body cut short, retried");
+                    }
+                    Err(e) => return Err(e.into()),
+                },
+                404 => return Ok(None),
+                status => {
+                    return Err(SourceError::Invalid(format!(
+                        "bulletin status {status} {url}"
+                    )))
+                }
+            }
+            tokio::time::sleep(Duration::from_secs(20 * attempt)).await;
+            attempt += 1;
         }
     }
 }
@@ -325,7 +452,24 @@ pub fn site_dir(cache: &Path, site: BulletinSite) -> PathBuf {
 
 /// Native ids of the notices whose publication is written.
 pub fn load_published(dir: &Path) -> Result<BTreeSet<String>> {
-    let path = dir.join("published.json");
+    load_ids(dir, "published")
+}
+
+pub fn save_published(dir: &Path, published: &BTreeSet<String>) -> Result<()> {
+    save_ids(dir, "published", published)
+}
+
+/// Native ids of the written notices whose file was asked for the bucket.
+pub fn load_filed(dir: &Path) -> Result<BTreeSet<String>> {
+    load_ids(dir, "filed")
+}
+
+pub fn save_filed(dir: &Path, filed: &BTreeSet<String>) -> Result<()> {
+    save_ids(dir, "filed", filed)
+}
+
+fn load_ids(dir: &Path, name: &str) -> Result<BTreeSet<String>> {
+    let path = dir.join(format!("{name}.json"));
     if !path.exists() {
         return Ok(BTreeSet::new());
     }
@@ -333,14 +477,14 @@ pub fn load_published(dir: &Path) -> Result<BTreeSet<String>> {
         .map_err(|e| SourceError::Invalid(format!("{}: {e}", path.display())))
 }
 
-pub fn save_published(dir: &Path, published: &BTreeSet<String>) -> Result<()> {
+fn save_ids(dir: &Path, name: &str, ids: &BTreeSet<String>) -> Result<()> {
     fs::create_dir_all(dir)?;
-    let tmp = dir.join("published.json.tmp");
+    let tmp = dir.join(format!("{name}.json.tmp"));
     fs::write(
         &tmp,
-        serde_json::to_vec(published).map_err(|e| SourceError::Invalid(e.to_string()))?,
+        serde_json::to_vec(ids).map_err(|e| SourceError::Invalid(e.to_string()))?,
     )?;
-    fs::rename(tmp, dir.join("published.json"))?;
+    fs::rename(tmp, dir.join(format!("{name}.json")))?;
     Ok(())
 }
 
@@ -371,13 +515,6 @@ pub fn load_cached_ocr(dir: &Path, native_id: &str) -> Result<Option<String>> {
         return Ok(None);
     }
     Ok(Some(fs::read_to_string(path)?))
-}
-
-pub fn save_cached_ocr(dir: &Path, native_id: &str, markdown: &str) -> Result<()> {
-    let ocr = dir.join("ocr");
-    fs::create_dir_all(&ocr)?;
-    fs::write(ocr.join(format!("{native_id}.md")), markdown)?;
-    Ok(())
 }
 
 /// A circular, an instruction, a note, a directive or guidelines, by the type
@@ -441,9 +578,24 @@ pub fn nor_in_text(text: &str) -> Option<String> {
     re.captures_iter(&head).find_map(|c| nor(&c[1]))
 }
 
+/// A listing title cut short by « … », completed from the document, which
+/// prints it whole above its NOR.
+pub fn complete_title(title: &str, body: &str) -> Option<String> {
+    let stem = title.strip_suffix('…')?.trim_end();
+    let head = body
+        .chars()
+        .take(4000)
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let rest = &head[head.find(stem)?..];
+    let end = rest.find(" NOR")?;
+    Some(rest[..end].trim_end_matches([' ', '.']).to_string())
+}
+
 /// « 27 décembre 2019 ».
 pub(crate) fn french_long(d: NaiveDate) -> String {
-    use chrono::Datelike;
     const MONTHS: [&str; 12] = [
         "janvier",
         "février",

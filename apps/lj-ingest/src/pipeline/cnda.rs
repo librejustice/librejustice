@@ -2,14 +2,15 @@
 
 use anyhow::{anyhow, Result};
 use chrono::NaiveDate;
-use lj_bucket::key;
+use lj_bucket::{key, Bucket};
 use std::collections::HashSet;
 
 use lj_parse::{clean_ocr_markdown, parse_cnda, reflow_cnda_pdf_text, CndaParsed};
 use lj_store::repository::ExtractedFields;
+use serde_json::Value;
 
 use crate::config::Settings;
-use crate::ocr::Ocr;
+use crate::ocr::{self, Ocr};
 
 use super::batch::drain_batch;
 use super::europe::europe_pool;
@@ -83,24 +84,35 @@ pub(super) fn pdf_has_text_layer(extracted: &str) -> bool {
     extracted.chars().filter(|c| !c.is_whitespace()).count() >= PDF_TEXT_LAYER_FLOOR
 }
 
+/// The markdown of a scanned decision: from Mistral's answer the bucket keeps beside its file,
+/// else from the markdown cached before the answer was kept, else read by the OCR, its answer kept.
 async fn scanned_ocr_fallback(
     client: Option<&Ocr>,
+    bucket: &Bucket,
     cache_dir: &std::path::Path,
     numero: &str,
     pdf_bytes: &[u8],
 ) -> Option<String> {
-    use lj_sources::cnda::{load_cached_ocr, save_cached_ocr};
-    if let Ok(Some(md)) = load_cached_ocr(cache_dir, numero) {
+    let answer = key::ocr(&key::cnda(numero));
+    match ocr::kept::<Vec<Value>>(bucket, &answer).await {
+        Ok(Some(pages)) => return Some(ocr::text(&pages)),
+        Ok(None) => {}
+        Err(e) => {
+            tracing::warn!(numero = %numero, error = %e, "cnda kept OCR answer unread");
+            return None;
+        }
+    }
+    if let Ok(Some(md)) = lj_sources::cnda::load_cached_ocr(cache_dir, numero) {
         return Some(md);
     }
     let client = client?;
-    match client.document(pdf_bytes, numero).await {
-        Ok(markdown) => {
-            if let Err(e) = save_cached_ocr(cache_dir, numero, &markdown) {
-                tracing::warn!(numero = %numero, error = %e, "cnda ocr cache write");
-            }
+    match client
+        .document_kept(bucket, &answer, pdf_bytes, numero)
+        .await
+    {
+        Ok(reading) => {
             tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            Some(markdown)
+            Some(reading.text())
         }
         Err(e) => {
             tracing::warn!(numero = %numero, error = %e, "cnda scanned OCR fallback failed");
@@ -269,6 +281,7 @@ async fn run_cnda(
                         Some(raw) => (reflow_cnda_pdf_text(&raw), "pdf", bytes.clone()),
                         None => match scanned_ocr_fallback(
                             ocr_client.as_ref(),
+                            &bucket,
                             &cache_dir,
                             &numero,
                             bytes,

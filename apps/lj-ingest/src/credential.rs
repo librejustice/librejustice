@@ -153,6 +153,48 @@ pub async fn enable(fingerprint: &str) -> Result<()> {
     Ok(())
 }
 
+/// Prints what Mistral answers the key of `tenant` on the door its pool spends; a 402 parks it.
+pub async fn probe(provider: &str, tenant: &str) -> Result<()> {
+    let (url, body) = match provider {
+        "mistral" => (
+            "https://api.mistral.ai/v1/conversations",
+            json!({"model": "ministral-3b-2512", "inputs": "ping", "store": false,
+                   "completion_args": {"max_tokens": 1, "temperature": 0}}),
+        ),
+        "mistral-vibe" => (
+            "https://api.mistral.ai/v1/chat/completions",
+            json!({"model": "mistral-vibe-cli-latest", "max_tokens": 1, "temperature": 0,
+                   "messages": [{"role": "user", "content": "ping"}]}),
+        ),
+        _ => bail!("{provider}: no Mistral door to probe"),
+    };
+    with_repo!(conn, repo);
+    let credential = repo
+        .all_credentials(provider)
+        .await?
+        .into_iter()
+        .find(|c| c.tenant == tenant)
+        .ok_or_else(|| anyhow!("{provider} holds no key for {tenant}"))?;
+    let key = credential
+        .api_key()
+        .ok_or_else(|| anyhow!("{} carries no API key", credential.fingerprint))?;
+    let status = reqwest::Client::new()
+        .post(url)
+        .bearer_auth(key)
+        .json(&body)
+        .timeout(std::time::Duration::from_secs(30))
+        .send()
+        .await?
+        .status()
+        .as_u16();
+    if status == 402 {
+        repo.disable_credential(&credential.fingerprint, None, 402, "probe")
+            .await?;
+    }
+    println!("{status}");
+    Ok(())
+}
+
 /// Stands for "until enabled by hand": a date every reader already compares.
 fn until_enabled_instant() -> DateTime<Utc> {
     DateTime::<Utc>::from_naive_utc_and_offset(

@@ -23,6 +23,7 @@ pub enum LinkType {
     AppelDe,
     PourvoiContre,
     RenvoiApresCassation,
+    RequeteCedhContre,
 }
 
 impl LinkType {
@@ -32,6 +33,7 @@ impl LinkType {
             LinkType::AppelDe => "APPEL_DE",
             LinkType::PourvoiContre => "POURVOI_CONTRE",
             LinkType::RenvoiApresCassation => "RENVOI_APRES_CASSATION",
+            LinkType::RequeteCedhContre => "REQUETE_CEDH_CONTRE",
         }
     }
 }
@@ -77,8 +79,10 @@ impl ChronoSnapshot {
     ) -> Self {
         let mut by_type_city: HashMap<(String, String), Option<String>> = HashMap::new();
         for (code, jt, city) in rows {
-            if !matches!(jt.as_str(), "CA" | "TJ" | "TCOM" | "TA" | "CAA" | "CPH")
-                || closed.contains(&code)
+            if !matches!(
+                jt.as_str(),
+                "CA" | "TJ" | "TCOM" | "TA" | "CAA" | "CPH" | "ASSISES"
+            ) || closed.contains(&code)
             {
                 continue;
             }
@@ -197,6 +201,17 @@ pub fn prior_decision_refs(
             refs
         }
         Some("CAA") | Some("CE") => from_admin_text(d, snap).into_iter().collect(),
+        Some("CEDH") => d
+            .date_lecture
+            .as_deref()
+            .and_then(|date| crate::cedh::CedhFacts::read(&d.texte_integral_clean, date))
+            .and_then(|facts| facts.address(snap))
+            .map(|address| PriorRef {
+                link_type: LinkType::RequeteCedhContre,
+                address,
+            })
+            .into_iter()
+            .collect(),
         _ => Vec::new(),
     }
 }
@@ -418,13 +433,23 @@ pub fn attacked_text_spans(
 /// moyens de cassation. Groupe 1 = contenu, validé par [`RE_CITY_DATE`].
 static RE_ATTACKED_PAREN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\b(?:arr[êe]ts?|jugements?|ordonnances?|d[ée]cisions?)\s+attaqu[ée]e?s?\s*\(\s*([^)]{2,80}?)\s*\)",
+        r"(?i)\b(?:arr[êe]ts?|jugements?|ordonnances?|d[ée]cisions?)\s+(?:de\s+r[ée]f[ée]r[ée]\s+|(?:partiellement\s+)?(?:confirmati|infirmati)(?:fs?|ves?)\s+)?attaqu[ée]e?s?\s*\(\s*([^)]{2,120}?)\s*\)",
     )
     .unwrap()
 });
 /// Contenu de la parenthèse attaquée : « <Ville>, <date> ».
 static RE_CITY_DATE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)^([\p{L}'’ \-]{2,40}?)\s*,\s*(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})$").unwrap()
+});
+static RE_DAY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})").unwrap());
+/// « Versailles, 11e chambre, 21 mars 1984, n° 2 »: label (1), day (2-4), the other days when
+/// several arrêts are attacked (5).
+static RE_PAREN_COURT_DATE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^([\p{L}'’ \-]{2,90}?)(?:\s*,\s*(?:[^,()]*\bchambre\b[^,()]*|section\s+[\p{L}\d]+|si[ée]geant\s+[àa]\s+[\p{L}'’ \-]+|statuant\s+[^,()]+|d[ée]sign[ée]e?\s+[^,()]+|audience\s+[^,()]+|n\s*[°o]\s*[^,()]+))*\s*,?\s*(?:le\s+)?(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})((?:\s*(?:,|et|-)\s*(?:le\s+)?(?:\d{1,2}|1er)\s+[a-zà-ÿ]+\s+\d{4})*)(?:\s*,?\s*(?:rectifi[ée]e?s?\s+le\s+(?:\d{1,2}|1er)\s+[a-zà-ÿ]+\s+\d{4}|(?:n\s*[°o]\s*RG|n\s*[°o]?|RG)\s*:?\s*\d[^()]*))?$",
+    )
+    .unwrap()
 });
 /// « l'arrêt rendu le 22 août 2024 par la cour d'appel de Paris » — l'en-tête
 /// de pourvoi. Le span court du nom de décision à la ville (rognée en aval).
@@ -442,7 +467,16 @@ static RE_ATTACKED_RENDU: LazyLock<Regex> = LazyLock::new(|| {
 /// la clé TA).
 static RE_PRIOR_ADMIN: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\bpar\s+(?:un|une|deux|trois|quatre)?\s*(?:jugements?|ordonnances?|arr[êe]ts?)\s+n[°ºo]?\s*s?\s*([0-9][0-9A-Za-z]{2,14})(?:\s*(?:,|et)\s*n[°ºo]?\s*s?\s*[0-9][0-9A-Za-z]{2,14})*\s+(?:du|en\s+date\s+du)\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})\s*,\s*l[ea]\s+(?:[\p{L}'’ \-]{0,60}?\b(?:du|de\s+la)\s+)?((?:tribunal\s+administratif|cour\s+administrative\s+d[’']appel)\s+(?:de\s+la\s+|de\s+|d[’'])[\p{L}][\p{L}'’ \-]{1,40}?)\s+(?:a\b|ont\b|n[’']a|s[’']est|statuant)",
+        r"(?i)\bpar\s+(?:un|une|deux|trois|quatre)?\s*(?:jugements?|ordonnances?|arr[êe]ts?)\s+n[°ºo]?\s*s?\s*([0-9][0-9A-Za-z]{2,14})(?:[\-/][0-9A-Za-z]{1,14})*(?:\s*(?:,|et)\s*(?:n[°ºo]?\s*s?\s*)?[0-9][0-9A-Za-z]{2,14}(?:[\-/][0-9A-Za-z]{1,14})*)*\s+(?:du|en\s+date\s+du)\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})\s*,?\s*l[ea]\s+(?:[\p{L}\d'’ \-]{0,60}?\b(?:du|de\s+la)\s+)?((?:tribunal\s+administratif|cour\s+administrative\s+d[’']appel)\s+(?:de\s+la\s+|de\s+|d[’'])[\p{L}][\p{L}'’ \-]{1,40}?)\s+(?:a\b|ont\b|n[’']a|s[’']est|statuant)",
+    )
+    .unwrap()
+});
+
+/// A requête's visa, « d'annuler les articles 2 et 3 de l'arrêt du 2 février 2005 par lesquels »,
+/// « annule le jugement du tribunal administratif de Bordeaux en date du 21 février 1985 ».
+static RE_VISA_ADMIN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)\b(?:(?:annul(?:er|ent|e)|r[ée]form(?:er|ent|e))\s+(?:(?:l[’']|les\s+)articles?\s+(?:1er|\d+)(?:\s*(?:,|à|et)\s*(?:1er|\d+))*\s+(?:du\s+|de\s+l[’']|de\s+la\s+))?(?:l[’']|le\s+|la\s+|une?\s+)?|(?P<noun>annulation|r[ée]formation)\s+(?:du\s+|de\s+l[’']|de\s+la\s+))(?:jugements?|arr[êe]ts?|ordonnances?)\s*,?\s+(?:(?:n\s*[°ºo]?s?\s*)?(?P<number>[0-9][0-9A-Za-z/.\-]{2,})(?:\s*(?:,|et)\s*(?:n[°ºo]s?\s*)?[0-9][0-9A-Za-z/.\-]{2,14})*\s*,?\s+)?(?:(?:du|de\s+la)\s+(?P<court_first>(?:tribunal\s+administratif|cour\s+administrative\s+d[’']appel)\s+(?:de\s+la\s+|de\s+|d[’'])[\p{L}][\p{L}'’\-]*(?:\s+[\p{L}'’\-]+){0,3}?)\s*,?\s+(?:en\s+date\s+)?du\s+(?P<day_after>\d{1,2}|1er)\s+(?P<month_after>[a-zà-ÿ]+)\s+(?P<year_after>\d{4})|(?:du|en\s+date\s+du)\s+(?P<day>\d{1,2}|1er)\s+(?P<month>[a-zà-ÿ]+)\s+(?P<year>\d{4})\s*,?\s+(?:par\s+lequel|par\s+laquelle|par\s+lesquels|par\s+lesquelles|du|de\s+la)\s+(?:[^,;.]{0,90}?\b(?:du|de\s+la|le|la)\s+)?(?P<court>(?:tribunal\s+administratif|cour\s+administrative\s+d[’']appel)\s+(?:de\s+la\s+|de\s+|d[’'])[\p{L}][\p{L}'’\-]*(?:\s+[\p{L}'’\-]+){0,3}))",
     )
     .unwrap()
 });
@@ -455,33 +489,124 @@ fn from_admin_text(d: &Decision, snap: &ChronoSnapshot) -> Option<PriorRef> {
     let header_end = text.char_indices().nth(8000).map_or(text.len(), |(i, _)| i);
     let header = &text[..header_end];
 
-    let mut best: Option<(String, PriorRef)> = None; // (date ISO, lien) — max date
-    for cap in RE_PRIOR_ADMIN.captures_iter(header) {
-        let date = match parse_french_date(&cap[2], &cap[3], &cap[4]) {
-            Some(iso) => iso,
-            None => continue,
-        };
+    let ce = d.jurisdiction_type.as_deref() == Some("CE");
+    let pourvoi = ce && header_has_pourvoi(header);
+    let procedure = RE_PRIOR_ADMIN.captures_iter(header).filter_map(|cap| {
+        let date = parse_french_date(&cap[2], &cap[3], &cap[4])?;
         // The court comes from the gazetteer or does not come at all; an
         // address without one still designates by docket and date.
         let court = court_from_label(&cap[5], snap).unwrap_or_default();
         let address = CaseAddress::new(&court, &cap[1], &date);
-        if address.docket.is_none() {
-            continue;
+        address.docket.is_some().then_some(address)
+    });
+    let visa = RE_VISA_ADMIN.captures_iter(header).filter_map(|cap| {
+        if cap.name("noun").is_some() && recites_another_step(&header[..cap.get(0)?.start()]) {
+            return None;
         }
-        let link_type = match d.jurisdiction_type.as_deref() {
-            Some("CE") if header_has_pourvoi(header) => LinkType::PourvoiContre,
-            _ => LinkType::AppelDe,
+        let part = |name: &str| cap.name(name).map(|m| m.as_str());
+        let (day, month, year, court) = match part("court_first") {
+            Some(court) => (
+                part("day_after")?,
+                part("month_after")?,
+                part("year_after")?,
+                court,
+            ),
+            None => (part("day")?, part("month")?, part("year")?, part("court")?),
         };
-        let candidate = (date.clone(), PriorRef { link_type, address });
-        if best.as_ref().is_none_or(|(b, _)| *b <= date) {
-            best = Some(candidate);
+        let date = parse_french_date(day, month, year)?;
+        let court = court_from_label(court, snap)?;
+        // Joined numbers, or a section after the slash, keep the first docket; a run
+        // with no such head past this length is no single docket.
+        let number = cap.name("number").map_or("", |m| m.as_str());
+        let head = number.split(['-', '/']).next().unwrap_or(number);
+        let number = if head.len() >= 5 {
+            head
+        } else if number.len() <= 15 {
+            number
+        } else {
+            ""
+        };
+        Some(CaseAddress::new(&court, number, &date))
+    });
+    // The latest date is the decision attacked; the procedure section, which
+    // numbers it, wins a tie, then the first visa that numbers it.
+    let latest = procedure.fold(None, |best: Option<CaseAddress>, a| match best {
+        Some(b) if b.date > a.date => Some(b),
+        _ => Some(a),
+    });
+    visa.fold(latest, |best, a| match best {
+        Some(b)
+            if b.date > a.date
+                || b.date == a.date && (b.docket.is_some() || a.docket.is_none()) =>
+        {
+            Some(b)
         }
-    }
-    best.map(|(_, r)| r)
+        _ => Some(a),
+    })
+    .map(|address| {
+        // The Conseil d'État reviews a cour administrative d'appel's arrêt only in cassation, and a
+        // tribunal's judgment rendered before the cours opened in 1989 on appeal, whatever the visa says.
+        let reviews = |prefix: &str| {
+            address
+                .court
+                .as_deref()
+                .is_some_and(|c| c.starts_with(prefix))
+        };
+        let before_caa = address
+            .date
+            .as_deref()
+            .is_some_and(|day| day < "1989-01-01");
+        let link_type = if ce && reviews("caa_") || pourvoi && !(before_caa && reviews("ta_")) {
+            LinkType::PourvoiContre
+        } else {
+            LinkType::AppelDe
+        };
+        PriorRef { link_type, address }
+    })
 }
 
+/// « par lequel la cour a rejeté sa requête tendant à l'annulation du jugement » names the
+/// step before the one under review: the clause back to its « ; », « Vu » or full stop is read.
+fn recites_another_step(before: &str) -> bool {
+    let from = before.char_indices().rev().nth(300).map_or(0, |(i, _)| i);
+    let window = &before[from..];
+    let sentence = RE_SENTENCE_END.find_iter(window).last().map(|m| m.end());
+    let clause = [
+        window.rfind(';'),
+        window.rfind("Vu "),
+        window.rfind("VU "),
+        sentence,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .map_or(window, |i| &window[i..]);
+    RE_RECITAL.is_match(clause)
+}
+
+/// « … a rejeté sa demande. La société » and not « M. X »: a sentence ends after a
+/// lowercase letter or a digit.
+static RE_SENTENCE_END: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[\p{Ll}\d)]\.\s+\p{Lu}").unwrap());
+
+static RE_RECITAL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\bpar\s+(?:lequel|laquelle|lesquels|lesquelles)\b|\b(?:a|ont|avait|avaient)\s+(?:rejet|annul|sursis|donn|statu|renvoy)|\b(?:rejetant|annulant|tendai(?:t|ent))\b|rectifi|avant\s+de\s+statuer|[àa]\s+l[’']appui\s+d").unwrap()
+});
+
+/// The noun or « se pourvoit », never « les sièges à pourvoir » nor « un délai pour se pourvoir ».
 fn header_has_pourvoi(header: &str) -> bool {
-    lj_fold::fold_chars(header).contains("pourvoi")
+    let folded = lj_fold::fold_chars(header);
+    folded.match_indices("pourvoi").any(|(i, m)| {
+        let rest = &folded[i + m.len()..];
+        let word = rest
+            .find(|c: char| !c.is_alphanumeric())
+            .map_or(rest, |end| &rest[..end]);
+        match word {
+            "" | "s" => true,
+            "t" | "ent" => folded[..i].ends_with("se "),
+            _ => false,
+        }
+    })
 }
 
 /// Étiquettes qui ouvrent la zone où la cour nomme la décision dont elle est
@@ -610,25 +735,51 @@ fn from_deferee_text(d: &Decision, snap: &ChronoSnapshot) -> Option<PriorRef> {
     })
 }
 
-/// « a formé le pourvoi n° G 22-16.931 contre l'arrêt rendu le 5 avril 2022 par
-/// la cour d'appel de Nîmes (chambre sociale) », forme civile lue depuis l'ancre
-/// du scan. Groupes : jour, mois, année, ville.
+/// « contre l'arrêt rendu le 5 avril 2022 par la cour d'appel de Nîmes », the civil form,
+/// which a tribunal's judgment and a president's order share. Groups: day, month, year, court.
 static RE_POURVOI_RENDU: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?is)^(?:contre\s+(?:l[’']|un\s+|deux\s+)|en\s+cassation\s+d[’']un\s+)arr[êe]ts?\s+rendus?\s+le\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})\s+par\s+la\s+cour\s+d[’']appel\s+(?:de\s+la\s+|de\s+|d[’']|du\s+)((?:[\p{L}'’\-]+)(?: [\p{L}'’\-]+){0,3})",
+        r"(?is)^(?:contre\s*:?\s*(?:1\s*°?\s*\)?\s*)?(?:l[’']|le\s+|la\s+|un\s+|une\s+|deux\s+)|en\s+cassation\s+d[’']une?\s+)(?:arr[êe]ts?|jugements?|ordonnances?|d[ée]cisions?)(?:\s+de\s+r[ée]f[ée]r[ée])?(?:\s*\(?\s*(?:n\s*[°o]\s*(?:rg\s*)?|rg\s*(?:n\s*[°o]\s*)?):?\s*[0-9][0-9A-Za-z/.\-]{2,15}\)?)?\s*,?\s+rendue?s?\s+le\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})\s*,?\s+par\s+(?:le|la)\s+(?:(?:premier\s+)?pr[ée]sident\s+(?:de\s+la\s+|du\s+)|chambre\s+[\p{L}' ]{0,40}?\s+de\s+la\s+)?((?:cour\s+d[’']appel|tribunal|conseil\s+de\s+prud[’']hommes|juge)[^,(;.]{0,80})",
     )
     .unwrap()
 });
 
-/// « contre l'arrêt de la cour d'appel de PARIS, chambre 5-13, en date du
-/// 3 mars 2021 », forme criminelle : la ville précède la date.
-/// Groupes : ville, jour, mois, année.
+/// « contre l'arrêt de la cour d'appel de PARIS, chambre 5-13, en date du 3 mars 2021 », the
+/// criminal form: the court precedes the date. Groups: court, city, day, month, year.
 static RE_POURVOI_ARRET_DE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?is)^(?:contre\s+(?:l[’']|un\s+|deux\s+)|en\s+cassation\s+d[’']un\s+)arr[êe]ts?\s+de\s+la\s+cour\s+d[’']appel\s+(?:de\s+la\s+|de\s+|d[’']|du\s+)((?:[\p{L}'’\-]+)(?: [\p{L}'’\-]+){0,3}).{0,120}?(?:en\s+date\s+du|du|le)\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})",
+        r"(?is)^(?:contre\s*:?\s*(?:1\s*°?\s*\)?\s*)?(?:l[’']|le\s+|un\s+|une\s+|deux\s+)|en\s+cassation\s+d[’']une?\s+)(?:arr[êe]ts?|ordonnances?|jugements?)(?:\s+n\s*[°o]?\s*\d+)?\s+(?:du\s+pr[ée]sident\s+)?(?:de\s+la\s+|du\s+)(?:(?:chambre\s+(?:de\s+l[’']instruction|d[’']accusation|des\s+appels\s+correctionnels|correctionnelle)|\d+(?:[èe]me|e)\s+chambre(?:\s+d[’'](?:accusation|instruction)|\s+[\p{L}]+)?)\s+de\s+la\s+)?(cour\s+d[’']appel|cour\s+d[’']assises|tribunal\s+(?:de\s+grande\s+instance|d[’']instance|judiciaire|de\s+commerce)|conseil\s+de\s+prud[’']hommes)(?:\s+sp[ée]ciale|\s+des\s+mineurs)?\s+(?:de\s+la\s+|de\s+l[’']|des\s+|de\s+|d[’']|du\s+)((?:[\p{L}'’\-]+)(?: [\p{L}'’\-]+){0,3}).{0,120}?(?:en\s+date\s+du|en\s+date|du|le)\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})",
     )
     .unwrap()
 });
+
+/// « contre l'arrêt de la chambre de l'instruction de ladite cour, en date du 27 janvier 2015 »,
+/// the court named just before. Groups: day, month, year.
+static RE_POURVOI_LADITE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?is)^contre\s+l[’'](?:arr[êe]t|ordonnance)(?:\s+n\s*[°o]?\s*\d+)?\s+(?:du\s+pr[ée]sident\s+)?(?:de\s+la\s+chambre\s+(?:de\s+l[’']instruction|d[’']accusation|des\s+appels\s+correctionnels|correctionnelle)\s+)?de\s+ladite\s+cour(?:\s+d[’']appel)?(?:\s*,.{0,80}?\s|\s+)(?:en\s+date\s+du|du)\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})",
+    )
+    .unwrap()
+});
+/// The last cour d'appel a preamble names, the antecedent of « ladite cour ».
+static RE_LEAD_COUR_APPEL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)cour\s+d[’']appel\s+(?:de\s+la\s+|de\s+l[’']|des\s+|de\s+|d[’']|du\s+)((?:[\p{L}'’\-]+)(?: [\p{L}'’\-]+){0,3})",
+    )
+    .unwrap()
+});
+
+/// « CASSE ET ANNULE … l'arrêt rendu le 23 mars 1999, entre les parties, par la cour d'appel ».
+/// Groups: noun, day, month, year, court.
+static RE_DISPOSITIF_CASSE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r"(?i)^casse\s+et\s+annule\b[^;]{0,400}?(l[’']arr[êe]t|le\s+jugement|l[’']ordonnance|la\s+d[ée]cision|la\s+sentence)(?:\s+(?:n\s*[°o]\s*)?(?:RG\s*:?\s*)?[0-9][0-9A-Za-z/.\-]{1,15})?\s+rendue?\s*,?\s*(?:entre\s+les\s+parties\s*,?\s*)?le\s+(\d{1,2}|1er)\s+([a-zà-ÿ]+)\s+(\d{4})\s*,?\s*(?:entre\s+les\s+parties\s*,?\s*)?par\s+(?:le|la|l[’'])\s*(?:chambre\s+[\p{L}' ]{0,40}?\s+de\s+la\s+)?((?:(?:premier\s+)?pr[ée]sident\s+(?:de\s+la\s+|du\s+))?(?:cour\s+d[’']appel|tribunal|conseil\s+de\s+prud[’']hommes|juge)[^,(;.]{0,80})",
+    )
+    .unwrap()
+});
+
+static RE_CASSE_ET_ANNULE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\bcasse\s+et\s+annule\b").unwrap());
 
 /// CA judgment a pourvoi attacks, read in the header when no `contested` names it. The text
 /// names the court and the date, seldom the RG: the key falls in the `ca-parties|` family,
@@ -638,43 +789,151 @@ fn from_pourvoi_text(
     snap: &ChronoSnapshot,
     scan: &crate::scan::DocScan,
 ) -> Option<PriorRef> {
-    if d.jurisdiction_type.as_deref() != Some("CC") || scan_lacks(scan, "pourvoi") {
+    if d.jurisdiction_type.as_deref() != Some("CC") {
         return None;
     }
-    let address = scan.contre_windows().into_iter().find_map(|w| {
-        RE_POURVOI_RENDU
-            .captures(&w)
-            .and_then(|c| ca_party_key(snap, &c[4], &c[1], &c[2], &c[3]))
-            .or_else(|| {
-                RE_POURVOI_ARRET_DE
-                    .captures(&w)
-                    .and_then(|c| ca_party_key(snap, &c[1], &c[2], &c[3], &c[4]))
-            })
-    })?;
+    // The first window naming a decision settles it, even unresolved: a later one names another step.
+    let windows = if scan_lacks(scan, "pourvoi") {
+        Vec::new()
+    } else {
+        scan.contre_windows()
+    };
+    let named = windows.iter().enumerate().find_map(|(i, w)| {
+        if let Some(c) = RE_POURVOI_LADITE.captures(w) {
+            let lead = scan.contre_lead(i, 300)?;
+            return Some(
+                RE_LEAD_COUR_APPEL
+                    .captures_iter(&lead)
+                    .last()
+                    .and_then(|city| {
+                        court_party_key(snap, "cour d'appel", &city[1], &c[1], &c[2], &c[3])
+                    }),
+            );
+        }
+        if let Some(c) = RE_POURVOI_RENDU.captures(w) {
+            let date = parse_french_date(&c[1], &c[2], &c[3]);
+            let court = court_from_label(&c[4], snap);
+            return Some(
+                date.zip(court)
+                    .map(|(date, court)| CaseAddress::court_and_date(&court, &date)),
+            );
+        }
+        RE_POURVOI_ARRET_DE
+            .captures(w)
+            .map(|c| court_party_key(snap, &c[1], &c[2], &c[3], &c[4], &c[5]))
+    });
+    let address = named
+        .flatten()
+        .or_else(|| attacked_paren_key(d, snap, scan))
+        .or_else(|| dispositif_key(d, snap, scan))?;
     Some(PriorRef {
         link_type: LinkType::PourvoiContre,
         address,
     })
 }
 
-/// The city capture can overrun onto the following words ("Nîmes chambre
-/// sociale"): trimmed word by word from the right until the gazetteer knows it.
-fn ca_party_key(
+/// The decision a cassation quashes, named in the dispositif, the last « casse et annule »
+/// of the text: a recital quoting an earlier cassation comes before it.
+fn dispositif_key(
+    d: &Decision,
     snap: &ChronoSnapshot,
+    scan: &crate::scan::DocScan,
+) -> Option<CaseAddress> {
+    if scan_lacks(scan, "casse et annule") {
+        return None;
+    }
+    let text = &d.texte_integral_clean;
+    let last = RE_CASSE_ET_ANNULE.find_iter(text).last()?;
+    let c = RE_DISPOSITIF_CASSE.captures(&text[last.start()..])?;
+    let date = parse_french_date(&c[2], &c[3], &c[4])?;
+    if d.date_lecture
+        .as_deref()
+        .is_some_and(|lue| date.as_str() >= lue)
+    {
+        return None;
+    }
+    let jugement = lj_fold::fold_chars(&c[1]).contains("jugement");
+    let court = paren_court(&c[5], jugement, snap)?;
+    Some(CaseAddress::court_and_date(&court, &date))
+}
+
+/// « arrêt attaqué (Angers, 21 septembre 2004) »: a bare city names a cour d'appel.
+fn attacked_paren_key(
+    d: &Decision,
+    snap: &ChronoSnapshot,
+    scan: &crate::scan::DocScan,
+) -> Option<CaseAddress> {
+    if scan_lacks(scan, "attaque") {
+        return None;
+    }
+    RE_ATTACKED_PAREN
+        .captures_iter(&d.texte_integral_clean)
+        .find_map(|cap| {
+            let c = RE_PAREN_COURT_DATE.captures(cap.get(1)?.as_str())?;
+            // Several arrêts attacked: the registry names the latest.
+            let date = RE_DAY
+                .captures_iter(&c[5])
+                .filter_map(|o| parse_french_date(&o[1], &o[2], &o[3]))
+                .chain(parse_french_date(&c[2], &c[3], &c[4]))
+                .max()?;
+            if d.date_lecture
+                .as_deref()
+                .is_some_and(|lue| date.as_str() >= lue)
+            {
+                return None;
+            }
+            let jugement = lj_fold::fold_chars(&cap[0]).starts_with("jugement");
+            let court = paren_court(&c[1], jugement, snap)?;
+            Some(CaseAddress::court_and_date(&court, &date))
+        })
+}
+
+/// An officer heading the label stands for the court named after it, « premier président de la
+/// cour d'appel de Reims »; a bare city after a premier président names a cour d'appel.
+fn paren_court(label: &str, jugement: bool, snap: &ChronoSnapshot) -> Option<String> {
+    const OFFICERS: &[&str] = &[
+        "premier president ",
+        "president ",
+        "juge commissaire ",
+        "juge de l execution ",
+        "chambre des criees ",
+    ];
+    let label =
+        normalize_component(label).replacen("conseil des prud hommes", "conseil de prud hommes", 1);
+    if let Some(court) = court_from_label(&label, snap) {
+        return Some(court);
+    }
+    let officer = OFFICERS.iter().find(|o| label.starts_with(**o));
+    let rest = officer.map_or(label.as_str(), |o| strip_articles(&label[o.len()..]));
+    if officer.is_some() {
+        if let Some(court) = court_from_label(rest, snap) {
+            return Some(court);
+        }
+    }
+    let bare_city_ca = !jugement && officer.is_none_or(|o| *o == "premier president ");
+    bare_city_ca
+        .then(|| snap.code("CA", rest).map(str::to_string))
+        .flatten()
+}
+
+/// The city capture can overrun onto the following words ("Nîmes chambre
+/// sociale"): the gazetteer keeps its longest known prefix.
+fn court_party_key(
+    snap: &ChronoSnapshot,
+    court: &str,
     raw_city: &str,
     day: &str,
     month: &str,
     year: &str,
 ) -> Option<CaseAddress> {
     let date = parse_french_date(day, month, year)?;
-    let mut end = raw_city.len();
-    loop {
-        let trimmed = raw_city[..end].trim_end();
-        if let Some(code) = snap.code("CA", &normalize_component(trimmed)) {
-            return Some(CaseAddress::court_and_date(code, &date));
-        }
-        end = trimmed.rfind(char::is_whitespace)?;
-    }
+    let code = if lj_fold::fold_chars(court).contains("assises") {
+        snap.city_prefix_code("ASSISES", &normalize_component(raw_city))?
+            .to_string()
+    } else {
+        court_from_label(&format!("{court} de {raw_city}"), snap)?
+    };
+    Some(CaseAddress::court_and_date(&code, &date))
 }
 
 /// « Décision déférée à la Cour : sur renvoi après cassation - arrêt de la Cour
@@ -910,6 +1169,207 @@ mod tests {
         );
         let refs = liens(&d, &snap());
         assert_eq!(cible(&refs[0]), "ta_poitiers|2202850|2023-03-16");
+        let listed = decision(
+            "CAA",
+            "Par un jugement nos 1608034, 1702440, 1706467 du 25 mai 2018, le tribunal \
+             administratif de Lyon a annulé cette décision.",
+        );
+        assert_eq!(
+            cible(&liens(&listed, &snap())[0]),
+            "ta_lyon|1608034|2018-05-25"
+        );
+        let hyphen = decision(
+            "CAA",
+            "Par un jugement n° 1200374-1204574 du 23 septembre 2014, le tribunal \
+             administratif de Marseille a rejeté ses demandes.",
+        );
+        assert_eq!(
+            cible(&liens(&hyphen, &snap())[0]),
+            "ta_marseille|1200374|2014-09-23"
+        );
+    }
+
+    #[test]
+    fn caa_procedure_names_a_numbered_chamber_of_the_tribunal() {
+        let d = decision(
+            "CAA",
+            "Par une ordonnance n° 2518455/3 du 1er avril 2026 la présidente de la 3ème \
+             chambre du tribunal administratif de Poitiers a rejeté sa demande.",
+        );
+        assert_eq!(
+            cible(&liens(&d, &snap())[0]),
+            "ta_poitiers|2518455|2026-04-01"
+        );
+    }
+
+    #[test]
+    fn admin_visa_names_the_judgment_the_requete_asks_to_annul() {
+        let d = decision(
+            "CAA",
+            "Vu la requête, enregistrée le 3 février 2014, présentée pour M. C ; M. C \
+             demande à la Cour : 1°) d'annuler le jugement n° 1303160 du 15 octobre 2013 par \
+             lequel le conseiller délégué par le président du tribunal administratif de \
+             Marseille a rejeté sa demande tendant à l'annulation de l'arrêté du 2 mai 2013 ;",
+        );
+        assert_eq!(
+            cible(&liens(&d, &snap())[0]),
+            "ta_marseille|1303160|2013-10-15"
+        );
+        let old = decision(
+            "CE",
+            "Vu la requête présentée par M. X ; M. X demande que le Conseil d'Etat : 1°) \
+             annule le jugement du 4 mars 1993 du tribunal administratif de Lyon, en tant \
+             qu'il a rejeté sa demande ;",
+        );
+        let refs = liens(&old, &snap());
+        assert_eq!(refs[0].link_type, LinkType::AppelDe);
+        assert_eq!(cible(&refs[0]), "ta_lyon||1993-03-04");
+        let recital = decision(
+            "CE",
+            "Vu le pourvoi ; le ministre demande au Conseil d'Etat d'annuler les articles 1er \
+             à 3 de l'arrêt de la cour administrative d'appel de Lyon, qui a annulé le \
+             jugement du 27 juin 2006 du tribunal administratif de Grenoble ;",
+        );
+        assert!(liens(&recital, &snap()).is_empty());
+        let noun = decision(
+            "CE",
+            "Requête de M. X... tendant à l'annulation du jugement du 3 avril 1968, par lequel \
+             le tribunal administratif de Lyon a rejeté sa demande en décharge ;",
+        );
+        assert_eq!(cible(&liens(&noun, &snap())[0]), "ta_lyon||1968-04-03");
+        let article = decision(
+            "CAA",
+            "M. X demande à la Cour : 1 ) d'annuler l'article 1er du jugement n 92214 en date \
+             du 25 octobre 1994 par lequel le Tribunal administratif de Marseille a rejeté sa \
+             demande ;",
+        );
+        assert_eq!(
+            cible(&liens(&article, &snap())[0]),
+            "ta_marseille|92214|1994-10-25"
+        );
+        let joined = decision(
+            "CAA",
+            "M. X demande à la Cour : 1°) d'annuler le jugement \
+             n°9903584-9903585-9904085-0100743 en date du 25 octobre 2001, par lequel le \
+             Tribunal administratif de Poitiers a rejeté ses demandes ;",
+        );
+        assert_eq!(
+            cible(&liens(&joined, &snap())[0]),
+            "ta_poitiers|9903584|2001-10-25"
+        );
+        let articles = decision(
+            "CE",
+            "le ministre demande au Conseil d'Etat : 1°) d'annuler les articles 2 et 3 de \
+             l'arrêt du 2 février 2005 par lesquels la cour administrative d'appel de Lyon, \
+             faisant droit à l'appel de M. X, a déchargé celui-ci ;",
+        );
+        let refs = liens(&articles, &snap());
+        assert_eq!(refs[0].link_type, LinkType::PourvoiContre);
+        assert_eq!(cible(&refs[0]), "caa_lyon||2005-02-02");
+        let court_first = decision(
+            "CE",
+            "la commune demande que le Conseil d'Etat annule un jugement du tribunal \
+             administratif de Lyon, en date du 21 février 1985, par lequel ce tribunal a \
+             annulé l'arrêté du maire ;",
+        );
+        assert_eq!(
+            cible(&liens(&court_first, &snap())[0]),
+            "ta_lyon||1985-02-21"
+        );
+        let comma = decision(
+            "CE",
+            "M. X demande que le Conseil d'Etat : 1° annule le jugement, en date du 26 \
+             décembre 1979, par lequel le tribunal administratif de Marseille a rejeté sa \
+             demande ;",
+        );
+        assert_eq!(
+            cible(&liens(&comma, &snap())[0]),
+            "ta_marseille||1979-12-26"
+        );
+    }
+
+    #[test]
+    fn admin_visa_reads_the_annulation_asked_and_not_one_recited() {
+        let rectification = decision(
+            "CAA",
+            "M. X demande à la Cour la rectification pour erreur matérielle de l'arrêt n° \
+             02NC00085 en date du 24 février 2005 par lequel la Cour de céans a rejeté sa \
+             requête tendant à l'annulation du jugement en date du 22 novembre 2001 par lequel \
+             le Tribunal administratif de Lyon a rejeté ses demandes ;",
+        );
+        assert!(liens(&rectification, &snap()).is_empty());
+        let considerant = decision(
+            "CAA",
+            "Considérant que, par arrêt du 8 février 1995, la Cour a rejeté la demande de M. X \
+             tendant à l'annulation du jugement du 6 juin 1991 du Tribunal administratif de \
+             Lyon ;",
+        );
+        assert!(liens(&considerant, &snap()).is_empty());
+        let asked = decision(
+            "CE",
+            "Par un jugement du 22 octobre 2020, ce tribunal a rejeté sa demande. La société \
+             Pefil demande l'annulation de l'arrêt du 6 janvier 2023 par lequel la cour \
+             administrative d'appel de Lyon a rejeté son appel.",
+        );
+        assert_eq!(cible(&liens(&asked, &snap())[0]), "caa_lyon||2023-01-06");
+    }
+
+    #[test]
+    fn ce_review_of_a_caa_arret_is_a_pourvoi_whatever_its_visa_says() {
+        let d = decision(
+            "CE",
+            "Vu la requête sommaire, enregistrée le 10 juillet 1998 ; la société demande au \
+             Conseil d'Etat d'annuler l'arrêt du 12 mai 1998 par lequel la cour \
+             administrative d'appel de Lyon a rejeté sa requête tendant à l'annulation du \
+             jugement du 3 mars 1995 du tribunal administratif de Lyon ;",
+        );
+        let refs = liens(&d, &snap());
+        assert_eq!(refs[0].link_type, LinkType::PourvoiContre);
+        assert_eq!(cible(&refs[0]), "caa_lyon||1998-05-12");
+    }
+
+    #[test]
+    fn ce_review_of_a_tribunal_judgment_before_1989_is_an_appeal() {
+        let requete = |day: &str| {
+            format!(
+                "Vu la requête tendant à ce que le Conseil d'Etat annule le jugement en date du \
+                 {day} par lequel le tribunal administratif de Lyon a rejeté sa demande ; \
+                 Considérant que, par une décision postérieure à l'introduction du pourvoi, le \
+                 directeur des services fiscaux a prononcé le dégrèvement ;"
+            )
+        };
+        let refs = liens(&decision("CE", &requete("12 novembre 1985")), &snap());
+        assert_eq!(refs[0].link_type, LinkType::AppelDe);
+        assert_eq!(cible(&refs[0]), "ta_lyon||1985-11-12");
+
+        let refs = liens(&decision("CE", &requete("12 novembre 2015")), &snap());
+        assert_eq!(refs[0].link_type, LinkType::PourvoiContre);
+    }
+
+    #[test]
+    fn ce_reads_the_noun_pourvoi_and_not_the_verb() {
+        let requete = |cue: &str| {
+            format!(
+                "Vu la requête tendant à ce que le Conseil d'Etat annule le jugement du \
+                 25 novembre 2011 par lequel le tribunal administratif de Lyon a rejeté sa \
+                 protestation ; Considérant que {cue} ;"
+            )
+        };
+        for appeal in [
+            "le conseil municipal a été convoqué pour pourvoir aux sièges",
+            "il disposait d'un délai de deux mois pour se pourvoir",
+        ] {
+            let refs = liens(&decision("CE", &requete(appeal)), &snap());
+            assert_eq!(refs[0].link_type, LinkType::AppelDe, "{appeal}");
+            assert_eq!(cible(&refs[0]), "ta_lyon||2011-11-25");
+        }
+        for pourvoi in [
+            "les moyens des pourvois sont identiques",
+            "la commune se pourvoit en cassation contre ce jugement",
+        ] {
+            let refs = liens(&decision("CE", &requete(pourvoi)), &snap());
+            assert_eq!(refs[0].link_type, LinkType::PourvoiContre, "{pourvoi}");
+        }
     }
 
     #[test]
@@ -1046,6 +1506,183 @@ mod tests {
         assert_eq!(refs.len(), 1);
         assert_eq!(refs[0].link_type, LinkType::PourvoiContre);
         assert_eq!(cible(&refs[0]), "ca_aix_en_provence||2021-03-03");
+    }
+
+    #[test]
+    fn cc_pourvoi_reads_the_attacked_parenthesis_when_the_header_names_nothing() {
+        let header = "LA COUR DE CASSATION, CHAMBRE SOCIALE, a rendu l'arrêt suivant : \
+                      Sur le pourvoi formé par M. X... ; Attendu, selon ";
+        let read = |rest: &str| {
+            let mut d = decision("CC", &format!("{header}{rest}"));
+            d.date_lecture = Some("2022-06-01".into());
+            liens(&d, &snap()).iter().map(cible).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            read("l'arrêt attaqué (Nancy, 8 décembre 2020), que le salarié..."),
+            vec!["ca_nancy||2020-12-08"]
+        );
+        assert_eq!(
+            read("le jugement attaqué (tribunal judiciaire de Paris, 3 mai 2021), que..."),
+            vec!["tj_paris||2021-05-03"]
+        );
+        assert!(read("le jugement attaqué (Nancy, 3 mai 2021), que...").is_empty());
+        assert!(read("l'arrêt attaqué (Nancy, 8 décembre 2023), que...").is_empty());
+        assert_eq!(
+            read("l'arrêt confirmatif attaqué (Nancy, 11e chambre, le 8 décembre 2020, n° 19/01234), que..."),
+            vec!["ca_nancy||2020-12-08"]
+        );
+        assert_eq!(
+            read("les arrêts attaqués (Nancy, 2 février 2021 et 8 décembre 2020), que..."),
+            vec!["ca_nancy||2021-02-02"]
+        );
+        assert_eq!(
+            read("l'ordonnance attaquée (premier président Nancy, 8 décembre 2020), que..."),
+            vec!["ca_nancy||2020-12-08"]
+        );
+        assert_eq!(
+            read("l'ordonnance attaquée (juge-commissaire du tribunal de commerce de Paris, 3 mai 2021), que..."),
+            vec!["tcom_paris||2021-05-03"]
+        );
+        assert!(
+            read("l'ordonnance attaquée (juge-commissaire Nancy, 3 mai 2021), que...").is_empty()
+        );
+    }
+
+    #[test]
+    fn cc_cassation_names_the_quashed_decision_in_its_dispositif() {
+        let read = |text: &str| {
+            let mut d = decision("CC", text);
+            d.date_lecture = Some("2022-06-01".into());
+            liens(&d, &snap()).iter().map(cible).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            read(
+                "PAR CES MOTIFS : CASSE ET ANNULE, dans toutes ses dispositions, l'arrêt rendu le \
+                  8 décembre 2020, entre les parties, par la cour d'appel de Nancy ; remet..."
+            ),
+            vec!["ca_nancy||2020-12-08"]
+        );
+        assert_eq!(
+            read(
+                "CASSE ET ANNULE, mais seulement en ce qu'elle a ordonné la mesure, l'ordonnance \
+                  rendue le 3 mai 2021, entre les parties, par le président du tribunal \
+                  judiciaire de Paris ; remet..."
+            ),
+            vec!["tj_paris||2021-05-03"]
+        );
+        assert_eq!(
+            read(
+                "Attendu que la Cour de cassation a cassé et annulé l'arrêt rendu le 4 avril \
+                  2017, entre les parties, par la cour d'appel de Nancy ; PAR CES MOTIFS : CASSE \
+                  ET ANNULE, dans toutes ses dispositions, l'arrêt rendu le 8 décembre 2020, \
+                  entre les parties, par la cour d'appel d'Aix-en-Provence ; remet..."
+            ),
+            vec!["ca_aix_en_provence||2020-12-08"]
+        );
+    }
+
+    #[test]
+    fn cc_pourvoi_against_ladite_cour_reads_the_court_named_before() {
+        let d = decision(
+            "CC",
+            "LA COUR DE CASSATION, CHAMBRE CRIMINELLE, a rendu l'arrêt suivant : Statuant sur \
+             le pourvoi formé par : - le procureur général près la cour d'appel de Nancy, \
+             contre l'arrêt de la chambre de l'instruction de ladite cour, en date du \
+             27 janvier 2015, qui, dans l'information suivie contre M. X...",
+        );
+        let refs = liens(&d, &snap());
+        assert_eq!(refs.len(), 1);
+        assert_eq!(cible(&refs[0]), "ca_nancy||2015-01-27");
+    }
+
+    #[test]
+    fn cc_pourvoi_header_names_a_chamber_of_the_cour_d_appel() {
+        let read = |contre: &str| {
+            let d = decision(
+                "CC",
+                &format!("Statuant sur le pourvoi formé par M. Y... {contre}, qui a confirmé."),
+            );
+            liens(&d, &snap()).iter().map(cible).collect::<Vec<_>>()
+        };
+        for contre in [
+            "contre l'arrêt de la chambre de l'instruction de la cour d'appel de Nancy, \
+             en date du 24 avril 2002",
+            "contre l'arrêt de la chambre d'accusation de la cour d'appel de Nancy, \
+             du 24 avril 2002",
+            "contre l'ordonnance du président de la chambre de l'instruction de la cour \
+             d'appel de Nancy, en date du 24 avril 2002",
+            "contre l'arrêt de la 9ème chambre de la cour d'appel de Nancy, en date du \
+             24 avril 2002",
+            "contre l'arrêt n° 286 de la cour d'appel de Nancy, chambre correctionnelle, \
+             en date 24 avril 2002",
+            "contre l'arrêt de la 3ème chambre d'accusation de la cour d'appel de Nancy, \
+             en date du 24 avril 2002",
+            "contre :\n\n1 ) l'arrêt n° 154 de la chambre d'accusation de la cour d'appel de \
+             Nancy, en date du 24 avril 2002, qui a rejeté ; 2 ) l'arrêt de la même cour, en \
+             date du 3 juin 2002",
+        ] {
+            assert_eq!(read(contre), vec!["ca_nancy||2002-04-24"], "{contre}");
+        }
+        for contre in [
+            "contre le jugement du tribunal judiciaire de Paris, en date du 24 avril 2002",
+            "contre le jugement n° 158 du tribunal judiciaire de Paris du 24 avril 2002",
+        ] {
+            assert_eq!(read(contre), vec!["tj_paris||2002-04-24"], "{contre}");
+        }
+    }
+
+    #[test]
+    fn cc_pourvoi_header_names_a_cour_d_assises_by_its_departement() {
+        let snap = ChronoSnapshot::new(vec![(
+            "assises_seine_maritime".into(),
+            "ASSISES".into(),
+            "Seine-Maritime".into(),
+        )]);
+        let d = decision(
+            "CC",
+            "Statuant sur le pourvoi formé par M. Y... contre l'arrêt de la cour d'assises \
+             de la SEINE-MARITIME, en date du 13 novembre 1998, qui, pour meurtre, l'a \
+             condamné à quinze ans de réclusion criminelle.",
+        );
+        let refs = liens(&d, &snap);
+        assert_eq!(
+            refs.iter().map(cible).collect::<Vec<_>>(),
+            vec!["assises_seine_maritime||1998-11-13"]
+        );
+    }
+
+    #[test]
+    fn cc_pourvoi_civil_form_reads_any_court_and_what_sits_before_the_date() {
+        let read = |contre: &str| {
+            let d = decision(
+                "CC",
+                &format!("Mme X a formé le pourvoi n° G 22-16.931 {contre}, dans le litige."),
+            );
+            liens(&d, &snap()).iter().map(cible).collect::<Vec<_>>()
+        };
+        let cases = [
+            (
+                "contre le jugement rendu le 10 novembre 2020 par le tribunal judiciaire de Paris",
+                "tj_paris||2020-11-10",
+            ),
+            (
+                "contre l'ordonnance n° RG : 22/10938 rendue le 13 avril 2023 par le premier \
+                 président de la cour d'appel d'Aix-en-Provence (chambre 1-11)",
+                "ca_aix_en_provence||2023-04-13",
+            ),
+            (
+                "contre l'arrêt rendu le 8 mars 1982, par la cour d'appel de Nancy",
+                "ca_nancy||1982-03-08",
+            ),
+            (
+                "contre un arrêt rendu le 3 mai 2022 par la chambre spéciale des mineurs de \
+                 la cour d'appel de Nancy",
+                "ca_nancy||2022-05-03",
+            ),
+        ];
+        for (contre, want) in cases {
+            assert_eq!(read(contre), vec![want], "{contre}");
+        }
     }
 
     /// La métadonnée du greffe l'emporte : elle porte le RG, donc une clé qui se

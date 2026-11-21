@@ -2,8 +2,8 @@
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
   "name": "fr.librejustice/librejustice",
   "title": "LibreJustice",
-  "description": "Search French-language and European case law and French legal texts (codes, statutes, treaties).",
-  "version": "1.19.0",
+  "description": "Search French, European, Swiss, Belgian, Luxembourg, Dutch and African case law and legal texts.",
+  "version": "1.20.0",
   "websiteUrl": "https://librejustice.fr",
   "repository": {
     "url": "https://github.com/librejustice/librejustice",

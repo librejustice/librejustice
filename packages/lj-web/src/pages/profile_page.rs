@@ -13,8 +13,9 @@ use lj_dtos::{AccountSummary, LinkedIdentity};
 
 use super::login_page::auth_errors::translate_auth_error;
 use crate::components::client_only::ClientOnly;
-use crate::components::profile::{ApiKeysSettings, ThemeSettings};
+use crate::components::profile::ApiKeysSettings;
 use crate::components::ui::Skeleton;
+use crate::components::{prose, LINK};
 use crate::pages::decision_page::data::sendable;
 
 const CHAMP: &str = "rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] \
@@ -36,7 +37,7 @@ pub fn ProfilePage() -> impl IntoView {
     let compte = Resource::new_blocking(|| (), move |_| sendable(charger()));
 
     view! {
-        <Title text="Profil - LibreJustice" />
+        <Title text=crate::i18n::use_ui().profile.title />
         <Meta name="robots" content="noindex" />
         <Suspense fallback=|| {
             view! { <ProfileSkeleton /> }
@@ -73,39 +74,24 @@ async fn charger() -> Option<lj_dtos::AccountSummary> {
     }
 }
 
-/// Issue d'une action, lue dans la query au retour du 303.
-fn message_done(code: &str) -> &'static str {
-    match code {
-        "nom" => "Profil mis à jour.",
-        "google" => "Compte Google lié.",
-        "microsoft" => "Compte Microsoft lié.",
-        "deliaison" => "Connexion retirée.",
-        "email" => "Adresse e-mail mise à jour.",
-        _ => "C'est fait.",
-    }
-}
-
-fn message_sent(code: &str) -> &'static str {
-    match code {
-        "password" => "E-mail envoyé : ouvrez le lien qu'il contient pour choisir le mot de passe.",
-        "email_change" => {
-            "E-mail envoyé à votre adresse actuelle : confirmez-y la demande de changement."
-        }
-        _ => "E-mail envoyé.",
-    }
-}
-
 #[component]
 fn ProfileView(compte: AccountSummary) -> impl IntoView {
     let query = leptos_router::hooks::use_query_map();
+    let ui = &crate::i18n::use_ui().profile;
     let notice = move || {
         query.with(|q| {
             q.get("done")
-                .map(|c| message_done(&c))
-                .or_else(|| q.get("sent").map(|c| message_sent(&c)))
+                .map(|c| (ui.done)(&c))
+                .or_else(|| q.get("sent").map(|c| (ui.sent)(&c)))
         })
     };
-    let error = move || query.with(|q| q.get("error").map(|c| translate_auth_error(Some(&c))));
+    let account = &crate::i18n::use_ui().account;
+    let error = move || {
+        query.with(|q| {
+            q.get("error")
+                .map(|c| translate_auth_error(account, Some(&c)))
+        })
+    };
 
     let email = compte.email.clone().unwrap_or_else(|| "—".to_string());
     let nom = compte.display_name.clone().unwrap_or_default();
@@ -118,7 +104,7 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
                 class="font-sans text-2xl text-[var(--color-ink)]"
                 style="font-variation-settings: 'wght' 300"
             >
-                "Profil"
+                {ui.heading}
             </h1>
 
             {move || {
@@ -135,15 +121,15 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
             }}
 
             <section class="flex flex-col gap-4">
-                <h2 class=TITRE_SECTION>"Identité"</h2>
+                <h2 class=TITRE_SECTION>{ui.identity}</h2>
                 <div class="rounded-md border border-[var(--color-rule)] px-4 py-3">
-                    <p class=ETIQUETTE>"Adresse e-mail"</p>
+                    <p class=ETIQUETTE>{ui.email_address}</p>
                     <p class="mt-0.5 text-sm text-[var(--color-ink)]">{email}</p>
                 </div>
 
                 <form method="post" action="/internal/account/display-name" class="flex flex-col gap-3">
                     <label for="displayName" class=ETIQUETTE>
-                        "Nom affiché"
+                        {ui.display_name}
                     </label>
                     <input
                         id="displayName"
@@ -151,17 +137,17 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
                         type="text"
                         maxlength="80"
                         value=nom
-                        placeholder="Anonyme"
+                        placeholder=ui.anonymous
                         class=CHAMP
                     />
                     <button type="submit" class=BOUTON>
-                        "Enregistrer"
+                        {ui.save}
                     </button>
                 </form>
 
                 <form method="post" action="/internal/account/email-change" class="flex flex-col gap-3">
                     <label for="newEmail" class=ETIQUETTE>
-                        "Changer d'adresse e-mail : un lien de confirmation part vers l'adresse actuelle, puis vers la nouvelle"
+                        {ui.change_email}
                     </label>
                     <input
                         id="newEmail"
@@ -169,26 +155,17 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
                         type="email"
                         autocomplete="email"
                         required
-                        placeholder="nouvelle@adresse.fr"
+                        placeholder=ui.new_email_placeholder
                         class=CHAMP
                     />
                     <button type="submit" class=BOUTON>
-                        "Demander le changement"
+                        {ui.request_change}
                     </button>
                 </form>
             </section>
 
             <section class="flex flex-col gap-4">
-                <h2 class=TITRE_SECTION>"Apparence"</h2>
-                <ClientOnly fallback=|| {
-                    view! { <Skeleton class="h-16 w-full" /> }
-                }>
-                    <ThemeSettings />
-                </ClientOnly>
-            </section>
-
-            <section class="flex flex-col gap-4">
-                <h2 class=TITRE_SECTION>"Connexions"</h2>
+                <h2 class=TITRE_SECTION>{ui.connections}</h2>
                 {FOURNISSEURS
                     .iter()
                     .map(|&(cle, nom)| {
@@ -198,17 +175,17 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
                     .collect_view()}
 
                 <div class=CARTE>
-                    <p class="text-sm text-[var(--color-ink)]">"Mot de passe"</p>
+                    <p class="text-sm text-[var(--color-ink)]">{ui.password}</p>
                     <form method="post" action="/internal/account/password-link">
                         <button type="submit" class=ACTION>
-                            {if a_mot_de_passe { "Changer" } else { "Créer" }}
+                            {if a_mot_de_passe { ui.change } else { ui.create }}
                         </button>
                     </form>
                 </div>
             </section>
 
             <section class="flex flex-col gap-4">
-                <h2 class=TITRE_SECTION>"Clés d'API"</h2>
+                <h2 class=TITRE_SECTION>{ui.api_keys}</h2>
                 <ClientOnly fallback=|| {
                     view! { <Skeleton class="h-24 w-full" /> }
                 }>
@@ -218,15 +195,12 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
 
             <section class="flex flex-col gap-4 rounded-md border border-red-300 bg-red-50/50 p-4 dark:border-red-900/50 dark:bg-red-950/20">
                 <h2 class="text-sm font-medium uppercase tracking-widest text-red-700 dark:text-red-400">
-                    "Supprimer mon compte"
+                    {ui.delete_heading}
                 </h2>
-                <p class="text-sm text-[var(--color-ink-muted)]">
-                    "Cette action supprime " <strong>"définitivement"</strong>
-                    " votre compte et vos signets. Aucune restauration n'est possible."
-                </p>
+                <p class="text-sm text-[var(--color-ink-muted)]">{prose(ui.delete_warning, LINK)}</p>
                 <form method="post" action="/internal/account/delete" class="flex flex-col gap-3">
                     <label for="deleteConfirm" class=ETIQUETTE>
-                        "Tapez " <strong>"SUPPRIMER"</strong> " pour confirmer"
+                        {ui.delete_type} <strong>{ui.delete_word}</strong> {ui.delete_to_confirm}
                     </label>
                     <input
                         id="deleteConfirm"
@@ -234,14 +208,14 @@ fn ProfileView(compte: AccountSummary) -> impl IntoView {
                         type="text"
                         autocomplete="off"
                         required
-                        pattern="SUPPRIMER"
+                        pattern=ui.delete_word
                         class="rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-3 py-2 text-sm text-[var(--color-ink)] outline-none focus:border-red-500"
                     />
                     <button
                         type="submit"
                         class="self-start rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white transition-opacity hover:opacity-90"
                     >
-                        "Supprimer définitivement"
+                        {ui.delete_forever}
                     </button>
                 </form>
             </section>
@@ -257,6 +231,7 @@ fn CarteFournisseur(
     nom: &'static str,
     liee: Option<LinkedIdentity>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().profile;
     view! {
         <div class=CARTE>
             <p class="text-sm text-[var(--color-ink)]">{nom}</p>
@@ -267,7 +242,7 @@ fn CarteFournisseur(
                             <input type="hidden" name="provider" value=id.provider />
                             <input type="hidden" name="provider_sub" value=id.provider_sub />
                             <button type="submit" class=ACTION_RETRAIT>
-                                "Délier"
+                                {ui.unlink}
                             </button>
                         </form>
                     }
@@ -280,7 +255,7 @@ fn CarteFournisseur(
                             rel="external nofollow"
                             class=ACTION
                         >
-                            "Lier"
+                            {ui.link}
                         </a>
                     }
                         .into_any()
@@ -294,14 +269,15 @@ fn CarteFournisseur(
 /// (navigation SPA après déconnexion dans un autre onglet).
 #[component]
 fn SessionPerdue() -> impl IntoView {
+    let ui = &crate::i18n::use_ui().profile;
     view! {
         <div class="mx-auto flex max-w-lg flex-col gap-4 px-4 py-12">
-            <p class="text-sm text-[var(--color-ink-muted)]">"Votre session a expiré."</p>
+            <p class="text-sm text-[var(--color-ink-muted)]">{ui.session_expired}</p>
             <a
                 href="/login?next=%2Fprofile"
                 class="self-start text-sm text-[var(--color-accent)] underline hover:opacity-80"
             >
-                "Se reconnecter"
+                {ui.sign_in_again}
             </a>
         </div>
     }

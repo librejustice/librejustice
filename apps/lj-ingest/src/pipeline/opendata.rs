@@ -84,13 +84,16 @@ pub async fn ingest_opendata(data_dir: &Path, mode: IngestMode) -> Result<()> {
         );
         total.merge(&zip_counts);
 
-        // Marque le ZIP entièrement ingéré dans le manifeste, écrit immédiatement.
+        // A ZIP read whole is marked in the manifest at once, then deleted: the
+        // next sync fetches it again only once the source republishes it.
         if zip_counts.errors == 0 {
             if let Some(entry) = manifest_key.and_then(|k| manifest.entries.get_mut(k)) {
                 entry.fully_ingested = true;
                 manifest
                     .save(&manifest_path)
                     .map_err(|e| anyhow!("manifest save: {e}"))?;
+                std::fs::remove_file(zip_path)
+                    .with_context(|| format!("remove {}", zip_path.display()))?;
             }
         }
     }

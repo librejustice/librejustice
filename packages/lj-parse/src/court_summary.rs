@@ -160,6 +160,124 @@ fn paragraph_is_count(paragraph: &Paragraph) -> bool {
             .all(|c| c.is_ascii_digit())
 }
 
+static RUBRIC_DASH: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s[\x{2013}\x{2014}-]\s").expect("regex rubric dash"));
+static NUMBERED_POINT: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^(\d+)\.(?:\s|$)").expect("regex numbered point"));
+static PAGE_REFERENCE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\s+(?:I{1,3}\s*[-‐]\s*)?\d+\s*$").expect("regex page reference"));
+static DOT_LEADERS: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?:\s\.){2,}\s*$|(?:\.\s?){3,}$").expect("regex dot leaders"));
+
+/// What opens the line of the case's titrage, and what closes it.
+const TITRAGE_OPENERS: [char; 10] = ['«', '»', '„', '“', '‛', '‚', '‘', '"', '\'', '('];
+const TITRAGE_CLOSERS: [char; 9] = ['»', '«', '“', '”', '’', '‘', '"', '\'', ')'];
+const GUILLEMETS: [char; 5] = ['«', '»', '„', '“', '‛'];
+
+/// A CJUE summary from its first point, its head gone: the case, the parties, the formation,
+/// the date, the titrage and the « Sommaire » heading. Whole when no head is recognised.
+pub fn cjue_summary_without_head(summary: &str) -> &str {
+    let lines: Vec<&str> = summary.split_inclusive('\n').collect();
+    let start = head_lines(&lines).map_or(0, |n| lines[..n].iter().map(|l| l.len()).sum());
+    let rest = &summary[start..];
+    if rest.trim().is_empty() {
+        summary
+    } else {
+        rest
+    }
+}
+
+/// How many lines head the summary.
+fn head_lines(lines: &[&str]) -> Option<usize> {
+    for (i, line) in lines.iter().enumerate().take(24) {
+        let line = line.trim();
+        if let Some(point) = NUMBERED_POINT.captures(line) {
+            // Any other number is a later point, or a date or a paragraph wrapped onto the line.
+            if &point[1] != "1" {
+                break;
+            }
+            return Some(i);
+        }
+        if let Some(end) = titrage_end(lines, i) {
+            let mut j = end;
+            while j < lines.len() {
+                if let Some(next) = titrage_end(lines, j) {
+                    j = next;
+                    continue;
+                }
+                let line = lines[j].trim();
+                if head_line(line) {
+                    j += 1;
+                    continue;
+                }
+                // The articles of a rubric chain read as a head line: it opens the points.
+                if line.starts_with(['(', '[']) && j > end {
+                    return Some(j - 1);
+                }
+                return Some(j);
+            }
+            return None;
+        }
+        if line.ends_with('.') && line.chars().count() >= PROSE_MIN_CHARS {
+            break;
+        }
+    }
+    // Without a titrage, the head runs to the first rubric chain.
+    for (k, line) in lines.iter().enumerate().take(14) {
+        let line = line.trim();
+        if k > 0 && rubric_dashes(line) >= 2 {
+            return Some(k);
+        }
+        if !head_line(line) && !(line.starts_with('(') && line.ends_with(')')) {
+            return None;
+        }
+    }
+    None
+}
+
+/// The line after the titrage that opens at line `i`, over four lines at most.
+fn titrage_end(lines: &[&str], i: usize) -> Option<usize> {
+    let first = lines[i].trim();
+    let opener = first
+        .chars()
+        .next()
+        .filter(|c| TITRAGE_OPENERS.contains(c))?;
+    let mut text = String::new();
+    let mut j = i;
+    loop {
+        let line = lines[j].trim();
+        if j > i && NUMBERED_POINT.is_match(line) {
+            return None;
+        }
+        text.push(' ');
+        text.push_str(line);
+        if line.trim_end_matches('.').ends_with(TITRAGE_CLOSERS) {
+            break;
+        }
+        j += 1;
+        if j >= lines.len() || j - i > 3 {
+            return None;
+        }
+    }
+    (rubric_dashes(&text) >= 1 || GUILLEMETS.contains(&opener)).then_some(j + 1)
+}
+
+/// A line of the head: short, no rubric chain, no sentence, no label, no point.
+fn head_line(line: &str) -> bool {
+    if line.ends_with(':') || line.starts_with(['(', '[']) || NUMBERED_POINT.is_match(line) {
+        return false;
+    }
+    let core = PAGE_REFERENCE.replace(line, "");
+    let core = DOT_LEADERS.replace(&core, "");
+    let core = core.trim();
+    let chars = core.chars().count();
+    chars < 160 && rubric_dashes(core) < 2 && !(core.ends_with('.') && chars >= PROSE_MIN_CHARS)
+}
+
+fn rubric_dashes(line: &str) -> usize {
+    RUBRIC_DASH.find_iter(line).count()
+}
+
 /// What opens a legal summary, before the month of its issue: the Information Note it
 /// appeared in until 2021, the legal summary since.
 const CEDH_MASTHEADS: [&str; 5] = [
@@ -524,6 +642,70 @@ mod tests {
                 .as_str()
             )
         );
+    }
+
+    #[test]
+    fn a_cjue_summary_starts_at_its_first_point() {
+        let numbered = "Affaire C\u{2011}95/24 [Khuzdar] (i)\nATAU\n\
+(demande de décision préjudicielle, introduite par Corte di appello di Napoli)\n\
+Arrêt de la Cour (cinquième chambre) du 21 mai 2026\n\
+« Renvoi préjudiciel \u{2013} Mandat d\u{2019}arrêt européen \u{2013} Article 4, point 6 »\n\
+1. Coopération judiciaire en matière pénale \u{2013} Décision-cadre 2008/909\n(voir point 45)\n";
+        assert_eq!(
+            cjue_summary_without_head(numbered),
+            "1. Coopération judiciaire en matière pénale \u{2013} Décision-cadre 2008/909\n(voir point 45)\n"
+        );
+
+        let reports = "Affaire C-80/95\nHarnas & Helm CV contre Staatssecretaris van Financiën\n\
+(demande de décision préjudicielle, formée par le Hoge Raad der Nederlanden)\n\
+« TVA \u{2014} Interprétation des articles 4, 13 et 17 de la sixième directive »\n\
+Conclusions de l'avocat général M. N. Fennelly, présentées le 7 novembre 1996 . . . I - 747\n\
+Arrêt de la Cour (sixième chambre) du 6 février 1997 I - 768\nSommaire de l'arrêt\n\
+Dispositions fiscales \u{2014} Harmonisation des législations \u{2014} Activités économiques\n\
+(Directive du Conseil 77/388, art. 4, § 2)";
+        assert!(cjue_summary_without_head(reports).starts_with("Dispositions fiscales"));
+
+        let unindexed = "ARRÊT DU TRIBUNAL DE LA FONCTION PUBLIQUE\n(deuxième chambre)\n23 mars 2015\n\
+Julia Borghans\ncontre\nCommission européenne\n\
+«Fonction publique \u{2014} Rémunération \u{2014} Pension de survie»\nObjet :\n\
+Recours, introduit au titre de l\u{2019}article 270 TFUE, par lequel Mme Borghans demande l\u{2019}annulation.";
+        assert!(cjue_summary_without_head(unindexed).starts_with("Objet :\nRecours"));
+
+        let keywords = "Mots clés\nLibre circulation des capitaux \u{2014} Restrictions\n(Art. 63, § 1, TFUE)\n\
+Sommaire\nL\u{2019}article 63, paragraphe 1, TFUE doit être interprété en ce sens qu\u{2019}il s\u{2019}oppose à une réglementation.";
+        assert_eq!(cjue_summary_without_head(keywords), keywords);
+
+        for summary in [numbered, reports, unindexed, keywords] {
+            let cut = cjue_summary_without_head(summary);
+            assert_eq!(cjue_summary_without_head(cut), cut);
+        }
+    }
+
+    #[test]
+    fn a_cjue_summary_is_cut_once_at_its_point_one() {
+        let bare_number = "Rechtssache T-1/24\nX gegen EUIPO\nUrteil des Gerichts (Vierte Kammer) vom 3. Juli 2024\n\
+\u{201e}Unionsmarke \u{2013} Nichtigkeitsverfahren\u{201c}\n1.\nRechtsmittel \u{2013} Befugnisse \u{2013} Umfang\n\
+(vgl. Rn. 10)\n2.\nUnionsmarke \u{2013} Definition \u{2013} Unterscheidungskraft\n(vgl. Rn. 20)";
+        let cut = cjue_summary_without_head(bare_number);
+        assert!(cut.starts_with("1.\nRechtsmittel"), "{cut}");
+        assert_eq!(cjue_summary_without_head(cut), cut);
+
+        let closed_by_a_stop = "Arrêt du Tribunal (sixième chambre) du 25 mars 2026 \u{2013} Team Beverage/EUIPO \u{2013} Zurich (TEAM)\n\
+(affaire T\u{2011}17/25)\n\u{ab} Marque de l\u{2019}Union européenne \u{2013} Procédure d\u{2019}opposition \u{2013} Risque de confusion \u{bb}.\n\
+1. Marque de l\u{2019}Union européenne \u{2013} Procédure de recours \u{2013} Suspension de la procédure\n\
+(Règlement 2018/625, art. 71, § 1)\n(voir points 22-24)\n2. Marque de l\u{2019}Union européenne \u{2013} Motifs relatifs de refus\n(voir point 30)";
+        assert!(cjue_summary_without_head(closed_by_a_stop).starts_with("1. Marque"));
+
+        let unclosed = "Urteil des Gerichts (Neunte Kammer) vom 10. Januar 2019\n(Rechtssache T\u{2011}832/17)\n\
+\u{201e}Unionsmarke \u{2013} Bildmarke achtung! \u{2013} Fehlende Unterscheidungskraft\n\
+1. Unionsmarke \u{2013} Beschwerdeverfahren \u{2013} Befugnisse des Gerichts\n(Verordnung 2017/1001, Art. 72 Abs. 3)\n(vgl. Rn. 10, 11)";
+        assert!(cjue_summary_without_head(unclosed).starts_with("1. Unionsmarke"));
+
+        let wrapped_date =
+            "Gemeinsamer Zolltarif \u{2014} Tarifierung \u{2014} Tarifnummer 30.03\n\
+Der Gemeinsame Zolltarif in der Fassung der Verordnung Nr. 3618/86 des Rates vom\n\
+24. November 1986 ist dahin auszulegen, dass die Ware unter die Tarifnummer 30.03 f\u{e4}llt.";
+        assert_eq!(cjue_summary_without_head(wrapped_date), wrapped_date);
     }
 
     #[test]

@@ -4,91 +4,102 @@ use leptos::prelude::*;
 use lj_dtos::JurisdictionType;
 
 use super::badge::{badge_classes, BadgeTone};
+use crate::i18n::DecisionUi;
 
-/// Names who wrote the summary, its dot in the colour [`SummaryFold`] gives that author's text.
+/// Names who wrote the summary.
 #[component]
 pub fn SummaryBadge(
     jurisdiction_type: JurisdictionType,
     court: bool,
     #[prop(optional, into)] class: String,
 ) -> impl IntoView {
-    let (label, title) = author(jurisdiction_type, court);
-    let tone = if court {
-        "text-[var(--color-ink)]"
-    } else {
-        "text-[var(--color-ink-muted)]"
-    };
+    let (label, title) = author(&crate::i18n::use_ui().decision, jurisdiction_type, court);
     view! {
         <span
             class=badge_classes(BadgeTone::Outline, &format!("cursor-help {class}"))
             title=title
         >
-            <span aria-hidden="true" class=format!("h-1.5 w-1.5 rounded-full bg-current {tone}")></span>
-            <span class=tone>{label}</span>
+            {label}
         </span>
     }
 }
 
 /// The label and the tooltip of the badge: each court publishes under its own name.
-fn author(jurisdiction_type: JurisdictionType, court: bool) -> (&'static str, &'static str) {
+fn author(
+    ui: &'static DecisionUi,
+    jurisdiction_type: JurisdictionType,
+    court: bool,
+) -> (&'static str, &'static str) {
     if !court {
-        return ("Résumé IA", "Rédigé par une IA à partir de la décision.");
+        return (ui.ai_summary, ui.ai_summary_title);
     }
     match jurisdiction_type {
         JurisdictionType::Ce
         | JurisdictionType::Caa
         | JurisdictionType::Ta
-        | JurisdictionType::Tc => ("Analyse", "Publiée par la juridiction."),
-        JurisdictionType::Cedh => ("Résumé juridique", "Rédigé par le greffe de la Cour."),
-        _ => ("Sommaire", "Publié par la juridiction."),
+        | JurisdictionType::Tc => (ui.analysis, ui.analysis_title),
+        JurisdictionType::Cedh => (ui.legal_summary, ui.legal_summary_title),
+        _ => (ui.headnote, ui.headnote_title),
     }
 }
 
-/// Past `fold_at` characters, a summary opens on the lines `clamp` keeps, the rest a click away.
-/// The court's words read in the body colour, the model's stay muted.
+/// Past this many characters a summary shows its head, and a « … » unfolds the rest in place.
+pub const SUMMARY_FOLD_AT: usize = 700;
+
+/// A fold hides at least this many words, or the summary shows whole.
+const SUMMARY_FOLD_MIN_HIDDEN_WORDS: usize = 20;
+
+/// The words of `text` within `max` characters, `None` when it fits or when fewer than
+/// [`SUMMARY_FOLD_MIN_HIDDEN_WORDS`] words would be hidden.
+fn folded_head(text: &str, max: usize) -> Option<String> {
+    let cut = text.char_indices().nth(max)?.0;
+    let head = text[..cut]
+        .rfind(char::is_whitespace)
+        .map_or(&text[..cut], |at| &text[..at]);
+    let hidden = text[head.len()..].split_whitespace().count();
+    (hidden >= SUMMARY_FOLD_MIN_HIDDEN_WORDS)
+        .then(|| head.trim_end_matches([',', ';', ':', ' ']).to_string())
+}
+
+/// A summary past [`SUMMARY_FOLD_AT`] characters, folded on its head.
 #[component]
 pub fn SummaryFold(
     text: String,
-    court: bool,
-    fold_at: usize,
-    clamp: &'static str,
     class: &'static str,
-    unfold: &'static str,
     #[prop(optional)] node_ref: NodeRef<leptos::html::P>,
     #[prop(optional)] children: Option<Children>,
 ) -> impl IntoView {
-    let folds = text.chars().count() > fold_at;
+    let head = folded_head(&text, SUMMARY_FOLD_AT);
+    let folds = head.is_some();
     let open = RwSignal::new(false);
-    let shown_class = move || {
-        if folds && !open.get() {
-            format!("{class} {clamp}")
-        } else {
-            class.to_string()
-        }
+    let read_whole = crate::i18n::use_ui().decision.read_whole_summary;
+    let shown = move || match (&head, open.get()) {
+        (Some(head), false) => head.clone(),
+        _ => text.clone(),
     };
-    let toggle = folds.then(|| {
-        view! {
-            <button
-                type="button"
-                aria-expanded=move || open.get().to_string()
-                on:click=move |_| open.update(|o| *o = !*o)
-                class="mt-1 cursor-pointer text-xs text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
-            >
-                {move || if open.get() { "Replier le résumé" } else { unfold }}
-            </button>
-        }
-    });
-    let text = if court {
-        view! { <span class="text-[var(--color-ink)]">{text}</span> }.into_any()
-    } else {
-        text.into_any()
+    let more = move || {
+        (folds && !open.get()).then(|| {
+            view! {
+                " "
+                <button
+                    type="button"
+                    aria-expanded="false"
+                    aria-label=read_whole
+                    title=read_whole
+                    on:click=move |_| open.set(true)
+                    class="cursor-pointer font-semibold text-[var(--color-accent)] transition-colors hover:text-[var(--color-ink)]"
+                >
+                    "…"
+                </button>
+            }
+        })
     };
     view! {
-        <p node_ref=node_ref class=shown_class>
+        <p node_ref=node_ref class=class>
             {children.map(|c| c())}
-            {text}
+            {shown}
+            {more}
         </p>
-        {toggle}
     }
 }
 
@@ -130,6 +141,15 @@ pub fn shown_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_summary_folds_on_its_last_whole_word_and_only_to_hide_enough_words() {
+        let tail = " mot".repeat(SUMMARY_FOLD_MIN_HIDDEN_WORDS - 3);
+        let text = format!("La faute grave, prive de préavis.{tail}");
+        assert_eq!(folded_head("La faute grave prive de préavis.", 40), None);
+        assert_eq!(folded_head(&text, 17).as_deref(), Some("La faute grave"));
+        assert_eq!(folded_head(&text, 22), None);
+    }
 
     #[test]
     fn a_court_summary_is_shown_as_its_words_and_a_supreme_court_s_without_its_opening() {

@@ -16,7 +16,7 @@ pub(crate) mod top_cited;
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Script, Title};
+use leptos_meta::{Meta, Script, Title};
 use leptos_router::components::A;
 use lj_dtos::{
     Applicability, ApplicabilityStatus, ArticleModification, ArticleNeighbor, CoCitedArticle,
@@ -31,9 +31,9 @@ use crate::components::decision::DecisionLayout;
 use crate::components::own_page_description;
 use crate::components::search::compact_search::highlight::CitedBlock;
 use crate::components::ui::{
-    DatePicker, GroupedOption, GroupedSelect, ProvenanceBlock, SelectGroup,
+    DatePicker, GroupedOption, GroupedSelect, Look, ProvenanceBlock, SelectGroup,
 };
-use crate::helpers::{decision_count, format_article_num, format_iso_date, today_iso};
+use crate::helpers::{format_article_num, format_date, format_iso_date, today_iso};
 use crate::seo::law::{article_canonical_url, article_meta_description, build_article_json_ld};
 use crate::seo::OG_IMAGE;
 
@@ -79,13 +79,14 @@ impl NodeKind {
 #[component]
 pub fn LawArticlePage() -> impl IntoView {
     own_page_description();
+    let lang = crate::i18n::use_reader_lang().get();
 
     let key = article_key();
 
     let section_date = chrono_date();
     let node = Resource::new_blocking(
         move || (key.get(), section_date.get()),
-        |(key, date)| sendable(fetch_article_or_section(key, date)),
+        move |(key, date)| sendable(fetch_article_or_section(key, date, lang)),
     );
     // Awaits the node, so an article page never asks for a section's citing decisions.
     let section_citing = Resource::new(
@@ -94,7 +95,7 @@ pub fn LawArticlePage() -> impl IntoView {
             sendable(async move {
                 match node.await {
                     Ok(ArticleOrSection::Section(_)) => {
-                        fetch_section_citing(key.juris, key.code, key.num, date).await
+                        fetch_section_citing(key.juris, key.code, key.num, date, lang).await
                     }
                     _ => CitingResult {
                         hits: Vec::new(),
@@ -111,7 +112,9 @@ pub fn LawArticlePage() -> impl IntoView {
             let k = key.get();
             (k.juris, k.code, k.num, k.date, k.place)
         },
-        |(juris, code, num, date, place)| sendable(fetch_citing(juris, code, num, date, place)),
+        move |(juris, code, num, date, place)| {
+            sendable(fetch_citing(juris, code, num, date, place, lang))
+        },
     );
     // Articles co-cités (« souvent cité avec ») — indépendants de la version
     // servie (co-citation au grain `num_key`).
@@ -169,7 +172,7 @@ pub fn LawArticlePage() -> impl IntoView {
                         // Why a dated read finds nothing is in the timeline the
                         // undated read carries: one extra fetch, on the 404 leg only.
                         let frise = if err.status == 404 && k.date.is_some() {
-                            sendable(fetch_article(ArticleKey { date: None, ..k.clone() }))
+                            sendable(fetch_article(ArticleKey { date: None, ..k.clone() }, lang))
                                 .await
                                 .ok()
                         } else {
@@ -271,30 +274,30 @@ fn LawError(
     }
     let suffix = reader_suffix(place.as_deref());
     let text = lj_vocab::norm_path(&juris, &code);
+    let shell = &crate::i18n::use_ui().shell;
+    let ui = &crate::i18n::use_ui().norm;
+    let dates = &crate::i18n::use_ui().dates;
     let eyebrow = if err.status == 404 {
-        "Introuvable"
+        shell.not_found
     } else {
-        "Erreur"
+        shell.error
     };
-    let title = "Article introuvable - LibreJustice";
+    let title = ui.not_found_title;
     let (titre, recours) = match (err.status, date.as_deref()) {
         (404, Some(d)) => (
-            format!(
-                "Aucune version de cet article au {}",
-                lj_dtos::format_date_fr(d)
-            ),
+            (ui.no_version_on)(&format_date(dates, d)),
             Some(format!("{text}/{num}{suffix}")),
         ),
         (422, _) => (
-            "Cette adresse ne désigne ni un lieu ni une date que nous connaissons".to_string(),
+            ui.unknown_address.to_string(),
             Some(format!("{text}/{num}")),
         ),
-        _ => (err.message, None),
+        _ => (err.failure.text(&crate::i18n::use_ui().shell), None),
     };
     let raison = date
         .as_deref()
         .zip(frise.as_ref())
-        .and_then(|(d, article)| raison_du_trou(&article.versions, d));
+        .and_then(|(d, article)| raison_du_trou(&article.versions, d, ui, dates));
     view! {
         <Title text=title />
         <Meta name="robots" content="noindex" />
@@ -335,7 +338,7 @@ fn LawError(
                             href=href
                             class="mt-6 self-start text-sm text-[var(--color-accent)] underline-offset-4 hover:underline"
                         >
-                            "Voir la version en vigueur"
+                            {ui.see_in_force}
                         </a>
                     }
                 })}
@@ -349,6 +352,8 @@ fn LawError(
 fn raison_du_trou(
     versions: &[lj_dtos::LawArticleVersion],
     date: &str,
+    ui: &crate::i18n::NormUi,
+    dates: &crate::i18n::DatesUi,
 ) -> Option<(String, Vec<(String, String)>)> {
     let bornes: Vec<_> = versions
         .iter()
@@ -356,32 +361,21 @@ fn raison_du_trou(
         .collect();
     let (i, j) = lj_dtos::version_gap(&bornes, date)?;
     let (avant, apres) = (versions.get(i)?, versions.get(j)?);
-    let ferme = lj_dtos::format_date_fr(avant.date_fin.as_deref()?);
-    let reprise = lj_dtos::format_date_fr(&apres.date_debut);
+    let ferme = format_date(dates, avant.date_fin.as_deref()?);
+    let reprise = format_date(dates, &apres.date_debut);
     let phrase = if lj_dtos::gap_explique(&avant.etat) {
-        format!(
-            "{} le {ferme}, l'article est à nouveau présent le {reprise} : il n'existait pas sous ce numéro à la date demandée.",
-            status_label(&avant.etat)
-        )
+        (ui.gap_explained)(&status_label(&avant.etat), &ferme, &reprise)
     } else {
-        format!(
-            "L'article court de part et d'autre de cette date, mais nous ne détenons aucune version entre le {ferme} et le {reprise}."
-        )
+        (ui.gap_unexplained)(&ferme, &reprise)
     };
     Some((
         phrase,
         vec![
             (
-                format!(
-                    "Version qui précède, du {}",
-                    lj_dtos::format_date_fr(avant.date_debut.as_str())
-                ),
+                (ui.version_before)(&format_date(dates, avant.date_debut.as_str())),
                 avant.date_debut.clone(),
             ),
-            (
-                format!("Version qui suit, du {reprise}"),
-                apres.date_debut.clone(),
-            ),
+            ((ui.version_after)(&reprise), apres.date_debut.clone()),
         ],
     ))
 }
@@ -434,7 +428,11 @@ fn article_trail(article: &LawArticleResponse) -> AnyView {
             .collect()
     };
     norm_trail(
-        article.jurisdiction_label.clone(),
+        crate::i18n::place_name(
+            crate::i18n::use_reader_lang().get(),
+            &article.jurisdiction,
+            &article.jurisdiction_label,
+        ),
         lj_vocab::norm_path(&article.jurisdiction, &article.code),
         code_display_name(article),
         divisions,
@@ -485,7 +483,7 @@ pub(crate) fn norm_trail(
         .collect();
     view! {
         <nav
-            aria-label="Fil d'Ariane"
+            aria-label=crate::i18n::use_ui().shell.breadcrumb
             class="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-xs text-[var(--color-ink-subtle)]"
         >
             <span class="font-medium text-[var(--color-ink-muted)]">
@@ -516,10 +514,9 @@ fn division_number(label: &str) -> &str {
 /// Titre humain d'un article (« Article 1240 du Code civil », « Article 2 de
 /// l'Ordonnance n° 2016-131… »).
 pub(crate) fn article_title(article: &LawArticleResponse) -> String {
-    format!(
-        "Article {} {}",
-        format_article_num(&article.num),
-        lj_dtos::instrument_with_de(&code_display_name(article))
+    (crate::i18n::use_ui().norm.article_of)(
+        &format_article_num(&article.num),
+        &code_display_name(article),
     )
 }
 
@@ -541,8 +538,10 @@ fn LawArticleLoaded(
     citing: Resource<CitingResult>,
     related: Resource<RelatedResult>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().norm;
+    let dates = &crate::i18n::use_ui().dates;
     let title = article_title(&article);
-    let description = article_meta_description(&article, &title);
+    let description = article_meta_description(crate::i18n::use_ui(), &article, &title);
     let url = article_canonical_url(&article.jurisdiction, &article.code, &article.num_key);
     #[cfg(feature = "hydrate")]
     {
@@ -575,9 +574,12 @@ fn LawArticleLoaded(
         .applicability
         .as_ref()
         .is_some_and(|a| a.status == ApplicabilityStatus::NotApplicable)
-        && reader_place()
-            .get_untracked()
-            .is_some_and(|p| p != DEFAULT_READER_PLACE);
+        && reader_place().get_untracked().is_some_and(|p| {
+            article
+                .applicability
+                .as_ref()
+                .is_some_and(|a| a.implied != p)
+        });
     let reader_holds = frozen_on.is_some()
         || article.expired
             && article.applicability.as_ref().is_some_and(|a| {
@@ -586,27 +588,27 @@ fn LawArticleLoaded(
     let validity =
         (!withheld && !article.date_debut.is_empty() && !served_is_upcoming).then(|| {
             if let Some(d) = frozen_on.as_deref() {
-                (
-                    false,
-                    format!("Rédaction en vigueur le {}", format_iso_date(Some(d))),
-                )
+                (false, (ui.in_force_on)(&format_iso_date(dates, Some(d))))
             } else if reader_holds {
                 (
                     false,
-                    format!(
-                        "Rédaction du {}",
-                        format_iso_date(Some(&article.date_debut))
-                    ),
+                    (ui.wording_of)(&format_iso_date(dates, Some(&article.date_debut))),
                 )
             } else if article.expired {
                 (
                     false,
-                    validity_label(&article.date_debut, article.date_fin.as_deref(), true),
+                    validity_label(
+                        ui,
+                        dates,
+                        &article.date_debut,
+                        article.date_fin.as_deref(),
+                        true,
+                    ),
                 )
             } else {
                 (
                     true,
-                    format!("depuis le {}", format_iso_date(Some(&article.date_debut))),
+                    (ui.since)(&format_iso_date(dates, Some(&article.date_debut))),
                 )
             }
         });
@@ -616,8 +618,8 @@ fn LawArticleLoaded(
         (!withheld && article.expired && !reader_holds && !article.date_debut.is_empty()).then(
             || {
                 expired_banner(match article_key().get_untracked().date {
-                    None => "Cet article n'est plus en vigueur",
-                    Some(_) => "Cette version n'est plus en vigueur",
+                    None => ui.article_expired,
+                    Some(_) => ui.version_expired,
                 })
             },
         );
@@ -635,7 +637,7 @@ fn LawArticleLoaded(
             view! {
                 <span class="inline-flex items-center gap-1.5 rounded-full border border-[var(--color-rule)] px-2 py-0.5 text-xs text-[var(--color-ink)]">
                     <span aria-hidden="true" class="h-1.5 w-1.5 rounded-full bg-[var(--color-accent)]" />
-                    "En vigueur"
+                    {ui.in_force}
                 </span>
             }
         });
@@ -663,9 +665,9 @@ fn LawArticleLoaded(
         .filter(|_| !withheld && frozen_on.is_none())
         .map(|d| {
             let subject = if article.date_debut == d {
-                "Cet article entrera en vigueur"
+                ui.will_enter_into_force
             } else {
-                "Cet article sera modifié"
+                ui.will_be_modified
             };
             upcoming_banner(subject, d)
         });
@@ -715,11 +717,14 @@ fn LawArticleLoaded(
         <Meta property="og:title" content=title.clone() />
         <Meta property="og:description" content=description.clone() />
         <Meta property="og:url" content=url.clone() />
-        <Meta property="og:locale" content="fr_FR" />
+        <Meta
+            property="og:locale"
+            content=crate::i18n::use_reader_lang().get().og_locale()
+        />
         <Meta property="og:image" content=OG_IMAGE />
         <Meta name="twitter:card" content="summary_large_image" />
         {withheld.then(|| view! { <Meta name="robots" content="noindex" /> })}
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <Script type_="application/ld+json">{jsonld}</Script>
         <DecisionLayout toc=nav_view main=main_view similar=neighbors_view />
     }
@@ -735,7 +740,7 @@ fn neighbor_nav(article: &LawArticleResponse) -> Option<impl IntoView> {
     let text = lj_vocab::norm_path(&article.jurisdiction, &article.code);
     let link = |n: &ArticleNeighbor, arrow_left: bool| {
         let href = format!("{text}/{}{suffix}", n.num_key);
-        let label = format!("Article {}", format_article_num(&n.num));
+        let label = (crate::i18n::use_ui().norm.article_n)(&format_article_num(&n.num));
         view! {
             <A
                 href=href
@@ -757,7 +762,7 @@ fn neighbor_nav(article: &LawArticleResponse) -> Option<impl IntoView> {
     }
     Some(view! {
         <nav
-            aria-label="Articles voisins"
+            aria-label=crate::i18n::use_ui().norm.neighbours
             class="flex items-center justify-between gap-4 pt-1 lg:hidden"
         >
             <span>{prev}</span>
@@ -787,6 +792,11 @@ fn ArticleSideNav(article: LawArticleResponse) -> impl IntoView {
         .as_ref()
         .map(|a| readable_groups(&a.readable))
         .unwrap_or_default();
+    let implied = article
+        .applicability
+        .as_ref()
+        .map(|a| a.implied.clone())
+        .unwrap_or_else(|| DEFAULT_READER_PLACE.to_string());
     let other_version = article
         .applicability
         .as_ref()
@@ -795,13 +805,14 @@ fn ArticleSideNav(article: LawArticleResponse) -> impl IntoView {
     view! {
         <div class="flex flex-col gap-6 lg:sticky lg:top-20 lg:max-h-[calc(100vh-6rem)] lg:self-start lg:overflow-y-auto">
             <ArticleActions reference=reference />
-            <nav aria-label="Versions de l'article" class="flex flex-col gap-8">
+            <nav aria-label=crate::i18n::use_ui().norm.article_versions class="flex flex-col gap-8">
                 <ChronoDatePicker base=base.clone() date=requested_date path_segment=true />
                 <PlacePicker
                     base=base
                     groups=places
                     date=requested_date
                     other_version=other_version
+                    implied=implied
                 />
                 <Timeline article=article />
             </nav>
@@ -824,6 +835,7 @@ pub(crate) fn ChronoDatePicker(
 ) -> impl IntoView {
     use leptos_router::hooks::use_navigate;
     let navigate = use_navigate();
+    let ui = &crate::i18n::use_ui().norm;
     let place = reader_place().get_untracked();
     let href_for = StoredValue::new(move |picked: &str| {
         let mut href = if picked.is_empty() {
@@ -848,7 +860,7 @@ pub(crate) fn ChronoDatePicker(
                     class="w-fit text-xs text-[var(--color-accent)] underline-offset-4 hover:underline"
                     on:click=move |_| navigate(&href_for.get_value()(""), Default::default())
                 >
-                    "Revenir à la version en vigueur"
+                    {ui.back_to_in_force}
                 </button>
             }
         })
@@ -860,12 +872,12 @@ pub(crate) fn ChronoDatePicker(
         <div class="flex flex-col gap-1.5">
             <div class="flex flex-col gap-1">
                 <span class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "À la date du"
+                    {ui.on_date}
                 </span>
                 <DatePicker
                     value=Signal::derive(move || date.get().unwrap_or_else(today_iso))
                     on_change=on_change
-                    aria_label="À la date du"
+                    aria_label=ui.on_date
                     first_year=NORM_FIRST_YEAR
                     years_ahead=NORM_YEARS_AHEAD
                 />
@@ -913,10 +925,10 @@ pub(crate) fn rail_item(current: bool, body: AnyView) -> AnyView {
 }
 
 /// The dataset a version comes from, when its provenance names one.
-fn source_label(source: &str) -> Option<&'static str> {
+fn source_label(source: &str, ui: &crate::i18n::NormUi) -> Option<&'static str> {
     match source {
-        "legifrance" => Some("Base LEGI · DILA"),
-        "jorf" => Some("Journal officiel · DILA"),
+        "legifrance" => Some(ui.source_legi),
+        "jorf" => Some(ui.source_jorf),
         _ => None,
     }
 }
@@ -946,36 +958,46 @@ fn url_host(url: &str) -> Option<String> {
     (!host.is_empty()).then(|| host.strip_prefix("www.").unwrap_or(host).to_string())
 }
 
-/// Pendant de [`lj_dtos::provenance_rows`] pour un article.
-fn article_provenance_rows(article: &LawArticleResponse) -> Vec<(&'static str, String)> {
-    let mut rows: Vec<(&'static str, String)> = source_label(&article.source)
-        .map(|l| ("Source", l.to_string()))
+/// An article's counterpart of [`lj_dtos::provenance_rows`].
+fn article_provenance_rows(article: &LawArticleResponse) -> Vec<(&'static str, String, Look)> {
+    let ui = &crate::i18n::use_ui();
+    let prov = &ui.provenance;
+    let dates = &ui.dates;
+    let mut rows: Vec<(&'static str, String, Look)> = source_label(&article.source, &ui.norm)
+        .map(|l| (prov.source, l.to_string(), Look::Source))
         .into_iter()
         .collect();
-    rows.push(("Diffuseur", diffuser_name(article)));
-    rows.push(("Identifiant", article.legiarti.clone()));
+    rows.push((prov.diffuser, diffuser_name(article), Look::Text));
+    rows.push((prov.identifier, article.legiarti.clone(), Look::Code));
     if let Some(asof) = article.source_asof.as_deref() {
-        rows.push(("Fraîcheur de la source", format_iso_date(Some(asof))));
+        rows.push((
+            prov.freshness,
+            format_iso_date(dates, Some(asof)),
+            Look::Text,
+        ));
     }
-    rows.push(("Autorité", article.source_authority.clone()));
+    let authority = (prov.authority_value)(&article.source_authority)
+        .map_or_else(|| article.source_authority.clone(), str::to_string);
+    rows.push((prov.authority, authority, Look::Text));
     if let Some(url) = article.source_url.as_deref().filter(|u| !u.is_empty()) {
         let label = if article.source_official {
-            "Page officielle"
+            prov.official_page
         } else {
-            "Page du diffuseur"
+            prov.diffuser_page
         };
-        rows.push((label, url.to_string()));
+        rows.push((label, url.to_string(), Look::Text));
     }
     if let Some(url) = article
         .source_upstream_url
         .as_deref()
         .filter(|u| !u.is_empty())
     {
-        rows.push(("Source d'origine", url.to_string()));
+        rows.push((prov.upstream, url.to_string(), Look::Text));
     }
     rows.push((
-        "Permalien",
+        prov.permalink,
         article_canonical_url(&article.jurisdiction, &article.code, &article.num_key),
+        Look::Text,
     ));
     rows
 }
@@ -995,11 +1017,11 @@ fn ArticleContext(article: LawArticleResponse) -> impl IntoView {
         .into_iter()
         .map(|n| context_item(n, &text, &suffix))
         .collect();
-    rail_block("Dans le même chapitre", items)
+    rail_block(crate::i18n::use_ui().norm.same_chapter, items)
 }
 
 fn context_item(neighbor: ArticleNeighbor, text: &str, suffix: &str) -> AnyView {
-    let label = format!("Article {}", format_article_num(&neighbor.num));
+    let label = (crate::i18n::use_ui().norm.article_n)(&format_article_num(&neighbor.num));
     let abrogated = neighbor.etat != "VIGUEUR";
     if neighbor.current {
         let body = view! {
@@ -1026,15 +1048,16 @@ fn context_item(neighbor: ArticleNeighbor, text: &str, suffix: &str) -> AnyView 
 /// aussi » des éditions annotées. Rendu dans un encart distinct, non normatif.
 #[component]
 fn ArticleBody(article: LawArticleResponse) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().norm;
     let texte = article
         .texte
         .filter(|t| !t.trim().is_empty())
-        .unwrap_or_else(|| "Texte indisponible.".to_string());
+        .unwrap_or_else(|| ui.text_unavailable.to_string());
     // Badge de provenance : on signale une traduction non officielle ou
     // automatique ; le texte officiel ne porte pas de badge.
     let badge = match article.translation.as_str() {
-        "non_officiel" => Some(("Traduction non officielle", false)),
-        "automatique" => Some(("Traduction automatique — non vérifiée", true)),
+        "non_officiel" => Some((ui.unofficial_translation, false)),
+        "automatique" => Some((ui.automatic_translation, true)),
         _ => None,
     }
     .map(|(label, warn)| {
@@ -1056,9 +1079,9 @@ fn ArticleBody(article: LawArticleResponse) -> impl IntoView {
         .map(|orig| {
             let dir = if lang_orig.as_deref() == Some("ar") { "rtl" } else { "ltr" };
             let label = match lang_orig.as_deref() {
-                Some("ar") => "Texte original (arabe)".to_string(),
-                Some(l) => format!("Texte original ({l})"),
-                None => "Texte original".to_string(),
+                Some("ar") => ui.original_text_arabic.to_string(),
+                Some(l) => (ui.original_text_in)(l),
+                None => ui.original_text.to_string(),
             };
             view! {
                 <details class="mt-6 rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-4 py-3">
@@ -1069,7 +1092,7 @@ fn ArticleBody(article: LawArticleResponse) -> impl IntoView {
                         dir=dir
                         class="mt-2 whitespace-pre-line text-base leading-relaxed text-[var(--color-ink)]"
                     >
-                        {orig}
+                        {crate::components::search::compact_search::highlight::plain_text(orig)}
                     </div>
                 </details>
             }
@@ -1081,10 +1104,10 @@ fn ArticleBody(article: LawArticleResponse) -> impl IntoView {
             view! {
                 <aside class="mt-2 rounded-md border-l-2 border-[var(--color-rule)] bg-[var(--color-parchment)] px-4 py-3">
                     <p class="text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                        "Notes"
+                        {ui.notes}
                     </p>
                     <div class="mt-2 whitespace-pre-line text-sm leading-relaxed text-[var(--color-ink-subtle)]">
-                        {n}
+                        {crate::components::search::compact_search::highlight::plain_text(n)}
                     </div>
                 </aside>
             }
@@ -1139,10 +1162,11 @@ fn ModificationGroup(group: ArticleModification) -> impl IntoView {
         code_href,
         items,
     } = group;
+    let ui = &crate::i18n::use_ui().norm;
     let action = match action.as_str() {
-        "modifie" => "Modifie".to_string(),
-        "cree" => "Crée".to_string(),
-        "abroge" => "Abroge".to_string(),
+        "modifie" => ui.modifies.to_string(),
+        "cree" => ui.creates.to_string(),
+        "abroge" => ui.repeals.to_string(),
         _ => action,
     };
     let code_view = match code_href {
@@ -1180,7 +1204,7 @@ fn modification_item(item: ModificationItem) -> AnyView {
         .into_any();
     }
     let label = if item.kind == "article" {
-        format!("art. {}", item.label)
+        (crate::i18n::use_ui().norm.art_short)(&item.label)
     } else {
         item.label
     };
@@ -1211,6 +1235,7 @@ fn travaux_section(refs: Vec<LinkedTextRef>) -> Option<AnyView> {
     if refs.is_empty() {
         return None;
     }
+    let ui = &crate::i18n::use_ui().norm;
     let count = refs.len();
     let items = refs
         .into_iter()
@@ -1225,9 +1250,7 @@ fn travaux_section(refs: Vec<LinkedTextRef>) -> Option<AnyView> {
                     >
                         {r.label}
                     </a>
-                    <span class="text-[var(--color-ink-subtle)]">
-                        " — travaux préparatoires sur Légifrance"
-                    </span>
+                    <span class="text-[var(--color-ink-subtle)]">{ui.preparatory_work}</span>
                 </li>
             }
         })
@@ -1236,8 +1259,7 @@ fn travaux_section(refs: Vec<LinkedTextRef>) -> Option<AnyView> {
         view! {
             <details class="rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] px-4 py-3">
                 <summary class="cursor-pointer text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]">
-                    "Travaux parlementaires · "
-                    {count}
+                    {(ui.parliamentary_work)(count)}
                 </summary>
                 <ul class="mt-2 flex flex-col gap-1.5">{items}</ul>
             </details>
@@ -1259,11 +1281,7 @@ fn place_summary(places: &[PlaceRef]) -> String {
     if places.len() <= 3 {
         return place_labels(places);
     }
-    format!(
-        "{} et {} autres lieux",
-        place_labels(&places[..3]),
-        places.len() - 3
-    )
+    (crate::i18n::use_ui().norm.places_and_more)(&place_labels(&places[..3]), places.len() - 3)
 }
 
 /// A clause cut on a word, an ellipsis saying so.
@@ -1306,11 +1324,9 @@ fn state_links(states: &[StateElsewhere], path: &str, with_version: bool) -> Any
 /// the text has no compiled state.
 fn applicability_view(article: &LawArticleResponse, dated: bool, folded: bool) -> Option<AnyView> {
     let a: &Applicability = article.applicability.as_ref()?;
-    let when = if dated {
-        "à cette date"
-    } else {
-        "aujourd'hui"
-    };
+    let ui = &crate::i18n::use_ui().norm;
+    let dates = &crate::i18n::use_ui().dates;
+    let when = if dated { ui.at_this_date } else { ui.today };
     let key = article_key().get_untracked();
     let path = format!(
         "{}/{}",
@@ -1322,27 +1338,22 @@ fn applicability_view(article: &LawArticleResponse, dated: bool, folded: bool) -
         None => path.clone(),
     };
     let banner_class = "mt-1 w-fit rounded-md border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-sm text-[var(--color-ink)]";
-    let from_reader = format!("Lu depuis {} : ", a.reader.label);
+    let reader = (crate::i18n::use_ui().shell.located)(&a.reader.uid, &a.reader.label);
+    let from_reader = (ui.read_from_place)(&reader);
     let lead = match a.status {
         ApplicabilityStatus::Applicable => return Some(applicable_view(a, &path, when, folded)),
         ApplicabilityStatus::NotApplicable => match a.frozen_on.as_deref() {
-            Some(d) => format!(
-                "{from_reader}cet article ne s'y applique pas : il n'était pas en vigueur le {}, jour où la matière est passée à la collectivité.",
-                format_iso_date(Some(d))
-            ),
-            None => format!("{from_reader}cet article ne s'y applique pas {when}."),
+            Some(d) => (ui.not_applicable_frozen)(&from_reader, &format_iso_date(dates, Some(d))),
+            None => (ui.not_applicable)(&from_reader, when),
         },
-        ApplicabilityStatus::Undetermined(UndeterminedReason::NoMention) => format!(
-            "{from_reader}une loi ne s'y applique que si un texte le dit, et aucune mention qui étende cet article n'a été relevée."
+        ApplicabilityStatus::Undetermined(UndeterminedReason::NoMention) => {
+            (ui.no_mention)(&from_reader)
+        }
+        ApplicabilityStatus::Undetermined(UndeterminedReason::Frozen) => (ui.frozen)(
+            &from_reader,
+            &format_iso_date(dates, a.frozen_on.as_deref()),
         ),
-        ApplicabilityStatus::Undetermined(UndeterminedReason::Frozen) => format!(
-            "{from_reader}la matière relève de la collectivité depuis le {}. Le texte national y reste dans sa rédaction de cette date tant que la collectivité ne l'a pas remplacé : voici cette rédaction.",
-            format_iso_date(a.frozen_on.as_deref())
-        ),
-        ApplicabilityStatus::OutsideWindow => format!(
-            "Aucun état connu de cet article ne couvre {} {when}.",
-            a.reader.label
-        ),
+        ApplicabilityStatus::OutsideWindow => (ui.outside_window)(&reader, when),
     };
     let lists_elsewhere = matches!(
         a.status,
@@ -1352,7 +1363,7 @@ fn applicability_view(article: &LawArticleResponse, dated: bool, folded: bool) -
     let elsewhere = (lists_elsewhere && !a.elsewhere.is_empty()).then(|| {
         let links = state_links(&a.elsewhere, &dated_path, false);
         view! {
-            " Il s'applique en : "
+            {ui.applies_elsewhere}
             <span class="inline-flex flex-wrap gap-x-2">{links}</span>
         }
     });
@@ -1360,7 +1371,7 @@ fn applicability_view(article: &LawArticleResponse, dated: bool, folded: bool) -
         let short = shorten(s, 240);
         view! {
             <p class="text-xs text-[var(--color-ink-subtle)]">
-                {format!("Selon la règle : « {short} »")}
+                {(ui.by_rule)(&short)}
             </p>
         }
     });
@@ -1382,25 +1393,28 @@ fn applicability_view(article: &LawArticleResponse, dated: bool, folded: bool) -
 /// states the source left covering them.
 fn applicable_view(a: &Applicability, path: &str, when: &str, folded: bool) -> AnyView {
     let banner_class = "mt-1 w-fit rounded-md border border-[var(--color-accent)] bg-[var(--color-accent-soft)] px-3 py-1.5 text-sm text-[var(--color-ink)]";
-    let from_reader = if a.reader.uid == DEFAULT_READER_PLACE {
+    let ui = &crate::i18n::use_ui().norm;
+    let dates = &crate::i18n::use_ui().dates;
+    let reader = (crate::i18n::use_ui().shell.located)(&a.reader.uid, &a.reader.label);
+    let from_reader = if a.reader.uid == a.implied {
         String::new()
     } else {
-        format!("Lu depuis {} : ", a.reader.label)
+        (ui.read_from_place)(&reader)
     };
     let mut places: Vec<PlaceRef> = a.places.clone();
     places.sort_by_key(|p| p.uid != a.reader.uid);
-    let mut line = format!("{from_reader}S'applique en {}", place_summary(&places));
+    if let Some(first) = places.first_mut() {
+        first.label = (crate::i18n::use_ui().shell.located)(&first.uid, &first.label);
+    }
+    let mut line = (ui.applies_in)(&from_reader, &place_summary(&places));
     match a.starts_on.as_deref() {
-        Some(d) => line.push_str(&format!(" depuis le {}", format_iso_date(Some(d)))),
-        None => line.push_str(" (début non daté par la source)"),
+        Some(d) => line.push_str(&(ui.since_clause)(&format_iso_date(dates, Some(d)))),
+        None => line.push_str(ui.start_undated),
     }
     if let Some(f) = a.ends_on.as_deref() {
-        line.push_str(&format!(
-            ", cesse de s'appliquer le {}",
-            format_iso_date(Some(f))
-        ));
+        line.push_str(&(ui.stops_on)(&format_iso_date(dates, Some(f))));
         if a.ends_on_origin.as_deref() == Some("computed") {
-            line.push_str(" (fin déduite de l'état suivant)");
+            line.push_str(ui.end_computed);
         }
     }
     let all_places = place_labels(&a.places);
@@ -1412,7 +1426,7 @@ fn applicable_view(a: &Applicability, path: &str, when: &str, folded: bool) -> A
             let short = shorten(c, 240);
             view! {
                 <p class="text-xs text-[var(--color-ink-subtle)]">
-                    {format!("Selon la source : « {short} »")}
+                    {(ui.by_source)(&short)}
                 </p>
             }
         });
@@ -1421,7 +1435,7 @@ fn applicable_view(a: &Applicability, path: &str, when: &str, folded: bool) -> A
         view! {
             <p class=banner_class>
                 <span aria-hidden="true" class="mr-1.5">"⚠"</span>
-                {format!("Plusieurs états couvrent {} {when} et la source ne les départage pas. S'applique aussi, dans une autre version : ", a.reader.label)}
+                {(ui.competing)(&reader, when)}
                 <span class="inline-flex flex-wrap gap-x-2">{links}</span>
             </p>
         }
@@ -1443,17 +1457,20 @@ fn applicable_view(a: &Applicability, path: &str, when: &str, folded: bool) -> A
 fn compact_reach(article: &LawArticleResponse) -> Option<(String, String)> {
     let a = article.applicability.as_ref()?;
     let folds = a.status == ApplicabilityStatus::Applicable
-        && a.reader.uid == DEFAULT_READER_PLACE
+        && a.reader.uid == a.implied
         && a.starts_on.as_deref() == Some(article.date_debut.as_str())
         && a.ends_on.is_none()
         && a.competing.is_empty();
     if !folds {
         return None;
     }
+    let ui = &crate::i18n::use_ui().norm;
     let line = match a.places.iter().filter(|p| p.uid != a.reader.uid).count() {
-        0 => format!("s'applique en {}", a.reader.label),
-        1 => "s'applique aussi dans 1 autre lieu".to_string(),
-        n => format!("s'applique aussi dans {n} autres lieux"),
+        0 => (ui.applies_in_short)(&(crate::i18n::use_ui().shell.located)(
+            &a.reader.uid,
+            &a.reader.label,
+        )),
+        n => (ui.also_applies)(n),
     };
     Some((line, place_labels(&a.places)))
 }
@@ -1476,11 +1493,12 @@ fn other_version_places(a: &Applicability, served: &str) -> Vec<String> {
 
 /// The heading a place is listed under in « Lu depuis ».
 pub(crate) fn place_group_label(group: PlaceGroup) -> &'static str {
+    let ui = &crate::i18n::use_ui().norm;
     match group {
-        PlaceGroup::Metropole => "Métropole",
-        PlaceGroup::OverseasIdentity => "Outre-mer, identité législative",
-        PlaceGroup::OverseasSpecialty => "Outre-mer, spécialité législative",
-        PlaceGroup::OtherStates => "Autres États",
+        PlaceGroup::Metropole => ui.metropole,
+        PlaceGroup::OverseasIdentity => ui.overseas_identity,
+        PlaceGroup::OverseasSpecialty => ui.overseas_specialty,
+        PlaceGroup::OtherStates => ui.other_states,
     }
 }
 
@@ -1510,17 +1528,18 @@ pub fn PlacePicker(
     /// Places that read another version than the one shown.
     #[prop(optional)]
     other_version: Vec<String>,
+    /// The place `base` reads from when it names none, the default one if unset.
+    #[prop(optional)]
+    implied: Option<String>,
 ) -> impl IntoView {
     use leptos_router::hooks::use_navigate;
     if groups.is_empty() {
         return ().into_any();
     }
+    let ui = &crate::i18n::use_ui().norm;
     let place = reader_place();
-    let current = Signal::derive(move || {
-        place
-            .get()
-            .unwrap_or_else(|| DEFAULT_READER_PLACE.to_string())
-    });
+    let implied = StoredValue::new(implied.unwrap_or_else(|| DEFAULT_READER_PLACE.to_string()));
+    let current = Signal::derive(move || place.get().unwrap_or_else(|| implied.get_value()));
     let groups = groups
         .into_iter()
         .map(|(label, members)| SelectGroup {
@@ -1528,7 +1547,7 @@ pub fn PlacePicker(
             options: members
                 .into_iter()
                 .map(|p| GroupedOption {
-                    note: other_version.contains(&p.uid).then_some("autre version"),
+                    note: other_version.contains(&p.uid).then_some(ui.other_version),
                     value: p.uid,
                     label: p.label,
                 })
@@ -1541,7 +1560,7 @@ pub fn PlacePicker(
             Some(d) => format!("{base}/{d}"),
             None => base.clone(),
         };
-        let href = if picked == DEFAULT_READER_PLACE {
+        let href = if implied.with_value(|i| picked == *i) {
             path
         } else {
             format!("{path}?place={picked}")
@@ -1551,15 +1570,15 @@ pub fn PlacePicker(
     view! {
         <div class="flex flex-col gap-1">
             <span class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                "Lu depuis"
+                {ui.read_from}
             </span>
             <GroupedSelect
                 value=current
                 on_change=on_change
                 groups=groups
-                aria_label="Lu depuis"
-                filter_placeholder="Filtrer (ex. Mayotte…)"
-                empty_text="Aucun lieu ne correspond."
+                aria_label=ui.read_from
+                filter_placeholder=ui.filter_places
+                empty_text=ui.no_place_matches
             />
         </div>
     }
@@ -1623,10 +1642,12 @@ pub(crate) fn place_groups(places: &[PlaceNode]) -> Vec<(String, Vec<PlaceRef>)>
 /// Bandeau temporel : « {sujet} sera modifié le … » — la sentinelle
 /// `2222-02-22` (date inconnue DILA) devient « à une date à déterminer ».
 pub(crate) fn upcoming_banner(subject: &str, date: &str) -> AnyView {
+    let ui = &crate::i18n::use_ui().norm;
+    let dates = &crate::i18n::use_ui().dates;
     let when = if date == "2222-02-22" {
-        "à une date à déterminer".to_string()
+        ui.undetermined_date.to_string()
     } else {
-        format!("le {}", format_iso_date(Some(date)))
+        (ui.on_day)(&format_iso_date(dates, Some(date)))
     };
     view! {
         <p class="mt-1 w-fit rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)]/60 px-3 py-1.5 text-sm text-[var(--color-ink-muted)]">
@@ -1639,11 +1660,17 @@ pub(crate) fn upcoming_banner(subject: &str, date: &str) -> AnyView {
 
 /// Fenêtre de validité de la version servie : bornée dès qu'elle a cessé de
 /// s'appliquer, ouverte tant qu'elle court.
-fn validity_label(date_debut: &str, date_fin: Option<&str>, expired: bool) -> String {
-    let debut = format_iso_date(Some(date_debut));
+fn validity_label(
+    ui: &crate::i18n::NormUi,
+    dates: &crate::i18n::DatesUi,
+    date_debut: &str,
+    date_fin: Option<&str>,
+    expired: bool,
+) -> String {
+    let debut = format_iso_date(dates, Some(date_debut));
     match date_fin.filter(|_| expired) {
-        Some(fin) => format!("En vigueur du {debut} au {}", format_iso_date(Some(fin))),
-        None => format!("En vigueur depuis le {debut}"),
+        Some(fin) => (ui.in_force_from_to)(&debut, &format_iso_date(dates, Some(fin))),
+        None => (ui.in_force_since)(&debut),
     }
 }
 
@@ -1658,9 +1685,9 @@ fn expired_banner(subject: &'static str) -> AnyView {
     .into_any()
 }
 
-/// Libellé FR d'un état DILA ; état inconnu rendu brut.
+/// The reader's label of a DILA state; an unknown state shown as is.
 pub(crate) fn status_label(etat: &str) -> String {
-    lj_dtos::article_status_label(etat)
+    (crate::i18n::use_ui().norm.article_status)(etat)
         .map(str::to_string)
         .unwrap_or_else(|| etat.to_string())
 }
@@ -1684,7 +1711,7 @@ fn Timeline(article: LawArticleResponse) -> impl IntoView {
                 href=href
                 attr:class="mt-1 w-fit text-sm text-[var(--color-accent)] underline-offset-4 hover:underline"
             >
-                "Comparer les versions"
+                {crate::i18n::use_ui().norm.compare_versions}
             </A>
         }
     });
@@ -1696,7 +1723,7 @@ fn Timeline(article: LawArticleResponse) -> impl IntoView {
         .collect();
     view! {
         <div class="flex flex-col gap-1">
-            {rail_block("Versions", rows)}
+            {rail_block(crate::i18n::use_ui().norm.versions, rows)}
             {compare}
         </div>
     }
@@ -1741,24 +1768,26 @@ fn timeline_item(
     modified_by: &[LinkedTextRef],
     suffix: &str,
 ) -> AnyView {
+    let ui = &crate::i18n::use_ui().norm;
+    let dates = &crate::i18n::use_ui().dates;
     let is_current = version.legiarti == current;
     // `date_debut` vide = sentinelle absorbée (article modificatif) : pas de
     // « depuis le … ».
     let span = match (version.date_debut.is_empty(), version.date_fin.as_deref()) {
-        (true, _) => "Version initiale".to_string(),
+        (true, _) => ui.initial_version.to_string(),
         (false, Some(fin)) => format!(
             "{} – {}",
-            format_iso_date(Some(&version.date_debut)),
-            format_iso_date(Some(fin))
+            format_iso_date(dates, Some(&version.date_debut)),
+            format_iso_date(dates, Some(fin))
         ),
-        (false, None) => format!("depuis le {}", format_iso_date(Some(&version.date_debut))),
+        (false, None) => (ui.since)(&format_iso_date(dates, Some(&version.date_debut))),
     };
     // « à venir » : version pas encore entrée en vigueur, calculé côté API
     // (l'horloge vit côté serveur).
     let a_venir = version.upcoming.then(|| {
         view! {
             <span class="ml-1.5 rounded-sm border border-[var(--color-rule)] px-1 py-px text-[10px] uppercase tracking-wide text-[var(--color-ink-muted)]">
-                "à venir"
+                {ui.upcoming}
             </span>
         }
     });
@@ -1789,7 +1818,7 @@ fn timeline_item(
                 };
                 view! {
                     <span class="block text-xs leading-snug text-[var(--color-ink-muted)]">
-                        "par "
+                        {ui.by}
                         {inner}
                     </span>
                 }
@@ -1828,14 +1857,15 @@ fn ArticleNeighbors(
     article: LawArticleResponse,
     related: Resource<RelatedResult>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().norm;
     view! {
         <aside
-            aria-label="Articles liés"
+            aria-label=ui.related_articles
             class="flex flex-col gap-4 lg:sticky lg:top-20 lg:self-start"
         >
             <ArticleContext article=article />
             <Suspense fallback=|| ()>
-                {move || Suspend::new(async move { related_view(related.await) })}
+                {move || Suspend::new(async move { related_view(related.await, ui) })}
             </Suspense>
         </aside>
     }
@@ -1844,7 +1874,7 @@ fn ArticleNeighbors(
 /// Bloc « Souvent cité avec » : articles co-cités dans les décisions citantes,
 /// boilerplate procédural exclu côté repo, plafonné à `RELATED_LIMIT`. Rien à
 /// afficher = pas de bloc.
-fn related_view(resolved: RelatedResult) -> AnyView {
+fn related_view(resolved: RelatedResult, ui: &'static crate::i18n::NormUi) -> AnyView {
     if resolved.items.is_empty() {
         return ().into_any();
     }
@@ -1852,12 +1882,12 @@ fn related_view(resolved: RelatedResult) -> AnyView {
         .items
         .into_iter()
         .take(RELATED_LIMIT)
-        .map(related_item)
+        .map(|item| related_item(item, ui))
         .collect_view();
     view! {
         <div class="flex flex-col gap-3">
             <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                "Souvent cité avec"
+                {ui.often_cited_with}
             </h2>
             <ul class="flex flex-col gap-3">{items}</ul>
         </div>
@@ -1865,14 +1895,16 @@ fn related_view(resolved: RelatedResult) -> AnyView {
     .into_any()
 }
 
-fn related_item(item: CoCitedArticle) -> AnyView {
+fn related_item(mut item: CoCitedArticle, ui: &crate::i18n::NormUi) -> AnyView {
+    crate::i18n::relabel_title(crate::i18n::use_reader_lang().get(), &mut item.text_title);
+    let numbers = &crate::i18n::use_ui().numbers;
     use crate::components::hover_preview::{preview_kind, HoverPreview, PreviewKind};
-    let label = format!("Article {}", format_article_num(&item.num_key));
-    let decisions = decision_count(item.count);
+    let label = (ui.article_n)(&format_article_num(&item.num_key));
+    let decisions = (numbers.decisions)(item.count);
     let count = view! {
         <span
             class="shrink-0 text-xs tabular-nums text-[var(--color-ink-subtle)]"
-            title=format!("Cités ensemble dans {decisions}")
+            title=(ui.cited_together_in)(&decisions)
         >
             {decisions.clone()}
         </span>
@@ -1924,22 +1956,25 @@ fn related_item(item: CoCitedArticle) -> AnyView {
 #[cfg(test)]
 mod tests {
     use super::validity_label;
+    use crate::i18n::Lang;
 
     /// KALI laisse `status` à `VIGUEUR` sur des versions dépassées : c'est la
     /// fenêtre, et elle seule, qui dit ce qui s'applique.
     #[test]
     fn une_fenetre_close_ne_sannonce_pas_en_vigueur() {
+        let ui = &Lang::Fr.ui().norm;
+        let dates = &Lang::Fr.ui().dates;
         assert_eq!(
-            validity_label("2010-06-01", Some("2010-07-19"), true),
-            "En vigueur du 1 juin 2010 au 19 juillet 2010"
+            validity_label(ui, dates, "2010-06-01", Some("2010-07-19"), true),
+            "En vigueur du 1er juin 2010 au 19 juillet 2010"
         );
         assert_eq!(
-            validity_label("2010-06-01", Some("2027-12-31"), false),
-            "En vigueur depuis le 1 juin 2010"
+            validity_label(ui, dates, "2010-06-01", Some("2027-12-31"), false),
+            "En vigueur depuis le 1er juin 2010"
         );
         assert_eq!(
-            validity_label("2010-06-01", None, false),
-            "En vigueur depuis le 1 juin 2010"
+            validity_label(ui, dates, "2010-06-01", None, false),
+            "En vigueur depuis le 1er juin 2010"
         );
     }
 }

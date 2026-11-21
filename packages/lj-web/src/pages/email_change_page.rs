@@ -15,12 +15,13 @@ pub fn EmailChangePage() -> impl IntoView {
     let token = move || query.with(|q| q.get("token").unwrap_or_default());
     let sent = move || query.with(|q| q.get("sent").is_some());
     let error = move || query.with(|q| q.get("error"));
+    let ui = &crate::i18n::use_ui().account;
 
     view! {
-        <Title text="Changement d'adresse - LibreJustice" />
+        <Title text=ui.email_change_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex max-w-sm flex-col gap-4 px-4 py-16">
-            <h1 class="font-sans text-2xl text-[var(--color-ink)]">"Changement d'adresse"</h1>
+            <h1 class="font-sans text-2xl text-[var(--color-ink)]">{ui.email_change_heading}</h1>
             <Show
                 when=move || !sent() && error().is_none() && !token().is_empty()
                 fallback=move || {
@@ -31,8 +32,8 @@ pub fn EmailChangePage() -> impl IntoView {
                                 view! {
                                     <p class="text-sm text-red-600">
                                         {move || match error() {
-                                            Some(code) => translate_auth_error(Some(&code)),
-                                            None => "Lien incomplet : ouvrez celui reçu par courriel.".to_string(),
+                                            Some(code) => translate_auth_error(ui, Some(&code)),
+                                            None => ui.link_incomplete.to_string(),
                                         }}
                                     </p>
                                     <p class="text-sm text-[var(--color-ink-muted)]">
@@ -40,21 +41,21 @@ pub fn EmailChangePage() -> impl IntoView {
                                             href="/profile"
                                             class="text-[var(--color-accent)] underline hover:opacity-80"
                                         >
-                                            "Retour au profil"
+                                            {ui.back_to_profile}
                                         </a>
                                     </p>
                                 }
                             }
                         >
                             <p class="text-sm text-[var(--color-ink-muted)]">
-                                "Demande confirmée. Un lien de vérification vient de partir vers la nouvelle adresse : ouvrez-le pour finaliser le changement."
+                                {ui.email_change_sent}
                             </p>
                         </Show>
                     }
                 }
             >
                 <p class="text-sm text-[var(--color-ink-muted)]">
-                    "Confirmez cette étape du changement d'adresse de votre compte."
+                    {ui.email_change_intro}
                 </p>
                 <form method="post" action="/internal/auth/email-change" class="flex flex-col gap-3">
                     <input type="hidden" name="token" value=token />
@@ -62,7 +63,7 @@ pub fn EmailChangePage() -> impl IntoView {
                         type="submit"
                         class="rounded-md bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                     >
-                        "Confirmer"
+                        {ui.confirm}
                     </button>
                 </form>
             </Show>

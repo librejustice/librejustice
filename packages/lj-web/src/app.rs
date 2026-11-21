@@ -6,25 +6,22 @@ use leptos_router::components::{Route, Router, Routes};
 use leptos_router::{ParamSegment, SsrMode, StaticSegment, WildcardSegment};
 
 use crate::components::AppShell;
+use crate::jurisdiction::JurisdictionScope;
 use crate::pages::{
-    AnnoncesCataloguePage, AnnoncesDepartementPage, AnnoncesPage, AnnuaireDirectoryPage,
-    AnnuairePage, ApiGuide, AuthorizeMcpPage, BookmarksPage, CodeCataloguePage, ConfirmPage,
-    ContributePage, CorpusPage, DecisionPage, EmailChangePage, EntityPage, FeedbackPage,
-    JuridictionHubPage, JuridictionYearPage, JuridictionsPage, Landing, LawCodePage, LegalNotice,
-    LoginLinkPage, LoginPage, MarchePage, McpGuide, NormFondPage, NormNodePage, NormYearPage,
-    NormesPage, NotFound, OpenSource, Privacy, ProfilePage, RedactPage, ResetPasswordPage,
-    SearchPage, SourcesPage, Terms, TextesPage, ToolsPage,
+    AnnuaireDirectoryPage, AnnuairePage, ApiGuide, AuthorizeMcpPage, CodeCataloguePage,
+    ConfirmPage, ContributePage, CorpusPage, DecisionPage, EmailChangePage, EntityPage,
+    FeedbackPage, JournalsCataloguePage, JournalsDepartementPage, JournalsPage, JuridictionHubPage,
+    JuridictionYearPage, JuridictionsPage, Landing, LawCodePage, LegalNotice, LoginLinkPage,
+    LoginPage, McpGuide, NormFondPage, NormNodePage, NormYearPage, NormesPage, NotFound,
+    NoticePage, OpenSource, Privacy, ProfilePage, RedactPage, ResetPasswordPage, SearchPage,
+    SourcesPage, Terms, TextesPage, ToolsPage,
 };
-use crate::seo::site_default;
 
-/// Script anti-FOUC. Applique `.dark` avant
-/// le premier paint : anonyme (pas de `lj-auth=1`) => toujours light ; connecte
-/// => `lj-theme` sinon `prefers-color-scheme`. Pose AVANT
-/// HydrationScripts/MetaTags pour s'executer avant l'hydratation.
+/// Applies `.dark` before the first paint, from `lj-theme` else `prefers-color-scheme`.
+/// Placed BEFORE HydrationScripts/MetaTags so it runs before hydration.
 #[cfg(feature = "ssr")]
 const ANTI_FOUC: &str = r#"(() => {
   try {
-    if (localStorage.getItem("lj-auth") !== "1") return;
     const v = localStorage.getItem("lj-theme");
     const dark =
       v === "dark" ||
@@ -33,10 +30,28 @@ const ANTI_FOUC: &str = r#"(() => {
   } catch {}
 })();"#;
 
+/// A reader whose cookie names another open language than the page's goes to that version
+/// before the first paint, unless the address asks for one. Read here: a page the edge caches
+/// never reaches the origin.
+#[cfg(feature = "ssr")]
+const LANG_REDIRECT: &str = r#"((page) => {
+  try {
+    const kept = document.cookie.match(new RegExp("(?:^|;\\s*)" + page.cookie + "=([a-z]{2})(?:;|$)"));
+    const url = new URL(location.href);
+    if (!kept || kept[1] === page.lang || !page.open.includes(kept[1])) return;
+    if (url.searchParams.has("lang")) return;
+    url.searchParams.set("lang", kept[1]);
+    location.replace(url.href);
+  } catch {}
+})"#;
+
 /// Bandeau bas partagé, et suivi du build servi.
 ///
 /// `__ljBar(message, refermable)` pose le seul recours possible quand la page ne
 /// peut pas se réparer seule : un message et un bouton qui recharge.
+///
+/// `__ljLimit()` says a read was refused by its address's budget, once while shown, and
+/// offers to sign in, back to the current page.
 ///
 /// `__ljBuild(id)` reçoit l'identité du bundle portée par les réponses `/internal`
 /// (le client `hydrate` la lui passe). Elle est mémorisée à la
@@ -45,33 +60,55 @@ const ANTI_FOUC: &str = r#"(() => {
 /// suite étant close définitivement. Aucun sondage : le suivi voyage sur le
 /// trafic existant.
 #[cfg(feature = "ssr")]
-const BANDEAU: &str = r#"(() => {
+const BANDEAU: &str = r#"((copy) => {
   const bouton =
     "padding:.35rem .9rem;border:1px solid currentColor;border-radius:4px;" +
     "background:transparent;color:inherit;cursor:pointer;font:inherit";
+  const fond =
+    "position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;flex-wrap:wrap;" +
+    "gap:1rem;align-items:center;justify-content:center;padding:.75rem 1rem;" +
+    "background:#1B1612;color:#FBF9F4;font:14px/1.4 system-ui,sans-serif";
 
   window.__ljBar = (message, refermable) => {
     const bar = document.createElement("div");
     bar.setAttribute("role", "alert");
-    bar.style.cssText =
-      "position:fixed;left:0;right:0;bottom:0;z-index:9999;display:flex;flex-wrap:wrap;" +
-      "gap:1rem;align-items:center;justify-content:center;padding:.75rem 1rem;" +
-      "background:#1B1612;color:#FBF9F4;font:14px/1.4 system-ui,sans-serif";
+    bar.style.cssText = fond;
     const text = document.createElement("span");
     text.textContent = message;
     const reload = document.createElement("button");
-    reload.textContent = "Recharger";
+    reload.textContent = copy.reload;
     reload.style.cssText = bouton;
     reload.onclick = () => location.reload();
     bar.append(text, reload);
     if (refermable) {
       const plus_tard = document.createElement("button");
-      plus_tard.textContent = "Plus tard";
+      plus_tard.textContent = copy.later;
       plus_tard.style.cssText = bouton + ";border-color:transparent;opacity:.7";
       plus_tard.onclick = () => bar.remove();
       bar.append(plus_tard);
     }
     document.body.appendChild(bar);
+  };
+
+  let limite = null;
+  window.__ljLimit = () => {
+    if (limite && limite.isConnected) return;
+    limite = document.createElement("div");
+    limite.setAttribute("role", "alert");
+    limite.style.cssText = fond;
+    const text = document.createElement("span");
+    text.textContent = copy.limited + " " + copy.limitedHint;
+    const connexion = document.createElement("a");
+    connexion.textContent = copy.signIn;
+    connexion.href = "/login?next=" + encodeURIComponent(location.pathname + location.search);
+    connexion.style.cssText = bouton + ";text-decoration:none";
+    connexion.onclick = () => limite.remove();
+    const plus_tard = document.createElement("button");
+    plus_tard.textContent = copy.later;
+    plus_tard.style.cssText = bouton + ";border-color:transparent;opacity:.7";
+    plus_tard.onclick = () => limite.remove();
+    limite.append(text, connexion, plus_tard);
+    document.body.appendChild(limite);
   };
 
   let vu = null;
@@ -82,13 +119,19 @@ const BANDEAU: &str = r#"(() => {
       vu = id;
     } else if (vu !== id) {
       annonce = true;
-      window.__ljBar("Une nouvelle version est disponible.", true);
+      window.__ljBar(copy.newVersion, true);
     }
   };
-})();"#;
+})"#;
+
+/// A script above that takes its copy, called with it.
+#[cfg(feature = "ssr")]
+fn called(script: &str, copy: serde_json::Value) -> String {
+    format!("{script}({copy});")
+}
 
 #[cfg(feature = "ssr")]
-const SONDE_CLIENT: &str = r#"(() => {
+const SONDE_CLIENT: &str = r#"((copy) => {
   window.__ljIncident = (motif, detail) => {
     try {
       const body = JSON.stringify({
@@ -160,11 +203,11 @@ const SONDE_CLIENT: &str = r#"(() => {
         elapsed_ms: Math.round(performance.now()),
       });
     }
-    window.__ljBar("Cette page n'a pas pu charger entièrement.", false);
+    window.__ljBar(copy.incomplete, false);
   };
 
   setTimeout(() => check(5000), 5000);
-})();"#;
+})"#;
 
 /// Content-Security-Policy du document HTML.
 ///
@@ -223,6 +266,34 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
     // unique ici.
     use axum::http::{header::CONTENT_SECURITY_POLICY, HeaderValue};
     let nonce = leptos::nonce::use_nonce().map(|n| n.to_string());
+    let lang = crate::i18n::request_lang();
+    let ui = lang.ui();
+    let bar = called(
+        BANDEAU,
+        serde_json::json!({
+            "reload": ui.shell.reload,
+            "later": ui.shell.later,
+            "limited": ui.shell.rate_limited,
+            "limitedHint": ui.shell.rate_limited_hint,
+            "signIn": ui.account.sign_in,
+            "newVersion": ui.shell.new_version,
+        }),
+    );
+    let probe = called(
+        SONDE_CLIENT,
+        serde_json::json!({ "incomplete": ui.shell.page_incomplete }),
+    );
+    let open: Vec<&str> = crate::i18n::Lang::open().map(|l| l.code()).collect();
+    let lang_redirect = (open.len() > 1).then(|| {
+        called(
+            LANG_REDIRECT,
+            serde_json::json!({
+                "lang": lang.code(),
+                "open": open,
+                "cookie": crate::i18n::LANG_COOKIE,
+            }),
+        )
+    });
     if let Some(resp) = use_context::<leptos_axum::ResponseOptions>() {
         if let Ok(hv) = HeaderValue::from_str(&content_security_policy(nonce.as_deref())) {
             resp.insert_header(CONTENT_SECURITY_POLICY, hv);
@@ -231,7 +302,7 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
 
     view! {
         <!DOCTYPE html>
-        <html lang="fr">
+        <html lang=lang.tag()>
             <head>
                 <meta charset="utf-8" />
                 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -264,9 +335,11 @@ pub fn shell(options: LeptosOptions) -> impl IntoView {
                     type="font/woff2"
                     crossorigin="anonymous"
                 />
+                {lang_redirect
+                    .map(|script| view! { <script nonce=nonce.clone() inner_html=script></script> })}
                 <script nonce=nonce.clone() inner_html=ANTI_FOUC></script>
-                <script nonce=nonce.clone() inner_html=BANDEAU></script>
-                <script nonce=nonce.clone() inner_html=SONDE_CLIENT></script>
+                <script nonce=nonce.clone() inner_html=bar></script>
+                <script nonce=nonce.clone() inner_html=probe></script>
                 <AutoReload options=options.clone() />
                 <HydrationScripts options=options.clone() />
                 <HashedStylesheet options id="leptos" />
@@ -290,10 +363,9 @@ pub fn App() -> impl IntoView {
     crate::components::client_only::provide_hydrated();
     crate::auth::provide_auth_state();
     provide_auth_runtime();
-    let default = site_default();
 
     view! {
-        <Title text=default.title />
+        <Title text="LibreJustice" />
         // `<Meta name="description">` generique : pose par `AppShell`, dans le
         // Router, pour que `/decision/*` puisse emettre la sienne a la place (la
         // route remplace la meta racine, jamais deux balises description).
@@ -301,31 +373,25 @@ pub fn App() -> impl IntoView {
             <AppShell>
                 <Routes fallback=NotFound>
                     // ── Pages publiques (SSR streaming par defaut, OutOfOrder) ──
-                    <Route path=StaticSegment("") view=Landing />
-                    // Search: `/decision-search` (hybrid BM25+ANN) and `/norm-search`
-                    // (BM25 only), their own engines and filters, no cross search.
-                    <Route path=StaticSegment("decision-search") view=SearchPage />
-                    <Route path=StaticSegment("norm-search") view=TextesPage />
                     <Route path=StaticSegment("sources") view=SourcesPage />
                     // ── Annonces : la publicité légale en cours, plusieurs fonds derrière
                     // un même DTO (marchés publics en base, BODACC en proxy) ; les pages
                     // d'index restent du SSR bloquant, pour le crawl. ──
-                    <Route path=StaticSegment("notice-search") view=AnnoncesPage />
                     <Route
-                        path=(StaticSegment("notice-index"), ParamSegment("juris"))
-                        view=AnnoncesCataloguePage
+                        path=(StaticSegment("journal-index"), ParamSegment("juris"))
+                        view=JournalsCataloguePage
                     />
                     <Route
                         path=(
-                            StaticSegment("notice-index"),
+                            StaticSegment("journal-index"),
                             ParamSegment("juris"),
                             ParamSegment("code"),
                         )
-                        view=AnnoncesDepartementPage
+                        view=JournalsDepartementPage
                     />
                     <Route
-                        path=(StaticSegment("notice"), ParamSegment("juris"), ParamSegment("uid"))
-                        view=MarchePage
+                        path=(StaticSegment("notice"), ParamSegment("juris"), WildcardSegment("uid"))
+                        view=NoticePage
                     />
                     // ── Decision : similaires en streaming (PartiallyBlocked :
                     // le bloc bloquant est rendu cote serveur, sans JS). ──
@@ -456,7 +522,6 @@ pub fn App() -> impl IntoView {
                         view=ProfilePage
                         ssr=SsrMode::PartiallyBlocked
                     />
-                    <Route path=StaticSegment("bookmarks") view=BookmarksPage />
                     <Route
                         path=(StaticSegment("decision"), StaticSegment("contribute"))
                         view=ContributePage
@@ -465,12 +530,33 @@ pub fn App() -> impl IntoView {
                     <Route path=StaticSegment("feedback") view=FeedbackPage />
                     <Route path=StaticSegment("tools") view=ToolsPage />
                     <Route path=StaticSegment("redact") view=RedactPage />
-                    <Route path=StaticSegment("api-guide") view=ApiGuide />
                     <Route path=StaticSegment("mcp-guide") view=McpGuide />
                     <Route path=StaticSegment("legal-notice") view=LegalNotice />
                     <Route path=StaticSegment("privacy") view=Privacy />
                     <Route path=StaticSegment("terms") view=Terms />
                     <Route path=StaticSegment("open-source") view=OpenSource />
+                    // Under the reader's jurisdiction, after every static route since the first
+                    // match wins; lj-server serves a one-segment file before this capture.
+                    <Route
+                        path=ParamSegment("juris")
+                        view=|| view! { <JurisdictionScope><Landing /></JurisdictionScope> }
+                    />
+                    <Route
+                        path=(ParamSegment("juris"), StaticSegment("decision-search"))
+                        view=|| view! { <JurisdictionScope><SearchPage /></JurisdictionScope> }
+                    />
+                    <Route
+                        path=(ParamSegment("juris"), StaticSegment("norm-search"))
+                        view=|| view! { <JurisdictionScope><TextesPage /></JurisdictionScope> }
+                    />
+                    <Route
+                        path=(ParamSegment("juris"), StaticSegment("journal-search"))
+                        view=|| view! { <JurisdictionScope><JournalsPage /></JurisdictionScope> }
+                    />
+                    <Route
+                        path=(ParamSegment("juris"), StaticSegment("api-guide"))
+                        view=|| view! { <JurisdictionScope><ApiGuide /></JurisdictionScope> }
+                    />
                     // Pas de route catch-all : un `WildcardSegment` masquerait les assets
                     // statiques (`/pkg/*`, `/favicon.svg`) qui doivent atteindre le
                     // `file_and_error_handler`. Le no-match est couvert par
@@ -482,18 +568,12 @@ pub fn App() -> impl IntoView {
 }
 
 /// Pilote unique de l'etat d'auth cote client. Une seule lecture de session +
-/// un seul abonnement `onAuthStateChange` alimentent les trois consommateurs :
+/// un seul abonnement `onAuthStateChange` alimentent les deux consommateurs :
 ///   1. le signal `email` de l'`AuthState` (avatar + menu compte de la top-bar) ;
 ///   2. l'invalidation du cache de requetes sur changement REEL d'identite
-///      (connexion, deconnexion, bascule de compte) ;
-///   3. le flag `lj-auth` + le theme (cf. ANTI_FOUC : sombre reserve aux
-///      connectes, anonyme => toujours clair).
-///
-/// La sync n'a lieu qu'une fois la session connue (jamais sur un etat « pas
-/// encore charge »), donc aucun flash clair→sombre au reload d'un connecte.
+///      (connexion, deconnexion, bascule de compte).
 #[cfg(feature = "hydrate")]
 fn provide_auth_runtime() {
-    use crate::components::profile::sync_auth_theme;
     use leptos_fetch::QueryClient;
 
     let auth = crate::auth::use_auth();
@@ -509,14 +589,12 @@ fn provide_auth_runtime() {
     let apply = move || {
         leptos::task::spawn_local(async move {
             let mail = crate::auth::current_email().await;
-            let authed = mail.is_some();
             let changed = matches!(known.get_value(), Some(previous) if previous != mail);
             known.set_value(Some(mail.clone()));
             email.set(mail);
             if changed {
                 client.clear();
             }
-            sync_auth_theme(authed);
         });
     };
 

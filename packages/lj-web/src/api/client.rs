@@ -13,19 +13,19 @@
 //! le `ApiClient` obtenu via [`ApiClient::from_context`].
 
 use lj_dtos::{
-    AnnonceCatalogueResponse, AnnonceDetailResponse, AnnonceSearchRequest, AnnonceSearchResponse,
-    AnnuaireStatsResponse, ArticleSearchResponse, CitingDecisionHit, CoCitedArticle,
-    CodeCatalogueResponse, CodeTocResponse, CorpusStatsResponse, DecisionDetail,
-    DecisionPartiesResponse, EntityDecisionsResponse, EntityDirectoryResponse, EntityPageResponse,
-    EntityRegistreResponse, EntitySearchResponse, JurisdictionCatalogueResponse,
-    JurisdictionHubResponse, JurisdictionYearResponse, LawArticleResponse, LawCodeSummary,
-    LawCompareResponse, LawSectionResponse, NormCatalogueResponse, NormFondResponse,
-    NormYearResponse, OpenSourceResponse, PlaceCorpusResponse, PlacesResponse, SearchContext,
-    SearchRequest, SearchResponse, SimilarDecisionsResponse, SuggestResponse,
+    AnnonceCatalogueResponse, AnnonceDetailResponse, AnnuaireStatsResponse, ArticleSearchResponse,
+    CitingDecisionHit, CoCitedArticle, CodeCatalogueResponse, CodeTocResponse, CorpusStatsResponse,
+    DecisionDetail, DecisionPartiesResponse, EntityDecisionsResponse, EntityDirectoryResponse,
+    EntityPageResponse, EntityRegistreResponse, EntitySearchResponse, JournalSearchRequest,
+    JournalSearchResponse, JurisdictionCatalogueResponse, JurisdictionHubResponse,
+    JurisdictionYearResponse, LawArticleResponse, LawCodeSummary, LawCompareResponse,
+    LawSectionResponse, NormCatalogueResponse, NormFondResponse, NormYearResponse,
+    OpenSourceResponse, PlaceCorpusResponse, PlacesResponse, PublicationNotice, ReaderJurisdiction,
+    SearchContext, SearchRequest, SearchResponse, SimilarDecisionsResponse, SuggestResponse,
 };
-// Types portés uniquement par les routes client (`/me`, signets, hover cards).
+// Types portés uniquement par les routes client (`/me`, hover cards).
 #[cfg(feature = "hydrate")]
-use lj_dtos::{AccountSummary, BookmarksResponse, DecisionPreview, UserProfile};
+use lj_dtos::{AccountSummary, DecisionPreview, UserProfile};
 
 /// Fenetre de pagination offset-based des listes « Mon activite ».
 #[derive(Debug, Clone, Copy)]
@@ -46,60 +46,104 @@ pub struct TextesFilters<'a> {
     /// Orders or type paths (`FR.DECRET`), any of them served.
     pub jurisdictions: &'a [String],
     pub source: Option<&'a str>,
-    /// The scope: `norme` | `doctrine_administrative` | `information_publique`.
+    /// A category of `lj_vocab::NORM_CATEGORIES`.
     pub scope: Option<&'a str>,
     pub valid_from: Option<&'a str>,
     pub as_of: Option<&'a str>,
 }
 
-/// Erreur de la frontiere API.
+/// What the API did not find, named by the call that asked.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Missing {
+    Decision,
+    Article,
+    Places,
+    Corpus,
+    Version,
+    Code,
+    Consultation,
+    Notice,
+    Section,
+    Entity,
+}
+
+/// Why a call to the API failed, worded where it is shown.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum Failure {
+    Missing(Missing),
+    RateLimited,
+    InvalidId,
+    InvalidEntity,
+    /// Worded already: by the page, in the reader's language, or by the service.
+    Said(String),
+}
+
+impl Failure {
+    pub fn text(&self, ui: &crate::i18n::ShellUi) -> String {
+        match self {
+            Failure::Missing(missing) => (ui.missing)(*missing).to_string(),
+            Failure::RateLimited => ui.rate_limited.to_string(),
+            Failure::InvalidId => ui.invalid_id.to_string(),
+            Failure::InvalidEntity => ui.invalid_entity.to_string(),
+            Failure::Said(text) => text.clone(),
+        }
+    }
+}
+
+/// A call to the API that failed.
 #[derive(Debug, Clone)]
 pub struct ApiError {
-    pub message: String,
+    pub failure: Failure,
     pub status: u16,
 }
 
 impl std::fmt::Display for ApiError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{} (HTTP {})", self.message, self.status)
+        write!(f, "{:?} (HTTP {})", self.failure, self.status)
     }
 }
 
 impl std::error::Error for ApiError {}
 
-/// Ce qu'une recherche ratée montre : un titre et la conduite à tenir. Le 429 et
-/// le 422 ont la leur, ce sont les échecs que l'utilisateur peut résoudre.
+/// Why a search failed. The 429 and the 422 have their own words, being the
+/// failures the reader can resolve.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct SearchFailure {
-    pub title: String,
-    pub hint: String,
+pub enum SearchFailure {
+    RateLimited,
+    /// The query's length in characters, past [`lj_dtos::QUERY_MAX_CHARS`].
+    TooLong(usize),
+    UnknownFilter,
+    Down(Failure),
 }
 
 impl SearchFailure {
     /// Takes the query because a 422 has two causes calling for opposite
     /// gestures, and the refusal body is not carried this far.
     pub fn from_error(err: &ApiError, query: &str) -> Self {
+        let chars = query.chars().count();
         match err.status {
-            429 => Self {
-                title: "Trop de recherches en peu de temps.".to_string(),
-                hint: "Réessayez dans une minute.".to_string(),
-            },
-            422 if query.chars().count() > lj_dtos::QUERY_MAX_CHARS => Self {
-                title: format!(
-                    "Cette recherche fait {} caractères, le maximum est {}.",
-                    query.chars().count(),
-                    lj_dtos::QUERY_MAX_CHARS
-                ),
-                hint: "Gardez la question, retirez le texte collé autour : le moteur cherche sur le sens des mots, pas sur la longueur.".to_string(),
-            },
-            422 => Self {
-                title: "Un filtre de cette recherche n'est pas reconnu.".to_string(),
-                hint: "Le lien porte sans doute une valeur périmée : retirez le filtre pour relancer la recherche.".to_string(),
-            },
-            _ => Self {
-                title: err.message.clone(),
-                hint: "L'API est peut-être indisponible. Réessayez dans un instant.".to_string(),
-            },
+            429 => Self::RateLimited,
+            422 if chars > lj_dtos::QUERY_MAX_CHARS => Self::TooLong(chars),
+            422 => Self::UnknownFilter,
+            _ => Self::Down(err.failure.clone()),
+        }
+    }
+
+    /// Its title, then what to do about it.
+    pub fn words(&self, ui: &crate::i18n::Ui) -> (String, &'static str) {
+        let search = &ui.search;
+        match self {
+            Self::RateLimited => (search.rate_limited.to_string(), search.rate_limited_hint),
+            Self::TooLong(chars) => (
+                (search.too_long)(*chars, lj_dtos::QUERY_MAX_CHARS),
+                search.too_long_hint,
+            ),
+            Self::UnknownFilter => (
+                search.unknown_filter.to_string(),
+                search.unknown_filter_hint,
+            ),
+            Self::Down(Failure::Said(_)) => (search.down.to_string(), search.down_hint),
+            Self::Down(failure) => (failure.text(&ui.shell), search.down_hint),
         }
     }
 }
@@ -140,9 +184,15 @@ pub trait Backend: Send + Sync {
     /// au rendu SSR : le fetch part d'un Effect client).
     async fn suggest(&self, q: &str, mode: &str) -> ApiResult<SuggestResponse>;
 
-    async fn fetch_decision(&self, id: &str) -> ApiResult<DecisionDetail>;
+    /// The decision `id`, its text picked for the reader's language `lang` first.
+    async fn fetch_decision(&self, id: &str, lang: Option<&str>) -> ApiResult<DecisionDetail>;
 
-    async fn fetch_similar_decisions(&self, id: &str) -> ApiResult<SimilarDecisionsResponse>;
+    /// `lang` is the reader's, the language the summaries are served in when held.
+    async fn fetch_similar_decisions(
+        &self,
+        id: &str,
+        lang: &str,
+    ) -> ApiResult<SimilarDecisionsResponse>;
 
     /// Article LEGI à une date (`date = Some`) ou en vigueur (`date = None`),
     /// avec sa timeline. Slug inconnu / article absent ⇒ 404.
@@ -157,6 +207,9 @@ pub trait Backend: Send + Sync {
 
     /// The place vocabulary a reader picks from.
     async fn fetch_places(&self) -> ApiResult<PlacesResponse>;
+
+    /// The jurisdictions a reader can hold to, France first.
+    async fn fetch_reader_jurisdictions(&self) -> ApiResult<Vec<ReaderJurisdiction>>;
 
     /// What applies in a place at a date, grouped by journal.
     async fn fetch_place_corpus(
@@ -176,6 +229,7 @@ pub trait Backend: Send + Sync {
         juris: &str,
     ) -> ApiResult<LawCompareResponse>;
 
+    #[allow(clippy::too_many_arguments)]
     async fn fetch_legi_citing(
         &self,
         code: &str,
@@ -184,6 +238,7 @@ pub trait Backend: Send + Sync {
         place: Option<&str>,
         juris: &str,
         page: PageParams,
+        lang: &str,
     ) -> ApiResult<Vec<CitingDecisionHit>>;
 
     /// Articles co-cités avec l'article (« souvent cité avec »).
@@ -208,6 +263,16 @@ pub trait Backend: Send + Sync {
         mode: lj_dtos::SearchMode,
         context: SearchContext,
     ) -> ApiResult<ArticleSearchResponse>;
+
+    /// Total and facets of the norms search the same arguments name, asked
+    /// beside its hits: the server counts the answer that served them.
+    async fn search_textes_count(
+        &self,
+        q: &str,
+        filters: TextesFilters<'_>,
+        mode: lj_dtos::SearchMode,
+        context: SearchContext,
+    ) -> ApiResult<lj_dtos::ArticleSearchCountResponse>;
 
     /// Catalogue du fond codes (`/normes/codes`) : codes et constitutions
     /// (`scope=head` de l'API). Servi depuis le cache process-local 12 h.
@@ -247,16 +312,19 @@ pub trait Backend: Send + Sync {
     ) -> ApiResult<NormYearResponse>;
 
     /// Page du moteur d'annonces (fond `marche`).
-    async fn search_annonces(
+    async fn search_journals(
         &self,
-        request: &AnnonceSearchRequest,
-    ) -> ApiResult<AnnonceSearchResponse>;
+        request: &JournalSearchRequest,
+    ) -> ApiResult<JournalSearchResponse>;
 
     /// Fiche d'une consultation (`/marche/{uid}`). Uid inconnu ⇒ 404.
     async fn fetch_annonce(&self, uid: &str) -> ApiResult<AnnonceDetailResponse>;
 
+    /// What a journal printed, read as a notice (`/notice/{juris}/{journal}:{text_uid}`). Unknown uid ⇒ 404.
+    async fn fetch_publication_notice(&self, uid: &str) -> ApiResult<PublicationNotice>;
+
     /// Catalogue du fond annonces (stock ouvert par département et nature).
-    async fn fetch_annonces_catalogue(&self) -> ApiResult<AnnonceCatalogueResponse>;
+    async fn fetch_journals_catalogue(&self) -> ApiResult<AnnonceCatalogueResponse>;
 
     /// Compteurs globaux du corpus (page d'accueil), lus dans l'instantané
     /// `corpus_counts` : trois lignes indexées par rendu.
@@ -288,6 +356,7 @@ pub trait Backend: Send + Sync {
         date: Option<&str>,
         juris: &str,
         page: PageParams,
+        lang: &str,
     ) -> ApiResult<Vec<CitingDecisionHit>>;
 
     // ── Fiche entité (`/entite`) ────────────────────────────────────────────
@@ -372,9 +441,9 @@ use reqwest::{Client, Method, RequestBuilder, StatusCode};
 
 #[cfg(feature = "hydrate")]
 impl ApiError {
-    fn new(message: &str, status: StatusCode) -> Self {
+    fn new(failure: Failure, status: StatusCode) -> Self {
         Self {
-            message: message.to_string(),
+            failure,
             status: status.as_u16(),
         }
     }
@@ -382,7 +451,7 @@ impl ApiError {
     /// Erreur reseau (fetch/transport echoue avant toute reponse HTTP). Status 0.
     fn transport(err: reqwest::Error) -> Self {
         Self {
-            message: err.to_string(),
+            failure: Failure::Said(err.to_string()),
             status: 0,
         }
     }
@@ -440,7 +509,7 @@ impl ApiClient {
         &self,
         builder: RequestBuilder,
         message: &str,
-        not_found: Option<&str>,
+        not_found: Option<Missing>,
     ) -> ApiResult<()> {
         let resp = self.envoyer(builder).await?;
         check_status(&resp, message, not_found)?;
@@ -452,7 +521,7 @@ impl ApiClient {
         &self,
         builder: RequestBuilder,
         message: &str,
-        not_found: Option<&str>,
+        not_found: Option<Missing>,
     ) -> ApiResult<T> {
         let resp = self.envoyer(builder).await?;
         check_status(&resp, message, not_found)?;
@@ -464,6 +533,7 @@ impl ApiClient {
         // the split keeps it, and the method stays readable after the send.
         let requete = builder.build().map_err(ApiError::transport)?;
         let is_get = requete.method() == Method::GET;
+        let is_search = requete.url().path().starts_with("/internal/search");
         let resp = self
             .http
             .execute(requete)
@@ -472,6 +542,9 @@ impl ApiClient {
         note_build(&resp);
         if is_get {
             recover_from_challenge(&resp);
+            if !is_search {
+                offer_sign_in(&resp);
+            }
         }
         Ok(resp)
     }
@@ -521,34 +594,43 @@ impl ApiClient {
 
     // ── Decision ───────────────────────────────────────────────────────────
 
-    pub async fn fetch_decision(&self, id: &str) -> ApiResult<DecisionDetail> {
-        let builder = self.request(Method::GET, &format!("/decision/{id}"));
-        self.send_json(
-            builder,
-            "decision fetch failed",
-            Some("Décision introuvable"),
-        )
-        .await
+    pub async fn fetch_decision(&self, id: &str, lang: Option<&str>) -> ApiResult<DecisionDetail> {
+        let query = lang
+            .map(|l| format!("?lang={}", url_encode(l)))
+            .unwrap_or_default();
+        let builder = self.request(Method::GET, &format!("/decision/{id}{query}"));
+        self.send_json(builder, "decision fetch failed", Some(Missing::Decision))
+            .await
     }
 
-    pub async fn fetch_similar_decisions(&self, id: &str) -> ApiResult<SimilarDecisionsResponse> {
-        let builder = self.request(Method::GET, &format!("/decision/{id}/similar"));
+    pub async fn fetch_similar_decisions(
+        &self,
+        id: &str,
+        lang: &str,
+    ) -> ApiResult<SimilarDecisionsResponse> {
+        let builder = self.request(
+            Method::GET,
+            &format!("/decision/{id}/similar?lang={}", url_encode(lang)),
+        );
         self.send_json(
             builder,
             "similar decisions fetch failed",
-            Some("Décision introuvable"),
+            Some(Missing::Decision),
         )
         .await
     }
 
     /// Prévisualisation légère d'une décision (hover card). Client-only : le survol
     /// n'existe qu'au navigateur.
-    pub async fn fetch_decision_preview(&self, id: &str) -> ApiResult<DecisionPreview> {
-        let builder = self.request(Method::GET, &format!("/decision/{id}/preview"));
+    pub async fn fetch_decision_preview(&self, id: &str, lang: &str) -> ApiResult<DecisionPreview> {
+        let builder = self.request(
+            Method::GET,
+            &format!("/decision/{id}/preview?lang={}", url_encode(lang)),
+        );
         self.send_json(
             builder,
             "decision preview fetch failed",
-            Some("Décision introuvable"),
+            Some(Missing::Decision),
         )
         .await
     }
@@ -572,17 +654,19 @@ impl ApiClient {
             path.push_str(&format!("?place={place}"));
         }
         let builder = self.request(Method::GET, &path);
-        self.send_json(
-            builder,
-            "legi article fetch failed",
-            Some("Article introuvable"),
-        )
-        .await
+        self.send_json(builder, "legi article fetch failed", Some(Missing::Article))
+            .await
     }
 
     pub async fn fetch_places(&self) -> ApiResult<PlacesResponse> {
         let builder = self.request(Method::GET, "/places");
-        self.send_json(builder, "places fetch failed", Some("Lieux introuvables"))
+        self.send_json(builder, "places fetch failed", Some(Missing::Places))
+            .await
+    }
+
+    pub async fn fetch_reader_jurisdictions(&self) -> ApiResult<Vec<ReaderJurisdiction>> {
+        let builder = self.request(Method::GET, "/jurisdictions");
+        self.send_json(builder, "jurisdictions fetch failed", None)
             .await
     }
 
@@ -599,7 +683,7 @@ impl ApiClient {
             path.push_str(&format!("?place={place}"));
         }
         let builder = self.request(Method::GET, &path);
-        self.send_json(builder, "corpus fetch failed", Some("Corpus introuvable"))
+        self.send_json(builder, "corpus fetch failed", Some(Missing::Corpus))
             .await
     }
 
@@ -614,14 +698,11 @@ impl ApiClient {
     ) -> ApiResult<LawCompareResponse> {
         let text = lj_vocab::norm_path(juris, code);
         let builder = self.request(Method::GET, &format!("{text}/{num}/compare/{de}/{a}"));
-        self.send_json(
-            builder,
-            "legi compare fetch failed",
-            Some("Version introuvable"),
-        )
-        .await
+        self.send_json(builder, "legi compare fetch failed", Some(Missing::Version))
+            .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn fetch_legi_citing(
         &self,
         code: &str,
@@ -630,20 +711,21 @@ impl ApiClient {
         place: Option<&str>,
         juris: &str,
         page: PageParams,
+        lang: &str,
     ) -> ApiResult<Vec<CitingDecisionHit>> {
         let date_q = date.map(|d| format!("&date={d}")).unwrap_or_default();
         let place_q = place.map(|p| format!("&place={p}")).unwrap_or_default();
         let text = lj_vocab::norm_path(juris, code);
         let builder = self.request(
             Method::GET,
-            &format!("{text}/{num}/citing{}{date_q}{place_q}", page_query(page)),
+            &format!(
+                "{text}/{num}/citing{}{date_q}{place_q}&lang={}",
+                page_query(page),
+                url_encode(lang)
+            ),
         );
-        self.send_json(
-            builder,
-            "legi citing fetch failed",
-            Some("Article introuvable"),
-        )
-        .await
+        self.send_json(builder, "legi citing fetch failed", Some(Missing::Article))
+            .await
     }
 
     /// Articles co-cités avec l'article (« souvent cité avec »).
@@ -655,12 +737,8 @@ impl ApiClient {
     ) -> ApiResult<Vec<CoCitedArticle>> {
         let text = lj_vocab::norm_path(juris, code);
         let builder = self.request(Method::GET, &format!("{text}/{num}/related"));
-        self.send_json(
-            builder,
-            "legi related fetch failed",
-            Some("Article introuvable"),
-        )
-        .await
+        self.send_json(builder, "legi related fetch failed", Some(Missing::Article))
+            .await
     }
 
     pub async fn fetch_legi_code_summary(
@@ -669,7 +747,7 @@ impl ApiClient {
         juris: &str,
     ) -> ApiResult<LawCodeSummary> {
         let builder = self.request(Method::GET, &lj_vocab::norm_path(juris, code));
-        self.send_json(builder, "legi code fetch failed", Some("Code introuvable"))
+        self.send_json(builder, "legi code fetch failed", Some(Missing::Code))
             .await
     }
 
@@ -682,37 +760,26 @@ impl ApiClient {
         mode: lj_dtos::SearchMode,
         context: SearchContext,
     ) -> ApiResult<ArticleSearchResponse> {
-        let mut path = format!(
-            "/search-textes?query={}&limit={}&offset={}&mode={}",
-            url_encode(q),
-            page.limit,
-            page.offset,
-            enum_value(&mode)
+        let query = textes_query(q, filters, mode, context);
+        let path = format!(
+            "/search-textes?{query}&limit={}&offset={}",
+            page.limit, page.offset
         );
-        if context == SearchContext::Teaser {
-            path.push_str("&context=teaser");
-        }
-        for (key, values) in [
-            ("place", filters.places),
-            ("jurisdiction", filters.jurisdictions),
-        ] {
-            for v in values {
-                path.push_str(&format!("&{key}={}", url_encode(v)));
-            }
-        }
-        for (key, value) in [
-            ("code", filters.code),
-            ("source", filters.source),
-            ("scope", filters.scope),
-            ("valid_from", filters.valid_from),
-            ("as_of", filters.as_of),
-        ] {
-            if let Some(v) = value.filter(|v| !v.is_empty()) {
-                path.push_str(&format!("&{key}={}", url_encode(v)));
-            }
-        }
         let builder = self.request(Method::GET, &path);
         self.send_json(builder, "search textes failed", None).await
+    }
+
+    pub async fn search_textes_count(
+        &self,
+        q: &str,
+        filters: TextesFilters<'_>,
+        mode: lj_dtos::SearchMode,
+        context: SearchContext,
+    ) -> ApiResult<lj_dtos::ArticleSearchCountResponse> {
+        let query = textes_query(q, filters, mode, context);
+        let builder = self.request(Method::GET, &format!("/search-textes/decompte?{query}"));
+        self.send_json(builder, "search textes count failed", None)
+            .await
     }
 
     /// Catalogue du fond codes (`/normes/codes`) : codes et constitutions
@@ -791,11 +858,11 @@ impl ApiClient {
     }
 
     /// Page du moteur d'annonces.
-    pub async fn search_annonces(
+    pub async fn search_journals(
         &self,
-        request: &AnnonceSearchRequest,
-    ) -> ApiResult<AnnonceSearchResponse> {
-        let path = format!("/annonces?{}", build_annonces_query(request));
+        request: &JournalSearchRequest,
+    ) -> ApiResult<JournalSearchResponse> {
+        let path = format!("/journals?{}", build_journals_query(request));
         let builder = self.request(Method::GET, &path);
         self.send_json(builder, "annonces search failed", None)
             .await
@@ -803,19 +870,27 @@ impl ApiClient {
 
     /// Fiche d'une consultation (`/marche/{uid}`).
     pub async fn fetch_annonce(&self, uid: &str) -> ApiResult<AnnonceDetailResponse> {
-        let path = format!("/annonces/{}", url_encode(uid));
+        let path = format!("/journals/{}", url_encode(uid));
+        let builder = self.request(Method::GET, &path);
+        self.send_json(builder, "annonce fetch failed", Some(Missing::Consultation))
+            .await
+    }
+
+    /// What a journal printed, read as a notice.
+    pub async fn fetch_publication_notice(&self, uid: &str) -> ApiResult<PublicationNotice> {
+        let path = format!("/notices/{}", url_encode(uid));
         let builder = self.request(Method::GET, &path);
         self.send_json(
             builder,
-            "annonce fetch failed",
-            Some("Consultation introuvable"),
+            "publication notice fetch failed",
+            Some(Missing::Notice),
         )
         .await
     }
 
     /// Catalogue du fond annonces.
-    pub async fn fetch_annonces_catalogue(&self) -> ApiResult<AnnonceCatalogueResponse> {
-        let builder = self.request(Method::GET, "/annonces/catalogue");
+    pub async fn fetch_journals_catalogue(&self) -> ApiResult<AnnonceCatalogueResponse> {
+        let builder = self.request(Method::GET, "/journals/catalogue");
         self.send_json(builder, "annonces catalogue fetch failed", None)
             .await
     }
@@ -837,7 +912,7 @@ impl ApiClient {
         let date_q = date.map(|d| format!("?date={d}")).unwrap_or_default();
         let text = lj_vocab::norm_path(juris, code);
         let builder = self.request(Method::GET, &format!("{text}/sommaire{date_q}"));
-        self.send_json(builder, "code toc fetch failed", Some("Code introuvable"))
+        self.send_json(builder, "code toc fetch failed", Some(Missing::Code))
             .await
     }
 
@@ -852,12 +927,8 @@ impl ApiClient {
         let date_q = date.map(|d| format!("?date={d}")).unwrap_or_default();
         let text = lj_vocab::norm_path(juris, code);
         let builder = self.request(Method::GET, &format!("{text}/section/{path}{date_q}"));
-        self.send_json(
-            builder,
-            "law section fetch failed",
-            Some("Section introuvable"),
-        )
-        .await
+        self.send_json(builder, "law section fetch failed", Some(Missing::Section))
+            .await
     }
 
     /// Décisions citant une division (`…/section-citing/{path}`).
@@ -868,17 +939,22 @@ impl ApiClient {
         date: Option<&str>,
         juris: &str,
         page: PageParams,
+        lang: &str,
     ) -> ApiResult<Vec<CitingDecisionHit>> {
         let date_q = date.map(|d| format!("&date={d}")).unwrap_or_default();
         let text = lj_vocab::norm_path(juris, code);
         let builder = self.request(
             Method::GET,
-            &format!("{text}/section-citing/{path}{}{date_q}", page_query(page)),
+            &format!(
+                "{text}/section-citing/{path}{}{date_q}&lang={}",
+                page_query(page),
+                url_encode(lang)
+            ),
         );
         self.send_json(
             builder,
             "law section citing fetch failed",
-            Some("Section introuvable"),
+            Some(Missing::Section),
         )
         .await
     }
@@ -887,7 +963,7 @@ impl ApiClient {
 
     pub async fn fetch_entity(&self, ns: &str, id: &str) -> ApiResult<EntityPageResponse> {
         let builder = self.request(Method::GET, &format!("/entity/{ns}/{id}"));
-        self.send_json(builder, "entity fetch failed", Some("Entité introuvable"))
+        self.send_json(builder, "entity fetch failed", Some(Missing::Entity))
             .await
     }
 
@@ -905,7 +981,7 @@ impl ApiClient {
         self.send_json(
             builder,
             "entity decisions fetch failed",
-            Some("Entité introuvable"),
+            Some(Missing::Entity),
         )
         .await
     }
@@ -936,7 +1012,7 @@ impl ApiClient {
         self.send_json(
             builder,
             "decision parties fetch failed",
-            Some("Décision introuvable"),
+            Some(Missing::Decision),
         )
         .await
     }
@@ -1037,25 +1113,6 @@ impl ApiClient {
         self.send_unit(builder, "api key revoke failed", None).await
     }
 
-    // ── Signets ──────────────────────────────────────────────────────────────
-
-    pub async fn list_bookmarks(&self) -> ApiResult<BookmarksResponse> {
-        let builder = self.request(Method::GET, "/me/bookmarks");
-        self.send_json(builder, "bookmarks fetch failed", None)
-            .await
-    }
-
-    pub async fn add_bookmark(&self, decision_id: &str) -> ApiResult<()> {
-        let builder = self.request(Method::PUT, &format!("/me/bookmarks/{decision_id}"));
-        self.send_unit(builder, "bookmark add failed", None).await
-    }
-
-    pub async fn remove_bookmark(&self, decision_id: &str) -> ApiResult<()> {
-        let builder = self.request(Method::DELETE, &format!("/me/bookmarks/{decision_id}"));
-        self.send_unit(builder, "bookmark remove failed", None)
-            .await
-    }
-
     pub async fn report_read(&self, report: &lj_dtos::ReadReport) -> ApiResult<()> {
         let builder = self.request(Method::POST, "/reads").json(report);
         self.send_unit(builder, "read report failed", None).await
@@ -1119,6 +1176,27 @@ fn recover_from_challenge(resp: &reqwest::Response) {
     let _ = location.replace(&format!("{path}{query}"));
 }
 
+/// A refused read: the head script's bar offers to sign in, an account reading on its
+/// own budget. A refused search says so in its own results.
+#[cfg(feature = "hydrate")]
+fn offer_sign_in(resp: &reqwest::Response) {
+    use wasm_bindgen::JsCast as _;
+    use wasm_bindgen::JsValue;
+
+    if resp.status() != StatusCode::TOO_MANY_REQUESTS {
+        return;
+    }
+    let Some(window) = web_sys::window() else {
+        return;
+    };
+    let Ok(bar) = js_sys::Reflect::get(&window, &JsValue::from_str("__ljLimit")) else {
+        return;
+    };
+    if let Ok(bar) = bar.dyn_into::<js_sys::Function>() {
+        let _ = bar.call0(&window);
+    }
+}
+
 /// Transmet au suivi de l'onglet l'identite du bundle portee par la reponse. Le
 /// suivi lui-meme vit dans le script de tete (`app::BANDEAU`), pose avant
 /// l'hydratation : une seule memoire par onglet, une seule annonce.
@@ -1145,20 +1223,26 @@ fn note_build(resp: &reqwest::Response) {
     }
 }
 
-/// Verifie le status HTTP, mappant `404` vers `not_found` (si fourni) et tout
-/// autre `!ok` vers `message`.
+/// Maps `404` to `not_found` when given, `429` to [`Failure::RateLimited`], any other failure to `message`.
 #[cfg(feature = "hydrate")]
-fn check_status(resp: &reqwest::Response, message: &str, not_found: Option<&str>) -> ApiResult<()> {
+fn check_status(
+    resp: &reqwest::Response,
+    message: &str,
+    not_found: Option<Missing>,
+) -> ApiResult<()> {
     let status = resp.status();
     if status.is_success() {
         return Ok(());
     }
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        return Err(ApiError::new(Failure::RateLimited, status));
+    }
     if status == StatusCode::NOT_FOUND {
-        if let Some(nf) = not_found {
-            return Err(ApiError::new(nf, status));
+        if let Some(missing) = not_found {
+            return Err(ApiError::new(Failure::Missing(missing), status));
         }
     }
-    Err(ApiError::new(message, status))
+    Err(ApiError::new(Failure::Said(message.to_string()), status))
 }
 
 /// Query string `?limit=&offset=`.
@@ -1181,6 +1265,9 @@ fn build_search_query(request: &SearchRequest) -> String {
     append_multi(&mut params, "legal_domain", &request.legal_domain);
     append_multi_str(&mut params, "jurisdiction_code", &request.jurisdiction_code);
     append_multi_str(&mut params, "seat", &request.seat);
+    if let Some(home) = &request.home {
+        params.push(("home".to_string(), home.clone()));
+    }
     append_multi_str(&mut params, "formation", &request.formation);
     append_multi_str(&mut params, "legal_instrument", &request.legal_instrument);
     append_multi_str(&mut params, "legal_article", &request.legal_article);
@@ -1206,14 +1293,17 @@ fn build_search_query(request: &SearchRequest) -> String {
     if request.ai_mode {
         params.push(("ai_rerank".to_string(), "true".to_string()));
     }
+    if let Some(lang) = &request.lang {
+        params.push(("lang".to_string(), lang.clone()));
+    }
 
     encode_pairs(&params)
 }
 
-/// Encode un `AnnonceSearchRequest` en query string — mêmes clés que l'URL de
-/// la page `/annonces`, listes en paramètres répétés.
+/// A `JournalSearchRequest` as a query string: the keys of the `/journal-search`
+/// page's URL, a list as a repeated parameter.
 #[cfg(feature = "hydrate")]
-fn build_annonces_query(request: &AnnonceSearchRequest) -> String {
+fn build_journals_query(request: &JournalSearchRequest) -> String {
     let mut params: Vec<(String, String)> = Vec::new();
     if let Some(q) = request.q.as_deref().filter(|q| !q.is_empty()) {
         params.push(("q".to_string(), q.to_string()));
@@ -1234,12 +1324,54 @@ fn build_annonces_query(request: &AnnonceSearchRequest) -> String {
     if request.closes {
         params.push(("closes".to_string(), "true".to_string()));
     }
+    for (key, value) in [
+        ("jurisdiction", &request.jurisdiction),
+        ("home", &request.home),
+    ] {
+        if let Some(v) = value {
+            params.push((key.to_string(), v.clone()));
+        }
+    }
     params.push(("sort".to_string(), enum_value(&request.sort)));
     params.push(("limit".to_string(), request.limit.to_string()));
     if request.offset != 0 {
         params.push(("offset".to_string(), request.offset.to_string()));
     }
     encode_pairs(&params)
+}
+
+/// The query string a norms search and its count share.
+#[cfg(feature = "hydrate")]
+fn textes_query(
+    q: &str,
+    filters: TextesFilters<'_>,
+    mode: lj_dtos::SearchMode,
+    context: SearchContext,
+) -> String {
+    let mut query = format!("query={}&mode={}", url_encode(q), enum_value(&mode));
+    if context == SearchContext::Teaser {
+        query.push_str("&context=teaser");
+    }
+    for (key, values) in [
+        ("place", filters.places),
+        ("jurisdiction", filters.jurisdictions),
+    ] {
+        for v in values {
+            query.push_str(&format!("&{key}={}", url_encode(v)));
+        }
+    }
+    for (key, value) in [
+        ("code", filters.code),
+        ("source", filters.source),
+        ("scope", filters.scope),
+        ("valid_from", filters.valid_from),
+        ("as_of", filters.as_of),
+    ] {
+        if let Some(v) = value.filter(|v| !v.is_empty()) {
+            query.push_str(&format!("&{key}={}", url_encode(v)));
+        }
+    }
+    query
 }
 
 /// Serialise une valeur enum DTO en sa chaine serde (sans guillemets).
@@ -1306,48 +1438,35 @@ mod tests {
     use super::*;
     use lj_dtos::{Domain, JurisdictionType, SearchMode, Solution, SortOrder};
 
-    /// Un filtre invalide n'est pas une panne : le 422 nomme le lien, pas la
-    /// disponibilité de l'API.
-    #[test]
-    fn le_422_ne_met_pas_l_api_en_cause() {
-        let echec = SearchFailure::from_error(
-            &ApiError {
-                message: "search failed".to_string(),
-                status: 422,
-            },
-            "bail commercial",
-        );
-        assert!(!echec.title.contains("search failed"));
-        assert!(!echec.hint.contains("indisponible"));
-        assert!(echec.hint.contains("filtre"));
-
-        let panne = SearchFailure::from_error(
-            &ApiError {
-                message: "search failed".to_string(),
-                status: 500,
-            },
-            "bail commercial",
-        );
-        assert!(panne.hint.contains("indisponible"));
+    fn failed(status: u16) -> ApiError {
+        ApiError {
+            failure: Failure::Said("search failed".to_string()),
+            status,
+        }
     }
 
-    /// An over-length 422 shows both counts and never speaks of a filter.
+    /// An invalid filter is not an outage: the 422 names the link, not the
+    /// API's availability.
+    #[test]
+    fn a_422_does_not_blame_the_api() {
+        assert_eq!(
+            SearchFailure::from_error(&failed(422), "bail commercial"),
+            SearchFailure::UnknownFilter
+        );
+        assert!(matches!(
+            SearchFailure::from_error(&failed(500), "bail commercial"),
+            SearchFailure::Down(_)
+        ));
+    }
+
+    /// An over-length 422 carries the length and never speaks of a filter.
     #[test]
     fn over_length_422_names_the_length() {
         let too_long = "x".repeat(lj_dtos::QUERY_MAX_CHARS + 1);
-        let echec = SearchFailure::from_error(
-            &ApiError {
-                message: "search failed".to_string(),
-                status: 422,
-            },
-            &too_long,
+        assert_eq!(
+            SearchFailure::from_error(&failed(422), &too_long),
+            SearchFailure::TooLong(lj_dtos::QUERY_MAX_CHARS + 1)
         );
-        assert!(!echec.title.contains("filtre"));
-        assert!(!echec.hint.contains("filtre"));
-        assert!(echec
-            .title
-            .contains(&(lj_dtos::QUERY_MAX_CHARS + 1).to_string()));
-        assert!(echec.title.contains(&lj_dtos::QUERY_MAX_CHARS.to_string()));
     }
 
     /// Toute clé sérialisée par le `SearchRequest` doit partir dans la query
@@ -1358,10 +1477,11 @@ mod tests {
         let request = SearchRequest {
             query: "bail commercial".to_string(),
             jurisdiction_type: Some(vec![JurisdictionType::Cc]),
-            solution: Some(vec![Solution::Rejet]),
+            solution: Some(vec![Solution::Dismissed]),
             legal_domain: Some(vec![Domain::Social]),
             jurisdiction_code: Some(vec!["cc".to_string()]),
             seat: Some(vec!["FR.CC.C2".to_string()]),
+            home: Some("fr".to_string()),
             formation: Some(vec!["FR.CC.RESTREINTE".to_string()]),
             legal_instrument: Some(vec!["code-civil".to_string()]),
             legal_article: Some(vec!["code-civil|203".to_string()]),
@@ -1374,6 +1494,7 @@ mod tests {
             limit: 20,
             offset: 20,
             ai_mode: true,
+            lang: Some("de".to_string()),
         };
 
         let qs = build_search_query(&request);

@@ -64,6 +64,11 @@ pub fn source_authority(source: &str) -> SourceAuthority {
         // --- Gouvernemental / public officiel étranger ---
         "fedlex"
         | "legilux"
+        | "justice_laws"
+        | "elaws"
+        | "legisquebec"
+        | "gnb"
+        | "lexwork"
         | "boe.es"
         | "parlamento.pt"
         | "pgdlisboa.pt"
@@ -77,9 +82,13 @@ pub fn source_authority(source: &str) -> SourceAuthority {
         | "cmf.tn"
         | "academiedepolice.bf"
         | "ejustice-be"
+        | "vlaamse-codex"
+        | "wallex"
+        | "gallilex"
         | "cgra-be"
         | "ris-at"
         | "wetten-nl"
+        | "bwb"
         | "birosag-hu"
         | "legislatie-ro"
         | "lexpol.cloud.pf"
@@ -195,6 +204,7 @@ pub fn diffuseur_label_from_url(url: &str) -> Option<String> {
         "jafbase.fr" => "jafbase",
         "info-droits-etrangers.org" => "info-droits-etrangers",
         "ejustice.just.fgov.be" => "ejustice-be",
+        "gallilex.cfwb.be" => "gallilex",
         "ecoi.net" => "ecoi",
         "ris.bka.gv.at" => "ris-at",
         "wetten.overheid.nl" => "wetten-nl",

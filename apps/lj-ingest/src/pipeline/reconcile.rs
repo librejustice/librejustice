@@ -93,6 +93,11 @@ pub async fn reconcile_all() -> Result<()> {
     )
     .await?;
     tracing::info!(resolved, "pending chronology links resolved");
+    filet(
+        "liens CEDH",
+        super::cedh_link::settle_cedh_steps(lj_store::repository::CedhVisit::Changed),
+    )
+    .await?;
     pending_citations(&repo).await?;
 
     // Liens conseils devenus ambigus à date : le delta du reload CNB ne voit que le

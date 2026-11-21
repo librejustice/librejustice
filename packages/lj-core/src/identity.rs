@@ -35,9 +35,11 @@ pub fn ecli_key(ecli: &str) -> String {
 
 /// An equal ECLI decides, a different one discards the candidate, and the
 /// candidates left are ranked on publication, chamber, solution and attacked
-/// decision.
+/// decision. A consultative opinion and a judgment are never one decision.
 pub fn choose(incoming: &Traits, candidates: &[Traits]) -> Choice {
-    let mut pool: Vec<usize> = (0..candidates.len()).collect();
+    let mut pool: Vec<usize> = (0..candidates.len())
+        .filter(|&i| consultative_agrees(incoming, &candidates[i]))
+        .collect();
     if let Some(key) = incoming.ecli.as_deref().map(ecli_key) {
         let same = |i: &usize| candidates[*i].ecli.as_deref().map(ecli_key) == Some(key.clone());
         if let Some(i) = pool.iter().copied().find(|i| same(i)) {
@@ -80,6 +82,12 @@ fn chamber_agrees(a: &Traits, b: &Traits) -> bool {
         || ra
             .iter()
             .any(|p| rb.iter().any(|q| nested(p, q) || nested(q, p)))
+}
+
+fn consultative_agrees(a: &Traits, b: &Traits) -> bool {
+    let consultative = |rooms: &[&str]| rooms.iter().any(|p| p.split('.').any(|s| s == "AVIS"));
+    let (ra, rb) = (rooms(a), rooms(b));
+    ra.is_empty() || rb.is_empty() || consultative(&ra) == consultative(&rb)
 }
 
 fn rooms(t: &Traits) -> Vec<&str> {
@@ -198,6 +206,32 @@ mod tests {
             room("FR.CC.C2_CIVILE", "solution:CASSATION"),
         ];
         assert_eq!(choose(&incoming, &cands), Choice::Tied(vec![0, 1]));
+    }
+
+    #[test]
+    fn a_consultative_opinion_never_joins_a_judgment_at_its_address() {
+        let seat = |room: &str| Traits {
+            seat_paths: vec!["FR".into(), "FR.CE".into(), room.into()],
+            ..Default::default()
+        };
+        let opinion = seat("FR.CE.AVIS");
+        let judgment = Traits {
+            solution_uid: Some("solution:REJET".into()),
+            ..seat("FR.CE.C1")
+        };
+        assert_eq!(
+            choose(&opinion, std::slice::from_ref(&judgment)),
+            Choice::Neither
+        );
+        assert_eq!(
+            choose(&judgment, std::slice::from_ref(&opinion)),
+            Choice::Neither
+        );
+        let unseated = Traits {
+            seat_paths: vec!["FR".into(), "FR.CE".into()],
+            ..Default::default()
+        };
+        assert_eq!(choose(&opinion, &[judgment, unseated]), Choice::One(1));
     }
 
     #[test]

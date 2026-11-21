@@ -432,19 +432,36 @@ impl DecisionRepository<'_> {
     /// The named decisions, their keys and the identity the caller draws the pending key
     /// from, with the citations aiming at each: spans of `case_citation` and renvois, the
     /// count the search card ranks a name's bearers by.
+    ///
+    /// A pass over every named decision and the citations aiming at it, past the pool's
+    /// `statement_timeout` on a loaded base: the timeout is lifted for the transaction.
     pub async fn named_cases(&self) -> Result<Vec<NamedCaseRow>> {
-        let rows = self
-            .conn
-            .query(
-                "SELECT d.case_name_keys, d.jurisdiction_code, d.docket_numbers,
-                        to_char(d.date_lecture, 'YYYY-MM-DD'),
-                        (SELECT count(*) FROM case_citation cc WHERE cc.target_decision_id = d.id)
-                        + (SELECT count(*) FROM decision_renvoi r WHERE r.target_decision_id = d.id)
-                 FROM decisions d
-                 WHERE d.case_name_keys IS NOT NULL AND d.deleted_at IS NULL",
-                &[],
-            )
-            .await?;
+        self.conn.batch_execute("BEGIN").await?;
+        let result: Result<Vec<tokio_postgres::Row>> = async {
+            self.conn
+                .batch_execute("SET LOCAL statement_timeout = 0")
+                .await?;
+            Ok(self
+                .conn
+                .query(
+                    "SELECT d.case_name_keys, d.jurisdiction_code, d.docket_numbers,
+                            to_char(d.date_lecture, 'YYYY-MM-DD'),
+                            (SELECT count(*) FROM case_citation cc WHERE cc.target_decision_id = d.id)
+                            + (SELECT count(*) FROM decision_renvoi r WHERE r.target_decision_id = d.id)
+                     FROM decisions d
+                     WHERE d.case_name_keys IS NOT NULL AND d.deleted_at IS NULL",
+                    &[],
+                )
+                .await?)
+        }
+        .await;
+        match &result {
+            Ok(_) => self.conn.batch_execute("COMMIT").await?,
+            Err(_) => {
+                let _ = self.conn.batch_execute("ROLLBACK").await;
+            }
+        }
+        let rows = result?;
         Ok(rows
             .iter()
             .map(|r| NamedCaseRow {

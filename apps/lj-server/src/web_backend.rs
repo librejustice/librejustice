@@ -4,17 +4,18 @@
 use async_trait::async_trait;
 use lj_api::state::AppState;
 use lj_dtos::{
-    AccountSummary, AnnonceCatalogueResponse, AnnonceDetailResponse, AnnonceSearchRequest,
-    AnnonceSearchResponse, AnnuaireStatsResponse, ArticleSearchResponse, CitingDecisionHit,
-    CoCitedArticle, CodeCatalogueResponse, CodeTocResponse, CorpusStatsResponse, DecisionDetail,
-    DecisionPartiesResponse, EntityDecisionsResponse, EntityDirectoryResponse, EntityPageResponse,
-    EntityRegistreResponse, EntitySearchResponse, JurisdictionCatalogueResponse,
-    JurisdictionHubResponse, JurisdictionYearResponse, LawArticleResponse, LawCodeSummary,
-    LawCompareResponse, LawSectionResponse, NormCatalogueResponse, NormFondResponse,
-    NormYearResponse, OpenSourceResponse, PlaceCorpusResponse, PlacesResponse, SearchContext,
+    AccountSummary, AnnonceCatalogueResponse, AnnonceDetailResponse, AnnuaireStatsResponse,
+    ArticleSearchResponse, CitingDecisionHit, CoCitedArticle, CodeCatalogueResponse,
+    CodeTocResponse, CorpusStatsResponse, DecisionDetail, DecisionPartiesResponse,
+    EntityDecisionsResponse, EntityDirectoryResponse, EntityPageResponse, EntityRegistreResponse,
+    EntitySearchResponse, JournalSearchRequest, JournalSearchResponse,
+    JurisdictionCatalogueResponse, JurisdictionHubResponse, JurisdictionYearResponse,
+    LawArticleResponse, LawCodeSummary, LawCompareResponse, LawSectionResponse,
+    NormCatalogueResponse, NormFondResponse, NormYearResponse, OpenSourceResponse,
+    PlaceCorpusResponse, PlacesResponse, PublicationNotice, ReaderJurisdiction, SearchContext,
     SearchRequest, SearchResponse, SimilarDecisionsResponse, SuggestResponse,
 };
-use lj_web::api::{ApiError, ApiResult, Backend, PageParams, TextesFilters};
+use lj_web::api::{ApiError, ApiResult, Backend, Failure, Missing, PageParams, TextesFilters};
 
 pub struct ServiceBackend {
     pub state: AppState,
@@ -65,16 +66,20 @@ impl Backend for ServiceBackend {
             .map_err(map_service_error)
     }
 
-    async fn fetch_decision(&self, id: &str) -> ApiResult<DecisionDetail> {
-        lj_api::decisions::get_decision(&self.state, id)
+    async fn fetch_decision(&self, id: &str, lang: Option<&str>) -> ApiResult<DecisionDetail> {
+        lj_api::decisions::get_decision(&self.state, id, lang)
             .await
-            .map_err(|e| map_not_found(e, "Décision introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Decision))
     }
 
-    async fn fetch_similar_decisions(&self, id: &str) -> ApiResult<SimilarDecisionsResponse> {
-        lj_api::decisions::similar_decisions(&self.state, id, 4)
+    async fn fetch_similar_decisions(
+        &self,
+        id: &str,
+        lang: &str,
+    ) -> ApiResult<SimilarDecisionsResponse> {
+        lj_api::decisions::similar_decisions(&self.state, id, 4, lang)
             .await
-            .map_err(|e| map_not_found(e, "Décision introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Decision))
     }
 
     async fn fetch_legi_article(
@@ -92,13 +97,20 @@ impl Backend for ServiceBackend {
             }
             None => lj_api::legi::article_in_force(&self.state, code, juris, num, place).await,
         };
-        result.map_err(|e| map_not_found(e, "Article introuvable"))
+        result.map_err(|e| map_not_found(e, Missing::Article))
     }
 
     async fn fetch_places(&self) -> ApiResult<PlacesResponse> {
         lj_api::legi::places(&self.state)
             .await
-            .map_err(|e| map_not_found(e, "Lieux introuvables"))
+            .map_err(|e| map_not_found(e, Missing::Places))
+    }
+
+    async fn fetch_reader_jurisdictions(&self) -> ApiResult<Vec<ReaderJurisdiction>> {
+        let refs = lj_api::referential::referential(&self.state)
+            .await
+            .map_err(map_service_error)?;
+        Ok(lj_api::jurisdictions::known(&refs))
     }
 
     async fn fetch_place_corpus(
@@ -108,7 +120,7 @@ impl Backend for ServiceBackend {
     ) -> ApiResult<PlaceCorpusResponse> {
         lj_api::legi::place_corpus_str(&self.state, place, date)
             .await
-            .map_err(|e| map_not_found(e, "Corpus introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Corpus))
     }
 
     async fn fetch_legi_compare(
@@ -121,7 +133,7 @@ impl Backend for ServiceBackend {
     ) -> ApiResult<LawCompareResponse> {
         lj_api::legi::article_compare(&self.state, code, Some(juridiction(juris)), num, de, a)
             .await
-            .map_err(|e| map_not_found(e, "Version introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Version))
     }
 
     async fn fetch_legi_citing(
@@ -132,6 +144,7 @@ impl Backend for ServiceBackend {
         place: Option<&str>,
         juris: &str,
         page: PageParams,
+        lang: &str,
     ) -> ApiResult<Vec<CitingDecisionHit>> {
         lj_api::legi::article_citing(
             &self.state,
@@ -142,9 +155,10 @@ impl Backend for ServiceBackend {
             place,
             i64::from(page.limit),
             i64::from(page.offset),
+            lang,
         )
         .await
-        .map_err(|e| map_not_found(e, "Article introuvable"))
+        .map_err(|e| map_not_found(e, Missing::Article))
     }
 
     async fn fetch_legi_related(
@@ -155,13 +169,13 @@ impl Backend for ServiceBackend {
     ) -> ApiResult<Vec<CoCitedArticle>> {
         lj_api::legi::article_co_cited(&self.state, code, Some(juridiction(juris)), num)
             .await
-            .map_err(|e| map_not_found(e, "Article introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Article))
     }
 
     async fn fetch_legi_code_summary(&self, code: &str, juris: &str) -> ApiResult<LawCodeSummary> {
         lj_api::legi::code_summary(&self.state, code, Some(juridiction(juris)))
             .await
-            .map_err(|e| map_not_found(e, "Code introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Code))
     }
 
     async fn search_textes(
@@ -192,6 +206,36 @@ impl Backend for ServiceBackend {
             mode,
             lj_api::usage::Caller::web_anonymous(context),
             // In-process SSR: no socket, so no caller to name.
+            None,
+        )
+        .await
+        .map_err(map_service_error)
+    }
+
+    async fn search_textes_count(
+        &self,
+        q: &str,
+        filters: TextesFilters<'_>,
+        mode: lj_dtos::SearchMode,
+        context: SearchContext,
+    ) -> ApiResult<lj_dtos::ArticleSearchCountResponse> {
+        let date = |field, raw: Option<&str>| {
+            raw.map(|d| lj_api::legi::query_date(field, d))
+                .transpose()
+                .map_err(map_service_error)
+        };
+        lj_api::legi::count_textes(
+            &self.state,
+            q,
+            filters.code,
+            filters.places,
+            filters.jurisdictions,
+            filters.source,
+            filters.scope,
+            date("as_of", filters.as_of)?,
+            date("valid_from", filters.valid_from)?,
+            mode,
+            context,
             None,
         )
         .await
@@ -258,23 +302,29 @@ impl Backend for ServiceBackend {
             .map_err(map_service_error)
     }
 
-    async fn search_annonces(
+    async fn search_journals(
         &self,
-        request: &AnnonceSearchRequest,
-    ) -> ApiResult<AnnonceSearchResponse> {
-        lj_api::annonces::search(&self.state, request)
+        request: &JournalSearchRequest,
+    ) -> ApiResult<JournalSearchResponse> {
+        lj_api::journals::search(&self.state, request)
             .await
             .map_err(map_service_error)
     }
 
     async fn fetch_annonce(&self, uid: &str) -> ApiResult<AnnonceDetailResponse> {
-        lj_api::annonces::detail(&self.state, uid)
+        lj_api::journals::detail(&self.state, uid)
             .await
-            .map_err(|e| map_not_found(e, "Consultation introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Consultation))
     }
 
-    async fn fetch_annonces_catalogue(&self) -> ApiResult<AnnonceCatalogueResponse> {
-        lj_api::annonces::catalogue(&self.state)
+    async fn fetch_publication_notice(&self, uid: &str) -> ApiResult<PublicationNotice> {
+        lj_api::notices::notice(&self.state, uid)
+            .await
+            .map_err(|e| map_not_found(e, Missing::Notice))
+    }
+
+    async fn fetch_journals_catalogue(&self) -> ApiResult<AnnonceCatalogueResponse> {
+        lj_api::journals::catalogue(&self.state)
             .await
             .map(|c| (*c).clone())
             .map_err(map_service_error)
@@ -294,7 +344,7 @@ impl Backend for ServiceBackend {
     ) -> ApiResult<CodeTocResponse> {
         lj_api::legi::code_toc_str(&self.state, code, Some(juridiction(juris)), date)
             .await
-            .map_err(|e| map_not_found(e, "Code introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Code))
     }
 
     async fn fetch_law_section(
@@ -306,7 +356,7 @@ impl Backend for ServiceBackend {
     ) -> ApiResult<LawSectionResponse> {
         lj_api::legi::law_section_str(&self.state, code, Some(juridiction(juris)), path, date)
             .await
-            .map_err(|e| map_not_found(e, "Section introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Section))
     }
 
     async fn fetch_law_section_citing(
@@ -316,6 +366,7 @@ impl Backend for ServiceBackend {
         date: Option<&str>,
         juris: &str,
         page: PageParams,
+        lang: &str,
     ) -> ApiResult<Vec<CitingDecisionHit>> {
         lj_api::legi::section_citing(
             &self.state,
@@ -325,15 +376,16 @@ impl Backend for ServiceBackend {
             date,
             i64::from(page.limit),
             i64::from(page.offset),
+            lang,
         )
         .await
-        .map_err(|e| map_not_found(e, "Section introuvable"))
+        .map_err(|e| map_not_found(e, Missing::Section))
     }
 
     async fn fetch_entity(&self, ns: &str, id: &str) -> ApiResult<EntityPageResponse> {
         lj_api::entities::entity_page(&self.state, ns, id)
             .await
-            .map_err(|e| map_not_found(e, "Entité introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Entity))
     }
 
     async fn fetch_entity_decisions(
@@ -345,7 +397,7 @@ impl Backend for ServiceBackend {
     ) -> ApiResult<EntityDecisionsResponse> {
         lj_api::entities::entity_decisions(&self.state, ns, id, page, page_size)
             .await
-            .map_err(|e| map_not_found(e, "Entité introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Entity))
     }
 
     async fn fetch_entity_registre(&self, ns: &str, id: &str) -> ApiResult<EntityRegistreResponse> {
@@ -357,7 +409,7 @@ impl Backend for ServiceBackend {
     async fn fetch_decision_parties(&self, id: &str) -> ApiResult<DecisionPartiesResponse> {
         lj_api::entities::decision_parties(&self.state, id)
             .await
-            .map_err(|e| map_not_found(e, "Décision introuvable"))
+            .map_err(|e| map_not_found(e, Missing::Decision))
     }
 
     async fn fetch_annuaire_stats(&self) -> ApiResult<AnnuaireStatsResponse> {
@@ -418,27 +470,26 @@ fn juridiction(segment: &str) -> &str {
 /// the HTTP route (the front validates it upstream).
 fn resolve_kind(kind: &str) -> ApiResult<&'static str> {
     lj_api::entities::kind_to_category(kind).ok_or_else(|| ApiError {
-        message: format!("Catégorie inconnue : {kind}"),
+        failure: Failure::Said(format!("Catégorie inconnue : {kind}")),
         status: 422,
     })
 }
 
-/// A service error as the front's [`ApiError`] (status and message).
+/// A service error as the front's [`ApiError`], in the service's words.
 fn map_service_error(err: lj_api::error::ApiError) -> ApiError {
     ApiError {
         status: err.status(),
-        message: err.to_string(),
+        failure: Failure::Said(err.to_string()),
     }
 }
 
-/// As [`map_service_error`], with `not_found` as the message of a 404, the one the
-/// HTTP routes give.
-fn map_not_found(err: lj_api::error::ApiError, not_found: &str) -> ApiError {
+/// As [`map_service_error`], a 404 naming what was not found, as the HTTP routes do.
+fn map_not_found(err: lj_api::error::ApiError, not_found: Missing) -> ApiError {
     let status = err.status();
-    let message = if status == 404 {
-        not_found.to_string()
+    let failure = if status == 404 {
+        Failure::Missing(not_found)
     } else {
-        err.to_string()
+        Failure::Said(err.to_string())
     };
-    ApiError { message, status }
+    ApiError { failure, status }
 }

@@ -327,19 +327,7 @@ pub async fn sync_eu_catalog(full: bool, limit: Option<usize>) -> Result<()> {
 
     let mut publie_targets = std::collections::HashSet::new();
     for (path, _) in &ecrits {
-        conn.batch_execute("BEGIN")
-            .await
-            .map_err(|e| anyhow!("BEGIN: {e}"))?;
-        match super::legal_corpus::load_dataset_file(&repo, path, &mut publie_targets).await {
-            Ok(()) => conn
-                .batch_execute("COMMIT")
-                .await
-                .map_err(|e| anyhow!("COMMIT: {e}"))?,
-            Err(e) => {
-                let _ = conn.batch_execute("ROLLBACK").await;
-                return Err(e);
-            }
-        }
+        super::legal_corpus::load_dataset_file(&repo, path, &mut publie_targets).await?;
     }
     if !ecrits.is_empty() {
         super::legal_corpus::run_corpus_finishers(&repo, publie_targets).await?;
@@ -494,16 +482,7 @@ pub async fn sync_eu_jorf(limit: Option<usize>) -> Result<()> {
                 if !path.exists() {
                     ecrire_dataset(&path, uid, &titre_ue, date.as_deref(), nature_db, celex)?;
                 }
-                conn.batch_execute("BEGIN").await?;
-                match super::legal_corpus::load_dataset_file(&repo, &path, &mut publie_targets)
-                    .await
-                {
-                    Ok(()) => conn.batch_execute("COMMIT").await?,
-                    Err(e) => {
-                        let _ = conn.batch_execute("ROLLBACK").await;
-                        return Err(e);
-                    }
-                }
+                super::legal_corpus::load_dataset_file(&repo, &path, &mut publie_targets).await?;
                 en_base.insert(uid.clone());
                 frappees += 1;
                 target = Some((celex.clone(), uid.clone()));
@@ -525,7 +504,6 @@ pub async fn sync_eu_jorf(limit: Option<usize>) -> Result<()> {
     if frappees > 0 {
         super::legal_corpus::run_corpus_finishers(&repo, publie_targets).await?;
     }
-    let denorm = repo.refresh_article_denorm(None).await?;
     let (ranked_texts, _) = repo.refresh_reading_ranks().await?;
 
     tracing::info!(
@@ -533,7 +511,6 @@ pub async fn sync_eu_jorf(limit: Option<usize>) -> Result<()> {
         fusionnees,
         frappees,
         sans_acte,
-        denorm,
         ranked_texts,
         "sync-eu-jorf: OJ typos matched to EUR-Lex"
     );

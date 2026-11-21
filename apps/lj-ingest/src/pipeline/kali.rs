@@ -143,7 +143,6 @@ fn kali_conteneur_row(
         eli: None,
         nor: None,
         instrument_key: None,
-        body: None,
         status: None,
     })
 }
@@ -173,9 +172,8 @@ pub async fn ingest_kali(
     } else {
         lj_store::repository::Fraicheur::Autoritaire
     };
-    let mut touches: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (rang, path) in paths.iter().enumerate() {
-        let (u, s, e) = ingest_kali_tarball(&repo, path, textes, fraicheur, &mut touches).await?;
+        let (u, s, e) = ingest_kali_tarball(&repo, path, textes, fraicheur).await?;
         tracing::info!(
             rang = rang + 1,
             total = paths.len(),
@@ -184,14 +182,7 @@ pub async fn ingest_kali(
             "ingest_kali archive"
         );
     }
-    // Slugs first: the scoped pass below copies them onto the articles.
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
-    let portee: Vec<String> = touches.into_iter().collect();
-    // Dénormalise le titre de la convention sur ses articles (`search_title`).
-    let retitled = repo
-        .refresh_article_denorm(Some(&portee))
-        .await
-        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     // Ordre de lecture des textes touchés : l'écriture n'a fait qu'invalider les
     // rangs, ce finisseur les recalcule.
     let (ranked_texts, ranked_rows) = repo
@@ -199,7 +190,7 @@ pub async fn ingest_kali(
         .await
         .map_err(|e| anyhow!("refresh_reading_ranks: {e}"))?;
     tracing::info!(ranked_texts, ranked_rows, "reading ranks");
-    tracing::info!(retitled, slugged, "ingest_kali refresh code_title");
+    tracing::info!(slugged, "ingest_kali slugs");
     Ok(())
 }
 
@@ -211,7 +202,6 @@ async fn ingest_kali_tarball(
     path: &Path,
     textes: &[String],
     fraicheur: lj_store::repository::Fraicheur,
-    touches: &mut std::collections::HashSet<String>,
 ) -> Result<(usize, usize, usize)> {
     // Pièces de tête relues en base et non dans le tarball : un incrément livre
     // des articles dont le conteneur n'est pas du voyage, et c'est la
@@ -264,9 +254,6 @@ async fn ingest_kali_tarball(
             }
             let msg = match classify_kali_member(&name) {
                 KaliMember::Article => match lj_extract::kali::parse_kali_article(&raw) {
-                    // A numberless article cannot be cited, so it stays out
-                    // of the referential: the TI bodies consume it apart.
-                    Ok(art) if art.num_key.is_empty() => return Ok(()),
                     Ok(art) if !filtre.is_empty() && !filtre.contains(&art.kalicont) => {
                         return Ok(())
                     }
@@ -323,7 +310,6 @@ async fn ingest_kali_tarball(
     while let Some(msg) = rx.recv().await {
         match msg {
             KaliMsg::Article(row) => {
-                touches.insert(row.0.text_uid.clone());
                 articles.push(*row);
                 if articles.len() >= KALI_BATCH_SIZE {
                     let batch = std::mem::take(&mut articles);
@@ -332,7 +318,6 @@ async fn ingest_kali_tarball(
                 }
             }
             KaliMsg::Conteneur(row) => {
-                touches.insert(row.text_uid.clone());
                 conteneurs.push(*row);
                 if conteneurs.len() >= KALI_BATCH_SIZE {
                     let batch = std::mem::take(&mut conteneurs);
@@ -457,14 +442,12 @@ pub async fn sync_kali() -> Result<()> {
     let repo = DecisionRepository::new(&conn);
 
     let (mut upserted, mut skipped, mut errors) = (0usize, 0usize, 0usize);
-    let mut touches: std::collections::HashSet<String> = std::collections::HashSet::new();
     for archive in batch.archives.clone() {
         let (u, s, e) = ingest_kali_tarball(
             &repo,
             &archive.path,
             &[],
             lj_store::repository::Fraicheur::Autoritaire,
-            &mut touches,
         )
         .await?;
         upserted += u;
@@ -480,20 +463,7 @@ pub async fn sync_kali() -> Result<()> {
     // plein, donc la requalification suit ici plutôt que dans une étape à elle.
     let requalifies = requalifier_recueils(&repo, &settings, REQUALIF_LOT).await?;
 
-    // Slugs first: the scoped pass below copies them onto the articles.
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
-    let portee: Vec<String> = touches.into_iter().collect();
-    // A requalification rewrites texts the archive loop never listed, so it
-    // widens the pass back to the corpus.
-    let cible = if requalifies > 0 {
-        None
-    } else {
-        Some(portee.as_slice())
-    };
-    let retitled = repo
-        .refresh_article_denorm(cible)
-        .await
-        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     // Ordre de lecture des textes touchés : l'écriture n'a fait qu'invalider les
     // rangs, ce finisseur les recalcule.
     let (ranked_texts, ranked_rows) = repo
@@ -508,7 +478,6 @@ pub async fn sync_kali() -> Result<()> {
         skipped,
         errors,
         requalifies,
-        retitled,
         slugged,
         "sync_kali"
     );
@@ -623,9 +592,6 @@ pub async fn requalifier_kali(lot: i64) -> Result<()> {
         .map_err(|e| anyhow!("migrations: {e}"))?;
     let repo = DecisionRepository::new(&conn);
     if requalifier_recueils(&repo, &settings, lot).await? > 0 {
-        repo.refresh_article_denorm(None)
-            .await
-            .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
         repo.refresh_reading_ranks()
             .await
             .map_err(|e| anyhow!("refresh_reading_ranks: {e}"))?;
@@ -735,10 +701,7 @@ async fn lire_recueils(tarballs: &[std::path::PathBuf], cibles: &[String]) -> Re
                 } else {
                     match classify_kali_member(&name) {
                         KaliMember::Article => match lj_extract::kali::parse_kali_article(&raw) {
-                            Ok(art)
-                                if !art.num_key.is_empty()
-                                    && lot_lecture.contains(&art.kalicont) =>
-                            {
+                            Ok(art) if lot_lecture.contains(&art.kalicont) => {
                                 let checksum = xxhash_rust::xxh3::xxh3_64(&raw);
                                 LotMsg::Article(Box::new((art, checksum)))
                             }

@@ -19,8 +19,8 @@ use std::sync::Arc;
 /// judiciaire, juridictions spécialisées, cours européennes. Une famille
 /// inconnue passe en queue, dans l'ordre du GROUP BY (alphabétique).
 const TYPE_ORDER: &[&str] = &[
-    "CE", "CAA", "TA", "CONSTIT", "TC", "CC", "CA", "TJ", "TCOM", "CPH", "CNDA", "CNIL", "DDD",
-    "ADLC", "CEDH", "CJUE", "COMEU",
+    "CE", "CAA", "TA", "CONSTIT", "TC", "CC", "CA", "TJ", "TCOM", "CPH", "ASSISES", "CCD", "CNDA",
+    "CNIL", "DDD", "ADLC", "AMF", "CEDH", "CJUE", "COMEU",
 ];
 
 /// Catalogue des juridictions groupé par famille. Une seule entrée de cache
@@ -60,6 +60,7 @@ async fn load_catalogue(state: &AppState) -> Result<Arc<JurisdictionCatalogueRes
             }
         };
         group.jurisdictions.push(JurisdictionHubEntry {
+            court_names: referential.court_names(Some(&row.code)),
             code: row.code,
             label: row.label,
             decision_count: row.decision_count,
@@ -100,6 +101,7 @@ pub async fn hub(state: &AppState, code: &str) -> Result<JurisdictionHubResponse
         return Err(ApiError::NotFound);
     }
     Ok(JurisdictionHubResponse {
+        court_names: referential.court_names(Some(code)),
         code: code.to_string(),
         label,
         seat_path: seat_path(&jurisdiction_type, code),
@@ -138,6 +140,7 @@ pub async fn year_page(
         .jurisdiction_year_decisions(code, year, i64::from(HUB_PAGE_SIZE), offset)
         .await?;
     Ok(JurisdictionYearResponse {
+        court_names: referential.court_names(Some(code)),
         code: code.to_string(),
         label,
         jurisdiction_type: lj_dtos::JurisdictionType::from_code(&entry.jurisdiction_type)

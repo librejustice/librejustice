@@ -37,64 +37,117 @@ pub enum JurisdictionLevel {
     Autre,
 }
 
-/// Solution — miroir compilé du seed `solution:*` (migration 0100) : les 15
-/// valeurs du référentiel de place + Satisfaction totale/partielle (second
-/// référentiel). Chaque valeur sérialisée est le suffixe d'un uid `facet_value`
-/// (`"REJET"` ↔ `solution:REJET`).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// Solution: what became of the claim, whatever the court, the roots of the
+/// `solution:*` seed. A decision carries its court's own word, a leaf of
+/// [`Solution::LEAVES`], and a filter on a root matches its leaves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Solution {
-    Rejet,
-    Irrecevabilite,
-    Desistement,
-    NonLieuAStatuer,
-    Confirmation,
-    Infirmation,
-    InfirmationPartielle,
-    Reformation,
-    Cassation,
-    CassationPartielle,
-    Annulation,
-    Conformite,
-    NonConformite,
-    Ineligibilite,
-    SatisfactionTotale,
-    SatisfactionPartielle,
-    Autre,
+    Granted,
+    PartlyGranted,
+    Dismissed,
+    Inadmissible,
+    Closed,
+    Other,
 }
 
 impl Solution {
-    /// Toutes les variantes, dans l'ordre `sort` du seed 0100.
-    pub const ALL: [Solution; 17] = [
-        Solution::Rejet,
-        Solution::Irrecevabilite,
-        Solution::Desistement,
-        Solution::NonLieuAStatuer,
-        Solution::Confirmation,
-        Solution::Infirmation,
-        Solution::InfirmationPartielle,
-        Solution::Reformation,
-        Solution::Cassation,
-        Solution::CassationPartielle,
-        Solution::Annulation,
-        Solution::Conformite,
-        Solution::NonConformite,
-        Solution::Ineligibilite,
-        Solution::SatisfactionTotale,
-        Solution::SatisfactionPartielle,
-        Solution::Autre,
+    /// The roots, in the seed's `sort` order.
+    pub const ALL: [Solution; 6] = [
+        Solution::Granted,
+        Solution::PartlyGranted,
+        Solution::Dismissed,
+        Solution::Inadmissible,
+        Solution::Closed,
+        Solution::Other,
     ];
+
+    /// The roots' codes, in declaration order.
+    const CODES: [&'static str; 6] = [
+        "GRANTED",
+        "PARTLY_GRANTED",
+        "DISMISSED",
+        "INADMISSIBLE",
+        "CLOSED",
+        "OTHER",
+    ];
+
+    fn code(self) -> &'static str {
+        Self::CODES[self as usize]
+    }
+
+    /// Every leaf, a `solution:*` uid suffix, under its root, in the seed's order.
+    pub const LEAVES: [(&'static str, Solution); 27] = [
+        ("SATISFACTION_TOTALE", Solution::Granted),
+        ("CASSATION", Solution::Granted),
+        ("ANNULATION", Solution::Granted),
+        ("INFIRMATION", Solution::Granted),
+        ("NON_CONFORMITE", Solution::Granted),
+        ("INELIGIBILITE", Solution::Granted),
+        ("VIOLATION", Solution::Granted),
+        ("ADMISSION", Solution::Granted),
+        ("SATISFACTION_PARTIELLE", Solution::PartlyGranted),
+        ("CASSATION_PARTIELLE", Solution::PartlyGranted),
+        ("ANNULATION_PARTIELLE", Solution::PartlyGranted),
+        ("INFIRMATION_PARTIELLE", Solution::PartlyGranted),
+        ("REFORMATION", Solution::PartlyGranted),
+        ("ADMISSION_PARTIELLE", Solution::PartlyGranted),
+        ("REJET", Solution::Dismissed),
+        ("CONFIRMATION", Solution::Dismissed),
+        ("CONFORMITE", Solution::Dismissed),
+        ("NON_VIOLATION", Solution::Dismissed),
+        ("IRRECEVABILITE", Solution::Inadmissible),
+        ("NON_ADMISSION", Solution::Inadmissible),
+        ("DECHEANCE", Solution::Inadmissible),
+        ("DESISTEMENT", Solution::Closed),
+        ("NON_LIEU_A_STATUER", Solution::Closed),
+        ("REGLEMENT_AMIABLE", Solution::Closed),
+        ("RADIATION", Solution::Closed),
+        ("AUTRE", Solution::Other),
+        ("RECEVABLE", Solution::Other),
+    ];
+
+    pub fn leaves(self) -> impl Iterator<Item = &'static str> {
+        Self::LEAVES
+            .iter()
+            .filter(move |(_, root)| *root == self)
+            .map(|(leaf, _)| *leaf)
+    }
+
+    /// The root of a leaf code (`"REJET"` → [`Solution::Dismissed`]).
+    pub fn of_leaf(leaf: &str) -> Option<Solution> {
+        Self::LEAVES
+            .iter()
+            .find(|(code, _)| *code == leaf)
+            .map(|(_, root)| *root)
+    }
 }
 
-/// Domaine juridique — arbre du référentiel de place repris tel quel, miroir du
-/// seed `domaine:*` (migration 0100), namespace renommé `legal_domain:*` par la
-/// 0145 : 9 racines + 36 feuilles. La racine d'une feuille est portée par
-/// `parent_uid` en base ; côté requête une racine sélectionnée matche elle-même
-/// + toutes ses feuilles (expansion côté API).
+impl Serialize for Solution {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.code())
+    }
+}
+
+/// A leaf's code reads as its root: the leaves were the filter's values before
+/// the roots, and published guides still send them.
+impl<'de> Deserialize<'de> for Solution {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let code = String::deserialize(deserializer)?;
+        Solution::ALL
+            .into_iter()
+            .find(|root| root.code() == code)
+            .or_else(|| Solution::of_leaf(&code))
+            .ok_or_else(|| serde::de::Error::unknown_variant(&code, &Solution::CODES))
+    }
+}
+
+/// Legal domain tree, mirror of the `legal_domain:*` rows of `facet_value`: 9 roots
+/// and 45 leaves, a leaf's code prefixed by its root's. A selected root matches
+/// itself and all its leaves (expanded on the API side).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum Domain {
-    // Racines.
+    // Roots.
     Civil,
     Commercial,
     Public,
@@ -104,7 +157,7 @@ pub enum Domain {
     Europeen,
     Criminel,
     Constitutionnel,
-    // Feuilles Civil.
+    // CIVIL leaves.
     CivilProceduresCivilesExecution,
     CivilDroitImmobilierConstruction,
     CivilDroitLocatif,
@@ -120,7 +173,8 @@ pub enum Domain {
     CivilDroitResponsabiliteContrats,
     CivilDroitSaisieImmobiliere,
     CivilDroitMineurs,
-    // Feuilles Commercial.
+    CivilDroitInternationalPrive,
+    // COMMERCIAL leaves.
     CommercialDroitEntreprisesDifficulte,
     CommercialDroitBancaireBoursier,
     CommercialDroitContrats,
@@ -131,25 +185,35 @@ pub enum Domain {
     CommercialDroitConcurrence,
     CommercialDroitConsommation,
     CommercialDroitArbitrage,
-    // Feuilles Public.
+    // PUBLIC leaves.
     PublicDroitEtrangersNationalite,
     PublicDroitUrbanismeImmobilierPublic,
     PublicDroitTravail,
     PublicDroitPenalPublic,
     PublicDroitAideActionSociale,
     PublicDroitEnvironnement,
-    // Feuilles Social.
+    PublicDroitLibertesFondamentales,
+    PublicDroitCommandePublique,
+    // SOCIAL leaves.
     SocialDroitTravail,
     SocialDroitAideActionSociale,
     SocialDroitPenalSocial,
-    // Feuilles Propriété intellectuelle.
+    // FISCAL leaves.
+    FiscalDroitDouanier,
+    // PROPRIETE_INTELLECTUELLE leaves.
     ProprieteIntellectuelleIndustrielle,
     ProprieteIntellectuelleLitteraireArtistique,
+    // EUROPEEN leaves.
+    EuropeenLibertesCirculation,
+    EuropeenAidesEtat,
+    EuropeenPolitiqueAgricole,
+    EuropeenActionExterieure,
+    EuropeenDroitInstitutionnel,
 }
 
 impl Domain {
-    /// Toutes les variantes (racines puis feuilles, ordre du seed 0100).
-    pub const ALL: [Domain; 45] = [
+    /// Every variant, the roots then the leaves grouped by root.
+    pub const ALL: [Domain; 54] = [
         Domain::Civil,
         Domain::Commercial,
         Domain::Public,
@@ -174,6 +238,7 @@ impl Domain {
         Domain::CivilDroitResponsabiliteContrats,
         Domain::CivilDroitSaisieImmobiliere,
         Domain::CivilDroitMineurs,
+        Domain::CivilDroitInternationalPrive,
         Domain::CommercialDroitEntreprisesDifficulte,
         Domain::CommercialDroitBancaireBoursier,
         Domain::CommercialDroitContrats,
@@ -190,11 +255,19 @@ impl Domain {
         Domain::PublicDroitPenalPublic,
         Domain::PublicDroitAideActionSociale,
         Domain::PublicDroitEnvironnement,
+        Domain::PublicDroitLibertesFondamentales,
+        Domain::PublicDroitCommandePublique,
         Domain::SocialDroitTravail,
         Domain::SocialDroitAideActionSociale,
         Domain::SocialDroitPenalSocial,
+        Domain::FiscalDroitDouanier,
         Domain::ProprieteIntellectuelleIndustrielle,
         Domain::ProprieteIntellectuelleLitteraireArtistique,
+        Domain::EuropeenLibertesCirculation,
+        Domain::EuropeenAidesEtat,
+        Domain::EuropeenPolitiqueAgricole,
+        Domain::EuropeenActionExterieure,
+        Domain::EuropeenDroitInstitutionnel,
     ];
 }
 
@@ -227,11 +300,13 @@ pub enum DecisionType {
 }
 
 /// Court type of a decision: `TA` `CAA` `CE` `TC` `CONSTIT` (administrative and
-/// supreme), `CC` `CA` `TJ` `TCOM` `CPH` (judicial), `CEDH` `CJUE` (European),
+/// supreme), `CC` `CA` `TJ` `TCOM` `CPH` (judicial), `ASSISES` `CCD` (the cours d'assises and the
+/// cours criminelles départementales), `CEDH` `CJUE` (European),
 /// `CNDA` (asylum court), `CNIL` (CNIL deliberations), `DDD` (the Défenseur des droits and the
 /// authorities it succeeded), `ADLC` (the Autorité de la concurrence and the Conseil before it),
-/// `COMEU` (the European Commission's competition decisions), then the families of the foreign
-/// courts, whose code starts with their place.
+/// `AMF` (the Autorité des marchés financiers' Commission des sanctions), `COMEU` (the European
+/// Commission's competition decisions), then the families of the foreign courts, whose code
+/// starts with their place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum JurisdictionType {
     #[serde(rename = "TA")]
@@ -254,6 +329,10 @@ pub enum JurisdictionType {
     Tcom,
     #[serde(rename = "CPH")]
     Cph,
+    #[serde(rename = "ASSISES")]
+    Assises,
+    #[serde(rename = "CCD")]
+    Ccd,
     #[serde(rename = "CEDH")]
     Cedh,
     #[serde(rename = "CJUE")]
@@ -266,6 +345,8 @@ pub enum JurisdictionType {
     Ddd,
     #[serde(rename = "ADLC")]
     Adlc,
+    #[serde(rename = "AMF")]
+    Amf,
     #[serde(rename = "COMEU")]
     Comeu,
     #[serde(rename = "COUR_SUPREME")]
@@ -292,11 +373,13 @@ pub enum JurisdictionType {
     Ccja,
     #[serde(rename = "COUR_DROITS_HOMME")]
     CourDroitsHomme,
+    #[serde(rename = "AUTORITE_ADMINISTRATIVE")]
+    AutoriteAdministrative,
 }
 
 impl JurisdictionType {
     /// Toutes les variantes, dans l'ordre de déclaration.
-    pub const ALL: [JurisdictionType; 29] = [
+    pub const ALL: [JurisdictionType; 33] = [
         JurisdictionType::Ta,
         JurisdictionType::Caa,
         JurisdictionType::Ce,
@@ -307,12 +390,15 @@ impl JurisdictionType {
         JurisdictionType::Tj,
         JurisdictionType::Tcom,
         JurisdictionType::Cph,
+        JurisdictionType::Assises,
+        JurisdictionType::Ccd,
         JurisdictionType::Cedh,
         JurisdictionType::Cjue,
         JurisdictionType::Cnda,
         JurisdictionType::Cnil,
         JurisdictionType::Ddd,
         JurisdictionType::Adlc,
+        JurisdictionType::Amf,
         JurisdictionType::Comeu,
         JurisdictionType::CourSupreme,
         JurisdictionType::CourCassation,
@@ -326,6 +412,7 @@ impl JurisdictionType {
         JurisdictionType::CourJustice,
         JurisdictionType::Ccja,
         JurisdictionType::CourDroitsHomme,
+        JurisdictionType::AutoriteAdministrative,
     ];
 
     /// The jurisdiction segment of a decision URL, in the alphabet of text URLs: a foreign
@@ -344,10 +431,13 @@ impl JurisdictionType {
             | JurisdictionType::Tj
             | JurisdictionType::Tcom
             | JurisdictionType::Cph
+            | JurisdictionType::Assises
+            | JurisdictionType::Ccd
             | JurisdictionType::Cnda
             | JurisdictionType::Cnil
             | JurisdictionType::Ddd
-            | JurisdictionType::Adlc => "fr".to_string(),
+            | JurisdictionType::Adlc
+            | JurisdictionType::Amf => "fr".to_string(),
             foreign => lj_vocab::url_segment(&lj_vocab::courts::foreign_order(
                 jurisdiction_code
                     .unwrap_or_else(|| panic!("a foreign court without a code: {foreign:?}")),
@@ -360,17 +450,16 @@ impl JurisdictionType {
         serde_json::from_value(serde_json::Value::String(code.to_string())).ok()
     }
 
-    /// Libellé de la date de la décision. « Lecture » est le mot de l'ordre
-    /// administratif, jamais celui d'un arrêt de cassation.
-    pub fn date_label(self) -> &'static str {
-        match self {
+    /// Whether the court dates its decision by its public reading, as the administrative order does.
+    pub fn dated_by_reading(self) -> bool {
+        matches!(
+            self,
             JurisdictionType::Ta
-            | JurisdictionType::Caa
-            | JurisdictionType::Ce
-            | JurisdictionType::Tc
-            | JurisdictionType::Cnda => "Date de lecture",
-            _ => "Date de la décision",
-        }
+                | JurisdictionType::Caa
+                | JurisdictionType::Ce
+                | JurisdictionType::Tc
+                | JurisdictionType::Cnda
+        )
     }
 }
 
@@ -380,13 +469,15 @@ impl JurisdictionType {
 /// de la réforme 2025, rattachés au type TCOM). Les préfixes emboîtés sont
 /// classés du plus long au plus court (« cour administrative d'appel » avant
 /// « cour d'appel »).
-const JURISDICTION_ABBREVIATIONS: [(&str, &str); 21] = [
+const JURISDICTION_ABBREVIATIONS: [(&str, &str); 24] = [
     ("cour administrative d'appel", "CAA"),
     ("cour nationale du droit d'asile", "CNDA"),
     ("cour européenne des droits de l'homme", "CEDH"),
     ("cour de justice de l'union européenne", "CJUE"),
     ("cour de cassation", "Cass."),
     ("cour d'appel", "CA"),
+    ("cour d'assises", "C. assises"),
+    ("cour criminelle départementale", "CCD"),
     ("tribunal administratif", "TA"),
     ("tribunal des activités économiques", "TAE"),
     ("tribunal de commerce", "T. com."),
@@ -407,6 +498,7 @@ const JURISDICTION_ABBREVIATIONS: [(&str, &str); 21] = [
     ("commission nationale de déontologie de la sécurité", "CNDS"),
     ("autorité de la concurrence", "Aut. conc."),
     ("conseil de la concurrence", "Cons. conc."),
+    ("autorité des marchés financiers", "AMF"),
     ("commission européenne", "Comm. UE"),
 ];
 
@@ -451,6 +543,11 @@ mod tests {
             ("Cour d'appel d'Aix-en-Provence", "CA d'Aix-en-Provence"),
             ("Cour de cassation", "Cass."),
             ("Tribunal judiciaire du Mans", "TJ du Mans"),
+            ("Cour d'assises de Paris", "C. assises de Paris"),
+            (
+                "Cour criminelle départementale du Vaucluse",
+                "CCD du Vaucluse",
+            ),
             ("Tribunal de commerce d'Agen", "T. com. d'Agen"),
             (
                 "Tribunal des activités économiques de Nanterre",
@@ -510,12 +607,23 @@ mod tests {
 
     #[test]
     fn facet_enums_serialized_strings() {
-        assert_eq!(ser(&Solution::NonLieuAStatuer), "NON_LIEU_A_STATUER");
-        assert_eq!(
-            ser(&Solution::SatisfactionPartielle),
-            "SATISFACTION_PARTIELLE"
-        );
+        assert_eq!(ser(&Solution::PartlyGranted), "PARTLY_GRANTED");
         assert_eq!(ser(&Domain::CivilDroitLocatif), "CIVIL_DROIT_LOCATIF");
+    }
+
+    #[test]
+    fn solution_reads_a_root_or_a_leaf_as_its_root() {
+        let de = |code: &str| serde_json::from_value::<Solution>(serde_json::json!(code));
+        for root in Solution::ALL {
+            assert_eq!(de(&ser(&root)).unwrap(), root);
+        }
+        assert_eq!(de("REJET").unwrap(), Solution::Dismissed);
+        assert_eq!(
+            de("SATISFACTION_PARTIELLE").unwrap(),
+            Solution::PartlyGranted
+        );
+        let refused = de("ACQUITTEMENT").unwrap_err().to_string();
+        assert!(refused.contains("expected one of `GRANTED`"), "{refused}");
     }
 
     /// A facet's uids over every migration in order, seeded by `('facet:X'`, removed by DELETE.
@@ -571,10 +679,36 @@ mod tests {
     /// cardinal garde la complétude des deux côtés).
     #[test]
     fn enums_match_migration_seed() {
-        assert_eq!(all_codes(&Solution::ALL), seed_uid_suffixes("solution"));
-        assert_eq!(all_codes(&Domain::ALL), seed_uid_suffixes("domaine"));
-        assert_eq!(Solution::ALL.len(), 17);
-        assert_eq!(Domain::ALL.len(), 45);
+        let mut solutions = all_codes(&Solution::ALL);
+        solutions.extend(Solution::LEAVES.iter().map(|(leaf, _)| leaf.to_string()));
+        assert_eq!(solutions, seed_uid_suffixes("solution"));
+        let mut domains = seed_uid_suffixes("domaine");
+        domains.extend(seed_uid_suffixes("legal_domain"));
+        assert_eq!(all_codes(&Domain::ALL), domains);
+        assert_eq!(Solution::ALL.len(), 6);
+        assert_eq!(Domain::ALL.len(), 54);
+    }
+
+    /// Every leaf sits under the root the seed gives it, `('solution:LEAF', 'solution:ROOT'`.
+    #[test]
+    fn solution_leaves_match_migration_seed() {
+        let dir = format!("{}/../lj-store/migrations", env!("CARGO_MANIFEST_DIR"));
+        let mut seeded: Vec<(String, String)> = Vec::new();
+        for entry in std::fs::read_dir(&dir).unwrap() {
+            let sql = std::fs::read_to_string(entry.unwrap().path()).unwrap();
+            for line in sql.lines() {
+                if let [leaf, root] = &cite_uids(line, "solution")[..] {
+                    seeded.push((leaf.clone(), root.clone()));
+                }
+            }
+        }
+        seeded.sort();
+        let mut leaves: Vec<(String, String)> = Solution::LEAVES
+            .iter()
+            .map(|(leaf, root)| (leaf.to_string(), ser(root)))
+            .collect();
+        leaves.sort();
+        assert_eq!(leaves, seeded);
     }
 
     #[test]

@@ -71,6 +71,8 @@ pub(crate) fn normalize_component(s: &str) -> String {
 /// - CAA : `caa|<rg>|<date>` — le RG porte le code cour → clé indépendante du
 ///   nom ; repli `<nom>|<rg>|<date>` si RG non préfixé-cour.
 /// - Admin TA/CE : `<nom juridiction (porte la ville)>|<rg>|<date>`.
+/// - An opinion of the Conseil d'État's consultative formation: `ce_avis|<number>|<date>`, its
+///   numbers running in the range of older contentious dockets.
 /// - Autres (CONSTIT/TC/CEDH/CJUE/CNDA…) : `<type>|<numéro>|<date>`, sources
 ///   sans recoupement.
 pub fn decision_canonical_ref(d: &Decision) -> Option<String> {
@@ -123,6 +125,10 @@ pub fn decision_canonical_ref(d: &Decision) -> Option<String> {
                 .map(|s| normalize_component(&s))
                 .filter(|j| !j.is_empty())?;
             Some(format!("{jur}|{rg}|{date}"))
+        }
+        "CE" if crate::formation::consultative(d) => {
+            let numero = dockets.first().map(|n| normalize_component(n))?;
+            Some(format!("ce_avis|{numero}|{date}"))
         }
         "TA" | "CE" => {
             // Admin TA/CE : la ville vit dans le nom de juridiction (le RG n'est pas
@@ -261,6 +267,22 @@ mod tests {
             vec!["561/19", "C-561/19"]
         );
         assert!(pending_target_dockets(Some("cc"), &["  ".into()]).is_empty());
+    }
+
+    #[test]
+    fn a_consultative_opinion_keys_apart_from_the_judgment_sharing_its_number() {
+        let mut d = base();
+        d.jurisdiction_type = Some("CE".into());
+        d.jurisdiction_name = Some("Conseil d'État".into());
+        d.numero_dossier = Some("411021".into());
+        d.date_lecture = Some("2026-07-16".into());
+        let judgment = decision_canonical_ref(&d).unwrap();
+        d.formation = Some("Formation consultative".into());
+        assert_eq!(
+            decision_canonical_ref(&d).as_deref(),
+            Some("ce_avis|411021|2026-07-16")
+        );
+        assert_ne!(judgment, "ce_avis|411021|2026-07-16");
     }
 
     #[test]

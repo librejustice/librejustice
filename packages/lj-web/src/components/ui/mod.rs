@@ -24,7 +24,7 @@ pub use expandable_summary::ExpandableSummary;
 pub use grouped_select::{GroupedOption, GroupedSelect, SelectGroup};
 pub use input::Input;
 pub use pill::Pill;
-pub use provenance::ProvenanceBlock;
+pub use provenance::{Look, ProvenanceBlock};
 pub use separator::Separator;
 pub use skeleton::Skeleton;
 pub use summary::{shown_summary, SummaryBadge, SummaryFold};

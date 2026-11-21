@@ -14,6 +14,7 @@ use lj_dtos::{
 
 use crate::api::ApiClient;
 use crate::helpers::{group_thousands, split_entity_uid};
+use crate::i18n::{DirectoryUi, KindCopy};
 use crate::pages::decision_page::data::{sendable, PageError};
 use crate::pages::law_page::{rail_block, rail_item};
 
@@ -61,25 +62,14 @@ impl Kind {
         }
     }
 
-    /// Libellé pluriel (titre de carte / de page).
-    pub fn plural(self) -> &'static str {
+    /// The category's names in the reader's language.
+    pub fn copy(self, ui: &'static DirectoryUi) -> &'static KindCopy {
         match self {
-            Kind::Entreprises => "Entreprises",
-            Kind::PersonnesPubliques => "Personnes publiques",
-            Kind::Associations => "Associations",
-            Kind::Avocats => "Avocats",
-            Kind::Cabinets => "Cabinets d'avocats",
-        }
-    }
-
-    /// Baseline descriptive de la catégorie (carte accueil + méta).
-    pub fn tagline(self) -> &'static str {
-        match self {
-            Kind::Entreprises => "Sociétés et entrepreneurs identifiés par leur SIREN.",
-            Kind::PersonnesPubliques => "État, collectivités et établissements publics.",
-            Kind::Associations => "Associations déclarées identifiées par leur RNA.",
-            Kind::Avocats => "Avocats et avocats aux Conseils, cherchés par leur nom.",
-            Kind::Cabinets => "Structures d'exercice des avocats : SCP, SELARL, AARPI…",
+            Kind::Entreprises => &ui.companies,
+            Kind::PersonnesPubliques => &ui.public_bodies,
+            Kind::Associations => &ui.associations,
+            Kind::Avocats => &ui.lawyers,
+            Kind::Cabinets => &ui.firms,
         }
     }
 
@@ -92,15 +82,6 @@ impl Kind {
             Kind::Associations => stats.associations,
             Kind::Avocats => stats.avocats,
             Kind::Cabinets => stats.cabinets,
-        }
-    }
-
-    /// Participe « lié » accordé au pluriel de la catégorie (« dont N liées à
-    /// des décisions de justice »).
-    pub fn liees(self) -> &'static str {
-        match self {
-            Kind::Avocats | Kind::Cabinets => "liés",
-            Kind::Entreprises | Kind::PersonnesPubliques | Kind::Associations => "liées",
         }
     }
 
@@ -182,13 +163,11 @@ pub fn AnnuaireRail(
     #[prop(optional, into)] current: Option<Kind>,
     stats: Resource<Option<AnnuaireStatsResponse>>,
 ) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().directory;
     view! {
-        <nav
-            aria-label="Catégories de l'annuaire"
-            class="lg:sticky lg:top-20 lg:self-start"
-        >
-            <Suspense fallback=move || rail_view(current, None)>
-                {move || Suspend::new(async move { rail_view(current, stats.await) })}
+        <nav aria-label=ui.categories_label class="lg:sticky lg:top-20 lg:self-start">
+            <Suspense fallback=move || rail_view(ui, current, None)>
+                {move || Suspend::new(async move { rail_view(ui, current, stats.await) })}
             </Suspense>
         </nav>
     }
@@ -196,7 +175,11 @@ pub fn AnnuaireRail(
 
 // Le rail compte les entités AVEC contentieux (parité avec les totaux des
 // listings qu'il lie) ; les totaux registre vivent sur les cartes de l'accueil.
-fn rail_view(current: Option<Kind>, stats: Option<AnnuaireStatsResponse>) -> AnyView {
+fn rail_view(
+    ui: &'static DirectoryUi,
+    current: Option<Kind>,
+    stats: Option<AnnuaireStatsResponse>,
+) -> AnyView {
     let max = stats.as_ref().map(|s| {
         Kind::ALL
             .into_iter()
@@ -217,7 +200,7 @@ fn rail_view(current: Option<Kind>, stats: Option<AnnuaireStatsResponse>) -> Any
         current.is_none(),
         rail_entry(
             "/entity-search".to_string(),
-            "Toutes",
+            ui.all,
             current.is_none(),
             total,
             None,
@@ -231,14 +214,14 @@ fn rail_view(current: Option<Kind>, stats: Option<AnnuaireStatsResponse>) -> Any
             is_current,
             rail_entry(
                 format!("/entity-index/fr/{}", kind.slug()),
-                kind.plural(),
+                kind.copy(ui).plural,
                 is_current,
                 count,
                 bar,
             ),
         ));
     }
-    rail_block("Catégories", items)
+    rail_block(ui.categories, items)
 }
 
 /// Corps d'une entrée du rail : lien (accent, ou encre médium si courant) +
@@ -250,6 +233,7 @@ fn rail_entry(
     count: Option<i64>,
     bar: Option<AnyView>,
 ) -> AnyView {
+    let numbers = &crate::i18n::use_ui().numbers;
     let label_class = if current {
         "min-w-0 truncate text-sm font-medium text-[var(--color-ink)] no-underline"
     } else {
@@ -258,7 +242,7 @@ fn rail_entry(
     let count_view = count.map(|c| {
         view! {
             <span class="shrink-0 text-xs tabular-nums text-[var(--color-ink-subtle)]">
-                {group_thousands(c)}
+                {group_thousands(numbers, c)}
             </span>
         }
     });
@@ -295,7 +279,7 @@ pub fn mini_bar(count: i64, max: i64) -> AnyView {
 
 /// Chips de catégories (mobile, remplace le rail sous `lg`) : « Toutes » +
 /// les 4 catégories, chip accentuée sur la courante.
-pub fn category_chips(current: Option<Kind>) -> AnyView {
+pub fn category_chips(ui: &'static DirectoryUi, current: Option<Kind>) -> AnyView {
     let chip = |href: String, label: &'static str, is_current: bool| {
         let class = if is_current {
             "rounded-full border border-[var(--color-accent)] px-3 py-1 text-xs text-[var(--color-accent)] no-underline"
@@ -311,13 +295,13 @@ pub fn category_chips(current: Option<Kind>) -> AnyView {
     };
     let mut chips: Vec<AnyView> = vec![chip(
         "/entity-search".to_string(),
-        "Toutes",
+        ui.all,
         current.is_none(),
     )];
     for kind in Kind::ALL {
         chips.push(chip(
             format!("/entity-index/fr/{}", kind.slug()),
-            kind.plural(),
+            kind.copy(ui).plural,
             current == Some(kind),
         ));
     }
@@ -332,14 +316,15 @@ pub fn category_chips(current: Option<Kind>) -> AnyView {
 /// Une ligne d'entité (résultat de recherche ou listing) : dénomination liée à
 /// la fiche + badges (forme juridique, barreau, état), volume de contentieux à
 /// droite avec sa barre de proportion (relative au max de la liste).
-pub fn entity_row(item: EntityDirectoryItemDto, max_count: i64) -> AnyView {
+pub fn entity_row(
+    ui: &'static DirectoryUi,
+    item: EntityDirectoryItemDto,
+    max_count: i64,
+) -> AnyView {
     let (ns, local) = split_entity_uid(&item.uid);
     let href = lj_vocab::entity_path(ns, local);
 
-    let decisions = match item.decision_count {
-        1 => "1 déc.".to_string(),
-        n => format!("{} déc.", group_thousands(n)),
-    };
+    let decisions = (ui.decision_count)(item.decision_count);
 
     let mut badges: Vec<AnyView> = Vec::new();
     if let Some(forme) = item.forme.clone().filter(|f| !f.trim().is_empty()) {
@@ -352,7 +337,7 @@ pub fn entity_row(item: EntityDirectoryItemDto, max_count: i64) -> AnyView {
         badges.push(
             view! {
                 <span class="inline-flex items-center rounded-full border border-[var(--color-rule)] px-2 py-0.5 text-xs text-[var(--color-ink-subtle)]">
-                    "Cessée"
+                    {ui.ceased}
                 </span>
             }
             .into_any(),

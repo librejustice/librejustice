@@ -563,10 +563,6 @@ async fn date_undated_acts(
         .fill_text_dates(&fills)
         .await
         .map_err(|e| anyhow!("fill_text_dates: {e}"))?;
-    let articles = repo
-        .refresh_article_denorm(Some(&dated))
-        .await
-        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     if dated.is_empty() {
         tracing::info!(
             undated = undated.len(),
@@ -576,7 +572,6 @@ async fn date_undated_acts(
         tracing::warn!(
             undated = undated.len(),
             texts = dated.len(),
-            articles,
             "sync-eu-law: undated acts dated from CELLAR"
         );
     }
@@ -861,21 +856,7 @@ pub async fn sync_eu_law(
     if !updated.is_empty() {
         let mut publie_targets: HashSet<String> = HashSet::new();
         for path in &updated {
-            // Un dataset = une transaction : pas de texte à moitié rechargé
-            // (la purge et les upserts atterrissent ensemble).
-            conn.batch_execute("BEGIN")
-                .await
-                .map_err(|e| anyhow!("BEGIN: {e}"))?;
-            match super::legal_corpus::load_dataset_file(&repo, path, &mut publie_targets).await {
-                Ok(()) => conn
-                    .batch_execute("COMMIT")
-                    .await
-                    .map_err(|e| anyhow!("COMMIT: {e}"))?,
-                Err(e) => {
-                    let _ = conn.batch_execute("ROLLBACK").await;
-                    return Err(e);
-                }
-            }
+            super::legal_corpus::load_dataset_file(&repo, path, &mut publie_targets).await?;
         }
         super::legal_corpus::run_corpus_finishers(&repo, publie_targets).await?;
     }

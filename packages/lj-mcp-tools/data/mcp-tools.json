@@ -1,5 +1,5 @@
 {
-  "instructions": "Search French and European case law: all French courts plus, among others, the CNDA, the Conseil constitutionnel, the CNIL, the Défenseur des droits, the CEDH and the CJUE; and read legal texts at any date: codes, laws, Journal officiel, collective agreements, EU law, treaties, foreign codes. The engine understands meaning, not just keywords: phrase the query as a natural question or a list of descriptive terms; synonyms and reformulations are handled. Typical workflow: search_decisions for a shortlist, then get_decision to read candidates in full. Previews, facets and chronologies are machine-made and only orient: never judge relevance, quote, or state what a decision holds from them. Iterate by refining the query or filters. Open any `url` with the matching tool: /decision/ links with get_decision, /norm/ links with get_norm. When mentioning a decision, hyperlink its `title` (or a conventional citation) to its `url`.",
+  "instructions": "Search French, European, Swiss and Belgian case law: all French courts plus, among others, the CNDA, the Conseil constitutionnel, the CNIL, the Défenseur des droits, the CEDH and the CJUE; and read legal texts at any date: codes, laws, Journal officiel, collective agreements, EU law, treaties, foreign codes, Service-Public sheets; and search the official journals: Journal officiel, ministry bulletins, foreign journals, public procurement, BODACC, JOAFE. The engine understands meaning, not just keywords: phrase the query as a natural question or a list of descriptive terms; synonyms and reformulations are handled. Typical workflow: search_decisions for a shortlist, then get_decision to read candidates in full. Previews, facets and chronologies are machine-made and only orient: never judge relevance, quote, or state what a decision holds from them. Iterate by refining the query or filters. Open any `url` with the matching tool: /decision/ links with get_decision, /norm/ links with get_norm, /notice/ links with get_notice. When mentioning a decision, hyperlink its `title` (or a conventional citation) to its `url`.",
   "protocolVersions": [
     "2025-11-25",
     "2025-06-18",
@@ -110,6 +110,7 @@
                     "CIVIL_DROIT_RESPONSABILITE_CONTRATS",
                     "CIVIL_DROIT_SAISIE_IMMOBILIERE",
                     "CIVIL_DROIT_MINEURS",
+                    "CIVIL_DROIT_INTERNATIONAL_PRIVE",
                     "COMMERCIAL_DROIT_ENTREPRISES_DIFFICULTE",
                     "COMMERCIAL_DROIT_BANCAIRE_BOURSIER",
                     "COMMERCIAL_DROIT_CONTRATS",
@@ -126,11 +127,19 @@
                     "PUBLIC_DROIT_PENAL_PUBLIC",
                     "PUBLIC_DROIT_AIDE_ACTION_SOCIALE",
                     "PUBLIC_DROIT_ENVIRONNEMENT",
+                    "PUBLIC_DROIT_LIBERTES_FONDAMENTALES",
+                    "PUBLIC_DROIT_COMMANDE_PUBLIQUE",
                     "SOCIAL_DROIT_TRAVAIL",
                     "SOCIAL_DROIT_AIDE_ACTION_SOCIALE",
                     "SOCIAL_DROIT_PENAL_SOCIAL",
+                    "FISCAL_DROIT_DOUANIER",
                     "PROPRIETE_INTELLECTUELLE_INDUSTRIELLE",
-                    "PROPRIETE_INTELLECTUELLE_LITTERAIRE_ARTISTIQUE"
+                    "PROPRIETE_INTELLECTUELLE_LITTERAIRE_ARTISTIQUE",
+                    "EUROPEEN_LIBERTES_CIRCULATION",
+                    "EUROPEEN_AIDES_ETAT",
+                    "EUROPEEN_POLITIQUE_AGRICOLE",
+                    "EUROPEEN_ACTION_EXTERIEURE",
+                    "EUROPEEN_DROIT_INSTITUTIONNEL"
                   ],
                   "type": "string"
                 },
@@ -216,7 +225,8 @@
                   "enum": [
                     "headnote",
                     "judgment",
-                    "annexes"
+                    "annexes",
+                    "conclusions"
                   ],
                   "type": "string"
                 },
@@ -227,7 +237,7 @@
               }
             ],
             "default": null,
-            "description": "Parts searched, all when absent: headnote (the court's sommaire or analyse), judgment (the decision without its annexes), annexes (the moyens annexés of Cour de cassation judgments)."
+            "description": "Parts searched, a decision's three when absent: headnote (the court's sommaire or analyse), judgment (the decision without its annexes), annexes (the moyens annexés of Cour de cassation judgments), conclusions (an Advocate General's or a rapporteur public's opinion, which decides nothing)."
           },
           "seat": {
             "anyOf": [
@@ -251,23 +261,12 @@
               {
                 "items": {
                   "enum": [
-                    "REJET",
-                    "IRRECEVABILITE",
-                    "DESISTEMENT",
-                    "NON_LIEU_A_STATUER",
-                    "CONFIRMATION",
-                    "INFIRMATION",
-                    "INFIRMATION_PARTIELLE",
-                    "REFORMATION",
-                    "CASSATION",
-                    "CASSATION_PARTIELLE",
-                    "ANNULATION",
-                    "CONFORMITE",
-                    "NON_CONFORMITE",
-                    "INELIGIBILITE",
-                    "SATISFACTION_TOTALE",
-                    "SATISFACTION_PARTIELLE",
-                    "AUTRE"
+                    "GRANTED",
+                    "PARTLY_GRANTED",
+                    "DISMISSED",
+                    "INADMISSIBLE",
+                    "CLOSED",
+                    "OTHER"
                   ],
                   "type": "string"
                 },
@@ -278,7 +277,7 @@
               }
             ],
             "default": null,
-            "description": "Filter by the ruling of the operative part (référentiel solution). REJET / IRRECEVABILITE / DESISTEMENT / NON_LIEU_A_STATUER are procedural or negative endings; CONFIRMATION / INFIRMATION* / REFORMATION are appeal outcomes; CASSATION* is cassation-specific; ANNULATION covers administrative annulment; SATISFACTION_TOTALE / SATISFACTION_PARTIELLE cover first-instance civil rulings granting the claim."
+            "description": "Filter by what became of the claim, whatever the court (référentiel solution). INADMISSIBLE: not examined; CLOSED: withdrawn, settled or moot. Each decision's `ruling` gives the court's own word (Cassation, Non-violation…)."
           },
           "sort": {
             "default": "relevance",
@@ -332,6 +331,17 @@
                   "type": "object"
                 },
                 "court_summary": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "court_summary_kind": {
                   "anyOf": [
                     {
                       "type": "string"
@@ -401,6 +411,17 @@
                     "type": "string"
                   },
                   "type": "array"
+                },
+                "ruling": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
                 },
                 "seat": {
                   "anyOf": [
@@ -493,7 +514,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Fetch the full text and metadata of a decision by its `url`. The text carries inline markdown links to cited articles (/norm/, open with get_norm) and cited decisions (/decision/, open with get_decision); a citation spanning several articles (« articles 3 à 6 », « et suivants ») links its first article and appends the others as labelled links right after the span. `case_chronology` lists the prior AND subsequent decisions of the same case (appeal, pourvoi, renvoi), each with its solution. `commentaries` lists documents around the decision (the court's summary, conclusions, reports…). `official_url` is the decision at its official publisher, proof of its authenticity.",
+      "description": "Fetch the full text and metadata of a decision by its `url`. The text carries inline markdown links to cited articles (/norm/, open with get_norm) and cited decisions (/decision/, open with get_decision); a citation spanning several articles (« articles 3 à 6 », « et suivants ») links its first article and appends the others as labelled links right after the span. `case_chronology` lists the prior AND subsequent decisions of the same case, international courts included, each with its solution. `standing` reads that chain: NO_KNOWN_REVIEW means no known later step settles it, not that the decision is final. `commentaries` lists documents around the decision (conclusions, reports…). `official_url` is the decision at its official publisher, proof of its authenticity.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -520,6 +541,17 @@
                   "type": "boolean"
                 },
                 "link_to_next": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "ruling": {
                   "anyOf": [
                     {
                       "type": "string"
@@ -579,17 +611,6 @@
                   ],
                   "default": null
                 },
-                "body": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
                 "date": {
                   "anyOf": [
                     {
@@ -615,7 +636,6 @@
                 },
                 "kind": {
                   "enum": [
-                    "summary",
                     "conclusions",
                     "note"
                   ],
@@ -683,6 +703,28 @@
               "type": "object"
             },
             "type": "array"
+          },
+          "court_summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "court_summary_kind": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "date": {
             "anyOf": [
@@ -758,6 +800,17 @@
             },
             "type": "array"
           },
+          "ruling": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "seat": {
             "anyOf": [
               {
@@ -780,6 +833,15 @@
             ],
             "default": null
           },
+          "standing": {
+            "enum": [
+              "QUASHED",
+              "UPHELD",
+              "FINAL",
+              "NO_KNOWN_REVIEW"
+            ],
+            "type": "string"
+          },
           "text": {
             "type": "string"
           },
@@ -794,6 +856,7 @@
           "title",
           "url",
           "jurisdiction_type",
+          "standing",
           "text"
         ],
         "type": "object"
@@ -900,17 +963,6 @@
                   ],
                   "default": null
                 },
-                "body": {
-                  "anyOf": [
-                    {
-                      "type": "string"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "default": null
-                },
                 "date": {
                   "anyOf": [
                     {
@@ -936,7 +988,6 @@
                 },
                 "kind": {
                   "enum": [
-                    "summary",
                     "conclusions",
                     "note"
                   ],
@@ -1240,7 +1291,7 @@
         "openWorldHint": false,
         "readOnlyHint": true
       },
-      "description": "Find legal articles from their subject, their wording, or an article number with no code named; returns a shortlist with highlighted snippets and the exact `total`. Query in French, descriptive terms (« délai de recours contentieux refus implicite »); put the code in the `code` filter (slug or exact name), keep the query for the subject. With no `query`, hits are whole texts, the most recently changed first. The response carries a `facets` block (`code`, `jurisdiction`): per filter name, a map of filter value to article count, reuse those keys verbatim to refine. Chain a hit into get_norm with its `url`, plus `as_of` when the dispute is governed by an earlier version.",
+      "description": "Find legal articles from their subject, their wording, or an article number with no code named; returns a shortlist with highlighted snippets and the exact `total`. Query in French, descriptive terms (« délai de recours contentieux refus implicite »); put the code in the `code` filter (slug or exact name), keep the query for the subject. With no `query`, hits are whole texts, the most recently changed first. The response carries a `facets` block (`code`, `jurisdiction`, `scope`): per filter name, a map of filter value to article count, reuse those keys verbatim to refine. Chain a hit into get_norm with its `url`, plus `as_of` when the dispute is governed by an earlier version.",
       "inputSchema": {
         "additionalProperties": false,
         "properties": {
@@ -1292,6 +1343,29 @@
             "maxLength": 512,
             "minLength": 1,
             "type": "string"
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "enum": [
+                  "constitution",
+                  "codes",
+                  "legislation",
+                  "reglementation",
+                  "traites",
+                  "conventions_collectives",
+                  "doctrine_administrative",
+                  "information_publique",
+                  "travaux_parlementaires"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Omitted: every category but travaux_parlementaires (parliamentary questions and their answers), which facets.scope counts."
           },
           "valid_from": {
             "anyOf": [
@@ -1413,6 +1487,689 @@
         "type": "object"
       },
       "title": "Search Norms"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Search the official journals: the Journal officiel (JORF), ministry bulletins and foreign journals, public procurement notices open for bids (BOAMP, TED, buyer platforms), company notices (BODACC) and association notices (JOAFE). Open a hit's `url` with get_notice.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "closing_within_days": {
+            "anyOf": [
+              {
+                "maximum": 365,
+                "minimum": 1,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Only tenders whose bid deadline falls within N days; tenders with no known deadline are left out."
+          },
+          "cpv": {
+            "description": "CPV divisions, two digits (\"45\" construction works, \"72\" IT services, \"85\" health). Procurement only.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "fund": {
+            "description": "jo: official journals and bulletins; marche: public procurement; bodacc: companies; joafe: associations. All when absent.",
+            "items": [
+              "marche",
+              "bodacc",
+              "joafe",
+              "jo"
+            ],
+            "type": "array"
+          },
+          "jurisdiction": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Country of the journal, ISO 3166 alpha-2 (\"FR\", \"BE\", \"CH\"); a dotted path narrows to one journal: \"FR.JORF\", \"FR.BO-INTERIEUR\", \"BE.MB-VLG\". Procurement, BODACC and JOAFE are FR's. All when absent."
+          },
+          "limit": {
+            "default": 10,
+            "description": "Maximum number of results when one journal is searched (default 10); several journals give 5 each.",
+            "maximum": 20,
+            "minimum": 1,
+            "type": "integer"
+          },
+          "nature": {
+            "description": "Kind of contract, procurement only: TRAVAUX (works), SERVICES, FOURNITURES (supplies), AUTRES.",
+            "items": [
+              "TRAVAUX",
+              "SERVICES",
+              "FOURNITURES",
+              "AUTRES"
+            ],
+            "type": "array"
+          },
+          "query": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "description": "Words the notice must contain, not a semantic search. A SIREN or SIRET finds a company's BODACC notices, an RNA an association's JOAFE notices. Without it, `jo` answers only when `fund` names it."
+          },
+          "zone": {
+            "description": "Département code (\"75\", \"2A\", \"973\"); \"fr\" and \"eu\" for nationwide and Europe-wide tenders. Not `jo`.",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [],
+        "type": "object"
+      },
+      "name": "search_notices",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "hits": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "actor": {
+                  "type": "string"
+                },
+                "actor_role": {
+                  "type": "string"
+                },
+                "channels": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "cpv": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "deadline": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "fund": {
+                  "type": "string"
+                },
+                "journal": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "nature": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "platform_url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null,
+                  "description": "Buyer's platform page, where the dossier is downloaded and the bid filed. No tool opens it."
+                },
+                "published": {
+                  "type": "string"
+                },
+                "reference": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "title": {
+                  "type": "string"
+                },
+                "url": {
+                  "description": "LibreJustice page of the notice; open it with get_notice.",
+                  "type": "string"
+                },
+                "zones": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                }
+              },
+              "required": [
+                "title",
+                "fund",
+                "actor",
+                "actor_role",
+                "url",
+                "published",
+                "channels"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "total": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "total",
+          "hits"
+        ],
+        "type": "object"
+      },
+      "title": "Search Notices"
+    },
+    {
+      "annotations": {
+        "destructiveHint": false,
+        "idempotentHint": true,
+        "openWorldHint": false,
+        "readOnlyHint": true
+      },
+      "description": "Read one notice as its journal printed it: an official journal's text with its visas, articles and signatures, a tender with its lots and deadline, a BODACC or JOAFE notice with the company or association it names.",
+      "inputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "url": {
+            "description": "A librejustice.fr /notice/ URL.",
+            "minLength": 1,
+            "type": "string"
+          }
+        },
+        "required": [
+          "url"
+        ],
+        "type": "object"
+      },
+      "name": "get_notice",
+      "outputSchema": {
+        "additionalProperties": false,
+        "properties": {
+          "articles": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "number": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "text": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "text"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "body": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "buyer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "corrigendum": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "cpv": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "criteria": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "currency": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "format": "date"
+          },
+          "deadline": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "entity": {
+            "anyOf": [
+              {
+                "additionalProperties": false,
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "url": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "name",
+                  "url"
+                ],
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "estimated_amount": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "explanatory_note": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "fields": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "label": {
+                  "type": "string"
+                },
+                "part": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "url": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "label",
+                "value"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "issue": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "issuer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "journal": {
+            "type": "string"
+          },
+          "lots": {
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "cpv": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "description": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                },
+                "name": {
+                  "anyOf": [
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ],
+                  "default": null
+                }
+              },
+              "type": "object"
+            },
+            "type": "array"
+          },
+          "nature": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "nor": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "norm_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "official_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "platform_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "procedure": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "published": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "format": "date"
+          },
+          "reference": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "repeal": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "signatories": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "summary": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "title": {
+            "type": "string"
+          },
+          "url": {
+            "type": "string"
+          },
+          "visas": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "zones": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "title",
+          "url",
+          "journal"
+        ],
+        "type": "object"
+      },
+      "title": "Get Notice"
     }
   ]
 }

@@ -7,17 +7,19 @@
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use lj_dtos::{NormCatalogueResponse, NormFondResponse, NormYearResponse};
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, Failure};
 use crate::components::own_page_description;
+use crate::helpers::group_thousands;
 use crate::helpers::norms_href;
+use crate::i18n::HubsUi;
 use crate::pages::juridictions_page::{
-    breadcrumb_jsonld, fmt_count, set_cache_control, HubBreadcrumb, HubError, HubSkeleton,
-    YearPagination, DEEP_LINK,
+    breadcrumb_jsonld, set_cache_control, HubBreadcrumb, HubError, HubSkeleton, YearPagination,
+    DEEP_LINK,
 };
 use crate::pages::law_page::data::{sendable, PageError};
 
@@ -25,10 +27,10 @@ use crate::pages::law_page::data::{sendable, PageError};
 const UNDATED_TOKEN: &str = "sans-date";
 
 /// Libellé d'une année de hub (`None` = bucket sans date).
-fn year_label(year: Option<i32>) -> String {
+fn year_label(ui: &HubsUi, year: Option<i32>) -> String {
     match year {
         Some(y) => y.to_string(),
-        None => "Sans date".to_string(),
+        None => ui.undated.to_string(),
     }
 }
 
@@ -51,10 +53,11 @@ pub fn NormesPage() -> impl IntoView {
     // on la declare ici, synchroniquement, sinon la generique du shell sort aussi.
     own_page_description();
 
+    let ui = &crate::i18n::use_ui().hubs;
     let params = use_params_map();
     let catalogue = Resource::new_blocking(
         move || params.get().get("juris").unwrap_or_default(),
-        |juris| {
+        move |juris| {
             sendable(async move {
                 let catalogue = ApiClient::from_context()
                     .fetch_normes()
@@ -67,7 +70,7 @@ pub fn NormesPage() -> impl IntoView {
                 {
                     return Err(PageError {
                         status: 404,
-                        message: "Juridiction inconnue".to_string(),
+                        failure: Failure::Said(ui.unknown_jurisdiction.to_string()),
                     });
                 }
                 Ok((juris, catalogue))
@@ -95,6 +98,9 @@ pub fn NormesPage() -> impl IntoView {
 
 #[component]
 fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView {
+    let numbers = &crate::i18n::use_ui().numbers;
+    let all = crate::i18n::use_ui();
+    let ui = &all.hubs;
     let (current, others): (Vec<_>, Vec<_>) = response
         .jurisdictions
         .into_iter()
@@ -104,40 +110,32 @@ fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView
         .flat_map(|j| j.fonds)
         .collect::<Vec<_>>();
     let title = if juris == "fr" {
-        "Catalogue des normes - LibreJustice".to_string()
+        ui.catalogue_title.to_string()
     } else {
-        format!(
-            "Catalogue des normes ({}) - LibreJustice",
-            juris.to_uppercase()
-        )
+        (ui.catalogue_title_for)(&juris.to_uppercase())
     };
-    let description = "Tous les textes du corpus normatif — codes, lois et ordonnances, \
-         décrets, arrêtés, conventions collectives, textes européens, traités, circulaires, \
-         BOFiP — par fond puis par année.";
+    let description = ui.catalogue_description;
     let url = format!("https://librejustice.fr/norm-index/{juris}");
     let jsonld = breadcrumb_jsonld(&[
-        ("Accueil", "https://librejustice.fr/".to_string()),
-        ("Normes", url.clone()),
+        (all.shell.home, "https://librejustice.fr/".to_string()),
+        (all.norm.norms, url.clone()),
     ]);
     let search_href = norms_href([("jurisdiction", lj_vocab::jurisdiction_of_segment(&juris))]);
 
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-2">
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Textes & codes"
+                    {ui.texts_and_codes}
                 </p>
-                <h1 class="font-sans text-3xl text-[var(--color-ink)]">"Catalogue des normes"</h1>
-                <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    "Parcourez les textes du corpus par fond, puis par année. "
-                    "Chaque fond ouvre la liste complète de ses textes."
-                </p>
-                <A href=search_href attr:class=DEEP_LINK>"Rechercher dans ces textes"</A>
+                <h1 class="font-sans text-3xl text-[var(--color-ink)]">{ui.catalogue_heading}</h1>
+                <p class="max-w-prose text-[var(--color-ink-muted)]">{ui.catalogue_intro}</p>
+                <A href=crate::jurisdiction::use_reader_scope().href(search_href) attr:class=DEEP_LINK>{ui.search_these}</A>
             </header>
 
             <ul class="flex flex-col divide-y divide-[var(--color-rule)]">
@@ -145,11 +143,7 @@ fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView
                     .into_iter()
                     .map(|f| {
                         let href = format!("/norm-index/{juris}/{}", f.fond);
-                        let count = format!(
-                            "{} texte{}",
-                            fmt_count(f.text_count),
-                            if f.text_count > 1 { "s" } else { "" },
-                        );
+                        let count = (ui.n_texts)(&group_thousands(numbers, f.text_count), f.text_count);
                         view! {
                             <li class="py-2.5">
                                 <A
@@ -171,7 +165,7 @@ fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView
 
             <section class="flex flex-col gap-3">
                 <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "Autres juridictions"
+                    {ui.other_jurisdictions}
                 </h2>
                 <ul class="flex flex-wrap gap-x-4 gap-y-1 text-sm">
                     {others
@@ -181,7 +175,7 @@ fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView
                             let label = format!(
                                 "{} ({})",
                                 j.jurisdiction.to_uppercase(),
-                                fmt_count(j.text_count),
+                                group_thousands(numbers, j.text_count),
                             );
                             view! {
                                 <li>
@@ -199,12 +193,12 @@ fn NormesLoaded(juris: String, response: NormCatalogueResponse) -> impl IntoView
             </section>
 
             <p class="max-w-prose text-sm text-[var(--color-ink-muted)]">
-                "Ce catalogue liste tous les textes du fonds. Pour ne garder que ceux qui s'appliquent en un territoire, à une date donnée : "
+                {ui.in_force_lead}
                 <A
-                    href="/norm-index/fr/in-force"
+                    href=crate::i18n::use_reader_lang().path("/norm-index/fr/in-force")
                     attr:class="text-[var(--color-accent)] underline underline-offset-2 hover:opacity-80"
                 >
-                    "ce qui s'applique en un lieu"
+                    {ui.in_force_link}
                 </A>
                 "."
             </p>
@@ -262,52 +256,51 @@ pub fn NormFondPage() -> impl IntoView {
 
 #[component]
 fn NormFondLoaded(hub: NormFondResponse) -> impl IntoView {
-    let title = format!("{} : textes - LibreJustice", hub.label);
-    let description = format!(
-        "Les {} textes du fond « {} », par année.",
-        fmt_count(hub.text_count),
-        hub.label,
-    );
+    let numbers = &crate::i18n::use_ui().numbers;
+    let all = crate::i18n::use_ui();
+    let ui = &all.hubs;
+    let title = (ui.fond_title)(&hub.label);
+    let description = (ui.fond_description)(&group_thousands(numbers, hub.text_count), &hub.label);
     let index = format!("/norm-index/{}", hub.jurisdiction);
     let url = format!("https://librejustice.fr{index}/{}", hub.fond);
     let jsonld = breadcrumb_jsonld(&[
-        ("Accueil", "https://librejustice.fr/".to_string()),
-        ("Normes", format!("https://librejustice.fr{index}")),
+        (all.shell.home, "https://librejustice.fr/".to_string()),
+        (all.norm.norms, format!("https://librejustice.fr{index}")),
         (&hub.label, url.clone()),
     ]);
     let dated: Vec<i32> = hub.years.iter().filter_map(|y| y.year).collect();
-    let span = match (dated.iter().min(), dated.iter().max()) {
-        (Some(min), Some(max)) => format!(", de {min} à {max}"),
-        _ => String::new(),
-    };
+    let span = dated
+        .iter()
+        .min()
+        .zip(dated.iter().max())
+        .map(|(min, max)| (*min, *max));
     let search_href = norms_href(hub.search_paths.into_iter().map(|p| ("jurisdiction", p)));
 
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-3">
                 <HubBreadcrumb items=vec![
-                    ("Accueil".to_string(), Some("/".to_string())),
-                    ("Normes".to_string(), Some(index.clone())),
+                    (all.norm.norms.to_string(), Some(index.clone())),
                     (hub.label.clone(), None),
                 ] />
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Textes & codes"
+                    {ui.texts_and_codes}
                 </p>
                 <h1 class="font-sans text-3xl text-[var(--color-ink)]">{hub.label.clone()}</h1>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    {format!("{} textes{span}.", fmt_count(hub.text_count))}
+                    {(ui.fond_intro)(&group_thousands(numbers, hub.text_count), span)}
                 </p>
-                <A href=search_href attr:class=DEEP_LINK>"Rechercher dans ces textes"</A>
+                <A href=crate::jurisdiction::use_reader_scope().href(search_href) attr:class=DEEP_LINK>{ui.search_these}</A>
             </header>
 
             <section class="flex flex-col gap-3">
                 <h2 class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                    "Textes par année"
+                    {ui.by_year}
                 </h2>
                 <ul class="flex flex-col divide-y divide-[var(--color-rule)]">
                     {hub
@@ -315,11 +308,7 @@ fn NormFondLoaded(hub: NormFondResponse) -> impl IntoView {
                         .into_iter()
                         .map(|y| {
                             let href = format!("{index}/{}/{}", hub.fond, year_token(y.year));
-                            let count = format!(
-                                "{} texte{}",
-                                fmt_count(y.count),
-                                if y.count > 1 { "s" } else { "" },
-                            );
+                            let count = (ui.n_texts)(&group_thousands(numbers, y.count), y.count);
                             view! {
                                 <li class="py-2.5">
                                     <A
@@ -327,7 +316,7 @@ fn NormFondLoaded(hub: NormFondResponse) -> impl IntoView {
                                         attr:class="group flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1"
                                     >
                                         <span class="text-base text-[var(--color-ink)] group-hover:text-[var(--color-accent)]">
-                                            {year_label(y.year)}
+                                            {year_label(ui, y.year)}
                                         </span>
                                         <span class="tabular-nums text-sm text-[var(--color-ink-subtle)]">
                                             {count}
@@ -354,6 +343,7 @@ pub fn NormYearPage() -> impl IntoView {
     // on la declare ici, synchroniquement, sinon la generique du shell sort aussi.
     own_page_description();
 
+    let ui = &crate::i18n::use_ui().hubs;
     let params = use_params_map();
     let query = use_query_map();
     let page_data = Resource::new_blocking(
@@ -369,14 +359,14 @@ pub fn NormYearPage() -> impl IntoView {
                     .unwrap_or(1),
             )
         },
-        |(juris, fond, annee, page)| {
+        move |(juris, fond, annee, page)| {
             sendable(async move {
                 let year: Option<i32> = if annee == UNDATED_TOKEN {
                     None
                 } else {
                     Some(annee.parse().map_err(|_| PageError {
                         status: 404,
-                        message: "Année invalide".to_string(),
+                        failure: Failure::Said(ui.invalid_year.to_string()),
                     })?)
                 };
                 ApiClient::from_context()
@@ -407,30 +397,16 @@ pub fn NormYearPage() -> impl IntoView {
 
 #[component]
 fn NormYearLoaded(page: NormYearResponse) -> impl IntoView {
+    let lang = crate::i18n::use_reader_lang().get();
+    let numbers = &crate::i18n::use_ui().numbers;
     let page_size = i64::from(page.page_size);
     let page_count = ((page.total + page_size - 1) / page_size).max(1) as u32;
-    let ylabel = year_label(page.year);
-    let title = if page.page > 1 {
-        format!(
-            "{} : textes {} (page {}) - LibreJustice",
-            page.label, ylabel, page.page,
-        )
-    } else {
-        format!("{} : textes {} - LibreJustice", page.label, ylabel)
-    };
-    let description = match page.year {
-        Some(y) => format!(
-            "Les {} textes de {} du fond « {} », en texte intégral.",
-            fmt_count(page.total),
-            y,
-            page.label,
-        ),
-        None => format!(
-            "Les {} textes sans date du fond « {} ».",
-            fmt_count(page.total),
-            page.label,
-        ),
-    };
+    let all = crate::i18n::use_ui();
+    let ui = &all.hubs;
+    let ylabel = year_label(ui, page.year);
+    let title = (ui.year_title)(&page.label, &ylabel, page.page);
+    let total = group_thousands(numbers, page.total);
+    let description = (ui.year_description)(&total, page.year, &page.label);
     let index = format!("/norm-index/{}", page.jurisdiction);
     let hub_href = format!("{index}/{}", page.fond);
     let year_href = format!("{hub_href}/{}", year_token(page.year));
@@ -443,8 +419,8 @@ fn NormYearLoaded(page: NormYearResponse) -> impl IntoView {
         base_url.clone()
     };
     let jsonld = breadcrumb_jsonld(&[
-        ("Accueil", "https://librejustice.fr/".to_string()),
-        ("Normes", format!("https://librejustice.fr{index}")),
+        (all.shell.home, "https://librejustice.fr/".to_string()),
+        (all.norm.norms, format!("https://librejustice.fr{index}")),
         (&page.label, format!("https://librejustice.fr{hub_href}")),
         (&ylabel, base_url.clone()),
     ]);
@@ -461,47 +437,38 @@ fn NormYearLoaded(page: NormYearResponse) -> impl IntoView {
             .chain(bounds),
     );
     let search_label = match page.year {
-        Some(y) => format!("Rechercher dans les textes de {y}"),
-        None => "Rechercher dans ces textes".to_string(),
+        Some(y) => (ui.search_year)(y),
+        None => ui.search_these.to_string(),
     };
 
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=canonical />
+        <crate::seo::Canonical href=canonical />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-3">
                 <HubBreadcrumb items=vec![
-                    ("Accueil".to_string(), Some("/".to_string())),
-                    ("Normes".to_string(), Some(index.clone())),
+                    (all.norm.norms.to_string(), Some(index.clone())),
                     (page.label.clone(), Some(hub_href.clone())),
                     (ylabel.clone(), None),
                 ] />
                 <h1 class="font-sans text-3xl text-[var(--color-ink)]">
-                    {format!("{} — {}", page.label, ylabel)}
+                    {(ui.year_heading)(&page.label, &ylabel)}
                 </h1>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    {match page.year {
-                        Some(_) => format!(
-                            "{} textes, du plus récent au plus ancien.",
-                            fmt_count(page.total),
-                        ),
-                        None => format!(
-                            "{} textes sans date de signature ni de publication connue.",
-                            fmt_count(page.total),
-                        ),
-                    }}
+                    {(ui.year_intro)(&total, page.year)}
                 </p>
-                <A href=search_href attr:class=DEEP_LINK>{search_label}</A>
+                <A href=crate::jurisdiction::use_reader_scope().href(search_href) attr:class=DEEP_LINK>{search_label}</A>
             </header>
 
             <ul class="flex flex-col divide-y divide-[var(--color-rule)]">
                 {page
                     .texts
                     .into_iter()
-                    .map(|t| {
+                    .map(|mut t| {
+                        crate::i18n::relabel_title(lang, &mut t.title);
                         let href = lj_vocab::norm_path(&t.jurisdiction, &t.slug);
                         view! {
                             <li class="py-2.5">

@@ -104,6 +104,7 @@ fn CardViewToggle(
 ) -> impl IntoView {
     let pref = pref();
     let current = effective_card_view(query, mode);
+    let ui = &crate::i18n::use_ui().search;
     let pin = move |view: CardView| {
         pref.set(Some((query.get_untracked(), view)));
     };
@@ -111,16 +112,16 @@ fn CardViewToggle(
     view! {
         <div
             role="group"
-            aria-label="Contenu des cartes"
+            aria-label=ui.card_content
             class="flex items-center gap-0.5 rounded border border-[var(--color-rule)] p-0.5"
         >
             <SegmentButton
-                label="Extrait"
+                label=ui.excerpt
                 selected=Signal::derive(move || current.get() == CardView::Snippet)
                 on_select=Callback::new(move |_| pin(CardView::Snippet))
             />
             <SegmentButton
-                label="Résumé"
+                label=ui.summary
                 selected=Signal::derive(move || current.get() == CardView::Summary)
                 on_select=Callback::new(move |_| pin(CardView::Summary))
             />
@@ -207,17 +208,18 @@ fn RerankToggle(
             if active.get() { "left-3" } else { "left-0.5" },
         ])
     };
+    let ui = &crate::i18n::use_ui().search;
     let title = move || {
         if par_date.get() {
-            "Le tri IA ne s'applique pas à un classement par date, qui impose déjà son ordre."
+            ui.ai_sort_by_date
         } else if hors_mode.get() {
-            "Le tri IA ne s'applique qu'au mode Reformulation : une recherche à opérateurs classe par correspondance aux termes saisis, une recherche par référence par l'identité de la décision."
+            ui.ai_sort_other_mode
         } else if renonce.get() {
-            "Le tri IA n'a pas trié cette liste : trop peu de résultats, ou le service était saturé. Le classement affiché est celui du score de recherche."
+            ui.ai_sort_declined
         } else if active.get() {
-            "Une IA a trié les 50 premiers résultats selon votre question. Cliquer pour revenir au classement par score de recherche."
+            ui.ai_sort_on
         } else {
-            "Faire trier les 50 premiers résultats par une IA, selon votre question."
+            ui.ai_sort_off
         }
     };
 
@@ -230,7 +232,7 @@ fn RerankToggle(
             title=title
             class=class
         >
-            <span>"Tri IA"</span>
+            <span>{ui.ai_sort}</span>
             <span aria-hidden="true" class=track>
                 <span class=knob></span>
             </span>

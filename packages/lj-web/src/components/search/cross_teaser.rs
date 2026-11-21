@@ -16,7 +16,8 @@ use lj_dtos::{
 
 use crate::api::{ApiClient, PageParams, TextesFilters};
 use crate::components::ui::Skeleton;
-use crate::helpers::{encode_query, format_article_num, group_thousands};
+use crate::helpers::{encode_query, format_article_num};
+use crate::jurisdiction::{home_place, use_reader_scope};
 
 use super::compact_search::highlight::Highlighted;
 use super::text_results::article_meta_line;
@@ -24,23 +25,29 @@ use super::text_results::article_meta_line;
 /// Hits affichés par teaser.
 const TEASER_ROWS: usize = 3;
 
-/// "Dans les textes" block of the `/decision-search` rail: top 3 articles of the
-/// text engine for the same query + a link to `/norm-search?q=…`.
+/// "Dans les textes" block of the decision search rail: top 3 articles of the text
+/// engine for the same query under the same jurisdiction, and a link to its page.
 #[component]
 pub fn TextesTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
-    let title = "Dans les textes";
+    let ui = &crate::i18n::use_ui().search;
+    let title = ui.in_texts;
     let answer = RwSignal::new(None::<(String, Option<ArticleSearchResponse>)>);
+    let scope = use_reader_scope();
     Effect::new(move |_| {
         let q = query.get();
         if q.is_empty() {
             answer.set(None);
             return;
         }
+        let places = vec![home_place(&scope.code())];
         leptos::task::spawn_local(async move {
             let resp = ApiClient::from_context()
                 .search_textes(
                     &q,
-                    TextesFilters::default(),
+                    TextesFilters {
+                        places: &places,
+                        ..Default::default()
+                    },
                     PageParams {
                         limit: TEASER_ROWS as u32,
                         offset: 0,
@@ -50,7 +57,7 @@ pub fn TextesTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
                     SearchContext::Teaser,
                 )
                 .await;
-            if query.get_untracked() != q {
+            if answer.is_disposed() || query.get_untracked() != q {
                 return;
             }
             answer.set(Some((q, resp.ok())));
@@ -71,45 +78,44 @@ pub fn TextesTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
         if resp.hits.is_empty() {
             return ().into_any();
         }
-        let total = resp.total;
         let rows = resp
             .hits
             .into_iter()
             .take(TEASER_ROWS)
             .map(|h| view! { <TextTeaserRow hit=h /> })
             .collect_view();
-        let more_label = if total == 1 {
-            "Voir le texte".to_string()
-        } else {
-            format!("Voir les {} textes", group_thousands(total))
-        };
+        // No number, as on the bridge to the decisions: the exact count costs an
+        // aggregate the bridge does not pay for three rows.
         teaser_block(
             title,
             rows.into_any(),
-            format!("/norm-search?q={}", encode_query(&q)),
-            more_label,
+            scope.path(&format!("/norm-search?q={}", encode_query(&q))),
+            ui.see_texts.to_string(),
         )
     }
 }
 
-/// "Dans les décisions" block of the `/norm-search` rail: top 3 decisions of the
-/// case law engine for the same query + a link to `/decision-search?q=…`.
+/// "Dans les décisions" block of the norm search rail: top 3 decisions of the case
+/// law engine for the same query under the same jurisdiction, and a link to its page.
 #[component]
 pub fn DecisionsTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
-    let title = "Dans les décisions";
+    let ui = &crate::i18n::use_ui().search;
+    let title = ui.in_decisions;
     let answer = RwSignal::new(None::<(String, Option<SearchResponse>)>);
+    let scope = use_reader_scope();
+    let lang = crate::i18n::use_reader_lang().get();
     Effect::new(move |_| {
         let q = query.get();
         if q.is_empty() {
             answer.set(None);
             return;
         }
+        let request = teaser_search_request(&q, scope.code(), lang.code());
         leptos::task::spawn_local(async move {
-            let request = teaser_search_request(&q);
             let resp = ApiClient::from_context()
                 .search(&request, SearchContext::Teaser)
                 .await;
-            if query.get_untracked() != q {
+            if answer.is_disposed() || query.get_untracked() != q {
                 return;
             }
             answer.set(Some((q, resp.ok())));
@@ -149,8 +155,8 @@ pub fn DecisionsTeaser(#[prop(into)] query: Signal<String>) -> impl IntoView {
         teaser_block(
             title,
             rows.into_any(),
-            format!("/decision-search?q={}", encode_query(&q)),
-            "Voir les décisions".to_string(),
+            scope.path(&format!("/decision-search?q={}", encode_query(&q))),
+            ui.see_decisions.to_string(),
         )
     }
 }
@@ -181,7 +187,8 @@ fn DecisionTeaserRow(href: String, title_html: String, snippet: String) -> impl 
 
 /// Texts teaser row, laid out like a `/norm-search` hit.
 #[component]
-fn TextTeaserRow(hit: ArticleSearchHit) -> impl IntoView {
+fn TextTeaserRow(mut hit: ArticleSearchHit) -> impl IntoView {
+    crate::i18n::relabel_title(crate::i18n::use_reader_lang().get(), &mut hit.code_title);
     // `numKey` vide : hit « texte entier » → page du texte ; sinon page de
     // l'article.
     let is_whole_text = hit.num_key.is_empty();
@@ -199,7 +206,7 @@ fn TextTeaserRow(hit: ArticleSearchHit) -> impl IntoView {
                     view! { {hit.code_title.clone()} }.into_any()
                 } else {
                     view! {
-                        {format!("Article {}", format_article_num(&hit.num))}
+                        {(crate::i18n::use_ui().norm.article_n)(&format_article_num(&hit.num))}
                         <span class="font-normal text-[var(--color-ink-subtle)]">
                             {format!("\u{00A0}· {}", hit.code_title)}
                         </span>
@@ -224,7 +231,7 @@ fn TextTeaserRow(hit: ArticleSearchHit) -> impl IntoView {
 /// Requête décisions du teaser : top-3, tri pertinence, sans filtre ni mode IA.
 /// Mode lexical forcé : le pont sert un extrait surligné, que produit la jambe
 /// BM25.
-fn teaser_search_request(q: &str) -> SearchRequest {
+fn teaser_search_request(q: &str, home: String, lang: &str) -> SearchRequest {
     SearchRequest {
         query: q.to_string(),
         jurisdiction_type: None,
@@ -232,6 +239,7 @@ fn teaser_search_request(q: &str) -> SearchRequest {
         legal_domain: None,
         jurisdiction_code: None,
         seat: None,
+        home: Some(home),
         formation: None,
         legal_instrument: None,
         legal_article: None,
@@ -244,6 +252,7 @@ fn teaser_search_request(q: &str) -> SearchRequest {
         limit: TEASER_ROWS as u32,
         offset: 0,
         ai_mode: false,
+        lang: Some(lang.to_owned()),
     }
 }
 

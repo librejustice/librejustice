@@ -14,6 +14,7 @@ use lj_dtos::{CitingDecisionHit, LinkedTextRef, SectionCitingText};
 
 use super::data::CitingResult;
 use crate::helpers::decisions_href;
+use crate::jurisdiction::{use_reader_scope, ReaderScope};
 
 /// Intertitre de sous-bloc : petites capitales trackées du registre discret.
 const SUBTITLE: &str = "text-xs uppercase tracking-[0.16em] text-[var(--color-ink-subtle)]";
@@ -37,6 +38,7 @@ pub(crate) struct CitedBySubject {
     pub all_href: String,
     /// Recherche plein-texte, servie quand le graphe n'a rien identifié.
     pub search_href: String,
+    pub scope: ReaderScope,
 }
 
 /// Une ligne du sous-bloc « Textes », d'où qu'elle vienne : renvoi entrant du
@@ -62,10 +64,7 @@ impl From<LinkedTextRef> for CitedText {
 
 impl From<SectionCitingText> for CitedText {
     fn from(t: SectionCitingText) -> Self {
-        let detail = match t.article_count {
-            1 => "cite 1 article de la division".to_string(),
-            n => format!("cite {n} articles de la division"),
-        };
+        let detail = (crate::i18n::use_ui().norm.cites_division_articles)(t.article_count);
         Self {
             label: t.label,
             href: t.href,
@@ -85,22 +84,24 @@ pub(crate) fn CitedBySection(
     code: String,
     num_key: String,
 ) -> impl IntoView {
+    let ui = crate::i18n::use_ui();
     let subject = CitedBySubject {
-        name: "cet article",
+        name: ui.norm.this_article,
         all_href: decisions_href([("legalArticle", format!("{code}|{num_key}"))]),
         search_href: decisions_href([("q", search_query)]),
+        scope: use_reader_scope(),
     };
     let texts: Vec<CitedText> = texts.into_iter().map(CitedText::from).collect();
     view! {
         <Suspense fallback=move || {
             view! {
-                <p class="text-sm text-[var(--color-ink-subtle)]">"Chargement des décisions…"</p>
+                <p class="text-sm text-[var(--color-ink-subtle)]">{ui.norm.loading_decisions}</p>
             }
         }>
             {move || {
                 let texts = texts.clone();
                 let subject = subject.clone();
-                Suspend::new(async move { section(citing.await, texts, &subject, &[]) })
+                Suspend::new(async move { section(citing.await, texts, &subject, &[], ui) })
             }}
         </Suspense>
     }
@@ -118,20 +119,21 @@ pub(crate) fn section(
     texts: Vec<CitedText>,
     subject: &CitedBySubject,
     articles: &[(String, String)],
+    ui: &'static crate::i18n::Ui,
 ) -> AnyView {
     let CitingResult { hits, error } = resolved;
-    let mut blocks = vec![decisions_block(hits, error, subject, articles)];
+    let mut blocks = vec![decisions_block(hits, error, subject, articles, ui)];
     if !texts.is_empty() {
-        blocks.push(texts_block(texts));
+        blocks.push(texts_block(texts, ui));
     }
-    frame(blocks)
+    frame(blocks, ui)
 }
 
 /// Cadre commun de la section : le titre, puis ses sous-blocs dans l'ordre reçu.
-fn frame(blocks: Vec<AnyView>) -> AnyView {
+fn frame(blocks: Vec<AnyView>, ui: &crate::i18n::Ui) -> AnyView {
     view! {
-        <section aria-label="Cité par" class="flex flex-col gap-6">
-            <h2 class="font-sans text-base text-[var(--color-ink)]">"Cité par"</h2>
+        <section aria-label=ui.norm.cited_by class="flex flex-col gap-6">
+            <h2 class="font-sans text-base text-[var(--color-ink)]">{ui.norm.cited_by}</h2>
             {blocks}
         </section>
     }
@@ -142,16 +144,17 @@ fn frame(blocks: Vec<AnyView>) -> AnyView {
 /// `legalArticle` (query montée par `ParamsMap` pour que le `|` soit encodé).
 fn decisions_block(
     hits: Vec<CitingDecisionHit>,
-    error: Option<String>,
+    error: Option<crate::api::Failure>,
     subject: &CitedBySubject,
     articles: &[(String, String)],
+    ui: &'static crate::i18n::Ui,
 ) -> AnyView {
     if let Some(err) = error {
         return view! {
             <div class="flex flex-col gap-2">
-                <p class=SUBTITLE>"Décisions"</p>
+                <p class=SUBTITLE>{ui.shell.decisions}</p>
                 <p class="text-sm text-[var(--color-ink-subtle)]">
-                    {format!("Décisions citantes indisponibles ({err}).")}
+                    {(ui.norm.citing_unavailable)(&err.text(&ui.shell))}
                 </p>
             </div>
         }
@@ -162,12 +165,12 @@ fn decisions_block(
         // recherche plein-texte, qui attrape les mentions non extraites.
         return view! {
             <div class="flex flex-col gap-2">
-                <p class=SUBTITLE>"Décisions"</p>
+                <p class=SUBTITLE>{ui.shell.decisions}</p>
                 <p class="text-sm text-[var(--color-ink-subtle)]">
-                    {format!("Aucune décision citant {} n'a encore été identifiée.", subject.name)}
+                    {(ui.norm.no_citing_decision)(subject.name)}
                 </p>
-                <A href=subject.search_href.clone() attr:class=DEEP_LINK>
-                    "Rechercher dans les décisions"
+                <A href=subject.scope.href(subject.search_href.clone()) attr:class=DEEP_LINK>
+                    {ui.search.search_decisions}
                 </A>
             </div>
         }
@@ -176,16 +179,17 @@ fn decisions_block(
     let rows = hits
         .into_iter()
         .map(|hit| {
-            let cited = cited_articles_line(&hit.cited_articles, articles);
+            let cited = cited_articles_line(&hit.cited_articles, articles, &ui.norm);
             view! { <CitedDecisionRow hit=hit cited=cited /> }
         })
         .collect_view();
+    let see_all = (ui.norm.see_all_citing)(subject.name);
     view! {
         <div class="flex flex-col gap-3">
-            <p class=SUBTITLE>"Décisions"</p>
+            <p class=SUBTITLE>{ui.shell.decisions}</p>
             <ul class="flex flex-col">{rows}</ul>
-            <A href=subject.all_href.clone() attr:class=DEEP_LINK>
-                {format!("Voir toutes les décisions citant {}", subject.name)}
+            <A href=subject.scope.href(subject.all_href.clone()) attr:class=DEEP_LINK>
+                {see_all}
             </A>
         </div>
     }
@@ -203,7 +207,11 @@ const NAMED_ARTICLES: usize = 3;
 ///
 /// Les articles sortent dans l'ordre de lecture du document (celui de
 /// `articles`), pas dans celui du tableau reçu, et sous leur numéro affichable.
-fn cited_articles_line(cited: &[String], articles: &[(String, String)]) -> Option<String> {
+fn cited_articles_line(
+    cited: &[String],
+    articles: &[(String, String)],
+    ui: &crate::i18n::NormUi,
+) -> Option<String> {
     if cited.is_empty() {
         return None;
     }
@@ -215,15 +223,12 @@ fn cited_articles_line(cited: &[String], articles: &[(String, String)]) -> Optio
     let (named, rest) = labels.split_at(labels.len().min(NAMED_ARTICLES));
     match (named, rest.len()) {
         ([], _) => None,
-        ([one], 0) => Some(format!("cite l'art. {one}")),
+        ([one], 0) => Some((ui.cites_art_one)(one)),
         (named, 0) => {
             let (last, head) = named.split_last()?;
-            Some(format!("cite les art. {} et {last}", head.join(", ")))
+            Some((ui.cites_art_list)(&head.join(", "), last))
         }
-        (named, more) => Some(format!(
-            "cite les art. {} et {more} autres",
-            named.join(", ")
-        )),
+        (named, more) => Some((ui.cites_art_more)(&named.join(", "), more)),
     }
 }
 
@@ -243,7 +248,10 @@ pub(crate) fn CitedDecisionRow(hit: CitingDecisionHit, cited: Option<String>) ->
         hit.jurisdiction_code.as_deref(),
         &hit.id,
     );
-    let badge = crate::pages::decision_page::labels::publication_badge(&hit.publication_codes)
+    let badge = crate::pages::decision_page::labels::publication_badge(
+        &hit.publication_codes,
+        &crate::i18n::use_ui().decision,
+    )
         .map(|label| {
             view! {
                 <span class="inline-flex w-fit items-center rounded-full border border-[var(--color-rule)] px-2 py-0.5 text-[11px] text-[var(--color-ink-muted)]">
@@ -252,11 +260,30 @@ pub(crate) fn CitedDecisionRow(hit: CitingDecisionHit, cited: Option<String>) ->
             }
             .into_any()
         });
-    let summary = hit.summary.map(|full| {
+    let summary = hit.summary.as_deref().map(|summary| {
+        let full = crate::components::ui::shown_summary(
+            hit.jurisdiction_type,
+            summary,
+            hit.summary_quote.as_ref(),
+            hit.summary_body.as_ref(),
+        )
+        .text;
         let excerpt = crate::seo::decision::first_sentence(&full);
         view! { <ExpandableSummary excerpt=excerpt full=full /> }.into_any()
     });
     let cited = cited.map(|line| view! { <p class=DETAIL>{line}</p> }.into_any());
+    let title = crate::helpers::retitle(
+        &crate::i18n::use_ui().dates,
+        &hit.title,
+        hit.date_lecture.as_deref(),
+    );
+    let title = match hit
+        .court_names
+        .get(crate::i18n::use_reader_lang().get().code())
+    {
+        Some(named) => crate::helpers::renamed(named, &title, hit.jurisdiction_name.as_deref()),
+        None => title,
+    };
     view! {
         <li class=format!("flex flex-col gap-1.5 {ROW}")>
             <h3 class="font-sans text-sm leading-snug text-[var(--color-ink)]">
@@ -264,7 +291,7 @@ pub(crate) fn CitedDecisionRow(hit: CitingDecisionHit, cited: Option<String>) ->
                     href=href
                     attr:class="no-underline transition-colors hover:text-[var(--color-accent)]"
                 >
-                    {hit.title}
+                    {title}
                 </A>
             </h3>
             {summary}
@@ -276,14 +303,14 @@ pub(crate) fn CitedDecisionRow(hit: CitingDecisionHit, cited: Option<String>) ->
 
 /// Sous-bloc textes : renvois entrants du graphe sur un article (libellé
 /// verbatim DILA), textes citants agrégés sur une division.
-fn texts_block(texts: Vec<CitedText>) -> AnyView {
+fn texts_block(texts: Vec<CitedText>, ui: &crate::i18n::Ui) -> AnyView {
     let rows = texts
         .into_iter()
         .map(|text| view! { <CitedTextRow text=text /> })
         .collect_view();
     view! {
         <div class="flex flex-col gap-3">
-            <p class=SUBTITLE>"Textes"</p>
+            <p class=SUBTITLE>{ui.shell.texts}</p>
             <ul class="flex flex-col">{rows}</ul>
         </div>
     }

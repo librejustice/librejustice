@@ -2,6 +2,7 @@
 //! text paths, hub pages, notice fonds, zones, passage tags, the tokenizer
 //! calibration and the workbench's document types and files.
 
+pub mod cantons;
 pub mod courts;
 pub mod files;
 pub mod languages;
@@ -41,9 +42,9 @@ pub fn entity_path(ns: &str, id: &str) -> String {
     format!("/entity/{seg}/{ns}/{id}")
 }
 
-/// The page of a public procurement notice. Every notice is French.
-pub fn notice_path(uid: &str) -> String {
-    format!("/notice/fr/{uid}")
+/// The page of a notice, under the place its journal publishes for; the uid keeps its slashes.
+pub fn notice_path(place: &str, uid: &str) -> String {
+    format!("/notice/{}/{uid}", url_segment(place))
 }
 
 /// Links per page of the `/decision-index/{juris}/{code}/{year}` and
@@ -64,13 +65,48 @@ pub mod passage_zones {
     pub const HEADNOTE: &str = "headnote";
 }
 
+/// What a row of `decisions` is, `decisions.kind`, repeated on its texts and passages.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash)]
+pub enum DocumentKind {
+    /// A decision of a court.
+    #[default]
+    Decision,
+    /// The conclusions of an Advocate General, a procureur-generaal or a rapporteur
+    /// public, which propose an answer to the court and decide nothing.
+    Conclusions,
+}
+
+impl DocumentKind {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            DocumentKind::Decision => "decision",
+            DocumentKind::Conclusions => "conclusions",
+        }
+    }
+}
+
 /// The fonds of the notice pot, in display order. Each has its own backend
-/// (the `annonce` table for `marche`, the DILA ODS proxy for `bodacc` and
-/// `joafe`), but all project onto the same hit: the fond is a facet axis, not
-/// a separate engine.
-pub const ANNONCE_FOND_MARCHE: &str = "marche";
-pub const ANNONCE_FOND_BODACC: &str = "bodacc";
-pub const ANNONCE_FOND_JOAFE: &str = "joafe";
+/// (the `annonce` table for `marche`, the gazette tables for `bodacc` and
+/// `joafe`, the JORF publications for `jo`, the prefectures' recueils for `raa`), but
+/// all project onto the same hit: the fond is a facet axis, not a separate engine.
+pub const JOURNAL_FOND_MARCHE: &str = "marche";
+pub const JOURNAL_FOND_BODACC: &str = "bodacc";
+pub const JOURNAL_FOND_JOAFE: &str = "joafe";
+pub const JOURNAL_FOND_JO: &str = "jo";
+pub const JOURNAL_FOND_RAA: &str = "raa";
+
+/// The categories of the norms search, each text in exactly one.
+pub const NORM_CATEGORIES: [&str; 9] = [
+    "constitution",
+    "codes",
+    "legislation",
+    "reglementation",
+    "traites",
+    "conventions_collectives",
+    "doctrine_administrative",
+    "information_publique",
+    "travaux_parlementaires",
+];
 
 /// The channels that publish a notice without carrying the consultation: they
 /// name the platform, they do not give access to it. A row seen by these alone

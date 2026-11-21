@@ -87,6 +87,7 @@ web-sys = { workspace = true, optional = true, features = [
   "FontFaceSet",
   "HtmlAnchorElement",
   "HtmlCanvasElement",
+  "HtmlDocument",
   "HtmlElement",
   "HtmlImageElement",
   "HtmlInputElement",

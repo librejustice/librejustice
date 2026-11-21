@@ -1,0 +1,109 @@
+text_uid	kind	lang	value
+BE/CODE-CIVIL	abbreviation	fr	C. civ.
+BE/CODE-CIVIL	abbreviation	nl	BW
+BE/CODE-CIVIL	abbreviation	nl	oud BW
+BE/CODE-CIVIL	title	nl	oud Burgerlijk Wetboek
+BE/CODE-CIVIL-NOUVEAU	abbreviation	fr	C. civ.
+BE/CODE-CIVIL-NOUVEAU	abbreviation	nl	BW
+BE/CODE-CIVIL-NOUVEAU	abbreviation	nl	nieuw BW
+BE/CODE-CIVIL-NOUVEAU	title	nl	Burgerlijk Wetboek
+BE/CODE-DROIT-ECONOMIQUE	abbreviation	fr	CDE
+BE/CODE-DROIT-ECONOMIQUE	abbreviation	nl	WER
+BE/CODE-DROIT-ECONOMIQUE	title	nl	Wetboek van economisch recht
+BE/CODE-INSTRUCTION-CRIMINELLE	abbreviation	fr	C.I.Cr.
+BE/CODE-INSTRUCTION-CRIMINELLE	abbreviation	nl	Sv.
+BE/CODE-INSTRUCTION-CRIMINELLE	title	nl	Wetboek van Strafvordering
+BE/CODE-JUDICIAIRE	abbreviation	fr	C. jud.
+BE/CODE-JUDICIAIRE	abbreviation	nl	Ger.W.
+BE/CODE-JUDICIAIRE	title	nl	Gerechtelijk Wetboek
+BE/CODE-PENAL	abbreviation	fr	C. pén.
+BE/CODE-PENAL	abbreviation	nl	Sw.
+BE/CODE-PENAL	title	nl	Strafwetboek
+BE/CODE-PENAL-NOUVEAU	abbreviation	fr	C. pén.
+BE/CODE-PENAL-NOUVEAU	abbreviation	nl	Sw.
+BE/CODE-PENAL-NOUVEAU	title	nl	Strafwetboek
+BE/CODE-SOCIETES	abbreviation	fr	C. soc.
+BE/CODE-SOCIETES	abbreviation	nl	W.Venn.
+BE/CODE-SOCIETES	title	nl	Wetboek van vennootschappen
+BE/CONSTITUTION-1994	abbreviation	fr	Const.
+BE/CONSTITUTION-1994	abbreviation	nl	Gw.
+BE/CONSTITUTION-1994	title	de	Verfassung
+BE/CONSTITUTION-1994	title	nl	Grondwet
+BJ/LOI-2008-07	title	fr	Code de procédure civile, commerciale, sociale, administrative et des comptes
+BJ/LOI-2008-07	title	fr	Loi du 28 février 2011
+CH/CODE-CIVIL	abbreviation	de	ZGB
+CH/CODE-CIVIL	abbreviation	fr	CC
+CH/CODE-CIVIL	abbreviation	it	CC
+CH/CODE-CIVIL	title	de	Schweizerisches Zivilgesetzbuch
+CH/CODE-CIVIL	title	it	Codice civile svizzero
+CH/CODE-CIVIL	number		210
+CH/CODE-OBLIGATIONS	abbreviation	de	OR
+CH/CODE-OBLIGATIONS	abbreviation	fr	CO
+CH/CODE-OBLIGATIONS	abbreviation	it	CO
+CH/CODE-OBLIGATIONS	title	de	Obligationenrecht
+CH/CODE-OBLIGATIONS	title	it	Codice delle obbligazioni
+CH/CODE-OBLIGATIONS	number		220
+CH/CODE-PROCEDURE-CIVILE	abbreviation	de	ZPO
+CH/CODE-PROCEDURE-CIVILE	abbreviation	fr	CPC
+CH/CODE-PROCEDURE-CIVILE	abbreviation	it	CPC
+CH/CODE-PROCEDURE-CIVILE	title	de	Schweizerische Zivilprozessordnung
+CH/CODE-PROCEDURE-CIVILE	title	it	Codice di diritto processuale civile svizzero
+CH/CODE-PROCEDURE-CIVILE	number		272
+CH/CONSTITUTION-FEDERALE	abbreviation	de	BV
+CH/CONSTITUTION-FEDERALE	abbreviation	fr	Cst.
+CH/CONSTITUTION-FEDERALE	abbreviation	it	Cost.
+CH/CONSTITUTION-FEDERALE	title	de	Bundesverfassung der Schweizerischen Eidgenossenschaft
+CH/CONSTITUTION-FEDERALE	title	it	Costituzione federale della Confederazione Svizzera
+CH/CONSTITUTION-FEDERALE	number		101
+CH/LOI-DROIT-INTERNATIONAL-PRIVE-LDIP	abbreviation	de	IPRG
+CH/LOI-DROIT-INTERNATIONAL-PRIVE-LDIP	abbreviation	fr	LDIP
+CH/LOI-DROIT-INTERNATIONAL-PRIVE-LDIP	abbreviation	it	LDIP
+CH/LOI-DROIT-INTERNATIONAL-PRIVE-LDIP	title	de	Bundesgesetz über das Internationale Privatrecht
+CH/LOI-DROIT-INTERNATIONAL-PRIVE-LDIP	number		291
+CH/LOI-PARTIE-GENERALE-ASSURANCES-SOCIALES-LPGA	abbreviation	de	ATSG
+CH/LOI-PARTIE-GENERALE-ASSURANCES-SOCIALES-LPGA	abbreviation	fr	LPGA
+CH/LOI-PARTIE-GENERALE-ASSURANCES-SOCIALES-LPGA	abbreviation	it	LPGA
+CH/LOI-PARTIE-GENERALE-ASSURANCES-SOCIALES-LPGA	title	de	Bundesgesetz über den Allgemeinen Teil des Sozialversicherungsrechts
+CH/LOI-PARTIE-GENERALE-ASSURANCES-SOCIALES-LPGA	number		830.1
+CH/LOI-POURSUITE-DETTES-FAILLITE-LP	abbreviation	de	SchKG
+CH/LOI-POURSUITE-DETTES-FAILLITE-LP	abbreviation	fr	LP
+CH/LOI-POURSUITE-DETTES-FAILLITE-LP	abbreviation	it	LEF
+CH/LOI-POURSUITE-DETTES-FAILLITE-LP	title	de	Bundesgesetz über Schuldbetreibung und Konkurs
+CH/LOI-POURSUITE-DETTES-FAILLITE-LP	number		281.1
+DJ/LOI-133-AN-5-5L	title	fr	Code du travail
+DJ/LOI-152-AN-2-4L	title	fr	Code de la famille
+LU/CODE-CIVIL	abbreviation	fr	C. civ.
+LU/CODE-PENAL	abbreviation	fr	C. pén.
+LU/CODE-PROCEDURE-CIVILE	abbreviation	fr	NCPC
+LU/CODE-PROCEDURE-CIVILE	title	fr	Nouveau code de procédure civile
+MA/CODE-COMMERCE	number		15-95
+MA/CODE-DROITS-REELS	number		39-08
+MA/CODE-FAMILLE	title	fr	Moudawana
+MA/CODE-FAMILLE	number		70-03
+MA/CODE-MEDICAMENT-PHARMACIE	number		17-04
+MA/CODE-NATIONALITE-MAROCAINE	number		1-58-250
+MA/CODE-OBLIGATIONS-CONTRATS	abbreviation	fr	DOC
+MA/CODE-OBLIGATIONS-CONTRATS	title	fr	Dahir des obligations et des contrats
+MA/CODE-OBLIGATIONS-CONTRATS	title	fr	Dahir des obligations et contrats
+MA/CODE-OBLIGATIONS-CONTRATS	title	fr	Code des obligations et contrats
+MA/CODE-PENAL	number		1-59-413
+MA/CODE-PROCEDURE-CIVILE	number		1-74-447
+MA/CODE-RECOUVREMENT-CREANCES-PUBLIQUES	number		15-97
+MA/CODE-TRAVAIL	number		65-99
+MA/LOI-15-01	title	fr	Loi relative à la prise en charge (la kafala) des enfants abandonnés
+MA/LOI-37-99	title	fr	Loi relative à l'état civil
+OHADA/ACTE-UNIFORME-2003-CONTRATS-DE-TRANSPORT-DE-MARCHANDISES-PAR-ROUTE	abbreviation	fr	AUCTMR
+OHADA/ACTE-UNIFORME-2010-DROIT-COMMERCIAL-GENERAL	abbreviation	fr	AUDCG
+OHADA/ACTE-UNIFORME-2010-ORGANISATION-DES-SURETES	abbreviation	fr	AUS
+OHADA/ACTE-UNIFORME-2010-RELATIF-AU-DROIT-DES-SOCIETES-COOPERATIVES	abbreviation	fr	AUSCOOP
+OHADA/ACTE-UNIFORME-2014-SOCIETES-COMMERCIALES-GROUPEMENT-D-INTERET-ECONOMIQUE	abbreviation	fr	AUSCGIE
+OHADA/ACTE-UNIFORME-2015-ORGANISATION-DES-PROCEDURES-COLLECTIVES-D-APUREMENT-DU-PASSIF	abbreviation	fr	AUPCAP
+OHADA/ACTE-UNIFORME-2017-DROIT-DE-L-ARBITRAGE	abbreviation	fr	AUA
+OHADA/ACTE-UNIFORME-2017-RELATIF-A-LA-MEDIATION	abbreviation	fr	AUM
+OHADA/ACTE-UNIFORME-2023-ORGANISATION-DES-PROCEDURES-SIMPLIFIEES-DE-RECOUVREMENT-ET-DES-VOIES-D-EXECUTION	abbreviation	fr	AUPSRVE
+SN/CODE-FAMILLE	abbreviation	fr	CF
+SN/CODE-OBLIGATIONS-CIVILES-COMMERCIALES	abbreviation	fr	COCC
+SN/CODE-PENAL	abbreviation	fr	CP
+SN/CODE-PROCEDURE-CIVILE	abbreviation	fr	CPC
+SN/CODE-PROCEDURE-PENALE	abbreviation	fr	CPP
+SN/CODE-TRAVAIL	abbreviation	fr	CT

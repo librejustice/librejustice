@@ -158,7 +158,138 @@ JO-OHADA	geo:CD	*	default	2012-09-12		Adhésion de la République démocratique 
 JONC	geo:NC	*	default			Journal officiel de la Nouvelle-Calédonie
 JOPF	geo:PF	*	default			Journal officiel de la Polynésie française
 MB	geo:BE	*	default			Moniteur belge, art. 190 de la Constitution
+MB-VLG	geo:BE-VLG	*	default			Constitution belge, art. 134 (décrets régionaux) et art. 127 et 128 (région de langue néerlandaise)
+MB-WAL	geo:BE-WAL	*	default			Constitution belge, art. 134 (décrets régionaux)
+MB-BRU	geo:BE-BRU	*	default			Loi spéciale du 12 janvier 1989 relative aux Institutions bruxelloises, art. 7 et 8 (ordonnances)
+MB-CFR	geo:BE-CFR	*	default			Constitution belge, art. 127 à 129 (décrets communautaires)
+MB-CDE	geo:BE-CDE	*	default			Constitution belge, art. 130 (décrets de la Communauté germanophone)
 RO	geo:CH	*	default			Recueil officiel du droit fédéral, loi sur les publications officielles (RS 170.512)
+JO-CH-AG	geo:CH-AG	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-AI	geo:CH-AI	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-AR	geo:CH-AR	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-BE	geo:CH-BE	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-BL	geo:CH-BL	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-BS	geo:CH-BS	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-FR	geo:CH-FR	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-GE	geo:CH-GE	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-GL	geo:CH-GL	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-GR	geo:CH-GR	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-JU	geo:CH-JU	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-LU	geo:CH-LU	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-NE	geo:CH-NE	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-NW	geo:CH-NW	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-OW	geo:CH-OW	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-SG	geo:CH-SG	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-SH	geo:CH-SH	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-SO	geo:CH-SO	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-SZ	geo:CH-SZ	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-TG	geo:CH-TG	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-TI	geo:CH-TI	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-UR	geo:CH-UR	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-VD	geo:CH-VD	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-VS	geo:CH-VS	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-ZG	geo:CH-ZG	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
+JO-CH-ZH	geo:CH-ZH	*	default			Constitution fédérale, art. 3 (souveraineté des cantons)
 JORADP	geo:DZ	*	default			Journal officiel de la République algérienne
 JORS	geo:SN	*	default			Journal officiel de la République du Sénégal
 JO-LU	geo:LU	*	default			Journal officiel du Grand-Duché de Luxembourg
+CG	geo:CA	*	default			Gazette du Canada
+JO-CA-ON	geo:CA-ON	*	default			Loi constitutionnelle de 1867, art. 92
+JO-CA-QC	geo:CA-QC	*	default			Loi constitutionnelle de 1867, art. 92
+JO-CA-NB	geo:CA-NB	*	default			Loi constitutionnelle de 1867, art. 92
+STCE	geo:BE	*	default	1955-06-14		Convention de sauvegarde des droits de l'homme et des libertés fondamentales (STE n° 005), ratifiée par la Belgique le 14 juin 1955, en vigueur le même jour
+STCE	geo:FR-M	*	default	1974-05-03		Convention de sauvegarde des droits de l'homme et des libertés fondamentales (STE n° 005), ratifiée par la France le 3 mai 1974, en vigueur le même jour
+STCE	geo:FR-ALS	*	default	1974-05-03		Convention de sauvegarde des droits de l'homme et des libertés fondamentales (STE n° 005), ratifiée par la France le 3 mai 1974, en vigueur le même jour
+STCE	geo:CH	*	default	1974-11-28		Convention de sauvegarde des droits de l'homme et des libertés fondamentales (STE n° 005), ratifiée par la Suisse le 28 novembre 1974, en vigueur le même jour
+STCE	geo:BG	*	default	1992-09-07		Convention de sauvegarde des droits de l'homme et des libertés fondamentales (STE n° 005), ratifiée par la Bulgarie le 7 septembre 1992, en vigueur le même jour
+STCE	geo:HU	*	default	1992-11-05		Convention de sauvegarde des droits de l'homme et des libertés fondamentales (STE n° 005), ratifiée par la Hongrie le 5 novembre 1992, en vigueur le même jour
+JO-OHADA	geo:CF	*	default	1995-09-18		Traité de Port-Louis du 17 octobre 1993, en vigueur le 18 septembre 1995 ; Centrafrique ratifié le 13 janvier 1995
+JO-OHADA	geo:ML	*	default	1995-09-18		Traité de Port-Louis du 17 octobre 1993, en vigueur le 18 septembre 1995 ; Mali ratifié le 7 février 1995
+JO-OHADA	geo:KM	*	default	1995-09-18		Traité de Port-Louis du 17 octobre 1993, en vigueur le 18 septembre 1995 ; Comores ratifié le 20 février 1995
+JO-OHADA	geo:BF	*	default	1995-09-18		Traité de Port-Louis du 17 octobre 1993, en vigueur le 18 septembre 1995 ; Burkina Faso ratifié le 6 mars 1995
+JO-OHADA	geo:BJ	*	default	1995-09-18		Traité de Port-Louis du 17 octobre 1993, en vigueur le 18 septembre 1995 ; Bénin ratifié le 8 mars 1995
+JO-OHADA	geo:NE	*	default	1995-09-18		Traité de Port-Louis du 17 octobre 1993, en vigueur le 18 septembre 1995 ; Niger ratifié le 5 juin 1995
+JO-OHADA	geo:TG	*	default	1996-01-19		Ratification du Togo, dépôt des instruments le 20 novembre 1995, en vigueur le 19 janvier 1996
+JO-OHADA	geo:CI	*	default	1996-02-11		Ratification de la Côte d'Ivoire, dépôt des instruments le 13 décembre 1995, en vigueur le 11 février 1996
+JO-OHADA	geo:TD	*	default	1996-07-02		Ratification du Tchad, dépôt des instruments le 3 mai 1996, en vigueur le 2 juillet 1996
+JO-OHADA	geo:CM	*	default	1996-12-03		Ratification du Cameroun, dépôt des instruments le 4 octobre 1996, en vigueur le 3 décembre 1996
+JO-OHADA	geo:GA	*	default	1998-04-05		Ratification du Gabon, dépôt des instruments le 4 février 1998, en vigueur le 5 avril 1998
+JO-OHADA	geo:CG	*	default	1999-07-17		Ratification du Congo, dépôt des instruments le 18 mai 1999, en vigueur le 17 juillet 1999
+JO-OHADA	geo:GW	*	default	1996-02-24		Instruments de la Guinée-Bissau déposés le 26 décembre 1995, en vigueur le 24 février 1996
+JO-OHADA	geo:GQ	*	default	1999-08-14		Ratification de la Guinée équatoriale, dépôt des instruments le 15 juin 1999, en vigueur le 14 août 1999
+JO-UEMOA	geo:BJ	*	default	1994-08-01		Traité de l'UEMOA signé à Dakar le 10 janvier 1994, en vigueur le 1er août 1994 après ratification par les États membres
+JO-UEMOA	geo:BF	*	default	1994-08-01		Traité de l'UEMOA signé à Dakar le 10 janvier 1994, en vigueur le 1er août 1994 après ratification par les États membres
+JO-UEMOA	geo:CI	*	default	1994-08-01		Traité de l'UEMOA signé à Dakar le 10 janvier 1994, en vigueur le 1er août 1994 après ratification par les États membres
+JO-UEMOA	geo:ML	*	default	1994-08-01		Traité de l'UEMOA signé à Dakar le 10 janvier 1994, en vigueur le 1er août 1994 après ratification par les États membres
+JO-UEMOA	geo:NE	*	default	1994-08-01		Traité de l'UEMOA signé à Dakar le 10 janvier 1994, en vigueur le 1er août 1994 après ratification par les États membres
+JO-UEMOA	geo:SN	*	default	1994-08-01		Traité de l'UEMOA signé à Dakar le 10 janvier 1994, en vigueur le 1er août 1994 après ratification par les États membres
+JO-UEMOA	geo:TG	*	default	1994-08-01		Traité de l'UEMOA signé à Dakar le 10 janvier 1994, en vigueur le 1er août 1994 après ratification par les États membres
+JO-UEMOA	geo:GW	*	default	1997-05-02		Accord d'adhésion de la Guinée-Bissau au Traité de l'UEMOA, huitième État membre le 2 mai 1997
+JO-CEDEAO	geo:BJ	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:CI	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:GN	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:SN	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:TG	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:GH	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:GM	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:GW	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:LR	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:NG	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:SL	*	default	1975-05-28		Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993
+JO-CEDEAO	geo:BF	*	default	1975-05-28	2025-01-29	Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993 ; retrait effectif le 29 janvier 2025 (communiqué de la Commission de la CEDEAO du 29 janvier 2025)
+JO-CEDEAO	geo:ML	*	default	1975-05-28	2025-01-29	Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993 ; retrait effectif le 29 janvier 2025 (communiqué de la Commission de la CEDEAO du 29 janvier 2025)
+JO-CEDEAO	geo:NE	*	default	1975-05-28	2025-01-29	Traité de la CEDEAO signé à Lagos le 28 mai 1975, en vigueur à titre provisoire dès la signature (art. 62), révisé à Cotonou le 24 juillet 1993 ; retrait effectif le 29 janvier 2025 (communiqué de la Commission de la CEDEAO du 29 janvier 2025)
+JO-CEMAC	geo:CM	*	default	1999-06-25		Traité instituant la CEMAC signé à N'Djamena le 16 mars 1994, en vigueur le 25 juin 1999 après ratification par tous les États signataires (art. 7)
+JO-CEMAC	geo:CF	*	default	1999-06-25		Traité instituant la CEMAC signé à N'Djamena le 16 mars 1994, en vigueur le 25 juin 1999 après ratification par tous les États signataires (art. 7)
+JO-CEMAC	geo:CG	*	default	1999-06-25		Traité instituant la CEMAC signé à N'Djamena le 16 mars 1994, en vigueur le 25 juin 1999 après ratification par tous les États signataires (art. 7)
+JO-CEMAC	geo:GA	*	default	1999-06-25		Traité instituant la CEMAC signé à N'Djamena le 16 mars 1994, en vigueur le 25 juin 1999 après ratification par tous les États signataires (art. 7)
+JO-CEMAC	geo:TD	*	default	1999-06-25		Traité instituant la CEMAC signé à N'Djamena le 16 mars 1994, en vigueur le 25 juin 1999 après ratification par tous les États signataires (art. 7)
+JO-CEMAC	geo:GQ	*	default	1999-06-25		Traité instituant la CEMAC signé à N'Djamena le 16 mars 1994, en vigueur le 25 juin 1999 après ratification par tous les États signataires (art. 7)
+BO-CIMA	geo:BJ	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:BF	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:CM	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:CF	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:CG	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:CI	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:GA	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:GQ	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:ML	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:NE	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:SN	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:TD	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:TG	*	default	1995-02-15		Code CIMA en vigueur le 15 février 1995 dans les États ayant ratifié le Traité de Yaoundé du 10 juillet 1992 (décision n° 055/MEPCI/SE/CAB/DPCI du 6 février 1995)
+BO-CIMA	geo:GW	*	default	2002-04-15		Adhésion de la Guinée-Bissau à la CIMA le 15 avril 2002, Traité ratifié en 2007
+TRAITES-UA	geo:DZ	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 3 juin 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:BJ	*	default	2014-08-22		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 22 août 2014 (art. 34)
+TRAITES-UA	geo:BF	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 23 février 1999, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:BI	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 12 mai 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:CM	*	default	2015-08-17		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 17 août 2015 (art. 34)
+TRAITES-UA	geo:TD	*	default	2016-02-08		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 8 février 2016 (art. 34)
+TRAITES-UA	geo:CI	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 21 mars 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:KM	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 26 décembre 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:CG	*	default	2010-10-06		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 6 octobre 2010 (art. 34)
+TRAITES-UA	geo:CD	*	default	2020-12-08		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 8 décembre 2020 (art. 34)
+TRAITES-UA	geo:GA	*	default	2004-06-29		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 29 juin 2004 (art. 34)
+TRAITES-UA	geo:GM	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 15 octobre 1999, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:GH	*	default	2005-08-16		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 16 août 2005 (art. 34)
+TRAITES-UA	geo:GW	*	default	2021-11-02		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 2 novembre 2021 (art. 34)
+TRAITES-UA	geo:KE	*	default	2005-02-18		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 18 février 2005 (art. 34)
+TRAITES-UA	geo:LY	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 8 décembre 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:LS	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 23 décembre 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:MG	*	default	2022-01-12		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 12 janvier 2022 (art. 34)
+TRAITES-UA	geo:ML	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 20 juin 2000, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:MW	*	default	2008-10-09		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 9 octobre 2008 (art. 34)
+TRAITES-UA	geo:MZ	*	default	2004-07-20		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 20 juillet 2004 (art. 34)
+TRAITES-UA	geo:MR	*	default	2005-12-14		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 14 décembre 2005 (art. 34)
+TRAITES-UA	geo:MU	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 24 mars 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:NG	*	default	2004-06-09		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 9 juin 2004 (art. 34)
+TRAITES-UA	geo:NE	*	default	2004-06-26		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 26 juin 2004 (art. 34)
+TRAITES-UA	geo:RW	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 6 mai 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:ZA	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 3 juillet 2002, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:EH	*	default	2014-01-27		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 27 janvier 2014 (art. 34)
+TRAITES-UA	geo:SN	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 30 octobre 1998, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:TZ	*	default	2006-02-10		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 10 février 2006 (art. 34)
+TRAITES-UA	geo:TG	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 6 juillet 2003, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:TN	*	default	2007-10-05		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 5 octobre 2007 (art. 34)
+TRAITES-UA	geo:UG	*	default	2004-01-25		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), instrument déposé le 6 juin 2001, en vigueur le 25 janvier 2004
+TRAITES-UA	geo:ZM	*	default	2023-01-10		Protocole relatif à la Cour africaine des droits de l'homme et des peuples (Ouagadougou, 9 juin 1998), en vigueur à la date du dépôt de l'instrument, le 10 janvier 2023 (art. 34)

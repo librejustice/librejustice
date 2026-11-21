@@ -14,16 +14,22 @@ rust-version = "1.96"
 [workspace.dependencies]
 # Async runtime + web
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
 # Combinateurs de futures (join_all concurrent sur une seule task, sans spawn).
 futures = "0.3"
 bytes = "1"
 # S3 client of `lj-bucket`, on the workspace's reqwest 0.13 and aws-lc-rs.
 object_store = { version = "0.14", default-features = false, features = ["aws"] }
 sevenz-rust2 = { version = "0.23", default-features = false }
+# Rows of a parquet file, without arrow: the OpenCaseLaw dataset, compressed with zstd.
+parquet = { version = "58", default-features = false, features = ["zstd", "snap"] }
 axum = { version = "0.8", features = ["macros", "multipart"] }
 tower = { version = "0.5", features = ["util"] }
 # Trait de corps HTTP (`Frame`, `SizeHint`) : version d'axum 0.8 / hyper 1.
 http-body = "1"
+# The errors under a reqwest failure: an HTTP/2 reset's reason, an HTTP/1 reply cut short.
+h2 = "0.4"
+hyper = { version = "1", features = ["client", "http1"] }
 tower-http = { version = "0.6", features = [
     "cors",
     "trace",
@@ -95,6 +101,7 @@ memchr = "2"
 # Diff de rédactions d'articles pour le comparateur de versions.
 similar = { version = "3", features = ["unicode"] }
 html-escape = "0.2"
+unicode-normalization = "0.1"
 # FxHash: lj-extract's citation snap indexes, short keys on a hot path where SipHash weighs.
 rustc-hash = "2"
 
@@ -164,6 +171,7 @@ printpdf = { version = "0.9", default-features = false }
 # (azul-layout) ; on alimente nous-mêmes ses maps glyphes via ttf-parser.
 ttf-parser = "0.25"
 xxhash-rust = { version = "0.8", features = ["xxh3", "const_xxh64"] }
+zstd = "0.13"
 # blake3 : MAC à clé (`keyed_hash`) des pseudonymes d'usage. xxh3, déjà là, est
 # non cryptographique et n'offre aucune résistance en clé.
 blake3 = "1"

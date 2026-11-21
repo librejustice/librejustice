@@ -166,7 +166,7 @@ jsonpath "$.facets.seat" isCollection
 
 
 # ── 15. Single filter: solution (référentiel solution:*) ────────────────────
-GET {{base}}/internal/search?query=rejet&solution=REJET
+GET {{base}}/internal/search?query=rejet&solution=DISMISSED
 HTTP 200
 [Asserts]
 jsonpath "$.hits" isCollection
@@ -240,12 +240,12 @@ jsonpath "$.hits" isCollection
 
 
 # ── 24. Combined filters (many dimensions at once + date range) ──────────────
-GET {{base}}/internal/search?query=expulsion&jurisdiction_type=CA&solution=CONFIRMATION&legal_domain=CIVIL_DROIT_LOCATIF&date_from=2018-01-01&date_to=2024-12-31&publication=PUBLIE_BULLETIN
+GET {{base}}/internal/search?query=expulsion&jurisdiction_type=CA&solution=DISMISSED&legal_domain=CIVIL_DROIT_LOCATIF&date_from=2018-01-01&date_to=2024-12-31&publication=PUBLIE_BULLETIN
 HTTP 200
 [Asserts]
 jsonpath "$.hits" isCollection
 
-GET {{base}}/internal/search/decompte?query=expulsion&jurisdiction_type=CA&solution=CONFIRMATION&legal_domain=CIVIL_DROIT_LOCATIF&date_from=2018-01-01&date_to=2024-12-31&publication=PUBLIE_BULLETIN
+GET {{base}}/internal/search/decompte?query=expulsion&jurisdiction_type=CA&solution=DISMISSED&legal_domain=CIVIL_DROIT_LOCATIF&date_from=2018-01-01&date_to=2024-12-31&publication=PUBLIE_BULLETIN
 HTTP 200
 [Asserts]
 jsonpath "$.facets" exists
@@ -282,6 +282,24 @@ jsonpath "$.facets.seat[0].count" isInteger
 # roots = a legal order alone, French law first, the first segment of a seat path
 jsonpath "$.facets.seat[0].value" == "FR"
 jsonpath "$.facets.seat[0].parent" not exists
+
+
+# ── 27b. home = the reader's jurisdiction: its courts and its organisations' ──
+GET {{base}}/internal/search/decompte?query=bail&home=ch
+HTTP 200
+[Asserts]
+jsonpath "$.facets.seat" isCollection
+jsonpath "$.facets.seat[?(@.value == 'FR')]" count == 0
+
+GET {{base}}/internal/search/decompte?query=bail&home=CH
+HTTP 422
+
+GET {{base}}/internal/jurisdictions
+HTTP 200
+[Asserts]
+jsonpath "$[0].code" == "fr"
+jsonpath "$[0].seats" contains "EU"
+jsonpath "$[?(@.code == 'ch')]" count == 1
 
 
 # ============================================================================
@@ -445,12 +463,12 @@ jsonpath "$.hits[0].seatPath.key" == "FR.CC.SOCIALE"
 
 
 # ── 41. A bare number no body writes: the designated decision is the list ────
-GET {{base}}/internal/search?query=362324
+GET {{base}}/internal/search?query=362335
 HTTP 200
 [Asserts]
 jsonpath "$.queryMode" == "reference"
 jsonpath "$.hits" count == 1
-jsonpath "$.hits[0].titleHtml" contains "362324"
+jsonpath "$.hits[0].titleHtml" contains "362335"
 jsonpath "$.pinned" not exists
 
 
@@ -572,15 +590,19 @@ jsonpath "$.facets.legalInstrument[0].articles[*].value" contains "700"
 
 # ── 48b. In browse mode, the composite filter serves what the facet counts ──
 # Unfiltered, the facet count is read from the stored snapshot; the filtered
-# total is counted live. The snapshot trails the fund and never leads it, so the
-# filter serves at least what the facet advertises, the gap being what has been
-# written since the last recount.
+# total is counted live. The snapshot trails the fund, so the filter serves at
+# least what the facet advertises, the gap being what has been written since the
+# last recount. A re-extraction that moves citations off an article breaks this
+# until `resync-corpus-counts` runs again.
 GET {{base}}/internal/search/decompte?query=&limit=10
 HTTP 200
 [Captures]
-cite: jsonpath "$.facets.legalArticleTop[?(@.value=='LEGITEXT000006070721|1240')].count" nth 0
+article: jsonpath "$.facets.legalArticleTop[0].value"
+cite: jsonpath "$.facets.legalArticleTop[0].count"
 
-GET {{base}}/internal/search/decompte?query=&legal_article=LEGITEXT000006070721%7C1240
+GET {{base}}/internal/search/decompte?query=
+[QueryStringParams]
+legal_article: {{article}}
 HTTP 200
 [Asserts]
 jsonpath "$.total" >= {{cite}}

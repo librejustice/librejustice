@@ -5,13 +5,14 @@
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::use_params_map;
 use lj_dtos::CodeCatalogueEntry;
 
-use crate::api::ApiClient;
+use crate::api::{ApiClient, Failure};
 use crate::components::own_page_description;
+use crate::i18n::HubsUi;
 use crate::pages::juridictions_page::{
     breadcrumb_jsonld, set_cache_control, HubBreadcrumb, HubError, HubSkeleton,
 };
@@ -25,10 +26,11 @@ pub fn CodeCataloguePage() -> impl IntoView {
     own_page_description();
 
     // Catalogue complet du fond, bloquant SSR (dans le document initial pour le SEO).
+    let ui = &crate::i18n::use_ui().hubs;
     let params = use_params_map();
     let entries = Resource::new_blocking(
         move || params.get().get("juris").unwrap_or_default(),
-        |juris| sendable(fetch_catalogue(juris)),
+        move |juris| sendable(fetch_catalogue(ui, juris)),
     );
 
     view! {
@@ -50,7 +52,10 @@ pub fn CodeCataloguePage() -> impl IntoView {
 }
 
 /// Charge le catalogue (codes + constitutions) d'un ordre juridique. Bloquant SSR.
-async fn fetch_catalogue(juris: String) -> Result<(String, Vec<CodeCatalogueEntry>), PageError> {
+async fn fetch_catalogue(
+    ui: &HubsUi,
+    juris: String,
+) -> Result<(String, Vec<CodeCatalogueEntry>), PageError> {
     let mut entries = ApiClient::from_context()
         .fetch_codes_catalogue()
         .await
@@ -60,7 +65,7 @@ async fn fetch_catalogue(juris: String) -> Result<(String, Vec<CodeCatalogueEntr
     if entries.is_empty() {
         return Err(PageError {
             status: 404,
-            message: "Juridiction inconnue".to_string(),
+            failure: Failure::Said(ui.unknown_jurisdiction.to_string()),
         });
     }
     Ok((juris, entries))
@@ -80,29 +85,29 @@ fn jurisdiction_rank(jurisdiction: &str) -> u8 {
 /// Sous-catégorie d'affichage d'un texte à partir de sa `nature` brute
 /// (taxonomie du corpus) : `(rang, libellé)`. Le fond ne porte que ces deux
 /// familles (codes, constitutions).
-fn nature_category(nature: &str) -> (u8, &'static str) {
+fn nature_category(ui: &'static HubsUi, nature: &str) -> (u8, &'static str) {
     let n = nature.to_ascii_uppercase();
     if n == "CONSTITUTION" {
-        (1, "Constitutions")
+        (1, ui.constitutions)
     } else {
-        (0, "Codes")
+        (0, ui.codes)
     }
 }
 
 #[component]
 fn CatalogueLoaded(juris: String, entries: Vec<CodeCatalogueEntry>) -> impl IntoView {
-    let title = "Codes : textes consolidés - LibreJustice";
-    let description =
-        "Catalogue des codes et constitutions consolidés, un groupe par ordre juridique, de la \
-         France à chaque État ou territoire. Versions à date, articles liés.";
+    let all = crate::i18n::use_ui();
+    let ui = &all.hubs;
+    let title = ui.codes_title;
+    let description = ui.codes_description;
     let index = format!("/norm-index/{juris}");
     let url = format!("https://librejustice.fr{index}/codes");
     let jsonld = breadcrumb_jsonld(&[
-        ("Accueil", "https://librejustice.fr/".to_string()),
-        ("Normes", format!("https://librejustice.fr{index}")),
-        ("Codes", url.clone()),
+        (all.shell.home, "https://librejustice.fr/".to_string()),
+        (all.norm.norms, format!("https://librejustice.fr{index}")),
+        (ui.codes, url.clone()),
     ]);
-    let count_line = format!("{} textes.", entries.len());
+    let count_line = (ui.codes_count)(entries.len());
 
     let mut groups: Vec<(String, String, Vec<CodeCatalogueEntry>)> = Vec::new();
     for entry in entries {
@@ -110,7 +115,11 @@ fn CatalogueLoaded(juris: String, entries: Vec<CodeCatalogueEntry>) -> impl Into
             Some(group) => group.2.push(entry),
             None => groups.push((
                 entry.jurisdiction.clone(),
-                entry.jurisdiction_label.clone(),
+                crate::i18n::place_name(
+                    crate::i18n::use_reader_lang().get(),
+                    &entry.jurisdiction,
+                    &entry.jurisdiction_label,
+                ),
                 vec![entry],
             )),
         }
@@ -120,20 +129,19 @@ fn CatalogueLoaded(juris: String, entries: Vec<CodeCatalogueEntry>) -> impl Into
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=url />
+        <crate::seo::Canonical href=url />
         <leptos_meta::Script type_="application/ld+json">{jsonld}</leptos_meta::Script>
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-3">
                 <HubBreadcrumb items=vec![
-                    ("Accueil".to_string(), Some("/".to_string())),
-                    ("Normes".to_string(), Some(index.clone())),
-                    ("Codes".to_string(), None),
+                    (all.norm.norms.to_string(), Some(index.clone())),
+                    (ui.codes.to_string(), None),
                 ] />
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Textes & codes"
+                    {ui.texts_and_codes}
                 </p>
-                <h1 class="font-sans text-3xl text-[var(--color-ink)]">"Codes"</h1>
+                <h1 class="font-sans text-3xl text-[var(--color-ink)]">{ui.codes}</h1>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">{count_line}</p>
             </header>
 
@@ -150,11 +158,12 @@ fn CatalogueLoaded(juris: String, entries: Vec<CodeCatalogueEntry>) -> impl Into
 /// A legal order: its heading, then one sub-section per nature.
 #[component]
 fn CatalogueSection(label: String, codes: Vec<CodeCatalogueEntry>) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().hubs;
     // Sous-groupes (catégorie de nature) ordonnés Codes → Constitutions ;
     // chaque sous-groupe garde l'ordre alphabétique d'arrivée.
     let mut categories: Vec<(u8, &'static str, Vec<CodeCatalogueEntry>)> = Vec::new();
     for entry in codes {
-        let (rank, label) = nature_category(&entry.nature);
+        let (rank, label) = nature_category(ui, &entry.nature);
         if let Some(g) = categories.iter_mut().find(|(r, _, _)| *r == rank) {
             g.2.push(entry);
         } else {
@@ -198,11 +207,7 @@ fn CatalogueCategory(label: &'static str, codes: Vec<CodeCatalogueEntry>) -> imp
 #[component]
 fn CatalogueRow(entry: CodeCatalogueEntry) -> impl IntoView {
     let href = lj_vocab::norm_path(&entry.jurisdiction, &entry.code);
-    let count = format!(
-        "{} article{}",
-        entry.article_count,
-        if entry.article_count > 1 { "s" } else { "" }
-    );
+    let count = (crate::i18n::use_ui().hubs.n_articles)(entry.article_count);
     view! {
         <li class="py-3">
             <A href=href attr:class="group flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1">

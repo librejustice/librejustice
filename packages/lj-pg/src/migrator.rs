@@ -128,19 +128,14 @@ async fn apply_migrations_locked(
 
     let applied = applied_versions(conn, table).await?;
 
-    let missing: Vec<i32> = applied
-        .iter()
-        .copied()
-        .filter(|v| !available_versions.contains(v))
-        .collect();
-    if !missing.is_empty() {
-        let mut missing_sorted = missing;
-        missing_sorted.sort_unstable();
-        let max = *missing_sorted.last().expect("non-empty");
-        return Err(PgError::UnknownMigrations {
-            version: max,
-            missing: missing_sorted,
-        });
+    let newer = newer_than_disk(&available_versions, &applied)?;
+    if !newer.is_empty() {
+        tracing::warn!(
+            ?newer,
+            table,
+            "migrations: the database is ahead of this binary"
+        );
+        return Ok(Vec::new());
     }
 
     let pending: Vec<&Migration> = available
@@ -172,6 +167,30 @@ async fn apply_migrations_locked(
         newly_applied.push(migration.version);
     }
     Ok(newly_applied)
+}
+
+/// The versions the base holds beyond the disk's last one, a binary older than the base: it runs on
+/// it, every migration staying additive until the deploy after. A version missing from the disk
+/// below its last one, or a version of the disk the base lacks while it is ahead, is refused.
+pub fn newer_than_disk(available: &[i32], applied: &[i32]) -> Result<Vec<i32>> {
+    let mut unknown: Vec<i32> = applied
+        .iter()
+        .copied()
+        .filter(|v| !available.contains(v))
+        .collect();
+    if unknown.is_empty() {
+        return Ok(unknown);
+    }
+    unknown.sort_unstable();
+    let last = available.iter().copied().max().unwrap_or(i32::MIN);
+    let lagging = available.iter().any(|v| !applied.contains(v));
+    if unknown[0] < last || lagging {
+        return Err(PgError::UnknownMigrations {
+            version: *unknown.last().expect("non-empty"),
+            missing: unknown,
+        });
+    }
+    Ok(unknown)
 }
 
 /// Marker of a statement run outside a transaction, alone on its line, the
@@ -335,6 +354,25 @@ async fn record(conn: &Connection, version: i32, table: &str) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_binary_runs_on_a_base_ahead_of_it_and_on_nothing_else_unknown() {
+        use super::newer_than_disk;
+        assert_eq!(
+            newer_than_disk(&[1, 2, 3], &[1, 2, 3]).unwrap(),
+            Vec::<i32>::new()
+        );
+        assert_eq!(
+            newer_than_disk(&[1, 2, 3], &[1, 2]).unwrap(),
+            Vec::<i32>::new()
+        );
+        assert_eq!(
+            newer_than_disk(&[1, 2, 3], &[1, 2, 3, 5, 4]).unwrap(),
+            vec![4, 5]
+        );
+        assert!(newer_than_disk(&[1, 2, 3], &[1, 3, 4]).is_err());
+        assert!(newer_than_disk(&[1, 3], &[1, 2, 3]).is_err());
+    }
+
     use super::*;
 
     #[test]

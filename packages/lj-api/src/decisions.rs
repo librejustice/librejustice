@@ -10,6 +10,8 @@ use lj_dtos::{
     SimilarDecisionHit, SimilarDecisionsResponse,
 };
 use lj_parse::FromSourceFields;
+use lj_store::repository::{DecisionRepository, SimilarLegs, SimilarPanels};
+use lj_vocab::DocumentKind;
 
 use tracing::instrument;
 
@@ -17,27 +19,8 @@ use crate::error::{ApiError, Result};
 use crate::referential::{referential, Referential};
 use crate::state::AppState;
 
-/// Facteur d'élargissement de la fenêtre ANN interne.
-const SIMILAR_INNER_LIMIT_FACTOR: i64 = 24;
-
-/// Sur-fetch du volet espèce : absorbe les exclusions avant troncature à `limit`.
-const ESPECE_OVERFETCH_FACTOR: i64 = 3;
-
-/// Probes vchordrq de la jambe KNN pré-filtrée portée notable.
-const PRINCIPE_KNN_PROBES: u32 = 100;
-
 /// Head page of the « citée par » block; the total of citing decisions comes with it.
 const CITANTES_LIMIT: i64 = 5;
-
-/// Codes de publication « portée notable » = MAJEURE ∪ IMPORTANTE.
-const NOTABLE_CODES: [&str; 8] = ["r", "A", "b", "l", "c", "B", "C+", "R"];
-
-/// Jambe IDF : nombre max de termes article retenus sur la décision source.
-const IDF_MAX_RARE_TERMS: i64 = 8;
-
-/// Jambe IDF : df au-delà duquel un article est trop cité pour signer la
-/// question de droit.
-const IDF_RARE_DF_CAP: i64 = 100_000;
 
 /// Titres de sommaire canoniques par `kind`.
 fn section_label(kind: &str) -> Option<&'static str> {
@@ -467,7 +450,25 @@ pub async fn decision_address(state: &AppState, public_id: &str) -> Option<Strin
     Some(lj_dtos::decision_path(jt, code.as_deref(), public_id))
 }
 
-pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionDetail> {
+/// The address of the ruling the conclusions `public_id` were presented in.
+pub async fn conclusions_ruling_address(state: &AppState, public_id: &str) -> Option<String> {
+    let conn = state.pool.get().await.ok()?;
+    ruling_address(&DecisionRepository::new(&conn), public_id).await
+}
+
+async fn ruling_address(repo: &DecisionRepository<'_>, public_id: &str) -> Option<String> {
+    let (jt, code, ruling) = repo.conclusions_ruling(public_id).await.ok()??;
+    let jt = lj_dtos::JurisdictionType::from_code(&jt)?;
+    Some(lj_dtos::decision_path(jt, code.as_deref(), &ruling))
+}
+
+/// The decision `public_id`, its text picked for the reader's language `lang` first.
+pub async fn get_decision(
+    state: &AppState,
+    public_id: &str,
+    lang: Option<&str>,
+) -> Result<DecisionDetail> {
+    let reader = lang.unwrap_or("fr");
     let refs = referential(state).await?;
     let conn = state.pool.get().await?;
 
@@ -491,7 +492,7 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
               d.jurisdiction_code,
               d.docket_numbers,
               d.seat,
-              pt.summary,
+              sm.summary,
               d.ecli,
               ds.source,
               d.formation_uid,
@@ -504,18 +505,34 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
               j.place,
               legi.source,
               legi.source_uid,
-              CASE WHEN pt.summary_quote_start IS NOT NULL
-                THEN ARRAY[pt.summary_quote_start, pt.summary_quote_end] END,
+              CASE WHEN sm.summary_quote_start IS NOT NULL
+                THEN ARRAY[sm.summary_quote_start, sm.summary_quote_end] END,
               (SELECT ds4.source_fields->>'summary' FROM decision_sources ds4
                 WHERE ds4.decision_id = d.id AND ds4.deleted_at IS NULL AND ds4.source = 'judilibre'
                   AND btrim(ds4.source_fields->>'summary') <> ''
                 LIMIT 1),
-              CASE WHEN pt.summary_body_start IS NOT NULL
-                THEN ARRAY[pt.summary_body_start, pt.summary_body_end] END,
-              pt.summary_engine
+              CASE WHEN sm.summary_body_start IS NOT NULL
+                THEN ARRAY[sm.summary_body_start, sm.summary_body_end] END,
+              sm.summary_engine,
+              pt.lang,
+              ARRAY(SELECT p.lang || ':' || p.text_status FROM decision_text p
+                    WHERE p.decision_id = d.id ORDER BY {order}),
+              sm.summary_lang,
+              d.kind
             FROM decisions d
             LEFT JOIN jurisdiction j ON j.code = d.jurisdiction_code
-            LEFT JOIN LATERAL {text} pt ON true
+            LEFT JOIN LATERAL (
+                SELECT p.full_text, p.source_uid, p.lang FROM decision_text p
+                WHERE p.decision_id = d.id ORDER BY (p.lang = $3) IS TRUE DESC, {order} LIMIT 1
+            ) pt ON true
+            LEFT JOIN LATERAL (
+                SELECT {summary_columns}
+                FROM decision_text p
+                LEFT JOIN decision_text_reader_summary r
+                  ON r.decision_text_id = p.id AND r.lang = coalesce($3, 'fr') AND p.lang <> coalesce($3, 'fr')
+                WHERE p.decision_id = d.id
+                ORDER BY (p.lang = $3 AND p.summary IS NOT NULL) IS TRUE DESC, {order} LIMIT 1
+            ) sm ON true
             LEFT JOIN LATERAL (
                 SELECT source_fields, source, source_uid
                 FROM decision_sources
@@ -556,13 +573,10 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             ) web ON true
             WHERE d.public_id = $1 AND d.deleted_at IS NULL
             ",
-                text = lj_store::repository::pick::text(
-                    "p.full_text, p.summary, p.summary_quote_start, p.summary_quote_end, \
-                     p.summary_body_start, p.summary_body_end, p.source_uid, p.summary_engine",
-                    "d",
-                ),
+                order = lj_store::repository::pick::order("p", "d"),
+                summary_columns = lj_store::repository::pick::SUMMARY_COLUMNS,
             ),
-            &[&public_id, &lj_core::official_url::LEGIFRANCE_SOURCES],
+            &[&public_id, &lj_core::official_url::LEGIFRANCE_SOURCES, &lang],
         )
         .await?;
 
@@ -603,34 +617,33 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
         .get::<_, Option<String>>(26)
         .zip(row.get::<_, Option<String>>(27));
     let judilibre_summary: Option<String> = row.get(29);
-    let twins: Vec<(String, Vec<String>)> = match judilibre_summary.as_deref() {
-        Some(summary) if lj_parse::cassation_summary_numbers_arrets(summary) => conn
-            .query(
-                &format!(
-                    "
-                    SELECT {head}, t.docket_numbers
-                    FROM decisions d
-                    JOIN decisions t ON t.jurisdiction_code = d.jurisdiction_code
-                      AND t.date_lecture = d.date_lecture
-                      AND t.id <> d.id AND t.deleted_at IS NULL
-                    JOIN decision_sources s ON s.decision_id = t.id
-                      AND s.deleted_at IS NULL AND s.source = 'judilibre'
-                    WHERE d.id = $1 AND s.source_fields->>'summary' = $2
-                    ",
-                    head = lj_store::repository::pick::text("left(p.full_text, 64)", "t"),
-                ),
-                &[&decision_id, &summary],
-            )
+    let lang: Option<String> = row.get(32);
+    let summary_lang: Option<String> = row.get(34);
+    let texts: Vec<lj_dtos::DecisionText> = row
+        .get::<_, Vec<String>>(33)
+        .iter()
+        .map(|t| {
+            let (lang, status) = t.split_once(':').expect("lang:status");
+            lj_dtos::DecisionText {
+                lang: lang.to_string(),
+                status: lj_dtos::TextStatus::from_code(status).expect("checked text_status"),
+            }
+        })
+        .collect();
+    // Citations are read on the text shown by default, at its offsets.
+    let cited = texts.first().map(|t| &t.lang) == lang.as_ref();
+    let twins = if judilibre_summary
+        .as_deref()
+        .is_some_and(lj_parse::cassation_summary_numbers_arrets)
+    {
+        lj_store::repository::DecisionRepository::new(&conn)
+            .cassation_arrets(&[decision_id])
             .await?
-            .iter()
-            .map(|r| {
-                (
-                    r.get::<_, Option<String>>(0).unwrap_or_default(),
-                    r.get::<_, Option<Vec<String>>>(1).unwrap_or_default(),
-                )
-            })
-            .collect(),
-        _ => Vec::new(),
+            .remove(&decision_id)
+            .map(|(_, twins)| twins)
+            .unwrap_or_default()
+    } else {
+        Vec::new()
     };
     let as_this_arret = |summary: &str| {
         lj_parse::cassation_summary_for(
@@ -695,16 +708,15 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
                    lt.jurisdiction,
                    el->>3 AS ref_num_key,
                    lt.title AS label,
-                   (EXISTS (SELECT 1 FROM legal_article a
-                            WHERE a.text_uid = lt.text_uid)
-                    OR coalesce(length(lt.body), 0) > 0) AS readable,
+                   EXISTS (SELECT 1 FROM legal_article a
+                           WHERE a.text_uid = lt.text_uid) AS readable,
                    (el->>4)::bool AS suivants
             FROM legal_citation lc
             CROSS JOIN LATERAL jsonb_array_elements(lc.spans) AS el
             JOIN legal_text lt ON lt.text_uid = el->>2
-            WHERE lc.decision_id = $1
+            WHERE lc.decision_id = $1 AND $2
             ",
-            &[&decision_id],
+            &[&decision_id, &cited],
         )
         .await?;
 
@@ -720,9 +732,9 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
                    t.jurisdiction_type
             FROM case_citation cc
             JOIN decisions t ON t.id = cc.target_decision_id
-            WHERE cc.decision_id = $1 AND t.deleted_at IS NULL
+            WHERE cc.decision_id = $1 AND t.deleted_at IS NULL AND $2
             ",
-            &[&decision_id],
+            &[&decision_id, &cited],
         )
         .await?;
 
@@ -1074,15 +1086,35 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
         )
         .await?;
 
-    let (citantes_total, citantes) = lj_store::repository::DecisionRepository::new(&conn)
-        .decisions_citing(decision_id, &chain_ids, CITANTES_LIMIT)
+    let communicated = lj_store::repository::DecisionRepository::new(&conn)
+        .communicated_steps(&chain_ids)
         .await?;
+
+    let (citantes_total, citantes) = lj_store::repository::DecisionRepository::new(&conn)
+        .decisions_citing(decision_id, &chain_ids, CITANTES_LIMIT, reader)
+        .await?;
+
+    let conclusions = match (jurisdiction_code.as_deref(), docket_numbers_raw.as_deref()) {
+        (Some(code), Some(dockets)) => {
+            let day = date_lecture
+                .as_deref()
+                .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+            DecisionRepository::new(&conn)
+                .conclusions_of_ruling(code, dockets, day, &id)
+                .await?
+        }
+        _ => Vec::new(),
+    };
+    let ruling_url = match row.get::<_, String>(35) == DocumentKind::Conclusions.as_str() {
+        true => ruling_address(&DecisionRepository::new(&conn), &id).await,
+        false => None,
+    };
 
     // La connexion est rendue au pool avant le parse offloadé, qui ne touche plus
     // la DB.
     drop(conn);
 
-    let chronology = chronology(&refs, &chrono_rows, &chrono_edges);
+    let chronology = chronology(&refs, &chrono_rows, &chrono_edges, &communicated);
 
     // `source_fields` est un JSONB hétérogène par source : forme inattendue ⇒
     // champ vide, jamais d'erreur.
@@ -1173,13 +1205,13 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             .unwrap_or(&jur_type_raw),
         jurisdiction_name.as_deref(),
     );
-    let chamber_label = seat_stored.as_ref().and_then(lj_core::chamber::Seat::label);
-    let seat = crate::titles::decision_seat(
+    let seat_parts = crate::titles::seat_parts(
         &jur_display,
-        chamber_label.as_deref(),
+        seat_stored.as_ref(),
         formation_uid.as_deref(),
         office_uid.as_deref(),
     );
+    let seat = seat_parts.as_ref().and_then(crate::titles::french_seat);
     let title = lj_core::titles::decision_title(
         &jur_display,
         seat.as_deref(),
@@ -1193,9 +1225,11 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
 
     let seat_path = crate::titles::seat_path_tag(&seat_paths);
 
+    let court_names = refs.court_names(jurisdiction_code.as_deref());
     Ok(DecisionDetail {
         id,
         jurisdiction_type: jur_type,
+        court_names,
         title,
         case_name,
         paragraphs,
@@ -1204,6 +1238,7 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
         summary,
         summary_quote,
         summary_body,
+        summary_lang,
         jurisdiction_code,
         jurisdiction_name,
         court_place: court_place
@@ -1217,6 +1252,7 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
         date_audience,
         docket_numbers,
         seat,
+        seat_parts,
         seat_path,
         legal_references,
         source_xml,
@@ -1233,7 +1269,9 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
                 .map(court_summary)
                 .into_iter()
                 .collect();
-            if let Some(bundle) = ariane_bundle.as_ref() {
+            let held_at_ariane = conclusions.iter().any(|r| r.source == ARIANE_WEB);
+            c.extend(conclusions.iter().map(conclusions_commentaire));
+            if let Some(bundle) = ariane_bundle.as_ref().filter(|_| !held_at_ariane) {
                 c.extend(conclusions_from_bundle(bundle));
             }
             if let Some(files) = judilibre_files.as_ref() {
@@ -1244,21 +1282,26 @@ pub async fn get_decision(state: &AppState, public_id: &str) -> Result<DecisionD
             }
             c
         },
+        ruling_url,
         citantes: citantes
             .into_iter()
             .map(|r| crate::legi::citing_dto(r, &refs))
             .collect(),
         citantes_total: (citantes_total > CITANTES_LIMIT).then_some(citantes_total),
+        lang,
+        texts,
     })
 }
 
-/// Case chronology, most recent first: the decisions of the chain (`rows`) and,
-/// for every link left pending, the step its key names without leading
-/// anywhere. A lone step is no chronology.
+/// Case chronology, most recent first: the decisions of the chain (`rows`),
+/// for every link left pending the step its key names without leading
+/// anywhere, and the cases the CEDH communicated against one of them, leading
+/// to the CEDH ruling when held, else to HUDOC. A lone step is no chronology.
 fn chronology(
     refs: &Referential,
     rows: &[tokio_postgres::Row],
     edges: &[tokio_postgres::Row],
+    communicated: &[lj_store::repository::CommunicatedStep],
 ) -> Vec<lj_dtos::ChronologyEntry> {
     // Ordering and edge key: `public_id` of a step held by the corpus, the
     // rendered address of a pending one.
@@ -1281,6 +1324,7 @@ fn chronology(
                     solution: solution_uid.as_deref().map(|u| refs.tag(u).key),
                     docket_numbers: r.get(7),
                     link: None,
+                    external_url: None,
                 },
             )
         })
@@ -1326,6 +1370,7 @@ fn chronology(
                         solution: None,
                         docket_numbers: step.docket.map(|d| vec![d]),
                         link: None,
+                        external_url: None,
                     },
                 ));
             }
@@ -1333,6 +1378,41 @@ fn chronology(
             continue;
         };
         links.insert((source, target), link_type);
+    }
+
+    for case in communicated {
+        let key = case
+            .ruling
+            .as_ref()
+            .map_or_else(|| format!("hudoc:{}", case.itemid), |r| r.public_id.clone());
+        if steps.iter().any(|(k, _)| *k == key) {
+            continue;
+        }
+        let ruling = case.ruling.as_ref();
+        steps.push((
+            key.clone(),
+            lj_dtos::ChronologyEntry {
+                id: ruling.map(|r| r.public_id.clone()),
+                jurisdiction_type: ruling
+                    .and_then(|_| lj_dtos::JurisdictionType::from_code("CEDH")),
+                jurisdiction_code: ruling.and_then(|r| r.jurisdiction_code.clone()),
+                label: crate::chronology::communicated_label(&case.appnos),
+                date: Some(case.communicated_on.to_string()),
+                current: false,
+                solution: ruling
+                    .and_then(|r| r.solution_uid.as_deref())
+                    .map(|u| refs.tag(u).key),
+                docket_numbers: None,
+                link: None,
+                external_url: ruling
+                    .is_none()
+                    .then(|| lj_core::official_url::hudoc_url(&case.itemid)),
+            },
+        ));
+        links.insert(
+            (key, case.target_public_id.clone()),
+            "REQUETE_CEDH_CONTRE".to_string(),
+        );
     }
 
     if steps.len() < 2 {
@@ -1453,8 +1533,32 @@ fn court_summary(text: String) -> lj_dtos::Commentaire {
     }
 }
 
+/// What a list of decisions carries of a stored summary: its teaser, and where the court's
+/// words and the body sit in it.
+pub(crate) fn listed_summary(
+    summary: Option<&str>,
+    quote: Option<std::ops::Range<usize>>,
+    stored_body: Option<std::ops::Range<usize>>,
+) -> (
+    Option<String>,
+    Option<std::ops::Range<usize>>,
+    Option<std::ops::Range<usize>>,
+) {
+    let Some(summary) = summary else {
+        return (None, None, None);
+    };
+    let body = lj_summary::summary_body(summary, stored_body, quote.clone());
+    let head = lj_summary::summary_head(summary).chars().count();
+    let clip = |r: std::ops::Range<usize>| (r.start < head).then(|| r.start..r.end.min(head));
+    (
+        Some(lj_summary::summary_teaser(summary)),
+        quote.and_then(clip),
+        body.and_then(clip),
+    )
+}
+
 /// A stored summary with its quoted court words read anew, its codepoint bounds moved.
-fn requote(
+pub(crate) fn requote(
     summary: &str,
     quote: std::ops::Range<usize>,
     body: Option<std::ops::Range<usize>>,
@@ -1498,9 +1602,8 @@ fn analysis_from_bundle(bundle: &serde_json::Value) -> Option<String> {
     })
 }
 
-/// ArianeWeb bundle → its `conclusions` link line: the document itself is never
-/// stored (rights reserved), its existence is, and the link line is composed
-/// here, the single place to fix should the Conseil d'Etat change its URL scheme.
+/// ArianeWeb bundle → its `conclusions` link line, for a decision whose conclusions
+/// `conclusions` does not hold yet.
 fn conclusions_from_bundle(bundle: &serde_json::Value) -> Vec<lj_dtos::Commentaire> {
     let (Some(date), Some(dossier)) = (bundle["date_lecture"].as_str(), bundle["dossier"].as_str())
     else {
@@ -1521,17 +1624,85 @@ fn conclusions_from_bundle(bundle: &serde_json::Value) -> Vec<lj_dtos::Commentai
         volume: None,
         issue: None,
         pages: None,
-        url: Some(format!(
-            "https://www.conseil-etat.fr/fr/arianeweb/CRP/conclusion/{date}/{dossier}"
-        )),
+        url: Some(ariane_conclusions_url(date, dossier)),
         body: None,
     }]
+}
+
+const ARIANE_WEB: &str = "ariane-web";
+
+/// The single place to fix should the Conseil d'État change its URL scheme.
+fn ariane_conclusions_url(date: &str, dossier: &str) -> String {
+    format!("https://www.conseil-etat.fr/fr/arianeweb/CRP/conclusion/{date}/{dossier}")
+}
+
+/// A row of `conclusions` as a line of the ruling's commentaries, linking to its page,
+/// else to its source; the rapporteur public stays unnamed.
+fn conclusions_commentaire(row: &lj_store::repository::ConclusionsRow) -> lj_dtos::Commentaire {
+    let page = row.page.as_ref().and_then(|(jt, code, public_id)| {
+        let jt = lj_dtos::JurisdictionType::from_code(jt)?;
+        Some(lj_dtos::decision_path(jt, code.as_deref(), public_id))
+    });
+    let url = if let Some(page) = page.clone() {
+        page
+    } else if row.source == ARIANE_WEB {
+        let (dossier, date) = row
+            .source_uid
+            .split_once('@')
+            .unwrap_or((row.source_uid.as_str(), ""));
+        ariane_conclusions_url(date, dossier)
+    } else {
+        let lang = if row.langs.iter().any(|l| l == "fr") {
+            "FR".to_string()
+        } else {
+            row.langs
+                .first()
+                .map_or("FR".to_string(), |l| l.to_uppercase())
+        };
+        format!(
+            "https://eur-lex.europa.eu/legal-content/{lang}/TXT/?uri=CELEX:{}",
+            row.source_uid
+        )
+    };
+    let date = row.delivered_on.or(row.ruled_on).map(|d| d.to_string());
+    let (author, title, publisher) = if row.source == ARIANE_WEB {
+        (None, None, Some("ArianeWeb".to_string()))
+    } else {
+        let who = match &row.author {
+            Some(name) => format!("Conclusions de l'avocat général {name}"),
+            None => "Conclusions de l'avocat général".to_string(),
+        };
+        let title = match &date {
+            Some(d) => format!(
+                "{who}, présentées le {}",
+                lj_core::titles::format_fr_date(d)
+            ),
+            None => who,
+        };
+        (row.author.clone(), Some(title), Some("EUR-Lex".to_string()))
+    };
+    lj_dtos::Commentaire {
+        kind: "conclusions".to_string(),
+        author,
+        date,
+        title,
+        publisher: publisher.filter(|_| page.is_none()),
+        volume: None,
+        issue: None,
+        pages: None,
+        url: Some(url),
+        body: None,
+    }
 }
 
 /// Prévisualisation légère d'une décision par `public_id` : identité + solution
 /// + codes de publication + résumé, sans lire le corps.
 #[instrument(skip(state), fields(db.system = "postgresql", public_id = %public_id))]
-pub async fn decision_preview(state: &AppState, public_id: &str) -> Result<DecisionPreview> {
+pub async fn decision_preview(
+    state: &AppState,
+    public_id: &str,
+    lang: &str,
+) -> Result<DecisionPreview> {
     let refs = referential(state).await?;
     let conn = state.pool.get().await?;
 
@@ -1551,13 +1722,15 @@ pub async fn decision_preview(state: &AppState, public_id: &str) -> Result<Decis
               {summary},
               d.seat,
               d.formation_uid,
-              d.office_uid
+              d.office_uid,
+              {bounds}
             FROM decisions d
             WHERE d.public_id = $1 AND d.deleted_at IS NULL
             ",
-                summary = lj_store::repository::pick::text("p.summary", "d")
+                summary = lj_store::repository::pick::summary("d", "$2"),
+                bounds = lj_store::repository::pick::summary_bounds("d", "$2")
             ),
-            &[&public_id],
+            &[&public_id, &lang],
         )
         .await?;
     let row = row.ok_or(ApiError::NotFound)?;
@@ -1570,9 +1743,9 @@ pub async fn decision_preview(state: &AppState, public_id: &str) -> Result<Decis
     let solution_uid: Option<String> = row.get(5);
     let formation_paths: Vec<String> = row.get::<_, Option<Vec<String>>>(6).unwrap_or_default();
     let publication_codes: Vec<String> = row.get(7);
-    let summary = row
-        .get::<_, Option<&str>>(8)
-        .map(lj_summary::summary_teaser);
+    let (summary_quote, summary_body) = lj_store::repository::pick::bounds(row.get(12));
+    let (summary, summary_quote, summary_body) =
+        listed_summary(row.get(8), summary_quote, summary_body);
     let seat_stored: Option<lj_core::chamber::Seat> = row
         .get::<_, Option<tokio_postgres::types::Json<lj_core::chamber::Seat>>>(9)
         .map(|j| j.0);
@@ -1589,13 +1762,13 @@ pub async fn decision_preview(state: &AppState, public_id: &str) -> Result<Decis
             .unwrap_or(&jur_type_raw),
         jurisdiction_name.as_deref(),
     );
-    let chamber_label = seat_stored.as_ref().and_then(lj_core::chamber::Seat::label);
-    let seat = crate::titles::decision_seat(
+    let seat_parts = crate::titles::seat_parts(
         &jur_display,
-        chamber_label.as_deref(),
+        seat_stored.as_ref(),
         formation_uid.as_deref(),
         office_uid.as_deref(),
     );
+    let seat = seat_parts.as_ref().and_then(crate::titles::french_seat);
     let title = lj_core::titles::decision_title(
         &jur_display,
         seat.as_deref(),
@@ -1610,67 +1783,46 @@ pub async fn decision_preview(state: &AppState, public_id: &str) -> Result<Decis
     Ok(DecisionPreview {
         id,
         title,
+        jurisdiction_type: parse_enum_str(&jur_type_raw).unwrap_or(JurisdictionType::Ta),
         solution: opt_tag(&solution_uid, &refs),
         formation: crate::titles::formation_tags(&formation_paths),
         publication_codes,
         summary,
+        summary_quote,
+        summary_body,
     })
 }
 
-/// Décisions similaires en deux volets pour un `public_id` :
-///
-/// - **principe** (référence, similaires sur le fond) : décisions de portée
-///   notable par trois signaux fusionnés — citations sortantes résolues
-///   (`case_citation`), articles rares partagés pondérés IDF, KNN pré-filtré
-///   portée notable.
-/// - **espèce** (similaires en fait) : ANN top-k sur les embeddings des chunks
-///   bord, en excluant les hits principe et la chronologie de l'affaire
-///   (`decision_links`, déjà affichée sur la page).
-///
-/// Les trois jambes partent en parallèle sur des connexions distinctes du pool ;
-/// `limit` s'applique à chaque volet.
+/// Similar decisions in two panels for a `public_id`, the principe one (notable
+/// decisions on the same question of law) and the espece one (similar facts),
+/// `limit` each.
 #[instrument(skip(state), fields(db.system = "postgresql", public_id = %public_id))]
 pub async fn similar_decisions(
     state: &AppState,
     public_id: &str,
     limit: u32,
+    lang: &str,
 ) -> Result<SimilarDecisionsResponse> {
     let limit = limit as usize;
-
-    let (source_id, meta) = similar_source_meta(state, public_id)
-        .await?
-        .ok_or(ApiError::NotFound)?;
-
+    let (source_id, meta) = {
+        let conn = state.pool.get().await?;
+        DecisionRepository::new(&conn)
+            .similar_source_meta(public_id)
+            .await?
+            .ok_or(ApiError::NotFound)?
+    };
     let legs = similar_legs(state, source_id, limit).await?;
-
-    let abstained = similar_principe_gated(&meta);
-    let principe_ids = if abstained {
-        Vec::new()
-    } else {
-        assemble_principe(&legs.direct, &legs.idf, &legs.principe_knn, limit)
-    };
-    let excluded: HashSet<i64> = principe_ids
-        .iter()
-        .chain(legs.chronology.iter())
-        .copied()
-        .collect();
-    let espece_ids: Vec<i64> = if similar_espece_gated(&meta) {
-        Vec::new()
-    } else {
-        legs.espece_knn
-            .into_iter()
-            .filter(|id| !excluded.contains(id))
-            .take(limit)
-            .collect()
-    };
+    let panels = SimilarPanels::assemble(&meta, legs, limit);
 
     let mut by_id = hydrate_similar_hits(
         state,
-        &principe_ids
+        &panels
+            .principe
             .iter()
-            .chain(espece_ids.iter())
+            .chain(panels.espece.iter())
             .copied()
             .collect::<Vec<i64>>(),
+        lang,
     )
     .await?;
     let collect = |ids: &[i64], by_id: &mut HashMap<i64, SimilarDecisionHit>| {
@@ -1678,107 +1830,41 @@ pub async fn similar_decisions(
     };
     Ok(SimilarDecisionsResponse {
         decision_id: public_id.to_string(),
-        principe: collect(&principe_ids, &mut by_id),
-        espece: collect(&espece_ids, &mut by_id),
-        abstained,
+        principe: collect(&panels.principe, &mut by_id),
+        espece: collect(&panels.espece, &mut by_id),
+        abstained: panels.abstained,
     })
 }
 
-/// Au-delà de cette taille, un rejet CC citant le 1014 est un arrêt mixte motivé
-/// (moyens réels + un moyen 1014), pas un rejet non spécialement motivé.
-const GATE_1014_MAX_CHARS: i32 = 3_500;
-/// Terme d'inversion `lj_cit_terms` de l'art. 1014 du code de procédure
-/// civile (rejet non spécialement motivé).
-const CPC_1014_TERM: &str = "LEGITEXT000006070716|1014";
-
-/// Métadonnées de la décision-source pilotant l'abstention des volets
-/// similaires.
-pub struct SimilarSourceMeta {
-    pub jurisdiction_type: String,
-    pub solution_uid: Option<String>,
-    pub text_chars: i32,
-    pub cites_1014: bool,
-}
-
-/// Volet principe muet : la source ne tranche aucune question de droit —
-/// désistement, non-lieu à statuer, ou rejet CC non spécialement motivé
-/// (art. 1014 CPC, texte court).
-pub fn similar_principe_gated(meta: &SimilarSourceMeta) -> bool {
-    match meta.solution_uid.as_deref() {
-        Some("solution:DESISTEMENT") | Some("solution:NON_LIEU_A_STATUER") => true,
-        Some("solution:REJET") => {
-            meta.jurisdiction_type == "CC"
-                && meta.cites_1014
-                && meta.text_chars < GATE_1014_MAX_CHARS
-        }
-        _ => false,
-    }
-}
-
-/// Volet espèce muet : les voisines d'un désistement sont des donné-acte en
-/// série sans valeur d'usage. Les non-lieux gardent leur volet.
-pub fn similar_espece_gated(meta: &SimilarSourceMeta) -> bool {
-    meta.solution_uid.as_deref() == Some("solution:DESISTEMENT")
-}
-
-/// Résout une décision par `public_id` : id interne + métadonnées du gate.
-pub async fn similar_source_meta(
-    state: &AppState,
-    public_id: &str,
-) -> Result<Option<(i64, SimilarSourceMeta)>> {
-    let conn = state.pool.get().await?;
-    let row = conn
-        .query_opt(
-            &format!(
-                "
-            SELECT d.id, d.jurisdiction_type, d.solution_uid,
-                   coalesce(length({text}), 0),
-                   EXISTS (
-                     SELECT 1 FROM legal_citation lc
-                     WHERE lc.decision_id = d.id
-                       AND public.lj_cit_terms(lc.spans) @> ARRAY[$2::text]
-                   )
-            FROM decisions d WHERE d.public_id = $1 AND d.deleted_at IS NULL
-            ",
-                text = lj_store::repository::pick::text("p.full_text", "d")
-            ),
-            &[&public_id, &CPC_1014_TERM],
-        )
-        .await?;
-    Ok(row.map(|r| {
-        (
-            r.get(0),
-            SimilarSourceMeta {
-                jurisdiction_type: r.get(1),
-                solution_uid: r.get(2),
-                text_chars: r.get(3),
-                cites_1014: r.get(4),
-            },
-        )
-    }))
-}
-
-/// Jambes brutes des deux volets, avant assemblage et hydratation.
-pub struct SimilarLegs {
-    /// Cibles résolues des citations sortantes, portée notable.
-    pub direct: Vec<i64>,
-    /// Décisions notables citant les mêmes articles rares, rang IDF.
-    pub idf: Vec<i64>,
-    /// Chronologie `decision_links` de l'affaire (exclue du volet espèce).
-    pub chronology: Vec<i64>,
-    /// KNN pré-filtré portée notable.
-    pub principe_knn: Vec<i64>,
-    /// KNN générique sur-fetché (volet espèce, avant exclusions).
-    pub espece_knn: Vec<i64>,
-}
-
-/// Calcule les cinq jambes en parallèle sur des connexions distinctes du pool.
+/// The five legs at once on three connections of the pool.
 pub async fn similar_legs(state: &AppState, source_id: i64, limit: usize) -> Result<SimilarLegs> {
-    let (espece_knn, principe_knn, graph) = tokio::try_join!(
-        espece_knn_leg(state, source_id, limit),
-        principe_knn_leg(state, source_id, limit),
-        graph_legs(state, source_id, limit),
-    )?;
+    let _permit = state
+        .similar_permits
+        .acquire()
+        .await
+        .map_err(|e| ApiError::Internal(format!("similar semaphore: {e}")))?;
+    let espece = async {
+        let conn = state.pool.get().await?;
+        let ids = DecisionRepository::new(&conn)
+            .similar_espece_knn(source_id, limit, state.settings.vchord_probes)
+            .await?;
+        Ok::<_, ApiError>(ids)
+    };
+    let principe = async {
+        let conn = state.pool.get().await?;
+        let ids = DecisionRepository::new(&conn)
+            .similar_principe_knn(source_id, limit)
+            .await?;
+        Ok::<_, ApiError>(ids)
+    };
+    let graph = async {
+        let conn = state.pool.get().await?;
+        let graph = DecisionRepository::new(&conn)
+            .similar_graph(source_id, limit)
+            .await?;
+        Ok::<_, ApiError>(graph)
+    };
+    let (espece_knn, principe_knn, graph) = tokio::try_join!(espece, principe, graph)?;
     Ok(SimilarLegs {
         direct: graph.direct,
         idf: graph.idf,
@@ -1788,249 +1874,12 @@ pub async fn similar_legs(state: &AppState, source_id: i64, limit: usize) -> Res
     })
 }
 
-/// Jambe espèce : ANN top-k générique sur les embeddings des chunks bord
-/// (premier + dernier, max-pool par décision), sur-fetchée pour absorber les
-/// exclusions.
-async fn espece_knn_leg(state: &AppState, source_id: i64, limit: usize) -> Result<Vec<i64>> {
-    let outer_limit = (limit as i64) * ESPECE_OVERFETCH_FACTOR;
-    let inner_limit = (limit as i64) * SIMILAR_INNER_LIMIT_FACTOR;
-    let query = format!(
-        "
-        WITH source AS (
-          SELECT embedding
-          FROM (
-            SELECT
-              c.embedding,
-              row_number() OVER (ORDER BY c.chunk_index) AS rn_first,
-              row_number() OVER (ORDER BY c.chunk_index DESC) AS rn_last
-            FROM decision_chunks c
-            WHERE c.decision_id = $1
-              AND c.embedding IS NOT NULL
-          ) ordered
-          WHERE rn_first = 1 OR rn_last = 1
-        ),
-        neighbors AS MATERIALIZED (
-          SELECT
-            cand.decision_id,
-            1 - cand.distance AS score
-          FROM source src
-          JOIN LATERAL (
-            SELECT
-              c.decision_id,
-              c.embedding <=> src.embedding AS distance
-            FROM decision_chunks c
-            WHERE c.embedding IS NOT NULL
-              AND c.decision_id <> $1
-            ORDER BY distance
-            LIMIT {inner_limit}
-          ) cand ON TRUE
-        )
-        SELECT n.decision_id
-        FROM neighbors n
-        GROUP BY n.decision_id
-        ORDER BY MAX(n.score) DESC, n.decision_id
-        LIMIT {outer_limit}
-        ",
-    );
-    knn_query(state, &query, source_id, state.settings.vchord_probes).await
-}
-
-/// Jambe principe KNN : même ANN, pré-filtrée portée notable *dans* le scan —
-/// le filtre join force vchordrq à continuer en ordre de distance jusqu'à
-/// remplir le LIMIT.
-async fn principe_knn_leg(state: &AppState, source_id: i64, limit: usize) -> Result<Vec<i64>> {
-    let limit = limit as i64;
-    let query = format!(
-        "
-        WITH source AS (
-          SELECT embedding
-          FROM (
-            SELECT
-              c.embedding,
-              row_number() OVER (ORDER BY c.chunk_index) AS rn_first,
-              row_number() OVER (ORDER BY c.chunk_index DESC) AS rn_last
-            FROM decision_chunks c
-            WHERE c.decision_id = $1
-              AND c.embedding IS NOT NULL
-          ) ordered
-          WHERE rn_first = 1 OR rn_last = 1
-        ),
-        neighbors AS MATERIALIZED (
-          SELECT
-            cand.decision_id,
-            1 - cand.distance AS score
-          FROM source src
-          JOIN LATERAL (
-            SELECT
-              c.decision_id,
-              c.embedding <=> src.embedding AS distance
-            FROM decision_chunks c
-            JOIN decisions dn ON dn.id = c.decision_id
-            WHERE c.embedding IS NOT NULL
-              AND c.decision_id <> $1
-              AND dn.publication_codes && '{{{notable}}}'::text[]
-            ORDER BY distance
-            LIMIT {limit}
-          ) cand ON TRUE
-        )
-        SELECT n.decision_id
-        FROM neighbors n
-        GROUP BY n.decision_id
-        ORDER BY MAX(n.score) DESC, n.decision_id
-        LIMIT {limit}
-        ",
-        notable = NOTABLE_CODES.join(","),
-    );
-    knn_query(state, &query, source_id, PRINCIPE_KNN_PROBES).await
-}
-
-/// Exécute une requête ANN (`$1` = decision_id source, une colonne
-/// `decision_id`) sous `SET LOCAL vchordrq.probes`.
-async fn knn_query(state: &AppState, query: &str, source_id: i64, probes: u32) -> Result<Vec<i64>> {
-    let mut conn = state.pool.get().await?;
-    let tx = conn.transaction().await?;
-    tx.batch_execute(&format!("SET LOCAL vchordrq.probes = {probes}"))
-        .await?;
-    let rows = tx.query(query, &[&source_id]).await?;
-    tx.commit().await?;
-    Ok(rows.iter().map(|r| r.get(0)).collect())
-}
-
-/// Signaux du graphe de citations pour le volet principe, plus la chronologie
-/// de l'affaire à exclure du volet espèce.
-struct GraphLegs {
-    /// Cibles résolues des citations sortantes, portée notable — majeures
-    /// d'abord, puis les plus récentes.
-    direct: Vec<i64>,
-    /// Décisions notables citant les mêmes articles rares, rang IDF.
-    idf: Vec<i64>,
-    /// Décisions de la chronologie `decision_links`.
-    chronology: Vec<i64>,
-}
-
-async fn graph_legs(state: &AppState, source_id: i64, limit: usize) -> Result<GraphLegs> {
-    let limit = limit as i64;
-    let notable: Vec<&str> = NOTABLE_CODES.to_vec();
-    let majeure = vec!["r", "A"];
-    let conn = state.pool.get().await?;
-
-    let direct_rows = conn
-        .query(
-            "
-            SELECT t.id
-            FROM case_citation cc
-            JOIN decisions t ON t.id = cc.target_decision_id
-            WHERE cc.decision_id = $1
-              AND t.publication_codes && $2
-            GROUP BY t.id
-            ORDER BY bool_or(t.publication_codes && $3) DESC,
-                     MAX(t.date_lecture) DESC NULLS LAST, t.id
-            LIMIT $4
-            ",
-            &[&source_id, &notable, &majeure, &limit],
-        )
-        .await?;
-
-    // Shared rare articles: the source's article terms (`text_uid|num_key`), kept
-    // under the rarity cap, inverted by the GIN `legal_citation_terms_idx` onto the
-    // notable decisions, scored Σ ln(N/df) with N the planner's estimate.
-    // Codes inlined, never bound: `idx_decisions_notable` is partial, and from a
-    // parameter the planner cannot prove the implication on a generic plan.
-    let notable_sql = NOTABLE_CODES.map(|code| format!("'{code}'")).join(", ");
-    let idf_query = format!(
-        "
-        WITH terms AS (
-          SELECT DISTINCT t
-          FROM legal_citation lc, unnest(public.lj_cit_terms(lc.spans)) AS t
-          WHERE lc.decision_id = $1 AND position('|' in t) > 0
-        ),
-        rare AS (
-          SELECT t.t, s.decision_count
-          FROM terms t
-          JOIN citing_decision_counts s ON s.cited_term = t.t
-          WHERE s.decision_count < {IDF_RARE_DF_CAP}
-          ORDER BY s.decision_count ASC
-          LIMIT {IDF_MAX_RARE_TERMS}
-        )
-        SELECT lc2.decision_id
-        FROM rare r
-        JOIN legal_citation lc2 ON public.lj_cit_terms(lc2.spans) @> ARRAY[r.t]
-        JOIN decisions d2 ON d2.id = lc2.decision_id
-        WHERE d2.publication_codes && ARRAY[{notable_sql}]::text[]
-          AND lc2.decision_id <> $1
-        GROUP BY lc2.decision_id
-        ORDER BY sum(ln(
-                     (SELECT greatest(reltuples, 1)::float8 FROM pg_class
-                      WHERE oid = 'decisions'::regclass)
-                     / r.decision_count::float8
-                 )) DESC,
-                 lc2.decision_id
-        LIMIT $2
-        ",
-    );
-    let idf_rows = conn.query(&idf_query, &[&source_id, &limit]).await?;
-
-    let chrono_rows = conn
-        .query(
-            "
-            WITH RECURSIVE chain(id, depth) AS (
-                SELECT $1::bigint, 0
-                UNION
-                SELECT CASE WHEN dl.decision_id = c.id THEN dl.target_decision_id
-                            ELSE dl.decision_id END,
-                       c.depth + 1
-                FROM chain c
-                JOIN decision_links dl
-                  ON dl.target_decision_id IS NOT NULL
-                 AND (dl.decision_id = c.id OR dl.target_decision_id = c.id)
-                WHERE c.depth < 8
-            )
-            SELECT DISTINCT id FROM chain WHERE id <> $1
-            ",
-            &[&source_id],
-        )
-        .await?;
-
-    Ok(GraphLegs {
-        direct: direct_rows.iter().map(|r| r.get(0)).collect(),
-        idf: idf_rows.iter().map(|r| r.get(0)).collect(),
-        chronology: chrono_rows.iter().map(|r| r.get(0)).collect(),
-    })
-}
-
-/// Assemble le volet principe : citations directes d'abord, puis les hits en
-/// accord IDF ∩ KNN, puis entrelacement alterné IDF/KNN.
-pub fn assemble_principe(direct: &[i64], idf: &[i64], knn: &[i64], limit: usize) -> Vec<i64> {
-    let knn_set: HashSet<i64> = knn.iter().copied().collect();
-    let accord = idf.iter().copied().filter(|id| knn_set.contains(id));
-
-    let mut interleaved = Vec::with_capacity(idf.len() + knn.len());
-    let (mut it_idf, mut it_knn) = (idf.iter().copied(), knn.iter().copied());
-    loop {
-        let (a, b) = (it_idf.next(), it_knn.next());
-        if a.is_none() && b.is_none() {
-            break;
-        }
-        interleaved.extend(a);
-        interleaved.extend(b);
-    }
-
-    let mut seen = HashSet::new();
-    direct
-        .iter()
-        .copied()
-        .chain(accord)
-        .chain(interleaved)
-        .filter(|id| seen.insert(*id))
-        .take(limit)
-        .collect()
-}
-
 /// Hydrate les cartes des deux volets en une requête, indexées par id interne ;
 /// l'appelant rétablit l'ordre d'assemblage.
 async fn hydrate_similar_hits(
     state: &AppState,
     ids: &[i64],
+    lang: &str,
 ) -> Result<HashMap<i64, SimilarDecisionHit>> {
     if ids.is_empty() {
         return Ok(HashMap::new());
@@ -2050,13 +1899,15 @@ async fn hydrate_similar_hits(
               d.solution_uid,
               d.formation_paths,
               d.publication_codes,
-              {summary}
+              {summary},
+              {bounds}
             FROM decisions d
             WHERE d.id = ANY($1)
             ",
-                summary = lj_store::repository::pick::text("p.summary", "d")
+                summary = lj_store::repository::pick::summary("d", "$2"),
+                bounds = lj_store::repository::pick::summary_bounds("d", "$2")
             ),
-            &[&ids],
+            &[&ids, &lang],
         )
         .await?;
     drop(conn);
@@ -2074,15 +1925,16 @@ async fn hydrate_similar_hits(
         let solution_uid: Option<String> = row.get(6);
         let formation_paths: Vec<String> = row.get::<_, Option<Vec<String>>>(7).unwrap_or_default();
         let publication_codes: Option<Vec<String>> = row.get(8);
-        let summary = row
-            .get::<_, Option<&str>>(9)
-            .map(lj_summary::summary_teaser);
+        let (summary_quote, summary_body) = lj_store::repository::pick::bounds(row.get(10));
+        let (summary, summary_quote, summary_body) =
+            listed_summary(row.get(9), summary_quote, summary_body);
 
         hits.insert(
             internal_id,
             SimilarDecisionHit {
                 id,
                 jurisdiction_type: parse_enum_str(&jur_type_raw).unwrap_or(JurisdictionType::Ta),
+                court_names: refs.court_names(jurisdiction_code.as_deref()),
                 jurisdiction_name: jurisdiction_code
                     .as_deref()
                     .and_then(|c| refs.jurisdiction(c))
@@ -2094,6 +1946,8 @@ async fn hydrate_similar_hits(
                 formation: crate::titles::formation_tags(&formation_paths),
                 publication_codes: publication_codes.unwrap_or_default(),
                 summary,
+                summary_quote,
+                summary_body,
             },
         );
     }
@@ -2108,73 +1962,6 @@ fn parse_enum_str<T: for<'de> serde::Deserialize<'de>>(code: &str) -> Option<T> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn assemble_principe_direct_puis_accord_puis_entrelacement() {
-        let out = assemble_principe(&[1], &[2, 3, 4], &[3, 5, 6], 6);
-        assert_eq!(out, vec![1, 3, 2, 5, 4, 6]);
-    }
-
-    #[test]
-    fn assemble_principe_cap_et_dedup_direct() {
-        let out = assemble_principe(&[2], &[2, 3], &[4, 5], 3);
-        assert_eq!(out, vec![2, 4, 3]);
-    }
-
-    fn gate_meta(
-        jt: &str,
-        solution: Option<&str>,
-        chars: i32,
-        cites_1014: bool,
-    ) -> SimilarSourceMeta {
-        SimilarSourceMeta {
-            jurisdiction_type: jt.to_string(),
-            solution_uid: solution.map(str::to_string),
-            text_chars: chars,
-            cites_1014,
-        }
-    }
-
-    #[test]
-    fn gate_desistement_coupe_les_deux_volets() {
-        let m = gate_meta("TA", Some("solution:DESISTEMENT"), 2_500, false);
-        assert!(similar_principe_gated(&m));
-        assert!(similar_espece_gated(&m));
-    }
-
-    #[test]
-    fn gate_non_lieu_coupe_le_principe_seul() {
-        let m = gate_meta("TA", Some("solution:NON_LIEU_A_STATUER"), 2_500, false);
-        assert!(similar_principe_gated(&m));
-        assert!(!similar_espece_gated(&m));
-    }
-
-    #[test]
-    fn gate_rejet_1014_court_cc_seulement() {
-        let m = gate_meta("CC", Some("solution:REJET"), 2_400, true);
-        assert!(similar_principe_gated(&m));
-        assert!(!similar_principe_gated(&gate_meta(
-            "CC",
-            Some("solution:REJET"),
-            8_000,
-            true
-        )));
-        assert!(!similar_principe_gated(&gate_meta(
-            "TA",
-            Some("solution:REJET"),
-            2_000,
-            false
-        )));
-        assert!(!similar_principe_gated(&gate_meta(
-            "CE", None, 2_000, false
-        )));
-    }
-
-    #[test]
-    fn assemble_principe_jambes_vides() {
-        assert_eq!(assemble_principe(&[], &[], &[7, 8], 4), vec![7, 8]);
-        assert!(assemble_principe(&[], &[], &[], 4).is_empty());
-    }
 
     fn raw_ref(instrument: &str, slug: Option<&str>, articles: &[&str]) -> RawLegalRef {
         (

@@ -13,6 +13,7 @@ use crate::config::Settings;
 pub(super) struct TreatyCounts {
     treaties: usize,
     articles: usize,
+    written: usize,
     entries: usize,
     nothing: usize,
 }
@@ -84,11 +85,7 @@ fn treaty_entries(c: &TreatyCutCandidate) -> Vec<(String, String)> {
         .into_iter()
         .filter_map(|l| {
             titles.extend(l.titles);
-            let entry = c.articles.get(&l.id)?;
-            if entry.get("held").is_some() {
-                return None;
-            }
-            let text = entry["text"].as_str()?;
+            let text = c.articles.get(&l.id)?["text"].as_str()?;
             let text = match l.num {
                 Some(n) if n.bytes().all(|b| b.is_ascii_digit()) => return None,
                 Some(n) => format!("{}\n{text}", n.to_uppercase()),
@@ -113,8 +110,9 @@ async fn write(
     c: &TreatyCutCandidate,
     entries: &[(String, String)],
     articles: &[TreatyArticle],
-) -> Result<()> {
+) -> Result<usize> {
     let today = chrono::Utc::now().date_naive();
+    let mut written = 0;
     for (i, a) in articles.iter().enumerate() {
         let row = LegalArticleRow {
             text_uid: c.instrument_uid.clone(),
@@ -137,21 +135,23 @@ async fn write(
             source_asof: Some(today),
             source_upstream_url: None,
         };
-        repo.upsert_legal_article(&row, Fraicheur::Autoritaire)
-            .await
-            .map_err(|e| {
-                anyhow!(
-                    "upsert_legal_article {} {}: {e}",
-                    c.instrument_uid,
-                    a.num_key
-                )
-            })?;
+        written += usize::from(
+            repo.upsert_legal_article(&row, Fraicheur::Autoritaire)
+                .await
+                .map_err(|e| {
+                    anyhow!(
+                        "upsert_legal_article {} {}: {e}",
+                        c.instrument_uid,
+                        a.num_key
+                    )
+                })?,
+        );
     }
     let ids: Vec<&str> = entries.iter().map(|(id, _)| id.as_str()).collect();
-    repo.hold_publication_articles(&c.vehicle_uid, &ids, &c.instrument_uid)
+    repo.release_vehicle_pieces(&c.vehicle_uid, &ids)
         .await
-        .map_err(|e| anyhow!("hold_publication_articles {}: {e}", c.vehicle_uid))?;
-    Ok(())
+        .map_err(|e| anyhow!("release_vehicle_pieces {}: {e}", c.vehicle_uid))?;
+    Ok(written)
 }
 
 /// Cuts the treaties `vehicles` publish, every treaty when `None`.
@@ -160,7 +160,7 @@ pub(super) async fn cut_treaty_articles(
     vehicles: Option<&[String]>,
 ) -> Result<TreatyCounts> {
     let candidates = repo
-        .treaty_cut_candidates(vehicles)
+        .treaty_cut_candidates(vehicles, false)
         .await
         .map_err(|e| anyhow!("treaty_cut_candidates: {e}"))?;
     let mut counts = TreatyCounts::default();
@@ -173,7 +173,10 @@ pub(super) async fn cut_treaty_articles(
         }
         repo.conn.batch_execute("BEGIN").await?;
         match write(repo, c, &entries, &articles).await {
-            Ok(()) => repo.conn.batch_execute("COMMIT").await?,
+            Ok(n) => {
+                counts.written += n;
+                repo.conn.batch_execute("COMMIT").await?
+            }
             Err(e) => {
                 repo.conn.batch_execute("ROLLBACK").await?;
                 return Err(e);
@@ -187,8 +190,9 @@ pub(super) async fn cut_treaty_articles(
 }
 
 /// Every treaty record still empty, then the finishers of the rows written.
-/// `dry_run` prints what each treaty would get and writes nothing.
-pub async fn treaty_articles(dry_run: bool) -> Result<()> {
+/// `dry_run` prints what each treaty would get and writes nothing; with `held`,
+/// the records already cut from the JO too, each with the keys it lacks.
+pub async fn treaty_articles(dry_run: bool, held: bool) -> Result<()> {
     let settings = Settings::from_env()?;
     let pool =
         lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
@@ -202,14 +206,30 @@ pub async fn treaty_articles(dry_run: bool) -> Result<()> {
     let repo = DecisionRepository::new(&conn);
     if dry_run {
         for c in repo
-            .treaty_cut_candidates(None)
+            .treaty_cut_candidates(None, held)
             .await
             .map_err(|e| anyhow!("treaty_cut_candidates: {e}"))?
         {
             let entries = treaty_entries(&c);
             let articles = cut_entries(&entries);
             let chars: usize = articles.iter().map(|a| a.text.chars().count()).sum();
-            let keys: Vec<&str> = articles.iter().map(|a| a.num_key.as_str()).collect();
+            let present: HashSet<String> = if held {
+                repo.text_article_keys(&c.instrument_uid)
+                    .await
+                    .map_err(|e| anyhow!("text_article_keys: {e}"))?
+                    .into_iter()
+                    .collect()
+            } else {
+                HashSet::new()
+            };
+            let keys: Vec<String> = articles
+                .iter()
+                .filter(|a| !present.contains(&a.num_key))
+                .map(|a| match held {
+                    true => format!("{}@{}", a.num_key, a.source),
+                    false => a.num_key.clone(),
+                })
+                .collect();
             println!(
                 "{}\t{}\t{}\t{}\t{chars}\t{}",
                 c.instrument_uid,
@@ -221,11 +241,11 @@ pub async fn treaty_articles(dry_run: bool) -> Result<()> {
         }
         return Ok(());
     }
+    if held {
+        anyhow::bail!("--held only lists, with --dry-run: a record's cut drifts with its entries");
+    }
     let counts = cut_treaty_articles(&repo, None).await?;
     tracing::warn!(?counts, "treaty articles: cut");
-    repo.refresh_article_denorm(None)
-        .await
-        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
     repo.refresh_reading_ranks()
         .await
         .map_err(|e| anyhow!("refresh_reading_ranks: {e}"))?;

@@ -4,71 +4,65 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::OnceLock;
 
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use regex::Regex;
 
 use super::issue::{cut_issue, signed_in_title};
-use super::{french_long_date, site_dir, BulletinClient, BulletinNotice, BulletinSite};
+use super::{french_long_date, is_doctrine, BulletinClient, BulletinNotice, BulletinSite};
 use crate::error::{Result, SourceError};
 use crate::html_strip::decode_entities;
 
 pub const BASE_URL: &str = "https://bulletins-officiels.social.gouv.fr";
-const INSTRUCTION: (u32, &str) = (217, "Instruction");
-const CIRCULAIRE: (u32, &str) = (280, "Circulaire");
-const NOTE: (u32, &str) = (286, "Note");
-const NOTE_INFO: (u32, &str) = (223, "Note d'information");
-/// A type a bulletin does not offer answers 500.
-const BULLETINS: [(&str, &[(u32, &str)]); 2] = [
-    (
-        "bo-sante-protection-sociale-solidarites",
-        &[INSTRUCTION, CIRCULAIRE, NOTE, NOTE_INFO],
-    ),
-    (
-        "bo-travail-emploi-formation-professionnelle",
-        &[INSTRUCTION, CIRCULAIRE, NOTE],
-    ),
+const BULLETINS: [&str; 2] = [
+    "bo-sante-protection-sociale-solidarites",
+    "bo-travail-emploi-formation-professionnelle",
 ];
 const PAGE_SIZE: usize = 3;
 const HEALTH: &str = "https://sante.gouv.fr";
 /// Links each year's page, a few under a suffixed slug.
 const HEALTH_YEARS: &str = "/ministere/documentation-et-publications-officielles/bulletins-officiels-et-documents-opposables/article/bulletin-officiel-sante-protection-sociale-solidarite";
 const LABOUR: &str = "https://travail-emploi.gouv.fr";
+/// The labour bulletin's yearly pages list no issue before 2006.
+const LABOUR_FIRST_YEAR: i32 = 2006;
 /// The issues stopped in June 2025, so a run reaching back a single year
 /// leaves them alone.
 const ARCHIVE_LAST_YEAR: i32 = 2025;
 
-/// A text both ministries signed sits in both bulletins under one page.
-pub(super) async fn list(client: &BulletinClient, since_year: i32) -> Result<Vec<BulletinNotice>> {
-    let since = NaiveDate::from_ymd_opt(since_year, 1, 1).expect("valid date");
+/// A text both ministries signed sits in both bulletins under one page. Each
+/// bulletin lists its texts by date, newest first.
+pub(super) async fn list(client: &BulletinClient, since: NaiveDate) -> Result<Vec<BulletinNotice>> {
     let mut found = BTreeMap::new();
-    for (bulletin, types) in BULLETINS {
-        for &(type_id, kind) in types {
-            for page in 0.. {
-                let url = format!(
-                    "{BASE_URL}/{bulletin}?field_institutional_target_id={type_id}&page={page}"
-                );
-                let notices = parse_listing(&client.get_text(&url).await?, kind);
-                let last = notices.len() < PAGE_SIZE
-                    || notices
-                        .iter()
-                        .any(|n| n.published.is_some_and(|d| d < since));
-                for n in notices {
-                    found.insert(n.native_id.clone(), n);
-                }
-                if last {
-                    break;
-                }
+    for bulletin in BULLETINS {
+        for page in 0.. {
+            let notices = parse_listing(
+                &client
+                    .get_text(&format!("{BASE_URL}/{bulletin}?page={page}"))
+                    .await?,
+            );
+            let last = notices.len() < PAGE_SIZE
+                || notices
+                    .iter()
+                    .any(|n| n.published.is_some_and(|d| d < since));
+            for n in notices
+                .into_iter()
+                .filter(|n| n.published.is_none_or(|d| d >= since))
+            {
+                found.insert(n.native_id.clone(), n);
+            }
+            if last {
+                break;
             }
         }
     }
     let mut out: Vec<_> = found.into_values().collect();
-    if since_year < ARCHIVE_LAST_YEAR {
-        out.extend(archive(client, since_year).await?);
+    if since.year() < ARCHIVE_LAST_YEAR {
+        out.extend(archive(client, since.year()).await?);
     }
     Ok(out)
 }
 
-pub fn parse_listing(html: &str, kind: &str) -> Vec<BulletinNotice> {
+/// A card names no type: the title opens with it.
+pub fn parse_listing(html: &str) -> Vec<BulletinNotice> {
     static RE: OnceLock<[Regex; 4]> = OnceLock::new();
     let [card, link, nor, published] = RE.get_or_init(|| {
         [
@@ -88,7 +82,7 @@ pub fn parse_listing(html: &str, kind: &str) -> Vec<BulletinNotice> {
                 site: BulletinSite::Social,
                 native_id: l[1].to_string(),
                 nor: nor.captures(card).and_then(|c| super::nor(&c[1])),
-                kind: kind.to_string(),
+                kind: String::new(),
                 signed: signed_in_title(&title),
                 published: published
                     .captures(card)
@@ -97,7 +91,7 @@ pub fn parse_listing(html: &str, kind: &str) -> Vec<BulletinNotice> {
                 body_url: None,
                 body: None,
                 legifrance_uid: None,
-                doctrine: true,
+                doctrine: is_doctrine(&title),
                 abrogated: false,
                 title,
             })
@@ -137,7 +131,7 @@ async fn archive(client: &BulletinClient, since_year: i32) -> Result<Vec<Bulleti
             .map(|c| format!("{host}/{}", c[1].trim_start_matches('/')))
             .collect();
         for url in issues {
-            let Some(bytes) = frozen_issue(client, &url).await? else {
+            let Some(bytes) = client.frozen_issue(BulletinSite::Social, &url).await? else {
                 tracing::warn!(issue = %url, "social: issue pdf gone");
                 continue;
             };
@@ -150,24 +144,6 @@ async fn archive(client: &BulletinClient, since_year: i32) -> Result<Vec<Bulleti
         }
     }
     Ok(found.into_values().collect())
-}
-
-/// The archive is frozen: an issue read once is kept beside the site's state,
-/// so an interrupted run resumes where it stopped.
-async fn frozen_issue(client: &BulletinClient, url: &str) -> Result<Option<Vec<u8>>> {
-    let dir = site_dir(&client.cache, BulletinSite::Social).join("issues");
-    let path = dir.join(url.trim_start_matches("https://").replace('/', "_"));
-    match tokio::fs::read(&path).await {
-        Ok(bytes) => return Ok(Some(bytes)),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => return Err(e.into()),
-    }
-    let Some(bytes) = client.get_bytes(url).await? else {
-        return Ok(None);
-    };
-    tokio::fs::create_dir_all(&dir).await?;
-    tokio::fs::write(&path, &bytes).await?;
-    Ok(Some(bytes))
 }
 
 async fn year_pages(
@@ -194,28 +170,44 @@ async fn year_pages(
     Ok(health
         .into_values()
         .map(|p| (HEALTH, p))
-        .chain(years.map(|y| (LABOUR, format!("{LABOUR}/bulletin-officiel-annee-{y}"))))
+        .chain(
+            (since_year.max(LABOUR_FIRST_YEAR)..=ARCHIVE_LAST_YEAR)
+                .map(|y| (LABOUR, format!("{LABOUR}/bulletin-officiel-annee-{y}"))),
+        )
         .collect())
 }
 
-/// The date the running head repeats on every page, « Bulletin officiel Santé
-/// - … n° 2024/34 du 31 décembre 2024 », « BO Travail no 2019/5 du 30 mai 2019 ».
+/// The date the running head repeats on every page, « Bulletin officiel
+/// Santé - … n° 2024/34 du 31 décembre 2024 », « BO Travail no 2019/5 du
+/// 30 mai 2019 », else the one the cover prints with the number, « No 2 -
+/// 15 mars 2005 ».
 fn published_in(plain: &str) -> Option<NaiveDate> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let re = RE.get_or_init(|| {
-        Regex::new(
-            r"(?:BO|Bulletin officiel)\b[^\n]{0,120}?\bn[oº°]\s?\d{4}/\d+[^\n]*? du ([^\n,]+)",
-        )
-        .expect("valid regex")
+    static RE: OnceLock<[Regex; 2]> = OnceLock::new();
+    let [head, cover] = RE.get_or_init(|| {
+        [
+            Regex::new(
+                r"(?:BO|Bulletin officiel)\b[^\n]{0,120}?\bn[oº°]\s?\d{4}/\d+[^\n]*? du ([^\n,]+)",
+            )
+            .expect("valid regex"),
+            Regex::new(r"(?m)^N[oº°] ?\d+[^\n]{0,10}?(?: - |\n)([^\n]+)$").expect("valid regex"),
+        ]
     });
     let mut seen = BTreeMap::new();
-    for d in re
+    for d in head
         .captures_iter(plain)
         .filter_map(|c| french_long_date(&c[1]))
     {
         *seen.entry(d).or_insert(0) += 1;
     }
-    seen.into_iter().max_by_key(|&(_, n)| n).map(|(d, _)| d)
+    seen.into_iter()
+        .max_by_key(|&(_, n)| n)
+        .map(|(d, _)| d)
+        .or_else(|| {
+            let first_page = plain.split('\u{c}').next().unwrap_or(plain);
+            cover
+                .captures_iter(first_page)
+                .find_map(|c| french_long_date(&c[1]))
+        })
 }
 
 fn clean(s: &str) -> String {
@@ -249,7 +241,7 @@ mod tests {
                         </h3>
                       <p class="fr-card__detail ">BO du     <time datetime="2026-09-30T12:00:00Z">30 septembre 2026</time>
 </li></ul>"#;
-        let notices = parse_listing(html, "Circulaire");
+        let notices = parse_listing(html);
         assert_eq!(notices.len(), 2);
         let n = &notices[0];
         assert_eq!(
@@ -312,5 +304,28 @@ mod tests {
             n.body.as_deref(),
             Some("INSTRUCTION INTERMINISTÉRIELLE N° DSS/2B/2024/181 du 20 décembre 2024\nrelative à la revalorisation des plafonds\nNOR : SAES2434195J\nPremier alinéa.\nSecond alinéa.\n\nINSTRUCTION INTERMINISTÉRIELLE N° DSS/2B/2024/181 du 20 décembre 2024\nNOR : SAES2434195J\nAnnexe.")
         );
+    }
+
+    #[test]
+    fn an_old_issue_is_dated_by_its_cover_and_titles_its_text_under_a_capital() {
+        let plain = [
+            "BULLETIN\nOfficiel\nNo 2 - 15 mars 2005\nSanté",
+            "Le directeur est chargé de l’exécution du présent\narrêté, qui sera publié au Bulletin officiel.\nPour le ministre :\nF. DUPONT\nArrêté du 25 janvier 2005 portant nomination des membres du jury\nNOR : SANG0530031A\nArrête :\nArticle 1er",
+        ]
+        .join("\u{c}");
+        let notices = cut_issue(
+            BulletinSite::Social,
+            "https://x/bo0502.pdf",
+            &plain,
+            published_in(&plain),
+        );
+        assert_eq!(notices.len(), 1);
+        let n = &notices[0];
+        assert_eq!(
+            n.title,
+            "Arrêté du 25 janvier 2005 portant nomination des membres du jury"
+        );
+        assert_eq!(n.signed, NaiveDate::from_ymd_opt(2005, 1, 25));
+        assert_eq!(n.published, NaiveDate::from_ymd_opt(2005, 3, 15));
     }
 }

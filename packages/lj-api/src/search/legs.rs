@@ -13,7 +13,7 @@ use lj_dtos::SearchRequest;
 
 use super::filters::{
     as_refs, build_array_filter_queries, build_facet_filter, compose_tantivy_query, parts_query,
-    passage_tags, term_any, ArrayFilters, FilterTable, Params,
+    passage_tags, passage_zones_clause, term_any, ArrayFilters, FilterTable, Params,
 };
 use super::query::{
     constrained_parse, is_boolean_query, phrase_combo_parse, quoted_constraint, translate_boolean,
@@ -353,7 +353,7 @@ pub(crate) async fn ann_leg(
         ArrayFilters::AsSql,
         FilterTable::Chunks,
     );
-    let has_filter = params.len() > 1;
+    let has_filter = params.len() > 1 || super::filters::conclusions_alone(req);
     let limit_idx = idx;
     params.push(Box::new(chunk_fetch_limit(leg_limit)));
     let sql = format!(
@@ -429,8 +429,8 @@ pub(crate) async fn ann_within(
     let vector = Vector::from(query_vec.to_vec());
     let distance = "c.embedding <=> quantize_to_rabitq8($1::vector)::rabitq8(1024)";
     let tags = passage_tags(req);
-    let tagged = |idx: usize| match tags {
-        Some(_) => format!(" AND c.zones && ${idx}::text[]"),
+    let tagged = |idx: usize| match passage_zones_clause(req, &format!("${idx}")) {
+        Some(clause) => format!(" AND {clause}"),
         None => String::new(),
     };
     let limit = chunk_fetch_limit(leg_limit);

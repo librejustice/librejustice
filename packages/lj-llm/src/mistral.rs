@@ -193,7 +193,7 @@ impl MistralClient {
         prompt_chars: usize,
         wait: bool,
     ) -> Result<String, MistralError> {
-        let body = self
+        let (body, _) = self
             .post_raw(MISTRAL_URL, payload, prompt_chars, wait)
             .await?;
         Ok(message_text(&body))
@@ -218,18 +218,22 @@ impl MistralClient {
         });
         // Coût nul : l'OCR se facture à la page, la taille du base64 ne prédit
         // rien. Seul le compteur de requêtes gate ; l'en-tête corrige ensuite.
-        let body = self.post_raw(OCR_URL, payload, 0, true).await?;
-        Ok(body["pages"].as_array().cloned().unwrap_or_default())
+        let (body, key) = self.post_raw(OCR_URL, payload, 0, true).await?;
+        let pages = body["pages"].as_array().cloned().unwrap_or_default();
+        tracing::info!(key, pages = pages.len(), "mistral_ocr_pages");
+        Ok(pages)
     }
 
     /// `prompt_chars` = taille du texte facturable, pour l'estimation de coût.
+    ///
+    /// The answer comes with the fingerprint of the key that paid for it.
     async fn post_raw(
         &self,
         url: &str,
         payload: serde_json::Value,
         prompt_chars: usize,
         wait: bool,
-    ) -> Result<serde_json::Value, MistralError> {
+    ) -> Result<(serde_json::Value, &str), MistralError> {
         // A caller on a deadline cuts this sleep with its `timeout_at`, and `Drop`
         // gives the reservation back.
         let reservation = loop {
@@ -275,12 +279,22 @@ impl MistralClient {
                     tok_left = ?quota.tok.map(|c| c.left),
                     "mistral_rate_limited"
                 );
+            } else if status == 400 {
+                let body = response.json::<serde_json::Value>().await.ok();
+                if body.as_ref().and_then(|b| b["type"].as_str())
+                    == Some("document_parser_image_too_large")
+                {
+                    return Err(MistralError::ImageTooLarge);
+                }
             }
             return Err(MistralError::Status(status));
         }
         let body = response.json::<serde_json::Value>().await;
         reservation.settle(quota, billed_tokens(body.as_ref().ok()), now_unix());
-        body.map_err(MistralError::Http)
+        Ok((
+            body.map_err(MistralError::Http)?,
+            &self.fingerprints[key_idx],
+        ))
     }
 }
 
@@ -318,6 +332,8 @@ pub fn key_fingerprint(key: &str) -> String {
 pub enum MistralError {
     /// Réponse HTTP non-2xx (code de statut).
     Status(u16),
+    /// The OCR refuses a document holding an image past its size limit, whatever the key.
+    ImageTooLarge,
     /// No key can pay yet, and one will in this many seconds. Nothing was sent.
     Busy(f64),
     /// Erreur de transport (réseau, timeout, parse JSON).
@@ -330,6 +346,7 @@ impl std::fmt::Display for MistralError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             MistralError::Status(code) => write!(f, "mistral status {code}"),
+            MistralError::ImageTooLarge => write!(f, "mistral: an image too large to read"),
             MistralError::Busy(wait) => write!(f, "mistral: pool busy for {wait:.1}s"),
             MistralError::Http(e) => write!(f, "mistral transport: {e}"),
             MistralError::Middleware(e) => write!(f, "mistral transport: {e}"),
@@ -366,7 +383,7 @@ pub async fn ocr_layout_with_retry(
     with_retry(client, label, || client.ocr_layout(pdf_bytes)).await
 }
 
-/// A 401 moves on to the next key at once, a 429 retries at once since admission
+/// A 401 or a 402 moves on to the next key at once, a 429 retries at once since admission
 /// does the waiting, a 5xx or a transport error backs off. Any other 4xx returns.
 async fn with_retry<T, F, Fut>(
     client: &MistralClient,
@@ -383,10 +400,10 @@ where
     loop {
         match op().await {
             Ok(out) => return Ok(out),
-            Err(MistralError::Status(401)) => {
+            Err(MistralError::Status(code @ (401 | 402))) => {
                 dead_keys += 1;
                 if dead_keys >= client.key_count() {
-                    return Err(MistralError::Status(401)); // pool entièrement refusé
+                    return Err(MistralError::Status(code));
                 }
                 tracing::warn!(label, dead_keys, "mistral_ocr_key_dead_rotate");
             }
@@ -400,6 +417,7 @@ where
             Err(MistralError::Status(code)) if !is_retryable_status(code) => {
                 return Err(MistralError::Status(code));
             }
+            Err(MistralError::ImageTooLarge) => return Err(MistralError::ImageTooLarge),
             Err(err) => {
                 if transient >= MAX_RETRIES {
                     return Err(err);

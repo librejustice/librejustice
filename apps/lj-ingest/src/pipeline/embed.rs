@@ -30,6 +30,7 @@ pub(super) async fn build_embedder(settings: &Settings) -> Result<AnyEmbedder> {
     }
 }
 
+/// The chain of every host before Cloudflare that answers its probe, without Cloudflare.
 pub(super) async fn build_local_strict(settings: &Settings) -> Result<AnyEmbedder> {
     match settings.embed_backend.as_str() {
         "dummy" => Ok(AnyEmbedder::Dummy(DummyEmbedder::default())),
@@ -37,16 +38,20 @@ pub(super) async fn build_local_strict(settings: &Settings) -> Result<AnyEmbedde
             "re-embed maintenance refuse backend=cloudflare (coût) : configure le local (openai-http/auto)"
         )),
         _ => {
+            let mut links = Vec::new();
             for host in hosts(settings) {
                 if probe_host(host).await {
-                    tracing::info!(url = %host.url, "re-embed maintenance: openai-http reachable, using openai-http (strict)");
-                    return Ok(build_openai_http(host));
+                    tracing::info!(url = %host.url, "re-embed maintenance: host reachable, in the chain (strict)");
+                    links.push(Link::local(host));
                 }
             }
-            Err(anyhow!(
-                "re-embed maintenance: no local host reachable ({}), no Cloudflare fallback (cost)",
-                urls(settings)
-            ))
+            if links.is_empty() {
+                return Err(anyhow!(
+                    "re-embed maintenance: no local host reachable ({}), no Cloudflare fallback (cost)",
+                    urls(settings)
+                ));
+            }
+            Ok(AnyEmbedder::Auto(links))
         }
     }
 }
@@ -71,8 +76,9 @@ fn single_host(settings: &Settings) -> Result<&EmbedHost> {
     }
 }
 
+/// The hosts before Cloudflare, the ones a passage goes to.
 fn hosts(settings: &Settings) -> impl Iterator<Item = &EmbedHost> {
-    settings.embed_chain.iter().filter_map(|entry| match entry {
+    settings.embed_chain.iter().map_while(|entry| match entry {
         Entry::Host(host) => Some(host),
         Entry::Cloudflare => None,
     })

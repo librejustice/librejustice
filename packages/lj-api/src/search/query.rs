@@ -322,19 +322,19 @@ fn quote_bare_syntax_token(tok: &str, syntax: &[char]) -> String {
 /// strippe les stopwords FR qui n'existent pas dans l'index.
 fn enforce_and_precedence(query: &str) -> String {
     if query.contains(" OR ") {
-        // Chemin OR servi tel quel à tantivy : le grouping `(…)` y est de la
-        // syntaxe voulue, seule l'apostrophe est neutralisée.
+        // `split_groups` left each grouping parenthesis a token of its own.
         let toks = TOKEN_RE
             .find_iter(query)
             .filter(|m| !is_bare_star(m.as_str().trim_start_matches(['+', '-'])))
             .map(|m| {
                 let tok = m.as_str();
                 match tok.as_bytes().first() {
+                    _ if tok == "(" || tok == ")" => tok.to_string(),
                     Some(b'+') | Some(b'-') => {
                         let (prefix, body) = tok.split_at(1);
-                        format!("{prefix}{}", quote_bare_syntax_token(body, &['\'']))
+                        format!("{prefix}{}", quote_bare_syntax_token(body, TANTIVY_SYNTAX))
                     }
-                    _ => quote_bare_syntax_token(tok, &['\'']),
+                    _ => quote_bare_syntax_token(tok, TANTIVY_SYNTAX),
                 }
             });
         // Le drop d'une étoile nue peut rendre un opérateur pendant
@@ -793,6 +793,14 @@ mod tests {
         assert_eq!(
             translate_boolean("congés OU d'aménagement"),
             r#"congés OR "d'aménagement""#
+        );
+        assert_eq!(
+            translate_boolean(r#""construction nouvelle" OU annexe : la règle [x] ^2 {a acte(s"#),
+            r#""construction nouvelle" OR annexe ":" la règle "[x]" "^2" "{a" "acte(s""#
+        );
+        assert_eq!(
+            translate_boolean("(bail OU loyer) ET -art.:3"),
+            r#"( bail OR loyer ) AND -"art.:3""#
         );
     }
 

@@ -4,6 +4,8 @@
 # Asserts HTTP status + JSON STRUCTURAL invariants only.
 # Variable: {{base}} = host root (e.g. http://localhost:8300).
 # Public route, no auth. An empty `q` browses the corpus, as /internal/search does.
+# A search with words answers its hits first; its total and facets come from
+# /internal/search-textes/decompte on the same parameters.
 # ============================================================================
 
 # ── 1. Baseline : recherche plein-texte d'articles ────────────────────────────
@@ -11,9 +13,14 @@ GET {{base}}/internal/search-textes?query=clause%20abusive
 HTTP 200
 [Asserts]
 header "Content-Type" contains "application/json"
+jsonpath "$.served" isInteger
+jsonpath "$.hits" isCollection
+
+GET {{base}}/internal/search-textes/decompte?query=clause%20abusive
+HTTP 200
+[Asserts]
 jsonpath "$.total" isInteger
 jsonpath "$.total" >= 0
-jsonpath "$.hits" isCollection
 # The article facets: code, jurisdiction, source, and the type paths.
 # The code axis is capped at its top 20.
 jsonpath "$.facets.code" isCollection
@@ -76,6 +83,10 @@ GET {{base}}/internal/search-textes?query=travail&jurisdiction=FR.CODE&limit=5
 HTTP 200
 [Asserts]
 jsonpath "$.hits" count > 0
+
+GET {{base}}/internal/search-textes/decompte?query=travail&jurisdiction=FR.CODE
+HTTP 200
+[Asserts]
 jsonpath "$.facets.path[?(@.value == 'FR.CODE')].label" contains "Code"
 
 
@@ -106,6 +117,10 @@ GET {{base}}/internal/search-textes?query=clause%20abusive&as_of=2005-06-01
 HTTP 200
 [Asserts]
 jsonpath "$.hits" isCollection
+
+GET {{base}}/internal/search-textes/decompte?query=clause%20abusive&as_of=2005-06-01
+HTTP 200
+[Asserts]
 jsonpath "$.total" isInteger
 
 
@@ -129,6 +144,10 @@ GET {{base}}/internal/search-textes?query=code%20civil%201240&mode=lexical
 HTTP 200
 [Asserts]
 jsonpath "$.queryMode" == "lexical"
+
+GET {{base}}/internal/search-textes/decompte?query=code%20civil%201240&mode=lexical
+HTTP 200
+[Asserts]
 jsonpath "$.total" > 1
 
 # A bare key lists every text carrying it, within the searched corpora.
@@ -176,7 +195,7 @@ jsonpath "$.pinnedMore" == true
 # ── 12. Legal orders on the axis ─────────────────────────────────────────────
 # The axis names the orders the reader's places search: states first, then the
 # Union, then treaties.
-GET {{base}}/internal/search-textes?query=responsabilite&limit=1
+GET {{base}}/internal/search-textes/decompte?query=responsabilite
 HTTP 200
 [Asserts]
 jsonpath "$.facets.jurisdiction" count == 3
@@ -185,7 +204,7 @@ jsonpath "$.facets.jurisdiction[1].value" == "EU"
 jsonpath "$.facets.jurisdiction[2].value" == "INTL"
 
 # Read from Belgium and Luxembourg, each country is a position of its own.
-GET {{base}}/internal/search-textes?query=responsabilite&place=BE&place=LU&limit=1
+GET {{base}}/internal/search-textes/decompte?query=responsabilite&place=BE&place=LU
 HTTP 200
 [Asserts]
 jsonpath "$.facets.jurisdiction" count == 4
@@ -199,9 +218,13 @@ jsonpath "$.facets.jurisdiction[2].value" == "EU"
 GET {{base}}/internal/search-textes?query=responsabilite&jurisdiction=BE&limit=3
 HTTP 200
 [Asserts]
-jsonpath "$.total" > 0
 jsonpath "$.hits[0].jurisdiction" == "BE"
 jsonpath "$.jurisdictions[0]" == "BE"
+
+GET {{base}}/internal/search-textes/decompte?query=responsabilite&jurisdiction=BE
+HTTP 200
+[Asserts]
+jsonpath "$.total" > 0
 jsonpath "$.facets.jurisdiction[0].count" == 0
 jsonpath "$.facets.jurisdiction[3].value" == "BE"
 
@@ -213,6 +236,10 @@ jsonpath "$.jurisdictions" count == 2
 jsonpath "$.jurisdictions[0]" == "CH"
 jsonpath "$.jurisdictions[1]" == "LU"
 jsonpath "$.hits[*].jurisdiction" not contains "FR"
+
+GET {{base}}/internal/search-textes/decompte?query=responsabilite&jurisdiction=CH&jurisdiction=LU
+HTTP 200
+[Asserts]
 jsonpath "$.facets.jurisdiction[3].value" == "CH"
 jsonpath "$.facets.jurisdiction[3].count" > 0
 jsonpath "$.facets.jurisdiction[4].value" == "LU"
@@ -234,8 +261,12 @@ HTTP 200
 [Asserts]
 jsonpath "$.jurisdictions" count == 1
 jsonpath "$.jurisdictions[0]" == "SN"
-jsonpath "$.facets.jurisdiction[*].value" contains "SN"
 jsonpath "$.hits[0].jurisdiction" == "SN"
+
+GET {{base}}/internal/search-textes/decompte?query=divorce%20au%20senegal
+HTTP 200
+[Asserts]
+jsonpath "$.facets.jurisdiction[*].value" contains "SN"
 
 # An instrument word joins INTL: a bilateral treaty lives in neither signatory's
 # own corpus.
@@ -254,12 +285,16 @@ GET {{base}}/internal/search-textes?query=responsabilite%201240
 HTTP 200
 [Asserts]
 jsonpath "$.queryMode" == "lexical"
+
+GET {{base}}/internal/search-textes/decompte?query=responsabilite%201240
+HTTP 200
+[Asserts]
 jsonpath "$.total" > 1
 
 
 # ── 15. Places read from ─────────────────────────────────────────────────────
 # Naming no place reads from the default one, whose answer the others narrow.
-GET {{base}}/internal/search-textes?query=bail%20commercial%20renouvellement&limit=1
+GET {{base}}/internal/search-textes/decompte?query=bail%20commercial%20renouvellement
 HTTP 200
 [Captures]
 metropole: jsonpath "$.total"
@@ -269,9 +304,13 @@ metropole: jsonpath "$.total"
 GET {{base}}/internal/search-textes?query=bail%20commercial%20renouvellement&place=PF&limit=1
 HTTP 200
 [Asserts]
+jsonpath "$.readerPlace.uid" == "PF"
+
+GET {{base}}/internal/search-textes/decompte?query=bail%20commercial%20renouvellement&place=PF
+HTTP 200
+[Asserts]
 jsonpath "$.total" > 0
 jsonpath "$.total" < {{metropole}}
-jsonpath "$.readerPlace.uid" == "PF"
 
 # `place` repeats, and what applies in any of the places is served, from the
 # corpora they belong to; several places name no one to open an article at.

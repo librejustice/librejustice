@@ -11,8 +11,10 @@
 //! Two schedulings over one code path: `run_stream` (decoupled stages, the embed
 //! sets the pace) for the volume sources, `drain_batch` (sequential) for maintenance.
 
+mod a2aj;
 mod adlc;
 mod affiliations;
+mod amf;
 mod annonces;
 mod annonces_couverture;
 mod applicability_events;
@@ -24,8 +26,13 @@ mod attract;
 mod backfill;
 mod batch;
 mod bofip;
+mod boss;
 mod bulletins;
+mod cc_site;
+mod cce;
 mod ce_list;
+mod cedh_application;
+mod cedh_link;
 mod chronicle_move;
 mod circulaires;
 mod cnb_history;
@@ -33,8 +40,12 @@ mod cnb_reduced;
 mod cnb_rekey;
 mod cnda;
 mod cnda_solution;
+mod cnil_doctrine;
 mod comeu;
+mod conclusions;
+mod consiliaweb;
 mod corpus_toc;
+mod court_sites;
 mod court_summaries;
 mod ddd;
 mod decision_text;
@@ -44,11 +55,15 @@ mod doctrine_names;
 mod doctrine_oai;
 mod embed;
 mod embed_missing;
+mod embed_norms;
+mod entscheidsuche;
+mod entscheidsuche_rekey;
 mod eu_bodies;
 pub(crate) mod eu_catalog;
 mod eu_law;
 mod eu_rproc;
 mod europe;
+mod expiry;
 mod false_merges;
 mod files;
 mod formations;
@@ -56,23 +71,36 @@ mod gazette;
 mod hal;
 mod identity_probe;
 mod jorf;
+mod jorf_pieces;
 mod jorf_publication;
+mod juportal;
+mod juradm_site;
 mod juricaf;
 mod jurisdiction_seed;
+mod justice_lu;
 mod kali;
+mod language_pairs;
 mod legal_corpus;
+mod legalis;
 mod legi;
+mod legimonaco;
+mod move_to_journal;
+mod norms;
+mod opencaselaw;
 mod opendata;
 mod parties;
 mod precompute;
 mod prepare;
 mod quantum;
+mod questions;
 mod raa;
+mod rechtspraak;
 mod reconcile;
 mod reextract;
 mod registries;
 mod rekey;
 mod roles;
+mod scc_csc;
 mod scope_alsace;
 mod scope_compteurs;
 mod seats;
@@ -86,11 +114,14 @@ mod text_stamps;
 mod toc_paths;
 mod treaty_articles;
 mod treaty_bodies;
+mod treaty_parties;
 mod union_filing;
 mod wiki_names;
 
+pub use a2aj::sync_a2aj;
 pub use adlc::sync_adlc;
 pub use affiliations::derive_affiliations;
+pub use amf::sync_amf;
 pub use annonces::{
     annonces, annonces_backfill, annonces_contenu, annonces_decp, annonces_discover,
     annonces_enrichir, annonces_jumeler, annonces_regulariser, annonces_resoudre,
@@ -105,24 +136,35 @@ pub use backfill::{
     absorb_copies, backfill_canonical_ref, backfill_ecli, merge_cross_source_duplicates,
 };
 pub use bofip::{ingest_bofip, sync_bofip};
-pub use bulletins::sync_bulletins;
+pub use boss::sync_boss;
+pub use bulletins::{blank_bulletins_ocr, rebuild_bulletins_ocr, sync_bulletins};
+pub use cc_site::sync_cc_site;
+pub use cce::sync_cce;
 pub use ce_list::sync_ce_list;
 pub use chronicle_move::move_chronicle;
-pub use circulaires::{sync_circulaires, sync_circulaires_bodies};
+pub use circulaires::{
+    blank_circulaires_ocr, rebuild_circulaires_ocr, sync_circulaires, sync_circulaires_bodies,
+};
 pub use cnb_history::replay_cnb_history;
 pub use cnb_rekey::rekey_cnb;
 pub use cnda::{ingest_cnda, sync_cnda};
 pub use cnda_solution::backfill_cnda_solution;
 pub use comeu::sync_comeu;
+pub use conclusions::{conclusions_authors, page_cjue_conclusions, sync_ce_conclusions};
+pub use consiliaweb::{rewrite_consiliaweb, sync_consiliaweb};
+pub use court_sites::sync_court_sites;
 pub use court_summaries::sync_court_summaries;
 pub use ddd::{ingest_ddd, sync_ddd};
 pub use decision_text::{
-    annex_starts, backfill_decision_text, headnote_tags, recase_texts, TextFond,
+    annex_starts, backfill_decision_text, headnote_tags, repair_texts, TextFond, TextRepair,
 };
 pub use dila::{ingest_dila, sync_dila, Fond};
 pub use doctrine_names::{sync_doctrine_names, DoctrineNamesScan};
 pub use doctrine_oai::{sync_doctrine_oai, DoctrineScan};
 pub use embed_missing::{embed_missing, parse_shard};
+pub use embed_norms::embed_norms;
+pub use entscheidsuche::sync_entscheidsuche;
+pub use entscheidsuche_rekey::{entscheidsuche_rekey, Pairing as RekeyPairing};
 pub use eu_bodies::fill_eu_bodies;
 pub(crate) use eu_catalog::{canonical_of, datasets_a_retirer};
 pub use eu_catalog::{ingest_eu_catalog, merge_eu_swapped_uids, sync_eu_catalog, sync_eu_jorf};
@@ -130,35 +172,50 @@ pub use eu_law::sync_eu_law;
 pub use eu_rproc::ingest_eu_rproc;
 pub use europe::{
     backfill_cjue_joined_cases, backfill_cjue_titles, cache_cedh, ingest_cedh, ingest_cjue,
-    sync_cedh, sync_cjue,
+    sync_cedh, sync_cedh_stubs, sync_cjue,
 };
+pub use expiry::expire_named;
 pub use false_merges::analyze_false_merges;
 pub use formations::resolve_formations;
 pub use gazette::{gazette, parse_gazette_source, GazetteMode};
 pub use hal::{sync_hal, HalScan};
 pub use identity_probe::probe_identity;
-pub use jorf::{backfill_jorf_bodies, ingest_jorf, sync_jorf};
+pub use jorf::{ingest_jorf, sync_jorf};
+pub use jorf_pieces::backfill_jorf_pieces;
 pub use jorf_publication::backfill_jorf_publications;
-pub use juricaf::{juricaf_probe, sync_juricaf};
+pub use juportal::sync_juportal;
+pub use juradm_site::sync_juradm_site;
+pub use juricaf::{juricaf_probe, merge_juricaf_twins, sync_juricaf};
 pub use jurisdiction_seed::seed_jurisdictions;
+pub use justice_lu::sync_justice_lu;
 pub use kali::{ingest_kali, requalifier_kali, sync_kali};
+pub use language_pairs::merge_language_pairs;
 pub use legal_corpus::{
     canonicalize_source_labels, load_legal_corpus, reading_ranks, relabel_sources, stamp_freshness,
+    write_text_aliases,
 };
+pub use legalis::sync_legalis;
 pub use legi::{
-    audit_legi_versions, backfill_links, backfill_textes, backfill_toc, ingest_legi,
-    redate_dila_versions, sync_legi,
+    audit_legi_versions, backfill_links, backfill_textes, backfill_toc, drop_legi_placeholders,
+    ingest_legi, redate_dila_versions, sync_legi,
 };
+pub use legimonaco::sync_legimonaco;
+pub use move_to_journal::{move_to_journal, MoveSelection};
+pub use norms::{sync_norms, NormsCountry, NormsScan};
+pub use opencaselaw::sync_opencaselaw;
 pub use opendata::{ingest_judilibre, ingest_opendata, refetch_judilibre};
 pub use parties::relink_parties;
 pub use precompute::{precompute_all, resync_corpus_counts, resync_jurisdiction_counts};
 pub use quantum::{extract_quantum, load_quantum_gold, load_quantum_readings};
-pub use raa::sync_raa;
+pub use questions::{sync_questions, QuestionSource};
+pub use raa::{blank_raa_ocr, rebuild_raa_ocr, sync_raa};
+pub use rechtspraak::sync_rechtspraak;
 pub use reconcile::{reconcile_all, resolve_pending_citations};
 pub use reextract::{reextract_fields, Worklist};
 pub use registries::{load_registries, RegistrySource};
 pub use rekey::{destar_article_keys, rekey_article_keys, rekey_identity_keys};
 pub use roles::backfill_text_roles;
+pub use scc_csc::sync_scc_csc;
 pub use scope_alsace::scope_backfill_alsace;
 pub use scope_compteurs::scope_backfill_compteurs;
 pub use seats::resolve_seats;
@@ -171,6 +228,7 @@ pub use text_stamps::stamp_texts;
 pub use toc_paths::audit_toc_paths;
 pub use treaty_articles::treaty_articles;
 pub use treaty_bodies::backfill_treaty_bodies;
+pub use treaty_parties::treaty_parties;
 pub use union_filing::refile_union_texts;
 pub use wiki_names::sync_wiki_names;
 
@@ -198,6 +256,7 @@ pub(crate) struct ExtractCtx {
     /// Source code to canonical code, the resolution `ensure_jurisdictions` runs
     /// at write time: the seat paths are derived before it.
     pub jur_codes: std::collections::HashMap<String, String>,
+    pub jur_sources: std::collections::HashMap<String, String>,
     pub successors: std::collections::HashMap<String, String>,
     /// Libellés du référentiel `chamber`, keyés `(code source, clé)` comme le
     /// reste des snapshots : le siège d'un titre les lit, il ne les recompose pas.
@@ -209,6 +268,8 @@ pub(crate) struct ExtractCtx {
     /// Empty on the pass that first writes the seats, so nothing resolves
     /// before a second one has a corpus to read.
     pub seats: lj_extract::seat_link::SeatVocabulary,
+    /// Source code to the court's place.
+    pub places: std::collections::HashMap<String, String>,
 }
 
 impl ExtractCtx {
@@ -218,9 +279,11 @@ impl ExtractCtx {
             vocab: &self.vocab,
             chrono: &self.chrono,
             jur_codes: &self.jur_codes,
+            jur_sources: &self.jur_sources,
             successors: &self.successors,
             case_names: &self.case_names,
             seats: &self.seats,
+            places: &self.places,
         }
     }
 }
@@ -240,9 +303,14 @@ pub(crate) async fn extract_ctx(conn: &Connection) -> anyhow::Result<&'static Ex
                 .collect();
             let articles = repo.link_catalog_articles().await?;
             let (n_texts, n_articles) = (texts.len(), articles.len());
-            let link = LinkSnapshot::build(texts.clone(), articles);
+            let link = LinkSnapshot::build(texts.clone(), articles)
+                .with_aliases(repo.link_catalog_aliases().await?);
             let vocab = lj_extract::compiled::CompiledVocab::build(&texts, &link);
             let jurisdictions = repo.load_jurisdictions().await?;
+            let places = jurisdictions
+                .iter()
+                .filter_map(|j| Some((j.source_code.clone(), j.place.clone()?)))
+                .collect();
             // `jur_labels` and `jur_codes` are keyed by `source_code`, the key
             // the extraction holds; the gazetteer returns the canonical code,
             // the one `decisions.jurisdiction_code` carries and every address
@@ -255,6 +323,7 @@ pub(crate) async fn extract_ctx(conn: &Connection) -> anyhow::Result<&'static Ex
                 .iter()
                 .map(|j| (j.source_code.clone(), j.code.clone()))
                 .collect();
+            let jur_sources = lj_extract_rows::court_sources(&jurisdictions);
             let successors: std::collections::HashMap<String, String> =
                 repo.jurisdiction_successors().await?.into_iter().collect();
             let chrono = lj_extract::chrono::ChronoSnapshot::with_closed(
@@ -282,9 +351,11 @@ pub(crate) async fn extract_ctx(conn: &Connection) -> anyhow::Result<&'static Ex
                 chrono,
                 jur_labels,
                 jur_codes,
+                jur_sources,
                 successors,
                 case_names,
                 seats,
+                places,
             })
         })
         .await

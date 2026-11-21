@@ -79,7 +79,7 @@ pub struct BofipRecord {
 
 /// Un paragraphe numéroté (`§ 130`) d'un document BOFiP.
 #[derive(Debug, PartialEq, Eq)]
-pub struct BofipParagraph {
+pub struct Paragraph {
     /// Numéro du § tel que publié (« 1 », « 130 »).
     pub num: String,
     pub texte: String,
@@ -104,7 +104,7 @@ pub struct BofipDoc {
     pub permalien: Option<String>,
     /// Texte avant le premier § numéroté (introduction non citable).
     pub preambule: Option<String>,
-    pub paragraphs: Vec<BofipParagraph>,
+    pub paragraphs: Vec<Paragraph>,
 }
 
 /// Parse une ligne JSONL de l'export. `Ok(None)` = record hors périmètre
@@ -146,25 +146,30 @@ pub fn parse_bofip_record(line: &str) -> Result<Option<BofipDoc>> {
 /// avant le premier) ; les intertitres tiennent la pile de sections courante
 /// et sortent des textes. Sans aucun marqueur de §, tout le corps devient le
 /// préambule (documents-plans, corps courts).
-fn split_paragraphs(html: &str) -> (Option<String>, Vec<BofipParagraph>) {
+fn split_paragraphs(html: &str) -> (Option<String>, Vec<Paragraph>) {
     static MARKER_RE: OnceLock<Regex> = OnceLock::new();
-    static HEADING_RE: OnceLock<Regex> = OnceLock::new();
     let re = MARKER_RE.get_or_init(|| {
         Regex::new(r#"(?is)<p\b[^>]*numero-de-paragraphe-western[^>]*>(.*?)</p>"#)
             .expect("regex marqueur § valide")
     });
+    // Guillemets doublés (artefact CSV Opendatasoft) → HTML propre.
+    split_numbered(&html.replace("\"\"", "\""), re)
+}
+
+/// The preamble and the numbered paragraphs of a page whose `marker` captures
+/// each paragraph's number, its headings `<h1>` to `<h6>` giving their sections.
+pub(crate) fn split_numbered(html: &str, re: &Regex) -> (Option<String>, Vec<Paragraph>) {
+    static HEADING_RE: OnceLock<Regex> = OnceLock::new();
     let hre = HEADING_RE.get_or_init(|| {
         Regex::new(r#"(?is)<h([1-6])\b[^>]*>(.*?)</h[1-6]\s*>"#).expect("regex intertitre valide")
     });
-    // Guillemets doublés (artefact CSV Opendatasoft) → HTML propre.
-    let html = html.replace("\"\"", "\"");
 
     enum Cut {
         Para(String),
         Heading(u8, String),
     }
     let mut cuts: Vec<(usize, usize, Cut)> = re
-        .captures_iter(&html)
+        .captures_iter(html)
         .filter_map(|c| {
             let m = c.get(0).expect("groupe 0 toujours présent");
             let num: String = strip_html(&c[1]).trim().to_string();
@@ -175,7 +180,7 @@ fn split_paragraphs(html: &str) -> (Option<String>, Vec<BofipParagraph>) {
             Some((m.start(), m.end(), Cut::Para(num)))
         })
         .collect();
-    cuts.extend(hre.captures_iter(&html).filter_map(|c| {
+    cuts.extend(hre.captures_iter(html).filter_map(|c| {
         let m = c.get(0).expect("groupe 0 toujours présent");
         let level: u8 = c[1].parse().expect("niveau h1-h6 à un chiffre");
         let title = strip_html(&c[2]).trim().to_string();
@@ -186,9 +191,9 @@ fn split_paragraphs(html: &str) -> (Option<String>, Vec<BofipParagraph>) {
 
     let mut stack: Vec<(u8, String)> = Vec::new();
     let mut preambule = String::new();
-    let mut paragraphs: Vec<BofipParagraph> = Vec::new();
+    let mut paragraphs: Vec<Paragraph> = Vec::new();
     let mut cursor = 0usize;
-    let mut push_text = |chunk: &str, paragraphs: &mut Vec<BofipParagraph>| {
+    let mut push_text = |chunk: &str, paragraphs: &mut Vec<Paragraph>| {
         let text = strip_html(chunk);
         let text = text.trim();
         if text.is_empty() {
@@ -221,7 +226,7 @@ fn split_paragraphs(html: &str) -> (Option<String>, Vec<BofipParagraph>) {
                     }
                 }
             }
-            Cut::Para(num) => paragraphs.push(BofipParagraph {
+            Cut::Para(num) => paragraphs.push(Paragraph {
                 num,
                 texte: String::new(),
                 section_path: stack.iter().map(|(_, t)| t.clone()).collect(),

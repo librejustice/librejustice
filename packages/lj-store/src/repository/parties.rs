@@ -925,8 +925,8 @@ fn resolve_sql(pick: Option<&str>, rel: &str, qualities: &str, on: &str) -> Stri
     ))
 }
 
-/// Legal persons (`party`, `law_firm`) to `siren:`/`rna:` without ambiguity, the
-/// batch's keys probed in the GIN of `entity` instead of unfolding the registry.
+/// Legal persons (`party`, `law_firm`) to `siren:`/`rna:` without ambiguity, the batch's
+/// keys [`PARTY_NAMED`] lets link probed in the GIN of `entity`.
 fn morales_scoped_sql() -> String {
     resolve_sql(
         Some(&format!(
@@ -935,6 +935,7 @@ fn morales_scoped_sql() -> String {
                  WHERE x.decision_id = ANY($1) \
                    AND a.entity_uid IS NULL \
                    AND a.quality IN ('party', 'law_firm') \
+                   AND {PARTY_NAMED} \
              ) \
              SELECT k.resolve_key AS k, min(h.uid) AS uid \
              FROM keys k \

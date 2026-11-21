@@ -65,19 +65,15 @@ pub async fn probe_identity(days: i32, sources: &[String], out: &Path, apply: bo
                 (p.decision_id, p.source_uid, p.source_fields, p.shared);
             let tally = tallies.entry(source_from_source_uid(&uid)).or_default();
             let decision = Decision::from_source_fields(&p.read_text, &source_fields, &uid);
-            let extracted = match lj_extract_rows::extracted_fields(&decision, &ctx.snapshots()) {
-                Ok(full) => {
-                    match lj_extract_rows::prebuilt_from_source_fields(&uid, &source_fields) {
-                        Some(pre) => lj_extract_rows::merge_prebuilt(pre, full),
-                        None => full,
+            let extracted =
+                match lj_extract_rows::reread_fields(&decision, &source_fields, &ctx.snapshots()) {
+                    Ok(fields) => fields,
+                    Err(e) => {
+                        tracing::debug!(%uid, error = %e, "identity probe: extract");
+                        tally.errors += 1;
+                        continue;
                     }
-                }
-                Err(e) => {
-                    tracing::debug!(%uid, error = %e, "identity probe: extract");
-                    tally.errors += 1;
-                    continue;
-                }
-            };
+                };
             let reading = super::dila_judi::reading(&repo, &uid).await?;
             let read = !matches!(reading, Reading::Unread);
             let now = match reading {

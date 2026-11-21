@@ -1,12 +1,13 @@
 //! The courts the referential holds by their own name: closed ones with their
-//! closing date and successor, and the successors no decision has created yet.
+//! closing date and successor, the successors no decision has created yet, and
+//! the criminal trial courts of every département.
 
 use anyhow::{anyhow, Result};
 use lj_store::repository::{DecisionRepository, SeededJurisdiction};
 
 use crate::config::Settings;
 
-fn seed() -> Vec<SeededJurisdiction> {
+pub(super) fn seed() -> Vec<SeededJurisdiction> {
     include_str!("../../data/jurisdiction_seed.tsv")
         .lines()
         .filter(|l| !l.is_empty() && !l.starts_with('#'))
@@ -28,6 +29,18 @@ fn seed() -> Vec<SeededJurisdiction> {
                 successor_code: filled(successor_code),
             }
         })
+        .chain(lj_extract::facets::criminal_courts().into_iter().map(|c| {
+            SeededJurisdiction {
+                code: c.code,
+                jurisdiction_type: c.jurisdiction_type,
+                city: c
+                    .city
+                    .expect("a criminal trial court sits in a département"),
+                label: c.label,
+                closed_on: None,
+                successor_code: None,
+            }
+        }))
         .collect()
 }
 

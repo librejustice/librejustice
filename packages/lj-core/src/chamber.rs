@@ -208,13 +208,15 @@ fn suffix(uid: &str) -> &str {
     uid.split_once(':').map_or(uid, |(_, s)| s)
 }
 
-/// Ce qui contient les chambres : le pôle d'une cour d'appel, la section d'un
-/// tribunal administratif.
+/// What holds the chambers: a cour d'appel's pôle, a tribunal administratif's
+/// section, the General Court and the Civil Service Tribunal beside the Court of Justice.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Container {
     Pole(u32),
     Section(u32),
+    Tribunal,
+    TribunalFonctionPublique,
 }
 
 impl Container {
@@ -222,6 +224,25 @@ impl Container {
         match self {
             Container::Pole(n) => format!("Pôle {n}"),
             Container::Section(n) => format!("{} section", ordinal(*n)),
+            Container::Tribunal => "Tribunal".to_string(),
+            Container::TribunalFonctionPublique => "Tribunal de la fonction publique".to_string(),
+        }
+    }
+
+    /// The General Court and the Civil Service Tribunal are names, which keep their capital.
+    fn is_proper_name(self) -> bool {
+        matches!(
+            self,
+            Container::Tribunal | Container::TribunalFonctionPublique
+        )
+    }
+
+    fn token(&self) -> String {
+        match self {
+            Container::Pole(n) => format!("P{n}"),
+            Container::Section(n) => format!("SC{n}"),
+            Container::Tribunal => "TRIBUNAL".to_string(),
+            Container::TribunalFonctionPublique => "TFP".to_string(),
         }
     }
 }
@@ -279,6 +300,14 @@ pub enum Solemn {
     ChambresReunies,
     ChambreMixte,
     FormationMixte,
+    Avis,
+    GrandeChambre,
+    President,
+    VicePresident,
+    AdmissionPourvois,
+    ChambrePourvois,
+    ChambrePrejudicielle,
+    ChambreIntermediaire,
 }
 
 impl Solemn {
@@ -292,11 +321,19 @@ impl Solemn {
             Solemn::ChambresReunies => "Chambres réunies",
             Solemn::ChambreMixte => "Chambre mixte",
             Solemn::FormationMixte => "Formation mixte",
+            Solemn::Avis => "Formation consultative",
+            Solemn::GrandeChambre => "Grande chambre",
+            Solemn::President => "Président",
+            Solemn::VicePresident => "Vice-président",
+            Solemn::AdmissionPourvois => "Chambre d'admission des pourvois",
+            Solemn::ChambrePourvois => "Chambre des pourvois",
+            Solemn::ChambrePrejudicielle => "Chambre préjudicielle",
+            Solemn::ChambreIntermediaire => "Chambre intermédiaire",
         }
     }
 
     /// Path token, which is the serde form of the variant.
-    fn token(self) -> &'static str {
+    pub fn token(self) -> &'static str {
         match self {
             Solemn::Assemblee => "ASSEMBLEE",
             Solemn::AssembleePleniere => "ASSEMBLEE_PLENIERE",
@@ -306,6 +343,14 @@ impl Solemn {
             Solemn::ChambresReunies => "CHAMBRES_REUNIES",
             Solemn::ChambreMixte => "CHAMBRE_MIXTE",
             Solemn::FormationMixte => "FORMATION_MIXTE",
+            Solemn::Avis => "AVIS",
+            Solemn::GrandeChambre => "GRANDE_CHAMBRE",
+            Solemn::President => "PRESIDENT",
+            Solemn::VicePresident => "VICE_PRESIDENT",
+            Solemn::AdmissionPourvois => "ADMISSION_POURVOIS",
+            Solemn::ChambrePourvois => "CHAMBRE_POURVOIS",
+            Solemn::ChambrePrejudicielle => "CHAMBRE_PREJUDICIELLE",
+            Solemn::ChambreIntermediaire => "CHAMBRE_INTERMEDIAIRE",
         }
     }
 
@@ -361,8 +406,8 @@ pub fn jurisdiction_order(jurisdiction_type: &str, jurisdiction_code: Option<&st
     match renamed(jurisdiction_type) {
         "CJUE" | "COMEU" => "EU".to_string(),
         "CEDH" => "INTL".to_string(),
-        "ADLC" | "CA" | "CAA" | "CC" | "CE" | "CNDA" | "CNIL" | "CONSTIT" | "CPH" | "DDD"
-        | "TA" | "TC" | "TCOM" | "TJ" => "FR".to_string(),
+        "ADLC" | "AMF" | "ASSISES" | "CA" | "CAA" | "CC" | "CCD" | "CE" | "CNDA" | "CNIL"
+        | "CONSTIT" | "CPH" | "DDD" | "TA" | "TC" | "TCOM" | "TJ" => "FR".to_string(),
         foreign if lj_vocab::courts::is_foreign(foreign) => lj_vocab::courts::foreign_order(
             jurisdiction_code
                 .unwrap_or_else(|| panic!("a foreign court without a code: {foreign}")),
@@ -501,6 +546,18 @@ impl Seat {
         }
     }
 
+    /// The label as a title reads it after the jurisdiction: « pôle 5, 3e chambre », but
+    /// « Tribunal, 5e chambre ».
+    pub fn title_label(&self) -> Option<String> {
+        let label = self.label()?;
+        Some(
+            match self.container.is_some_and(Container::is_proper_name) {
+                true => label,
+                false => crate::titles::mid_title(&label),
+            },
+        )
+    }
+
     /// Every path the seat sits under, ancestors unfolded and deduplicated. One
     /// function and one set, so that no caller can forget the unfolding; empty
     /// when nothing locates the jurisdiction itself.
@@ -532,8 +589,7 @@ impl Seat {
     /// that number would sit where a chamber goes, on the chamber that carries it.
     fn division(&self) -> Option<String> {
         match (self.container, self.chamber) {
-            (Some(Container::Pole(n)), _) => Some(format!("P{n}")),
-            (Some(Container::Section(n)), _) => Some(format!("SC{n}")),
+            (Some(container), _) => Some(container.token()),
             (None, Some(ChamberId::Composed(a, _))) => Some(format!("P{a}")),
             (None, _) => None,
         }
@@ -669,6 +725,12 @@ pub fn seat_path_label(path: &str) -> Option<String> {
     if let Some(n) = segment.strip_prefix("SC").and_then(number) {
         return Some(Container::Section(n).label());
     }
+    if let Some(container) = [Container::Tribunal, Container::TribunalFonctionPublique]
+        .into_iter()
+        .find(|c| c.token() == segment)
+    {
+        return Some(container.label());
+    }
     if let Some(n) = segment.strip_prefix('P').and_then(number) {
         return Some(Container::Pole(n).label());
     }
@@ -726,7 +788,7 @@ pub fn read_matters(mut rest: &str) -> Option<Vec<&'static str>> {
 mod tests {
     use super::*;
 
-    const SOLEMN: [(Solemn, &str); 8] = [
+    const SOLEMN: [(Solemn, &str); 16] = [
         (Solemn::Assemblee, "Assemblée du contentieux"),
         (Solemn::AssembleePleniere, "Assemblée plénière"),
         (Solemn::Specialisee, "Formation spécialisée"),
@@ -738,6 +800,17 @@ mod tests {
         (Solemn::ChambresReunies, "Chambres réunies"),
         (Solemn::ChambreMixte, "Chambre mixte"),
         (Solemn::FormationMixte, "Formation mixte"),
+        (Solemn::Avis, "Formation consultative"),
+        (Solemn::GrandeChambre, "Grande chambre"),
+        (Solemn::President, "Président"),
+        (Solemn::VicePresident, "Vice-président"),
+        (
+            Solemn::AdmissionPourvois,
+            "Chambre d'admission des pourvois",
+        ),
+        (Solemn::ChambrePourvois, "Chambre des pourvois"),
+        (Solemn::ChambrePrejudicielle, "Chambre préjudicielle"),
+        (Solemn::ChambreIntermediaire, "Chambre intermédiaire"),
     ];
 
     fn seat(chamber: ChamberId) -> Seat {
@@ -784,6 +857,22 @@ mod tests {
     fn paths_table() -> Vec<(Seat, Vec<&'static str>)> {
         vec![
             (court("CNDA", "cnda"), vec!["FR", "FR.CNDA"]),
+            (
+                Seat {
+                    container: Some(Container::Tribunal),
+                    chamber: Some(ChamberId::Number(4)),
+                    ..court("CJUE", "cjue")
+                },
+                vec!["EU", "EU.CJUE", "EU.CJUE.TRIBUNAL", "EU.CJUE.TRIBUNAL.C4"],
+            ),
+            (
+                Seat {
+                    container: Some(Container::TribunalFonctionPublique),
+                    solemn: Some(Solemn::President),
+                    ..court("CJUE", "cjue")
+                },
+                vec!["EU", "EU.CJUE", "EU.CJUE.TFP", "EU.CJUE.TFP.PRESIDENT"],
+            ),
             (
                 Seat {
                     chamber: Some(ChamberId::Number(1)),
@@ -1096,6 +1185,25 @@ mod tests {
     }
 
     #[test]
+    fn a_title_lowers_the_seat_unless_it_opens_on_a_court_s_name() {
+        let pole = Seat {
+            container: Some(Container::Pole(5)),
+            chamber: Some(ChamberId::Number(3)),
+            ..Default::default()
+        };
+        assert_eq!(pole.title_label().as_deref(), Some("pôle 5, 3e chambre"));
+        let tribunal = Seat {
+            container: Some(Container::Tribunal),
+            chamber: Some(ChamberId::Number(5)),
+            ..Default::default()
+        };
+        assert_eq!(
+            tribunal.title_label().as_deref(),
+            Some("Tribunal, 5e chambre")
+        );
+    }
+
+    #[test]
     fn an_unnumbered_room_is_named_by_its_matter() {
         let nommee = Seat {
             specialty: vec!["matiere:SOCIALE"],
@@ -1403,6 +1511,9 @@ mod tests {
             ("CIVI", "Commission d'indemnisation des victimes (CIVI)"),
             ("ASSEMBLEE", "Assemblée du contentieux"),
             ("ASSEMBLEE_PLENIERE", "Assemblée plénière"),
+            ("TRIBUNAL", "Tribunal"),
+            ("TFP", "Tribunal de la fonction publique"),
+            ("GRANDE_CHAMBRE", "Grande chambre"),
         ];
         for (segment, expected) in cases {
             assert_eq!(
@@ -1436,6 +1547,14 @@ mod tests {
         assert_eq!(
             jurisdiction_trunk("TJ", Some("tj_nice")),
             ["FR", "TJ", "NICE"]
+        );
+        assert_eq!(
+            jurisdiction_trunk("ASSISES", Some("assises_seine_saint_denis")),
+            ["FR", "ASSISES", "SEINE_SAINT_DENIS"]
+        );
+        assert_eq!(
+            jurisdiction_trunk("CCD", Some("ccd_vaucluse")),
+            ["FR", "CCD", "VAUCLUSE"]
         );
         assert_eq!(jurisdiction_trunk("CC", Some("cc")), ["FR", "CC"]);
         assert_eq!(jurisdiction_trunk("CE", None), ["FR", "CE"]);

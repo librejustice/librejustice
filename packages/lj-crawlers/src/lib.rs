@@ -157,6 +157,12 @@ pub const CRAWLERS: &[(&str, Category)] = &[
     ("YandexAdditionalBot", Category::Search),
     ("PetalBot", Category::Search),
     ("Youbot", Category::Search),
+    // "collects publicly available pages to build and maintain the Keenable search
+    // index [...] answers cite the source page with a link" (keenable.ai/bot).
+    ("KeenableBot", Category::Search),
+    // "Exa is a search engine [...] This index allows users to find, retrieve, and
+    // cite your content" (crawler.exa.ai).
+    ("ExaSearchBot", Category::Search),
     // ── Fetch à l'initiative de l'utilisateur ───────────────────────────────
     ("ChatGPT-User", Category::UserFetch),
     ("Claude-User", Category::UserFetch),
@@ -165,6 +171,8 @@ pub const CRAWLERS: &[(&str, Category)] = &[
     ("Meta-ExternalFetcher", Category::UserFetch),
     ("Google-NotebookLM", Category::UserFetch),
     ("Amzn-User", Category::UserFetch),
+    ("Keenable-User", Category::UserFetch),
+    ("ExaUser", Category::UserFetch),
     // ── Outillage agentique ─────────────────────────────────────────────────
     ("Google-CloudVertexBot", Category::Tooling),
     ("Crawl4AI", Category::Tooling),
@@ -177,6 +185,78 @@ pub const CRAWLERS: &[(&str, Category)] = &[
     ("LinkedInBot", Category::LinkPreview),
     ("WhatsApp", Category::LinkPreview),
 ];
+
+/// Agents refused sitewide for their crawl rate, whatever they do with the data.
+pub const BANNED: &[&str] = &["Baiduspider"];
+
+/// Token of the [`BANNED`] agent a `User-Agent` names.
+pub fn banned_of(user_agent: &str) -> Option<&'static str> {
+    let ua = user_agent.to_lowercase();
+    BANNED
+        .iter()
+        .find(|token| ua.contains(&pattern_of(token)))
+        .copied()
+}
+
+/// How the origin admits a request, read from its `User-Agent` alone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Admission {
+    /// A person waits for the page, behind an assistant.
+    Attended,
+    /// A crawler of [`CRAWLERS`] or [`BANNED`], by its token.
+    Crawler(&'static str),
+    /// A crawler outside the table, by the name it declares, lowercased.
+    Undeclared(String),
+    /// A [`Category::LinkPreview`] agent, unverified: the edge spares its `User-Agent` the challenge.
+    Preview,
+    /// Everyone else, browsers and [`Category::Tooling`] included.
+    Caller,
+}
+
+/// Crawlers held by the slots all crawlers share, never by a cap of their own.
+pub const UNCAPPED: &[&str] = &[
+    "Googlebot",
+    "Bingbot",
+    "OAI-SearchBot",
+    "Claude-SearchBot",
+    "PerplexityBot",
+];
+
+pub fn admission_of(user_agent: &str) -> Admission {
+    match entry_of(user_agent) {
+        Some((_, Category::UserFetch)) => Admission::Attended,
+        Some((_, Category::LinkPreview)) => Admission::Preview,
+        Some((token, category)) if category.is_unattended() => Admission::Crawler(token),
+        Some(_) => Admission::Caller,
+        None => match banned_of(user_agent) {
+            Some(token) => Admission::Crawler(token),
+            None => declared_crawler(user_agent).map_or(Admission::Caller, Admission::Undeclared),
+        },
+    }
+}
+
+/// The name a crawler outside the table declares: a product token ending in `bot`,
+/// `spider` or `crawler` and followed by `/` and a version digit, lowercased. The
+/// version keeps device names out: the phone brand `CUBOT` stands in `User-Agent`s
+/// without one.
+pub fn declared_crawler(user_agent: &str) -> Option<String> {
+    let ua = user_agent.as_bytes();
+    let is_name = |b: u8| b.is_ascii_alphanumeric() || b == b'-' || b == b'_';
+    (0..ua.len()).find_map(|slash| {
+        if ua[slash] != b'/' || !ua.get(slash + 1).is_some_and(u8::is_ascii_digit) {
+            return None;
+        }
+        let start = ua[..slash]
+            .iter()
+            .rposition(|&b| !is_name(b))
+            .map_or(0, |i| i + 1);
+        let name = user_agent[start..slash].to_ascii_lowercase();
+        ["bot", "spider", "crawler"]
+            .iter()
+            .any(|suffix| name.ends_with(suffix))
+            .then_some(name)
+    })
+}
 
 /// Chemin du `robots.txt`, servi par `lj-api` et **épargné par le refus
 /// total** : c'est le fichier qui porte l'intention opposable, il ne peut pas
@@ -195,7 +275,12 @@ pub const SITEMAPS_PREFIX: &str = "/sitemaps/";
 /// sitemap. `/api/` left this table when the keyed public surface moved in: a URL
 /// the guide sends integrators to cannot be forbidden here.
 const DISALLOW_API: [&str; 1] = ["/internal/"];
-const DISALLOW_SEARCH: [&str; 3] = ["/decision-search?", "/norm-search?", "/norm/*?place="];
+const DISALLOW_SEARCH: [&str; 4] = [
+    "/*/decision-search?",
+    "/*/norm-search?",
+    "/*/journal-search?",
+    "/norm/*?place=",
+];
 
 /// Seul des deux culs-de-sac à porter aussi une règle WAF : la règle et le
 /// `robots.txt` lisent la même constante.
@@ -260,6 +345,12 @@ pub fn robots_txt(sitemap_url: &str) -> String {
         out.push_str("Allow: /\n");
     }
 
+    out.push('\n');
+    for ua in BANNED {
+        out.push_str(&format!("User-agent: {ua}\n"));
+    }
+    out.push_str("Disallow: /\n");
+
     out.push_str(&format!("\nSitemap: {sitemap_url}\n"));
     out
 }
@@ -270,11 +361,15 @@ fn ua_clause(uas: impl Iterator<Item = &'static str>) -> String {
         .join(" or ")
 }
 
-/// Expression WAF du refus total : `Training` + `Seo`, [`ROBOTS_PATH`] excepté.
+/// WAF expression of the sitewide deny: `Training`, `Seo` and [`BANNED`], [`ROBOTS_PATH`] spared.
 pub fn waf_deny_all_expression() -> String {
     format!(
         "(http.request.uri.path ne \"{ROBOTS_PATH}\") and ({})",
-        ua_clause(uas_of(Category::Training).chain(uas_of(Category::Seo)))
+        ua_clause(
+            uas_of(Category::Training)
+                .chain(uas_of(Category::Seo))
+                .chain(BANNED.iter().copied())
+        )
     )
 }
 
@@ -293,6 +388,11 @@ pub fn waf_deny_api_expression() -> String {
         .collect::<Vec<_>>()
         .join(" or ");
     format!("({paths}) and ({})", ua_clause(uas))
+}
+
+/// WAF expression matching the link previews' User-Agents.
+pub fn waf_link_preview_expression() -> String {
+    ua_clause(uas_of(Category::LinkPreview))
 }
 
 #[cfg(test)]
@@ -328,6 +428,10 @@ mod tests {
         ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36", None),
         // Robot de rendu Yandex : ne contient pas le token `YandexBot`.
         ("Mozilla/5.0 (compatible; YandexRenderResourcesBot/1.0; +http://yandex.com/bots)", None),
+        ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; KeenableBot/1.0; +https://keenable.ai/bot)", Some(Category::Search)),
+        ("Mozilla/5.0 (compatible; ExaSearchBot/1.0; +https://crawler.exa.ai/)", Some(Category::Search)),
+        ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Keenable-User/1.0; +https://keenable.ai/bot)", Some(Category::UserFetch)),
+        ("Mozilla/5.0 (compatible; ExaUser/1.0; +https://exauser.crawler.exa.ai)", Some(Category::UserFetch)),
     ];
 
     #[test]
@@ -359,7 +463,9 @@ mod tests {
         CRAWLERS
             .iter()
             .filter(|(_, c)| c.denies_everything())
-            .map(|(token, _)| pattern_of(token))
+            .map(|(token, _)| *token)
+            .chain(BANNED.iter().copied())
+            .map(pattern_of)
             .collect()
     }
 
@@ -446,7 +552,11 @@ mod tests {
     #[test]
     fn robots_liste_chaque_ua_une_fois() {
         let txt = robots_txt("https://librejustice.fr/sitemap.xml");
-        for (ua, _) in CRAWLERS {
+        for ua in CRAWLERS
+            .iter()
+            .map(|(ua, _)| *ua)
+            .chain(BANNED.iter().copied())
+        {
             let line = format!("User-agent: {ua}\n");
             assert_eq!(
                 txt.matches(&line).count(),
@@ -473,6 +583,13 @@ mod tests {
                 assert!(deny_api.contains(&needle), "{ua} absent du refus /api/");
             }
         }
+        for ua in BANNED {
+            let needle = format!("contains \"{}\"", pattern_of(ua));
+            assert!(
+                deny_all.contains(&needle),
+                "{ua} missing from the sitewide deny"
+            );
+        }
         let (paths, _) = deny_api.split_once(") and (").expect("deux groupes");
         for path in DISALLOW_API {
             assert!(
@@ -494,5 +611,63 @@ mod tests {
     fn expressions_waf_tiennent_dans_la_limite() {
         assert!(waf_deny_all_expression().len() < 4000);
         assert!(waf_deny_api_expression().len() < 4000);
+    }
+
+    fn undeclared(name: &str) -> Admission {
+        Admission::Undeclared(name.to_string())
+    }
+
+    /// Strings seen at the edge in November 2026.
+    #[test]
+    fn a_crawler_is_named_by_its_token_else_by_the_name_it_declares() {
+        let admissions = [
+            ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; KeenableBot/1.0; +https://keenable.ai/bot)", Admission::Crawler("KeenableBot")),
+            ("Mozilla/5.0 (compatible; Baiduspider-render/2.0; +http://www.baidu.com/search/spider.html)", Admission::Crawler("Baiduspider")),
+            ("Mozilla/5.0 (compatible; MJ12bot/v1.4.8; http://mj12bot.com/)", Admission::Crawler("MJ12bot")),
+            ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; ShapBot/0.1.0", undeclared("shapbot")),
+            ("Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; Reflectionbot/1.0; +https://reflection.ai/bot) Chrome/151.0.0.0 Safari/537.36", undeclared("reflectionbot")),
+            ("LinkupBot/1.0 (LinkupBot for web indexing; https://linkup.so/bot; bot@linkup.so)", undeclared("linkupbot")),
+            ("toolpin-crawler/0.1 (+https://toolpin.dev; contact: support@toolpin.dev)", undeclared("toolpin-crawler")),
+        ];
+        for (ua, admission) in admissions {
+            assert_eq!(admission_of(ua), admission, "{ua}");
+        }
+    }
+
+    #[test]
+    fn a_person_waiting_a_preview_or_a_tool_is_not_a_crawler() {
+        let attended = [
+            "Claude-User",
+            "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ChatGPT-User/1.0; +https://openai.com/bot)",
+        ];
+        for ua in attended {
+            assert_eq!(admission_of(ua), Admission::Attended, "{ua}");
+        }
+        let previews = [
+            "Mozilla/5.0 (compatible; Discordbot/2.0; +https://discordapp.com)",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_11_1) AppleWebKit/601.2.4 (KHTML, like Gecko) Version/9.0.1 Safari/601.2.4 facebookexternalhit/1.1 Facebot Twitterbot/1.0",
+            "WhatsApp/1077477986 CFNetwork/3826.600.41 Darwin/24.6.0",
+        ];
+        for ua in previews {
+            assert_eq!(admission_of(ua), Admission::Preview, "{ua}");
+        }
+        let callers = [
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 9; CUBOT_X19 Build/PPR1.180610.011; wv) AppleWebKit/537.36 (KHTML, like Gecko) Version/4.0 Chrome/119.0.6045.163 Mobile Safari/537.36",
+            "Mozilla/5.0 (Linux; Android 12; CUBOT KINGKONG 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
+            "Mozilla/5.0 (compatible; Barkrowler/0.9; +https://babbar.tech/crawler)",
+            "Mozilla/5.0 (compatible; ibou-search/2.0; +https://ibou.com/crawlers.html)",
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 FirecrawlAgent",
+            "python-httpx/0.28.1",
+        ];
+        for ua in callers {
+            assert_eq!(admission_of(ua), Admission::Caller, "{ua}");
+        }
+    }
+
+    #[test]
+    fn a_declared_name_survives_a_multibyte_neighbour() {
+        assert_eq!(declared_crawler("é日Foobot/2 ü").as_deref(), Some("foobot"));
+        assert_eq!(declared_crawler("ébot"), None);
     }
 }

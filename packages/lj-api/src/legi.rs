@@ -25,14 +25,15 @@ use lj_norm::journal_rules::{self, matter_of, Regime, Rule};
 use lj_norm::source_authority::{is_live_authoritative, source_authority};
 use lj_norm::toc_path::{toc_paths, TocKind, TocNodePath, TocPaths};
 use lj_store::repository::{
-    covering_states, ArticleNeighborRow, ArticleSearchRow, ArticleSearchStats, AssertionRow,
-    CitingDecisionRow, DecisionRepository, FacetCount, LawVersionRow, LegalArticleRow,
-    LegalTextCatalogRow, PlaceFilter, PlaceReading, PlacedElsewhere, ResolvedLegalLink,
-    TocArticleRow, TocReadingRow, TocTreeRow,
+    covering_states, ArticleNeighborRow, ArticleSearchRow, ArticleSearchStats, ArticleVersions,
+    AssertionRow, CitingDecisionRow, DecisionRepository, FacetCount, LawVersionRow,
+    LegalArticleRow, LegalTextCatalogRow, PlaceFilter, PlaceReading, PlacedElsewhere,
+    ResolvedLegalLink, TocArticleRow, TocEdges, TocReadingRow, TocTreeRow,
 };
 use std::collections::{BTreeMap, HashMap};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::Arc;
-use tracing::instrument;
+use tracing::{instrument, Instrument};
 
 use crate::error::{ApiError, Result};
 use crate::state::AppState;
@@ -119,6 +120,7 @@ fn linked_text_ref(l: ResolvedLegalLink) -> LinkedTextRef {
     );
     let href = match (resolved, l.resolved_num_key) {
         (Some(path), Some(num_key)) => Some(format!("{path}/{num_key}")),
+        (Some(path), None) => Some(path),
         _ => match (&target, &l.resolved_section_cid) {
             (Some(path), Some(cid)) => Some(format!("{path}/section/{cid}")),
             _ => target,
@@ -175,6 +177,7 @@ fn link_blocks(
                     "article" => ModificationItem {
                         href: match (&resolved, &l.resolved_num_key) {
                             (Some(path), Some(num_key)) => Some(format!("{path}/{num_key}")),
+                            (Some(path), None) => Some(path.clone()),
                             _ => None,
                         },
                         kind: "article".to_string(),
@@ -281,6 +284,8 @@ pub struct Reader {
     place: String,
     path: Vec<String>,
     date: Option<NaiveDate>,
+    /// The place the text's address reads from, which an href leaves unnamed.
+    implied: String,
 }
 
 impl Reader {
@@ -297,12 +302,12 @@ impl Reader {
         }
     }
 
-    /// The reader's place carried on an internal href, when it is not the default.
+    /// The reader's place carried on an internal href, when the address does not imply it.
     fn href(&self, href: String) -> String {
-        let place = place_code(&self.place);
-        if place == DEFAULT_READER_PLACE {
+        if self.place == self.implied {
             return href;
         }
+        let place = place_code(&self.place);
         let (path, fragment) = match href.split_once('#') {
             Some((p, f)) => (p.to_string(), format!("#{f}")),
             None => (href, String::new()),
@@ -321,19 +326,7 @@ async fn reader(
 ) -> Result<Reader> {
     let default = place_uid(DEFAULT_READER_PLACE);
     let place = place.unwrap_or(&default);
-    let path = match state.place_path_cache.get(place).await {
-        Some(hit) => hit,
-        None => {
-            let path = Arc::new(repo.place_path(place).await?);
-            if !path.is_empty() {
-                state
-                    .place_path_cache
-                    .insert(place.to_string(), path.clone())
-                    .await;
-            }
-            path
-        }
-    };
+    let path = place_path(state, repo, place).await?;
     if path.is_empty() {
         return Err(ApiError::Unprocessable(
             crate::error::validation::value_error(
@@ -347,7 +340,47 @@ async fn reader(
         place: place.to_string(),
         path: (*path).clone(),
         date,
+        implied: default,
     })
+}
+
+/// A place and its ancestors, empty for a place the vocabulary lacks.
+async fn place_path(
+    state: &AppState,
+    repo: &DecisionRepository<'_>,
+    place: &str,
+) -> Result<Arc<Vec<String>>> {
+    if let Some(hit) = state.place_path_cache.get(place).await {
+        return Ok(hit);
+    }
+    let path = Arc::new(repo.place_path(place).await?);
+    if !path.is_empty() {
+        state
+            .place_path_cache
+            .insert(place.to_string(), path.clone())
+            .await;
+    }
+    Ok(path)
+}
+
+/// A text whose address names no place is read from its own jurisdiction when
+/// that is a place, the Swiss civil code from Switzerland, else from the default.
+async fn text_reader(
+    state: &AppState,
+    repo: &DecisionRepository<'_>,
+    text: &TextRef,
+    place: Option<&str>,
+    date: Option<NaiveDate>,
+) -> Result<Reader> {
+    let own = place_uid(&text.jurisdiction);
+    let implied = match place_path(state, repo, &own).await?.is_empty() {
+        true => place_uid(DEFAULT_READER_PLACE),
+        false => own,
+    };
+    let place = place.map(place_uid).unwrap_or_else(|| implied.clone());
+    let mut rd = reader(state, repo, Some(&place), date).await?;
+    rd.implied = implied;
+    Ok(rd)
 }
 
 /// Where a reader is read from, as `legal_text.jurisdiction` codes: the country
@@ -394,10 +427,8 @@ async fn reader_home(
     Ok(home)
 }
 
-/// The texts `place` rules out on `day`, per jurisdiction it belongs to, INTL
-/// left out, a treaty being read from every place: those its page says do not
-/// apply there. A text placed elsewhere by name stays when its own key reaches
-/// the place on mention, a doubt.
+/// The texts `place` rules out on `day`, per jurisdiction: those its page places
+/// elsewhere, short of a doubt, and the treaties its state is no party to.
 async fn place_texts(
     state: &AppState,
     repo: &DecisionRepository<'_>,
@@ -451,12 +482,17 @@ async fn place_texts(
         }
         let filter = texts.entry(text.jurisdiction).or_default();
         if text.articles {
-            filter.articles.push(text.text_uid.clone());
-        }
-        if text.body {
-            filter.bodies.push(text.text_uid);
+            filter.articles.push(text.text_uid);
         }
     }
+    let root = rd.path.last().expect("a reader path is never empty");
+    let country = root.strip_prefix("geo:").unwrap_or(root);
+    texts.insert(
+        "INTL".to_string(),
+        PlaceFilter {
+            articles: repo.treaties_without(country).await?,
+        },
+    );
     let texts = Arc::new(texts);
     state.place_texts_cache.insert(key, texts.clone()).await;
     Ok(texts)
@@ -611,7 +647,8 @@ pub(crate) struct CitedArticle {
 
 /// The articles of `cited` that do not apply at `place` on `day`: a decision
 /// of a court of that place links none of them. An article with no state is
-/// not among them, nor an undetermined one.
+/// not among them, nor an undetermined one, nor one placed below `place`,
+/// whose law a court of the whole also applies.
 pub(crate) async fn not_applicable_at(
     state: &AppState,
     repo: &DecisionRepository<'_>,
@@ -623,11 +660,19 @@ pub(crate) async fn not_applicable_at(
     let key = |c: &CitedArticle| (c.text_uid.clone(), c.num_key.clone());
     let articles: Vec<(String, String)> = cited.iter().map(key).collect();
     let places = repo.places_on(&articles, day).await?;
+    let mut below: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for p in places.values().flatten() {
+        if !below.contains(p.as_str()) && place_path(state, repo, p).await?.contains(&rd.place) {
+            below.insert(p);
+        }
+    }
     let uncovered: Vec<(&CitedArticle, Option<&'static Rule>, bool)> = cited
         .iter()
         .filter_map(|c| {
             let on = places.get(&key(c))?;
-            let covered = on.iter().any(|p| rd.path.contains(p));
+            let covered = on
+                .iter()
+                .any(|p| rd.path.contains(p) || below.contains(p.as_str()));
             let rule = Reception::new(&c.text_uid, &c.jurisdiction, &c.title, &c.num_key)
                 .rule(&rd.path, day);
             (!covered).then_some((c, rule, !on.is_empty()))
@@ -741,6 +786,7 @@ async fn applicability(
     readable.sort_by(|a, b| (a.group, &a.place.label).cmp(&(b.group, &b.place.label)));
     Ok(Some(Applicability {
         reader: place_ref(&rd.place, &labels),
+        implied: place_code(&rd.implied).to_string(),
         status,
         places: served
             .map(|a| a.places.iter().map(|p| place_ref(p, &labels)).collect())
@@ -952,7 +998,7 @@ async fn article_response(
         ..r
     };
     let modified_by: Vec<LinkedTextRef> = modified_by.into_iter().map(with_place).collect();
-    let public_info: Vec<String> = lj_norm::referential_labels::PUBLIC_INFO_NATURES
+    let public_info: Vec<String> = lj_norm::category::PUBLIC_INFO_NATURES
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -1411,12 +1457,12 @@ pub async fn article_in_force(
     let text = resolve_text(state, &repo, code, juris).await?;
     let text_uid = &text.text_uid;
     let num_key = &lj_norm::article_key::identity_key(num);
-    let rd = reader(state, &repo, place.map(place_uid).as_deref(), None).await?;
+    let rd = text_reader(state, &repo, &text, place, None).await?;
 
     let (num_key, article, states) = served_version(&repo, &text, num_key, &rd).await?;
     let consult_date = date_debut_display(article.date_debut);
     let versions = repo.law_article_versions(text_uid, &num_key).await?;
-    let context = repo.article_context(text_uid, &num_key, None).await?;
+    let context = repo.article_context(text_uid, &num_key).await?;
     article_response(
         state,
         &repo,
@@ -1448,12 +1494,14 @@ pub async fn article_at_date(
     let text = resolve_text(state, &repo, code, juris).await?;
     let text_uid = &text.text_uid;
     let num_key = &lj_norm::article_key::identity_key(num);
-    let rd = reader(state, &repo, place.map(place_uid).as_deref(), Some(date)).await?;
+    let rd = text_reader(state, &repo, &text, place, Some(date)).await?;
 
     let (num_key, article, states) = served_version(&repo, &text, num_key, &rd).await?;
     let consult_date = date.to_string();
     let versions = repo.law_article_versions(text_uid, &num_key).await?;
-    let context = repo.article_context(text_uid, &num_key, Some(date)).await?;
+    let context = article_versions(state, &repo, text_uid)
+        .await?
+        .context_at(&num_key, date);
     article_response(
         state,
         &repo,
@@ -1646,14 +1694,23 @@ pub(crate) fn citing_dto(
         dockets.as_deref(),
     );
     let jurisdiction_type = parse_jur_type(&row.jurisdiction_type).unwrap_or(JurisdictionType::Ta);
+    let (summary, summary_quote, summary_body) = crate::decisions::listed_summary(
+        row.summary.as_deref(),
+        row.summary_quote,
+        row.summary_body,
+    );
     CitingDecisionHit {
         id: row.public_id,
         title,
         jurisdiction_type,
+        court_names: refs.court_names(row.jurisdiction_code.as_deref()),
         jurisdiction_code: row.jurisdiction_code,
+        jurisdiction_name: row.jurisdiction_name,
         date_lecture: row.date_lecture,
         publication_codes: row.publication_codes.unwrap_or_default(),
-        summary: row.summary.as_deref().map(lj_summary::summary_teaser),
+        summary,
+        summary_quote,
+        summary_body,
         cited_articles: row.cited_num_keys,
     }
 }
@@ -1680,6 +1737,7 @@ pub async fn article_citing(
     place: Option<&str>,
     limit: i64,
     offset: i64,
+    lang: &str,
 ) -> Result<Vec<CitingDecisionHit>> {
     let date = date
         .map(|d| {
@@ -1702,7 +1760,7 @@ pub async fn article_citing(
 
     // Version servie (même résolution que l'en-tête d'article) → sa fenêtre de
     // validité borne les citantes. `date_debut` NOT NULL en base.
-    let rd = reader(state, &repo, place.map(place_uid).as_deref(), date).await?;
+    let rd = text_reader(state, &repo, &text, place, date).await?;
     let (num_key, article, _) = served_version(&repo, &text, num_key, &rd).await?;
     let num_key = num_key.as_str();
     let date_debut = article
@@ -1717,6 +1775,7 @@ pub async fn article_citing(
             article.date_fin,
             limit,
             offset,
+            lang,
         )
         .await?;
     let refs = crate::referential::referential(state).await?;
@@ -1756,6 +1815,7 @@ const SECTION_CITING_TEXT_MIN_ARTICLES: i64 = 2;
 ///
 /// Cost bounded by [`SECTION_CITING_ARTICLES`]: only the division's most cited
 /// articles are queried, the ranking coming from the counter table.
+#[allow(clippy::too_many_arguments)]
 #[instrument(skip(state), fields(db.system = "postgresql", code = %code, path = %path, date, limit, offset))]
 pub async fn section_citing(
     state: &AppState,
@@ -1765,6 +1825,7 @@ pub async fn section_citing(
     date: Option<&str>,
     limit: i64,
     offset: i64,
+    lang: &str,
 ) -> Result<Vec<CitingDecisionHit>> {
     let date = parse_opt_date(date)?;
     let conn = state.pool.get().await?;
@@ -1791,7 +1852,7 @@ pub async fn section_citing(
         .map(|(num_key, _)| num_key)
         .collect();
     let rows = repo
-        .law_decisions_citing_any(&text.text_uid, &top, limit, offset)
+        .law_decisions_citing_any(&text.text_uid, &top, limit, offset, lang)
         .await?;
     let refs = crate::referential::referential(state).await?;
     Ok(rows.into_iter().map(|r| citing_dto(r, &refs)).collect())
@@ -1900,23 +1961,48 @@ pub async fn article_refs_by_source_uid(
         .await?)
 }
 
-/// What the JO printed around a text's articles, `None` for a text it did not
-/// publish.
+/// What the journal printed around a text's articles, and the notice of that
+/// publication: `(None, None)` for a text no journal published.
 async fn text_publication(
     repo: &DecisionRepository<'_>,
     text_uid: &str,
-) -> Result<Option<lj_dtos::TextPublication>> {
+) -> Result<(Option<lj_dtos::TextPublication>, Option<LinkedTextRef>)> {
     let Some(row) = repo.text_publication(text_uid).await? else {
-        return Ok(None);
+        return Ok((None, None));
     };
+    let notice = LinkedTextRef {
+        label: match &row.issue {
+            Some(issue) => issue.title.clone(),
+            None => row
+                .journal_label
+                .unwrap_or_else(|| row.journal_code.clone()),
+        },
+        href: Some(crate::notices::path(&format!(
+            "{}:{text_uid}",
+            row.journal_code.to_lowercase()
+        ))),
+        date: None,
+    };
+    let publication = publication_blocks(&row.blocks, row.issue);
+    Ok((
+        (publication != lj_dtos::TextPublication::default()).then_some(publication),
+        Some(notice),
+    ))
+}
+
+/// A publication's printed blocks by name, and the issue that carried it.
+pub(crate) fn publication_blocks(
+    blocks: &serde_json::Value,
+    issue: Option<lj_store::repository::IssueRef>,
+) -> lj_dtos::TextPublication {
     let block = |key: &str| {
-        row.blocks
+        blocks
             .get(key)
             .and_then(serde_json::Value::as_str)
             .map(str::to_string)
     };
-    let publication = lj_dtos::TextPublication {
-        issue: row.issue.map(|i| LinkedTextRef {
+    lj_dtos::TextPublication {
+        issue: issue.map(|i| LinkedTextRef {
             href: i.eli,
             label: i.title,
             date: None,
@@ -1928,8 +2014,7 @@ async fn text_publication(
         summary: block("sm"),
         repeal: block("abro"),
         corrigendum: block("rect"),
-    };
-    Ok((publication != lj_dtos::TextPublication::default()).then_some(publication))
+    }
 }
 
 /// `(slug, jurisdiction)` of a Légifrance text id.
@@ -1971,13 +2056,15 @@ pub async fn code_summary(
         .map(|d| d.to_string())
         .collect();
     upcoming_versions.sort();
-    // The scope label, shown outside the norms, which carry no badge.
-    let scope = lj_norm::referential_labels::nature_scope(&row.nature);
-    let scope = (scope != "norme").then(|| {
-        lj_norm::referential_labels::scope_label(scope)
-            .unwrap_or(scope)
-            .to_string()
-    });
+    // The category label, shown on what explains or discusses the norms alone.
+    let category = lj_norm::category::text_category(&row.jurisdiction, &row.nature);
+    let scope = lj_norm::category::BESIDE_NORMS
+        .contains(&category)
+        .then(|| {
+            lj_norm::referential_labels::category_label(category)
+                .unwrap_or(category)
+                .to_string()
+        });
     // Maillage retour vers le hub fond×année du catalogue des normes ; `None`
     // pour un acte individuel.
     let fond_link = repo.norm_fond_of_text(&row.text_uid).await?;
@@ -2000,7 +2087,7 @@ pub async fn code_summary(
         Some(v) => serde_json::from_value(v)
             .map_err(|e| ApiError::Internal(format!("commentaires invalides: {e}")))?,
     };
-    let publication = text_publication(&repo, &row.text_uid).await?;
+    let (publication, notice) = text_publication(&repo, &row.text_uid).await?;
     Ok(LawCodeSummary {
         legitext: row.text_uid,
         code: slug,
@@ -2021,6 +2108,7 @@ pub async fn code_summary(
         top_cited,
         commentaires,
         publication,
+        notice,
     })
 }
 
@@ -2038,20 +2126,14 @@ pub fn query_date(field: &str, raw: &str) -> Result<NaiveDate> {
     })
 }
 
-/// Recherche plein-texte d'articles (`GET /api/search-textes`),
-/// **titre-primaire** : jambe titre (`search_title` formé, boostée + expansions
-/// d'alias) > jambe corps. `code` optionnel borne la recherche à un texte (résolu
-/// comme les pages `/texte`) ; absent ⇒ tout le référentiel navigable. Les facettes
-/// `jurisdiction`/`nature`/`source` et le `total` sont comptés sous le même
-/// prédicat BM25 + mêmes filtres que la page de hits, en une requête `GROUPING
-/// SETS` lancée **en parallèle** des hits sur sa propre connexion — le prédicat
-/// BM25 est le poste dominant, on ne le paie qu'une fois par jambe. Chaque hit
-/// reçoit un extrait surligné via [`crate::snippets::highlight`] (fallback corps
-/// tronqué).
+/// A page of the norms search, title first: the formed title, boosted and with
+/// its alias expansions, outranks the body. `code` bounds it to one text. A
+/// search with words answers its hits alone; [`count_textes`] counts the same
+/// cached answer. Each hit carries a highlighted excerpt.
 ///
-/// Émet le signal d'usage du moteur `textes` sous le nom de span `search`, même
-/// vocabulaire `librejustice.search.*` que les décisions ([`crate::usage`]) :
-/// `{name="search"}` couvre donc les deux moteurs, ventilables par `.engine`.
+/// Records the usage signal of the `textes` engine under the span name
+/// `search`, in the `librejustice.search.*` vocabulary of the decisions
+/// ([`crate::usage`]).
 #[instrument(
     name = "search",
     skip(state, caller, budget_key),
@@ -2096,15 +2178,7 @@ pub async fn search_textes(
     budget_key: Option<&crate::ratelimit::CallerKey>,
 ) -> Result<ArticleSearchResponse> {
     const ENGINE: lj_dtos::SearchEngine = lj_dtos::SearchEngine::Textes;
-    if places.len() > lj_dtos::MAX_READER_PLACES {
-        return Err(ApiError::Unprocessable(
-            crate::error::validation::value_error(
-                &["query", "place"],
-                &places.len().to_string(),
-                &format!("at most {} places", lj_dtos::MAX_READER_PLACES),
-            ),
-        ));
-    }
+    within_reader_places(places)?;
     let filters =
         textes_filters(code, places, jurisdictions, source, scope, at, valid_from).to_string();
     let shape = crate::usage::Shape {
@@ -2118,7 +2192,389 @@ pub async fn search_textes(
             "textes window offset={offset} limit={limit} exceeds {TEXTES_CACHED_WINDOW}"
         )));
     }
-    let snippet_chars = crate::snippets::budget(caller.context, ARTICLE_SNIPPET_MAX);
+    let answer = textes_answer(
+        state,
+        q,
+        code,
+        places,
+        jurisdictions,
+        source,
+        scope,
+        at,
+        valid_from,
+        mode,
+        caller.context,
+        budget_key,
+    )
+    .await?;
+    let resp = &answer.resp;
+    let span = tracing::Span::current();
+    span.record(
+        "librejustice.search.resolved",
+        tracing::field::debug(resp.query_mode),
+    );
+    span.record("librejustice.search.pinned", resp.pinned.len() as u64);
+    let count = answer.count.get();
+    caller.record_outcome(
+        ENGINE,
+        q,
+        shape,
+        count.map_or(resp.served, |(total, _)| *total),
+    );
+    Ok(ArticleSearchResponse {
+        hits: resp
+            .hits
+            .iter()
+            .skip(offset as usize)
+            .take(limit as usize)
+            .cloned()
+            .collect(),
+        served: resp.served,
+        total: count.map(|(total, _)| *total),
+        facets: count.map(|(_, facets)| facets.clone()),
+        query_mode: resp.query_mode,
+        pinned: resp.pinned.clone(),
+        pinned_more: resp.pinned_more,
+        jurisdictions: resp.jurisdictions.clone(),
+        reader_place: resp.reader_place.clone(),
+    })
+}
+
+/// The search of a caller that will not come back for its count: the
+/// connector and the public door, whose answers carry the total and the facets.
+/// A count the base cannot finish leaves the articles served as the total,
+/// without facets.
+#[allow(clippy::too_many_arguments)]
+pub async fn search_textes_counted(
+    state: &AppState,
+    q: &str,
+    code: Option<&str>,
+    places: &[String],
+    jurisdictions: &[String],
+    source: Option<&str>,
+    scope: Option<&str>,
+    at: Option<chrono::NaiveDate>,
+    valid_from: Option<chrono::NaiveDate>,
+    limit: i64,
+    offset: i64,
+    mode: lj_dtos::SearchMode,
+    caller: crate::usage::Caller,
+    budget_key: Option<&crate::ratelimit::CallerKey>,
+) -> Result<ArticleSearchResponse> {
+    let context = caller.context;
+    let mut resp = search_textes(
+        state,
+        q,
+        code,
+        places,
+        jurisdictions,
+        source,
+        scope,
+        at,
+        valid_from,
+        limit,
+        offset,
+        mode,
+        caller,
+        budget_key,
+    )
+    .await?;
+    if resp.total.is_some() {
+        return Ok(resp);
+    }
+    let answer = textes_answer(
+        state,
+        q,
+        code,
+        places,
+        jurisdictions,
+        source,
+        scope,
+        at,
+        valid_from,
+        mode,
+        context,
+        budget_key,
+    )
+    .await?;
+    match answer.counted(state, false).await {
+        Ok((total, facets)) => {
+            resp.total = Some(*total);
+            resp.facets = Some(facets.clone());
+        }
+        Err(err) if err.is_db_busy() => {
+            tracing::warn!(error = %err, served = resp.served, "norms count abandoned, total set to the articles served");
+            resp.total = Some(resp.served);
+        }
+        Err(err) => return Err(err),
+    }
+    Ok(resp)
+}
+
+/// The total and the facets of the search the same parameters name
+/// (`/internal/search-textes/decompte`), counted once per cached answer. Records
+/// no search: the list has.
+#[allow(clippy::too_many_arguments)]
+pub async fn count_textes(
+    state: &AppState,
+    q: &str,
+    code: Option<&str>,
+    places: &[String],
+    jurisdictions: &[String],
+    source: Option<&str>,
+    scope: Option<&str>,
+    at: Option<chrono::NaiveDate>,
+    valid_from: Option<chrono::NaiveDate>,
+    mode: lj_dtos::SearchMode,
+    context: lj_dtos::SearchContext,
+    budget_key: Option<&crate::ratelimit::CallerKey>,
+) -> Result<lj_dtos::ArticleSearchCountResponse> {
+    within_reader_places(places)?;
+    let answer = textes_answer(
+        state,
+        q,
+        code,
+        places,
+        jurisdictions,
+        source,
+        scope,
+        at,
+        valid_from,
+        mode,
+        context,
+        budget_key,
+    )
+    .await?;
+    let (total, facets) = answer.counted(state, true).await?;
+    Ok(lj_dtos::ArticleSearchCountResponse {
+        total: *total,
+        facets: facets.clone(),
+    })
+}
+
+fn within_reader_places(places: &[String]) -> Result<()> {
+    if places.len() > lj_dtos::MAX_READER_PLACES {
+        return Err(ApiError::Unprocessable(
+            crate::error::validation::value_error(
+                &["query", "place"],
+                &places.len().to_string(),
+                &format!("at most {} places", lj_dtos::MAX_READER_PLACES),
+            ),
+        ));
+    }
+    Ok(())
+}
+
+/// A norms answer as the cache holds it: the hits of the whole window, and its
+/// count, known at once for a listing and a reference, else counted on demand.
+pub struct TextesAnswer {
+    resp: ArticleSearchResponse,
+    count: Arc<tokio::sync::OnceCell<(i64, ArticleSearchFacets)>>,
+    counting: Option<Arc<TextesCounting>>,
+}
+
+impl TextesAnswer {
+    fn counted_at_once(
+        resp: ArticleSearchResponse,
+        total: i64,
+        facets: ArticleSearchFacets,
+    ) -> Self {
+        Self {
+            resp,
+            count: Arc::new(tokio::sync::OnceCell::from((total, facets))),
+            counting: None,
+        }
+    }
+
+    /// A caller that cannot wait twice takes the abandon of the run it waited
+    /// on rather than running the count again.
+    async fn counted(
+        &self,
+        state: &AppState,
+        rerun_abandoned: bool,
+    ) -> Result<&(i64, ArticleSearchFacets)> {
+        let abandons = |c: &TextesCounting| c.abandons.load(Ordering::Relaxed);
+        let seen = self.counting.as_deref().map(abandons);
+        self.count
+            .get_or_try_init(|| async {
+                let counting = self
+                    .counting
+                    .as_ref()
+                    .expect("an answer not counted at its creation holds what counts it");
+                if !rerun_abandoned && seen != Some(abandons(counting)) {
+                    return Err(ApiError::DbBusy("norms count abandoned".to_string()));
+                }
+                let _db_permit = state
+                    .search_permits
+                    .clone()
+                    .acquire_owned()
+                    .await
+                    .map_err(|e| ApiError::Internal(format!("search semaphore: {e}")))?;
+                count_content(state, counting).await
+            })
+            .await
+    }
+}
+
+/// What counting a content answer takes, owned: the count runs beside the
+/// search that served the list, or after it.
+struct TextesCounting {
+    q: String,
+    expansions: Vec<String>,
+    home: Vec<String>,
+    places: PlaceFilter,
+    text_uid: Option<String>,
+    stated: Vec<String>,
+    source: Option<String>,
+    /// A category kept (`true`) or dropped.
+    category: Option<(String, bool)>,
+    /// The category counted on the scope facet alone, out of the list.
+    aside: Option<&'static str>,
+    at: Option<chrono::NaiveDate>,
+    valid_from: Option<chrono::NaiveDate>,
+    searched: Vec<String>,
+    /// Runs of the count that gave up on the base.
+    abandons: AtomicU32,
+}
+
+async fn count_content(state: &AppState, c: &TextesCounting) -> Result<(i64, ArticleSearchFacets)> {
+    let counted = count_members(state, c).await;
+    if counted.as_ref().is_err_and(ApiError::is_db_busy) {
+        c.abandons.fetch_add(1, Ordering::Relaxed);
+    }
+    counted
+}
+
+/// The articles member and the containers member of the total and the facets,
+/// on a connection each.
+async fn count_members(state: &AppState, c: &TextesCounting) -> Result<(i64, ArticleSearchFacets)> {
+    let (conn_art, conn_txt) = tokio::try_join!(state.pool.get(), state.pool.get())?;
+    let (repo_art, repo_txt) = (
+        DecisionRepository::new(&conn_art),
+        DecisionRepository::new(&conn_txt),
+    );
+    let home: Vec<&str> = c.home.iter().map(String::as_str).collect();
+    let stated: Vec<&str> = c.stated.iter().map(String::as_str).collect();
+    let category = c.category.as_ref().map(|(n, keep)| (n.as_str(), *keep));
+    let (member_art, (member_txt, aside_count)) = tokio::try_join!(
+        repo_art.article_facets_articles(
+            &c.q,
+            &c.expansions,
+            &home,
+            &c.places,
+            c.text_uid.as_deref(),
+            &stated,
+            c.source.as_deref(),
+            category,
+            c.at,
+            c.valid_from,
+        ),
+        async {
+            let member = repo_txt
+                .article_facets_containers(
+                    &c.q,
+                    &home,
+                    &c.places,
+                    c.text_uid.as_deref(),
+                    &stated,
+                    c.source.as_deref(),
+                    category,
+                    c.at,
+                    c.valid_from,
+                )
+                .await?;
+            // A question is never a container: its body piece alone counts it.
+            let aside_count = match c.aside {
+                Some(aside) => {
+                    repo_txt
+                        .article_facets_articles(
+                            &c.q,
+                            &c.expansions,
+                            &home,
+                            &c.places,
+                            c.text_uid.as_deref(),
+                            &stated,
+                            c.source.as_deref(),
+                            Some((aside, true)),
+                            c.at,
+                            c.valid_from,
+                        )
+                        .await?
+                        .total
+                }
+                None => 0,
+            };
+            Ok::<_, lj_store::error::StoreError>((member, aside_count))
+        },
+    )?;
+    let stats = lj_store::repository::merge_article_facets([member_art, member_txt]);
+    let total = stats.total;
+    let mut facets = facets_dto(stats, &home, &c.searched);
+    count_aside(&mut facets, aside_count);
+    Ok((total, facets))
+}
+
+/// The category a search with no scope counts on its rail and never lists.
+const ASIDE: &str = "travaux_parlementaires";
+
+/// A category kept (`true`) or dropped.
+type CategoryFilter<'a> = Option<(&'a str, bool)>;
+
+/// The category filter of `scope`, and the category counted aside: with no scope
+/// the parliamentary work is counted on the rail and never listed.
+fn scope_category(scope: Option<&str>) -> Result<(CategoryFilter<'_>, Option<&'static str>)> {
+    match scope {
+        None => Ok((Some((ASIDE, false)), Some(ASIDE))),
+        Some(c) if lj_vocab::NORM_CATEGORIES.contains(&c) => Ok((Some((c, true)), None)),
+        Some(other) => Err(ApiError::Unprocessable(
+            crate::error::validation::enum_error(
+                &["query", "scope"],
+                other,
+                &lj_vocab::NORM_CATEGORIES,
+            ),
+        )),
+    }
+}
+
+/// Puts on the scope facet the parliamentary work a search with no scope counted
+/// aside, the other axes describing the list it served.
+fn count_aside(facets: &mut ArticleSearchFacets, count: i64) {
+    if count == 0 {
+        return;
+    }
+    let value = ASIDE;
+    facets.scope.push(FacetChoice {
+        label: lj_norm::referential_labels::category_label(value)
+            .unwrap_or(value)
+            .to_string(),
+        value: value.to_string(),
+        count,
+        parent: None,
+        hint: None,
+    });
+    facets
+        .scope
+        .sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+}
+
+/// The cached answer of a search, computed on a miss: the list and the count
+/// share it, so the count describes the answer that served the list.
+#[allow(clippy::too_many_arguments)]
+async fn textes_answer(
+    state: &AppState,
+    q: &str,
+    code: Option<&str>,
+    places: &[String],
+    jurisdictions: &[String],
+    source: Option<&str>,
+    scope: Option<&str>,
+    at: Option<chrono::NaiveDate>,
+    valid_from: Option<chrono::NaiveDate>,
+    mode: lj_dtos::SearchMode,
+    context: lj_dtos::SearchContext,
+    budget_key: Option<&crate::ratelimit::CallerKey>,
+) -> Result<Arc<TextesAnswer>> {
+    let snippet_chars = crate::snippets::budget(context, ARTICLE_SNIPPET_MAX);
     let uncached = || {
         search_textes_uncached(
             state,
@@ -2134,6 +2590,7 @@ pub async fn search_textes(
             0,
             mode,
             snippet_chars,
+            context,
             budget_key,
         )
     };
@@ -2156,7 +2613,7 @@ pub async fn search_textes(
         .optionally_get_with(key, async {
             paye = true;
             match uncached().await {
-                Ok(resp) => Some(std::sync::Arc::new(resp)),
+                Ok(answer) => Some(Arc::new(answer)),
                 Err(err) => {
                     own_err = Some(err);
                     None
@@ -2165,34 +2622,11 @@ pub async fn search_textes(
         })
         .await;
     crate::cache_metrics::record_access("textes", !paye);
-    let resp = match (hit, own_err) {
-        (Some(resp), _) => resp,
-        (None, Some(err)) => return Err(err),
-        (None, None) => std::sync::Arc::new(uncached().await?),
-    };
-    let span = tracing::Span::current();
-    span.record(
-        "librejustice.search.resolved",
-        tracing::field::debug(resp.query_mode),
-    );
-    span.record("librejustice.search.pinned", resp.pinned.len() as u64);
-    caller.record_outcome(ENGINE, q, shape, resp.total);
-    Ok(ArticleSearchResponse {
-        hits: resp
-            .hits
-            .iter()
-            .skip(offset as usize)
-            .take(limit as usize)
-            .cloned()
-            .collect(),
-        total: resp.total,
-        facets: resp.facets.clone(),
-        query_mode: resp.query_mode,
-        pinned: resp.pinned.clone(),
-        pinned_more: resp.pinned_more,
-        jurisdictions: resp.jurisdictions.clone(),
-        reader_place: resp.reader_place.clone(),
-    })
+    match (hit, own_err) {
+        (Some(answer), _) => Ok(answer),
+        (None, Some(err)) => Err(err),
+        (None, None) => Ok(Arc::new(uncached().await?)),
+    }
 }
 
 /// The deepest page the route admits, `offset` 99 + `limit` 100: fetching 200 rows
@@ -2229,9 +2663,11 @@ fn textes_cache_key(
     .to_string()
 }
 
-/// Poids d'une réponse pour le plafond mémoire du cache.
-pub(crate) fn response_weight(resp: &ArticleSearchResponse) -> usize {
-    let hits: usize = resp
+/// Weight of an answer under the cache's memory cap. Facets counted after the
+/// insert go unweighed: about 10 KB against 160 KB of hits.
+pub(crate) fn answer_weight(answer: &TextesAnswer) -> usize {
+    let hits: usize = answer
+        .resp
         .hits
         .iter()
         .map(|h| {
@@ -2247,17 +2683,18 @@ pub(crate) fn response_weight(resp: &ArticleSearchResponse) -> usize {
                 + h.date_debut.as_ref().map_or(0, String::len)
         })
         .sum();
-    let f = &resp.facets;
-    let facets: usize = [&f.code, &f.jurisdiction, &f.source, &f.scope, &f.path]
-        .into_iter()
-        .flatten()
-        .map(|c| {
-            std::mem::size_of::<lj_dtos::FacetChoice>()
-                + c.value.len()
-                + c.label.len()
-                + c.parent.as_ref().map_or(0, String::len)
-        })
-        .sum();
+    let facets: usize = answer.count.get().map_or(0, |(_, f)| {
+        [&f.code, &f.jurisdiction, &f.source, &f.scope, &f.path]
+            .into_iter()
+            .flatten()
+            .map(|c| {
+                std::mem::size_of::<lj_dtos::FacetChoice>()
+                    + c.value.len()
+                    + c.label.len()
+                    + c.parent.as_ref().map_or(0, String::len)
+            })
+            .sum()
+    });
     hits + facets
 }
 
@@ -2278,8 +2715,9 @@ async fn search_textes_uncached(
     offset: i64,
     mode: lj_dtos::SearchMode,
     snippet_chars: usize,
+    context: lj_dtos::SearchContext,
     budget_key: Option<&crate::ratelimit::CallerKey>,
-) -> Result<ArticleSearchResponse> {
+) -> Result<TextesAnswer> {
     if state
         .budgets
         .take(crate::ratelimit::Cost::Search, budget_key)
@@ -2290,13 +2728,16 @@ async fn search_textes_uncached(
         return Err(ApiError::TooManyRequests);
     }
     // Le sémaphore des décisions, pas un second : deux bornes sur un pool unique
-    // demanderaient 62 connexions sur 32.
-    let _db_permit = state
-        .search_permits
-        .clone()
-        .acquire_owned()
-        .await
-        .map_err(|e| ApiError::Internal(format!("search semaphore: {e}")))?;
+    // demanderaient 62 connexions sur 32. The count started beside the hits
+    // shares this permit.
+    let db_permit = Arc::new(
+        state
+            .search_permits
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|e| ApiError::Internal(format!("search semaphore: {e}")))?,
+    );
     // One connection per member, taken where it is used: the reference mode holds
     // one where the page holds three, on a pool of 32.
     let checkout = || async { state.pool.get().await.map_err(ApiError::from) };
@@ -2345,29 +2786,7 @@ async fn search_textes_uncached(
     // Expansion d'alias (acronymes/noms usuels → forme développée) OR-ée dans la
     // jambe titre.
     let expansions = lj_norm::aliases::expand_query(q);
-    // The scope as a set of natures: doctrine and public information are closed
-    // lists, a norm is any nature outside both.
-    use lj_norm::referential_labels::{DOCTRINE_ADMIN_NATURES, PUBLIC_INFO_NATURES};
-    let owned =
-        |natures: &[&str]| -> Vec<String> { natures.iter().map(|s| s.to_string()).collect() };
-    let doctrine_natures = owned(DOCTRINE_ADMIN_NATURES);
-    let public_info_natures = owned(PUBLIC_INFO_NATURES);
-    let non_norm_natures = owned(&[DOCTRINE_ADMIN_NATURES, PUBLIC_INFO_NATURES].concat());
-    let nature_set: Option<(&[String], bool)> = match scope {
-        None => None,
-        Some("doctrine_administrative") => Some((&doctrine_natures, true)),
-        Some("information_publique") => Some((&public_info_natures, true)),
-        Some("norme") => Some((&non_norm_natures, false)),
-        Some(other) => {
-            return Err(ApiError::Unprocessable(
-                crate::error::validation::enum_error(
-                    &["query", "scope"],
-                    other,
-                    &["norme", "doctrine_administrative", "information_publique"],
-                ),
-            ))
-        }
-    };
+    let (category, aside) = scope_category(scope)?;
     // No query: the texts of the corpora, the most recently changed first. The
     // places read from rule none out: a listing says what was enacted.
     if q.trim().is_empty() {
@@ -2376,20 +2795,35 @@ async fn search_textes_uncached(
             text_uid: text_uid.as_deref(),
             jurisdictions: &stated,
             source,
-            nature_set,
+            category,
             at,
             valid_from,
         };
         let conn_stats = checkout().await?;
         let repo_stats = DecisionRepository::new(&conn_stats);
-        let (rows, stats) = tokio::try_join!(
-            repo_hits.list_texts(listed, limit, offset),
-            repo_stats.text_list_stats(listed),
-        )?;
-        return Ok(ArticleSearchResponse {
+        let (rows, (stats, aside_count)) =
+            tokio::try_join!(repo_hits.list_texts(listed, limit, offset), async {
+                let stats = repo_stats.text_list_stats(listed).await?;
+                let aside_count = match aside {
+                    Some(aside) => {
+                        let filters = lj_store::repository::ArticleBrowseFilters {
+                            category: Some((aside, true)),
+                            ..listed
+                        };
+                        repo_stats.text_list_stats(filters).await?.total
+                    }
+                    None => 0,
+                };
+                Ok::<_, lj_store::error::StoreError>((stats, aside_count))
+            },)?;
+        let total = stats.total;
+        let mut facets = facets_dto(stats, &home, &orders);
+        count_aside(&mut facets, aside_count);
+        let resp = ArticleSearchResponse {
             hits: listed_hits(rows),
-            total: stats.total,
-            facets: facets_dto(stats, &home, &orders),
+            served: total,
+            total: None,
+            facets: None,
             query_mode: lj_dtos::QueryMode::Browse,
             pinned: Vec::new(),
             pinned_more: false,
@@ -2398,7 +2832,8 @@ async fn search_textes_uncached(
                 true => answered_place(state, &repo_hits, place, &[]).await?,
                 false => None,
             },
-        });
+        };
+        return Ok(TextesAnswer::counted_at_once(resp, total, facets));
     }
     // A stated content mode is served as stated, without a card.
     let cites = matches!(
@@ -2424,7 +2859,7 @@ async fn search_textes_uncached(
                 text_uid: text_uid.as_deref(),
                 jurisdictions: &stated,
                 source,
-                nature_set,
+                category,
                 at,
                 valid_from,
             };
@@ -2456,11 +2891,46 @@ async fn search_textes_uncached(
             pinned_more,
         } => (pinned, pinned_more),
     };
-    let (conn_art, conn_txt) = tokio::try_join!(checkout(), checkout())?;
-    let repo_art = DecisionRepository::new(&conn_art);
-    let repo_txt = DecisionRepository::new(&conn_txt);
-    let (rows, member_art, member_txt) = tokio::try_join!(
-        repo_hits.search_articles(
+    let counting = Arc::new(TextesCounting {
+        q: q.to_string(),
+        expansions: expansions.clone(),
+        home: home.iter().map(|h| h.to_string()).collect(),
+        places: place_filter.clone(),
+        text_uid: text_uid.clone(),
+        stated: stated.iter().map(|s| s.to_string()).collect(),
+        source: source.map(str::to_string),
+        category: category.map(|(c, keep)| (c.to_string(), keep)),
+        aside,
+        at,
+        valid_from,
+        searched: jurisdictions.clone(),
+        abandons: AtomicU32::new(0),
+    });
+    let count = Arc::new(tokio::sync::OnceCell::new());
+    // The count starts beside the hits for a page that asks for it next; a
+    // teaser never does.
+    if context != lj_dtos::SearchContext::Teaser {
+        let (state, counting, count, db_permit) = (
+            state.clone(),
+            counting.clone(),
+            count.clone(),
+            db_permit.clone(),
+        );
+        tokio::spawn(
+            async move {
+                let _db_permit = db_permit;
+                if let Err(err) = count
+                    .get_or_try_init(|| count_content(&state, &counting))
+                    .await
+                {
+                    tracing::warn!(error = %err, "norms count failed");
+                }
+            }
+            .instrument(tracing::Span::current()),
+        );
+    }
+    let rows = repo_hits
+        .search_articles(
             q,
             &expansions,
             &home,
@@ -2468,43 +2938,19 @@ async fn search_textes_uncached(
             text_uid.as_deref(),
             &stated,
             source,
-            nature_set,
+            category,
             named.as_ref(),
             at,
             valid_from,
             limit,
             offset,
-        ),
-        repo_art.article_facets_articles(
-            q,
-            &expansions,
-            &home,
-            &place_filter,
-            text_uid.as_deref(),
-            &stated,
-            source,
-            nature_set,
-            at,
-            valid_from,
-        ),
-        repo_txt.article_facets_texts(
-            q,
-            &expansions,
-            &home,
-            &place_filter,
-            text_uid.as_deref(),
-            &stated,
-            source,
-            nature_set,
-            at,
-            valid_from,
-        ),
-    )?;
-    let stats = lj_store::repository::merge_article_facets([member_art, member_txt]);
-    Ok(ArticleSearchResponse {
+        )
+        .await?;
+    let resp = ArticleSearchResponse {
+        served: rows.len() as i64,
         hits: hits_with_snippets(rows, q, snippet_chars),
-        total: stats.total,
-        facets: facets_dto(stats, &home, &jurisdictions),
+        total: None,
+        facets: None,
         query_mode: lj_dtos::QueryMode::Lexical,
         pinned: pinned.into_iter().map(pinned_article).collect(),
         pinned_more,
@@ -2513,6 +2959,11 @@ async fn search_textes_uncached(
             false => None,
         },
         jurisdictions,
+    };
+    Ok(TextesAnswer {
+        resp,
+        count,
+        counting: Some(counting),
     })
 }
 
@@ -2663,6 +3114,7 @@ pub async fn list_textes(
     state: &AppState,
     code: Option<&str>,
     jurisdictions: &[String],
+    scope: Option<&str>,
     valid_from: Option<chrono::NaiveDate>,
     at: Option<chrono::NaiveDate>,
     limit: i64,
@@ -2671,12 +3123,13 @@ pub async fn list_textes(
     budget_key: Option<&crate::ratelimit::CallerKey>,
 ) -> Result<ArticleSearchResponse> {
     const ENGINE: lj_dtos::SearchEngine = lj_dtos::SearchEngine::Textes;
-    let filters = textes_filters(code, &[], jurisdictions, None, None, at, valid_from).to_string();
+    let filters = textes_filters(code, &[], jurisdictions, None, scope, at, valid_from).to_string();
     let shape = crate::usage::Shape {
         page: crate::usage::page_number(offset, limit).unwrap_or(1),
         filters: &filters,
     };
     caller.record_span(ENGINE, "", shape);
+    let (category, aside) = scope_category(scope)?;
     if state
         .budgets
         .take(crate::ratelimit::Cost::Search, budget_key)
@@ -2713,19 +3166,34 @@ pub async fn list_textes(
         text_uid: text_uid.as_deref(),
         jurisdictions: &stated,
         source: None,
-        nature_set: None,
+        category,
         at,
         valid_from,
     };
-    let (rows, stats) = tokio::try_join!(
-        repo_rows.list_texts(listed, limit, offset),
-        repo_stats.text_list_stats(listed),
-    )?;
-    caller.record_outcome(ENGINE, "", shape, stats.total);
+    let (rows, (stats, aside_count)) =
+        tokio::try_join!(repo_rows.list_texts(listed, limit, offset), async {
+            let stats = repo_stats.text_list_stats(listed).await?;
+            let aside_count = match aside {
+                Some(aside) => {
+                    let filters = lj_store::repository::ArticleBrowseFilters {
+                        category: Some((aside, true)),
+                        ..listed
+                    };
+                    repo_stats.text_list_stats(filters).await?.total
+                }
+                None => 0,
+            };
+            Ok::<_, lj_store::error::StoreError>((stats, aside_count))
+        })?;
+    let total = stats.total;
+    caller.record_outcome(ENGINE, "", shape, total);
+    let mut facets = facets_dto(stats, &home, &path_orders(&stated));
+    count_aside(&mut facets, aside_count);
     Ok(ArticleSearchResponse {
         hits: listed_hits(rows),
-        total: stats.total,
-        facets: facets_dto(stats, &home, &path_orders(&stated)),
+        served: total,
+        total: Some(total),
+        facets: Some(facets),
         query_mode: lj_dtos::QueryMode::Browse,
         pinned: Vec::new(),
         pinned_more: false,
@@ -2766,7 +3234,7 @@ fn reference_response(
     limit: i64,
     offset: i64,
     snippet_chars: usize,
-) -> ArticleSearchResponse {
+) -> TextesAnswer {
     let total = rows.len() as i64;
     let mut by_code: std::collections::BTreeMap<String, i64> = std::collections::BTreeMap::new();
     for r in &rows {
@@ -2784,27 +3252,30 @@ fn reference_response(
         .skip(offset.max(0) as usize)
         .take(limit.max(0) as usize)
         .collect();
-    ArticleSearchResponse {
-        total,
+    let facets = facets_dto(
+        ArticleSearchStats {
+            total,
+            code,
+            jurisdiction: Vec::new(),
+            category: Vec::new(),
+            source: Vec::new(),
+            path: Vec::new(),
+        },
+        home,
+        &jurisdictions,
+    );
+    let resp = ArticleSearchResponse {
+        served: total,
         hits: hits_with_snippets(page, q, snippet_chars),
-        facets: facets_dto(
-            ArticleSearchStats {
-                total,
-                code,
-                jurisdiction: Vec::new(),
-                nature: Vec::new(),
-                source: Vec::new(),
-                path: Vec::new(),
-            },
-            home,
-            &jurisdictions,
-        ),
+        total: None,
+        facets: None,
         query_mode: lj_dtos::QueryMode::Reference,
         pinned: Vec::new(),
         pinned_more: false,
         jurisdictions,
         reader_place,
-    }
+    };
+    TextesAnswer::counted_at_once(resp, total, facets)
 }
 
 fn pinned_article(r: lj_store::repository::ArticleSearchRow) -> lj_dtos::PinnedArticle {
@@ -2907,22 +3378,15 @@ fn facets_dto(
             })
             .collect()
     };
-    // Sur-facette portée : agrégat des buckets nature par mapping code.
-    let mut scope_counts: std::collections::BTreeMap<&'static str, i64> =
-        std::collections::BTreeMap::new();
-    for row in &stats.nature {
-        *scope_counts
-            .entry(lj_norm::referential_labels::nature_scope(&row.value))
-            .or_default() += row.count;
-    }
-    let mut scope: Vec<FacetChoice> = scope_counts
+    let mut scope: Vec<FacetChoice> = stats
+        .category
         .into_iter()
-        .map(|(value, count)| FacetChoice {
-            label: lj_norm::referential_labels::scope_label(value)
-                .unwrap_or(value)
+        .map(|row| FacetChoice {
+            label: lj_norm::referential_labels::category_label(&row.value)
+                .unwrap_or(&row.value)
                 .to_string(),
-            value: value.to_string(),
-            count,
+            value: row.value,
+            count: row.count,
             parent: None,
             hint: None,
         })
@@ -3197,30 +3661,84 @@ impl TocAddresses {
     }
 }
 
-/// The addressed tree of a text at `at`, from [`AppState::toc_address_cache`].
+/// A text's tree over all its versions, and the key of every article it ever
+/// had: its addresses at any date are computed from these alone.
+pub struct TocSource {
+    edges: TocEdges,
+    article_keys: Vec<String>,
+}
+
+impl TocSource {
+    pub fn weight(&self) -> usize {
+        self.edges.weight()
+            + self
+                .article_keys
+                .iter()
+                .map(|k| k.len() + 24)
+                .sum::<usize>()
+    }
+}
+
+async fn toc_source(
+    state: &AppState,
+    repo: &DecisionRepository<'_>,
+    text_uid: &str,
+) -> Result<Arc<TocSource>> {
+    let load = async {
+        let edges = repo.toc_edges(text_uid).await?;
+        let article_keys = if edges.is_empty() {
+            Vec::new()
+        } else {
+            repo.text_article_keys(text_uid).await?
+        };
+        Ok::<_, ApiError>(Arc::new(TocSource {
+            edges,
+            article_keys,
+        }))
+    };
+    state
+        .toc_source_cache
+        .try_get_with(text_uid.to_string(), load)
+        .await
+        .map_err(|e| ApiError::Internal(format!("toc source {text_uid}: {e}")))
+}
+
+/// The addressed tree of a text at `at`, from [`AppState::toc_address_cache`],
+/// shared by every day the tree does not change.
 pub async fn toc_addresses(
     state: &AppState,
     repo: &DecisionRepository<'_>,
     text_uid: &str,
     at: NaiveDate,
 ) -> Result<Arc<TocAddresses>> {
-    let key = format!("{text_uid}@{at}");
+    let source = toc_source(state, repo, text_uid).await?;
+    let key = format!("{text_uid}@{}", source.edges.epoch(at));
     if let Some(hit) = state.toc_address_cache.get(&key).await {
         return Ok(hit);
     }
-    let tree = repo.toc_tree(text_uid, at).await?;
-    let keys = if tree.is_empty() {
-        Vec::new()
-    } else {
-        repo.text_article_keys(text_uid).await?
-    };
+    let tree = source.edges.tree_at(at);
     let paths = {
         let rows: Vec<_> = tree.iter().map(TocTreeRow::toc_row).collect();
-        toc_paths(&rows, &keys.iter().map(String::as_str).collect())
+        let keys = source.article_keys.iter().map(String::as_str).collect();
+        toc_paths(&rows, &keys)
     };
     let toc = Arc::new(TocAddresses { tree, paths });
     state.toc_address_cache.insert(key, toc.clone()).await;
     Ok(toc)
+}
+
+/// Every version of a text's articles, from [`AppState::article_versions_cache`].
+async fn article_versions(
+    state: &AppState,
+    repo: &DecisionRepository<'_>,
+    text_uid: &str,
+) -> Result<Arc<ArticleVersions>> {
+    let load = async { Ok::<_, ApiError>(Arc::new(repo.article_versions(text_uid).await?)) };
+    state
+        .article_versions_cache
+        .try_get_with(text_uid.to_string(), load)
+        .await
+        .map_err(|e| ApiError::Internal(format!("article versions {text_uid}: {e}")))
 }
 
 /// A cross-reference of an article body as served: to the article cited, else
@@ -3499,7 +4017,7 @@ async fn section_citing_texts(
         .filter(|i| i.kind == "article")
         .filter_map(|i| i.num_key.clone())
         .collect();
-    let public_info: Vec<String> = lj_norm::referential_labels::PUBLIC_INFO_NATURES
+    let public_info: Vec<String> = lj_norm::category::PUBLIC_INFO_NATURES
         .iter()
         .map(|s| s.to_string())
         .collect();
@@ -3658,7 +4176,6 @@ mod tests {
             title: title.to_string(),
             keyed,
             articles: true,
-            body: false,
         };
         let polynesia = ["geo:PF".to_string(), "geo:FR".to_string()];
         let metropole = ["geo:FR-M".to_string(), "geo:FR".to_string()];
@@ -3799,6 +4316,8 @@ mod tests {
             docket_numbers: Some(vec!["123456".to_string()]),
             publication_codes: Some(vec!["A".to_string()]),
             summary: None,
+            summary_quote: None,
+            summary_body: None,
             cited_num_keys: Vec::new(),
         };
         let refs = crate::referential::Referential::new(Vec::new(), Vec::new(), Vec::new());
@@ -4089,6 +4608,7 @@ mod reader_tests {
             place: place.to_string(),
             path: path.iter().map(|p| p.to_string()).collect(),
             date: Some(date.parse().unwrap()),
+            implied: place_uid(DEFAULT_READER_PLACE),
         }
     }
 

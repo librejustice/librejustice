@@ -10,6 +10,15 @@ use lj_fold::fold;
 /// have named no place.
 pub const DOMESTIC_REGIONS: [&str; 3] = ["FR", "EU", "INTL"];
 
+/// The community organisations whose law is an order of its own, by acronym.
+const ORGANISATIONS: &[(&str, &[&str])] = &[
+    ("OHADA", &["ohada"]),
+    ("UEMOA", &["uemoa"]),
+    ("CEMAC", &["cemac"]),
+    ("CEDEAO", &["cedeao", "ecowas"]),
+    ("CIMA", &["cima"]),
+];
+
 /// `code ISO` → variantes foldées (minuscules, sans accent). Convention :
 /// suffixe `*` = préfixe de token (couvre les flexions du gentilé :
 /// `senegal*` matche « sénégalais(e)(s) ») ; entrée à espace = sous-chaîne
@@ -24,6 +33,7 @@ const COUNTRIES: &[(&str, &[&str])] = &[
     ("BG", &["bulgar*"]),
     ("BI", &["burundi", "burundais*"]),
     ("BJ", &["benin", "beninois*"]),
+    ("CA", &["canada", "canadien*"]),
     ("CD", &["congo", "congolais*", "kinshasa", "rdc", "zaire*"]),
     ("CF", &["centrafri*"]),
     ("CG", &["congo", "congolais*", "brazzaville"]),
@@ -184,7 +194,7 @@ pub fn strip_query_jurisdictions(query: &str) -> Option<(Vec<&'static str>, Stri
     let bilateral = |i: usize, tokens: &[String]| i > 0 && tokens[i - 1] == "franco";
     let mut matched = vec![false; tokens.len()];
     let mut codes: Vec<&'static str> = Vec::new();
-    for (code, stems) in COUNTRIES {
+    for (code, stems) in COUNTRIES.iter().chain(ORGANISATIONS) {
         let mut hit = false;
         for s in *stems {
             match s.strip_suffix('*') {
@@ -245,13 +255,30 @@ pub fn from_url_segment(segment: &str) -> Option<&'static str> {
     DOMESTIC_REGIONS
         .iter()
         .copied()
-        .chain(COUNTRIES.iter().map(|(code, _)| *code))
+        .chain(COUNTRIES.iter().chain(ORGANISATIONS).map(|(code, _)| *code))
         .find(|code| code.eq_ignore_ascii_case(segment))
+}
+
+/// A filter path with the Union's former code, `UE`, written `EU`.
+pub fn union_as_eu(path: String) -> String {
+    match path.strip_prefix("UE") {
+        Some(rest) if rest.is_empty() || rest.starts_with('.') => format!("EU{rest}"),
+        _ => path,
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::query_jurisdictions;
+    use super::{query_jurisdictions, union_as_eu};
+
+    #[test]
+    fn union_old_code_reads_as_eu_and_leaves_uemoa() {
+        let fold = |p: &str| union_as_eu(p.to_string());
+        assert_eq!(fold("UE"), "EU");
+        assert_eq!(fold("UE.DIRECTIVE"), "EU.DIRECTIVE");
+        assert_eq!(fold("UEMOA"), "UEMOA");
+        assert_eq!(fold("FR.LOI"), "FR.LOI");
+    }
 
     #[test]
     fn demonym_and_country_name_detected() {
@@ -390,10 +417,11 @@ mod tests {
 
     #[test]
     fn every_jurisdiction_reads_back_from_its_url_segment() {
-        use super::{from_url_segment, COUNTRIES, DOMESTIC_REGIONS};
+        use super::{from_url_segment, COUNTRIES, DOMESTIC_REGIONS, ORGANISATIONS};
         use lj_vocab::url_segment;
         let all = COUNTRIES
             .iter()
+            .chain(ORGANISATIONS)
             .map(|(c, _)| *c)
             .chain(DOMESTIC_REGIONS.iter().copied());
         for code in all {

@@ -24,33 +24,30 @@ use tower_http::services::ServeDir;
 use tower_http::set_header::SetResponseHeader;
 use tracing::Instrument as _;
 
+mod pinned_render;
 mod tracing_executor;
 mod web_backend;
 
-// Runtime **mono-thread** : le SSR Leptos crée des valeurs `_local` (!Send)
-// stockées dans l'Owner réactif ; sur un runtime multi-thread leur drop peut
-// tomber sur un autre worker (`SendWrapper::invalid_drop`) et tuer le stream
-// Suspense. Création et drop ont donc lieu ici, sur le même thread.
-//
-// Le CPU lourd (highlight snippet, rendu PDF/DOCX) part sur le pool blocking,
-// borné aux cœurs réels — `#[tokio::main]` ne règle pas `max_blocking_threads`,
-// d'où le builder manuel.
+// Heavy CPU (snippet highlight, PDF/DOCX render) goes to the blocking pool, capped
+// at four threads: `#[tokio::main]` does not set `max_blocking_threads`.
 fn main() -> Result<()> {
-    let blocking_cap = std::thread::available_parallelism()
-        .map_or(4, |n| n.get())
-        .min(4);
-    tokio::runtime::Builder::new_current_thread()
+    let blocking_cap = cores().min(4);
+    tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .max_blocking_threads(blocking_cap)
         .build()?
         .block_on(run())
 }
 
+fn cores() -> usize {
+    std::thread::available_parallelism().map_or(4, |n| n.get())
+}
+
 async fn run() -> Result<()> {
     let settings = Settings::from_env()?;
     let _telemetry_guard = telemetry::init_telemetry(&settings)?;
     install_panic_hook();
-    tracing_executor::install()?;
+    tracing_executor::install(tokio::runtime::Handle::current())?;
 
     let conf = get_configuration(None).unwrap();
     let leptos_options = conf.leptos_options;
@@ -84,6 +81,11 @@ async fn run() -> Result<()> {
                 tracing::warn!("norm catalogue warm-up failed: {e}");
             }
         });
+    }
+    tokio::spawn(lj_api::journals_jo::keep_hidden(state.clone()));
+    // The beta and a dev server read the same base: one warmer counts for all.
+    if settings.deployment_environment.as_deref() == Some("prod") {
+        tokio::spawn(lj_api::search::keep_homes_warm(state.clone()));
     }
 
     let leptos_addr = leptos_options.site_addr;
@@ -163,6 +165,36 @@ async fn run() -> Result<()> {
         },
         shell,
     );
+    let site_fallback = move |uri: axum::http::Uri,
+                              st: axum::extract::State<LeptosOptions>,
+                              req: axum::extract::Request| {
+        let leptos_fallback = leptos_fallback.clone();
+        async move {
+            let path = uri.path();
+            if path.len() > 1 && path.ends_with('/') {
+                let canonical = path.trim_end_matches('/');
+                let target = match uri.query() {
+                    Some(q) => format!("{canonical}?{q}"),
+                    None => canonical.to_string(),
+                };
+                return axum::response::IntoResponse::into_response(
+                    axum::response::Redirect::permanent(&target),
+                );
+            }
+            // leptos_axum 0.8 `get_static_file` forwards `Accept-Encoding` alone: a
+            // byte range came back whole, and Safari plays no video served that way.
+            if path.ends_with(".mp4") || path.ends_with(".webm") {
+                return match ServeDir::new(&*st.site_root).try_call(req).await {
+                    Ok(res) => axum::response::IntoResponse::into_response(res),
+                    Err(e) => axum::response::IntoResponse::into_response((
+                        axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                        e.to_string(),
+                    )),
+                };
+            }
+            leptos_fallback(uri, st, req).await
+        }
+    };
     let leptos_router = Router::new()
         .leptos_routes_with_context(
             &leptos_options,
@@ -184,48 +216,40 @@ async fn run() -> Result<()> {
             };
             axum::response::Redirect::to(&target)
         })
-        .fallback(
-            move |uri: axum::http::Uri,
-                  st: axum::extract::State<LeptosOptions>,
-                  req: axum::extract::Request| {
-                let leptos_fallback = leptos_fallback.clone();
+        .fallback(site_fallback.clone())
+        .with_state(leptos_options.clone())
+        .layer(axum::middleware::from_fn(
+            move |req: axum::extract::Request, next: axum::middleware::Next| {
+                let (site_fallback, options) = (site_fallback.clone(), leptos_options.clone());
                 async move {
-                    let path = uri.path();
-                    if path.len() > 1 && path.ends_with('/') {
-                        let canonical = path.trim_end_matches('/');
-                        let target = match uri.query() {
-                            Some(q) => format!("{canonical}?{q}"),
-                            None => canonical.to_string(),
-                        };
-                        return axum::response::IntoResponse::into_response(
-                            axum::response::Redirect::permanent(&target),
-                        );
+                    if !names_a_root_file(&req) {
+                        return next.run(req).await;
                     }
-                    // leptos_axum 0.8 `get_static_file` forwards `Accept-Encoding` alone: a
-                    // byte range came back whole, and Safari plays no video served that way.
-                    if path.ends_with(".mp4") || path.ends_with(".webm") {
-                        return match ServeDir::new(&*st.site_root).try_call(req).await {
-                            Ok(res) => axum::response::IntoResponse::into_response(res),
-                            Err(e) => axum::response::IntoResponse::into_response((
-                                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                                e.to_string(),
-                            )),
-                        };
-                    }
-                    leptos_fallback(uri, st, req).await
+                    site_fallback(req.uri().clone(), axum::extract::State(options), req).await
                 }
             },
-        )
-        .with_state(leptos_options)
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            pinned_render::Renders::new(cores()),
+            pinned_render::render,
+        ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
             lj_api::page_gates::session_gates,
         ))
         .layer(axum::middleware::from_fn_with_state(
             state.clone(),
+            reader_home,
+        ))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
             ancienne_adresse,
         ))
         .layer(axum::middleware::from_fn(body_in_request_span))
+        .layer(axum::middleware::from_fn_with_state(
+            state.clone(),
+            lj_api::admission::admit,
+        ))
         .layer(OtelAxumLayer::default());
 
     // Fusion : routes données/MCP/OAuth (`lj-api`, sans fallback — c'est le
@@ -679,12 +703,14 @@ fn renamed_path(path: &str) -> Option<String> {
     Some(match segs.as_slice() {
         ["recherche" | "recherche-decisions" | "decisions"] => "/decision-search".to_string(),
         ["recherche-textes" | "textes"] => "/norm-search".to_string(),
-        ["annonces"] => "/notice-search".to_string(),
-        ["annonces.rss"] => "/notice-search.rss".to_string(),
-        ["annonces.ics"] => "/notice-search.ics".to_string(),
-        ["annonces", "departement"] | ["notice-index"] => "/notice-index/fr".to_string(),
-        ["annonces", "departement", code] => format!("/notice-index/fr/{code}"),
-        ["marche", uid] => lj_vocab::notice_path(uid),
+        ["annonces" | "notice-search"] => "/journal-search".to_string(),
+        ["annonces.rss" | "notice-search.rss"] => "/journal-search.rss".to_string(),
+        ["annonces.ics" | "notice-search.ics"] => "/journal-search.ics".to_string(),
+        ["annonces", "departement"] | ["notice-index" | "journal-index"] => {
+            "/journal-index/fr".to_string()
+        }
+        ["annonces", "departement", code] => format!("/journal-index/fr/{code}"),
+        ["marche", uid] => lj_vocab::notice_path("FR", uid),
         ["entite", ns, id] => {
             lj_vocab::entity_segment(ns)?;
             lj_vocab::entity_path(ns, id)
@@ -704,8 +730,10 @@ fn renamed_path(path: &str) -> Option<String> {
             lj_vocab::entity_segment(ns)?;
             lj_vocab::entity_path(ns, id)
         }
-        ["notice", _, uid] => lj_vocab::notice_path(uid),
-        ["notice-index", _, rest @ ..] if rest.len() <= 1 => prefixed_fr("/notice-index/fr", rest),
+        ["notice", _, uid @ ..] if !uid.is_empty() => lj_api::notices::path(&uid.join("/")),
+        ["notice-index" | "journal-index", _, rest @ ..] if rest.len() <= 1 => {
+            prefixed_fr("/journal-index/fr", rest)
+        }
         ["entity-index", _, kind] => format!("/entity-index/fr/{kind}"),
         ["norm-index", _, "in-force", rest @ ..] if rest.len() <= 1 => {
             prefixed_fr("/norm-index/fr/in-force", rest)
@@ -760,13 +788,111 @@ async fn ancienne_adresse(
         _ => renamed_path(uri.path()),
     };
     let Some(mut cible) = cible.filter(|c| c != uri.path()) else {
-        return next.run(req).await;
+        let resp = next.run(req).await;
+        if resp.status() != axum::http::StatusCode::NOT_FOUND {
+            return resp;
+        }
+        if let ["decision", .., id] = segs.as_slice() {
+            return match lj_api::decisions::conclusions_ruling_address(&state, id).await {
+                Some(ruling) => axum::response::Redirect::permanent(&ruling).into_response(),
+                None => resp,
+            };
+        }
+        let Some(slug) = moved_norm_slug(&segs) else {
+            return resp;
+        };
+        return match lj_api::notices::moved_text(&state, slug).await {
+            Ok(Some(notice)) => axum::response::Redirect::permanent(&notice).into_response(),
+            _ => resp,
+        };
     };
     if let Some(q) = uri.query() {
         cible.push('?');
         cible.push_str(q);
     }
     axum::response::Redirect::permanent(&cible).into_response()
+}
+
+/// A file of the site root, which the `/{juris}` route captures with the
+/// jurisdictions: its one segment is never two lower-case letters.
+fn names_a_root_file(req: &axum::extract::Request) -> bool {
+    let captured = req
+        .extensions()
+        .get::<axum::extract::MatchedPath>()
+        .is_some_and(|m| m.as_str() == "/{juris}");
+    let segment = req.uri().path().trim_start_matches('/');
+    captured && !(segment.len() == 2 && segment.bytes().all(|b| b.is_ascii_lowercase()))
+}
+
+/// The home page, the three searches and the API guide, reached without a
+/// jurisdiction, answer with the reader's, which differs per reader and so is never cached.
+async fn reader_home(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::response::IntoResponse as _;
+    let unscoped = matches!(
+        req.uri().path(),
+        "/" | "/decision-search" | "/norm-search" | "/journal-search" | "/api-guide"
+    );
+    let read = matches!(
+        *req.method(),
+        axum::http::Method::GET | axum::http::Method::HEAD
+    );
+    if !(unscoped && read) {
+        return next.run(req).await;
+    }
+    let known = match lj_api::referential::referential(&state).await {
+        Ok(refs) => lj_api::jurisdictions::known(&refs),
+        Err(e) => return e.into_response(),
+    };
+    let headers = req.headers();
+    let cookie = headers
+        .get(axum::http::header::COOKIE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| lj_api::session::read_cookie(v, lj_dtos::READER_JURISDICTION_COOKIE));
+    let country = headers.get("cf-ipcountry").and_then(|v| v.to_str().ok());
+    let code = reader_jurisdiction(cookie.as_deref(), country, &known);
+    let mut target = format!("/{code}{}", req.uri().path().trim_end_matches('/'));
+    if let Some(q) = req.uri().query() {
+        target.push('?');
+        target.push_str(q);
+    }
+    let mut resp = axum::response::Redirect::temporary(&target).into_response();
+    resp.headers_mut().insert(
+        axum::http::header::CACHE_CONTROL,
+        axum::http::HeaderValue::from_static("private, no-store"),
+    );
+    resp
+}
+
+/// The jurisdiction the reader chose, else the country Cloudflare places their
+/// address in, else France; a code the corpus does not hold is passed over.
+fn reader_jurisdiction(
+    cookie: Option<&str>,
+    country: Option<&str>,
+    known: &[lj_dtos::ReaderJurisdiction],
+) -> String {
+    let held = |code: &str| known.iter().any(|j| j.code == code);
+    cookie
+        .filter(|c| held(c))
+        .map(str::to_string)
+        .or_else(|| country.map(str::to_ascii_lowercase).filter(|c| held(c)))
+        .unwrap_or_else(|| "fr".to_string())
+}
+
+/// The French text slug a norm address names, under its jurisdiction or an older shape.
+fn moved_norm_slug<'a>(segs: &[&'a str]) -> Option<&'a str> {
+    match segs {
+        ["norm", "fr", slug, ..] => Some(slug),
+        ["norm" | "texte" | "loi", first, ..]
+            if lj_norm::jurisdictions::from_url_segment(first).is_none() =>
+        {
+            Some(first)
+        }
+        _ => None,
+    }
 }
 
 /// A place written with its vocabulary prefix (`?place=geo:PF`), as old links
@@ -860,8 +986,8 @@ fn redirect_preserving_query(target: &'static str) -> axum::routing::MethodRoute
 #[cfg(test)]
 mod tests {
     use super::{
-        body_in_request_span, browser_family, build_id, client_kind, referer_is_external,
-        renamed_path, SpannedBody,
+        body_in_request_span, browser_family, build_id, client_kind, reader_jurisdiction,
+        referer_is_external, renamed_path, SpannedBody,
     };
     use axum::body::{Body, Bytes, HttpBody};
     use axum::http::HeaderMap;
@@ -1114,13 +1240,49 @@ mod tests {
         assert!(!fixe.is_end_stream());
     }
 
+    /// The cookie wins, then the country Cloudflare reads, then France; a code
+    /// the corpus does not hold, `XX` and Tor's `T1` included, is passed over.
+    #[test]
+    fn a_reader_goes_to_the_jurisdiction_they_chose_else_their_country() {
+        let known: Vec<lj_dtos::ReaderJurisdiction> = ["fr", "ch", "be"]
+            .iter()
+            .map(|c| lj_dtos::ReaderJurisdiction {
+                code: c.to_string(),
+                label: c.to_string(),
+                seats: Vec::new(),
+            })
+            .collect();
+        let cases = [
+            (Some("ch"), Some("BE"), "ch"),
+            (Some("zz"), Some("BE"), "be"),
+            (Some("CH"), None, "fr"),
+            (None, Some("CH"), "ch"),
+            (None, Some("US"), "fr"),
+            (None, Some("XX"), "fr"),
+            (None, Some("T1"), "fr"),
+            (Some(""), Some(""), "fr"),
+            (None, None, "fr"),
+        ];
+        for (cookie, country, expected) in cases {
+            assert_eq!(
+                reader_jurisdiction(cookie, country, &known),
+                expected,
+                "{cookie:?} {country:?}"
+            );
+        }
+    }
+
     #[test]
     fn une_ancienne_adresse_nomme_la_nouvelle() {
         let cases = [
             ("/decisions", Some("/decision-search")),
             ("/recherche-textes", Some("/norm-search")),
-            ("/annonces.rss", Some("/notice-search.rss")),
-            ("/annonces/departement/2A", Some("/notice-index/fr/2A")),
+            ("/annonces.rss", Some("/journal-search.rss")),
+            ("/annonces/departement/2A", Some("/journal-index/fr/2A")),
+            ("/notice-search", Some("/journal-search")),
+            ("/notice-search.ics", Some("/journal-search.ics")),
+            ("/notice-index/fr/2A", Some("/journal-index/fr/2A")),
+            ("/journal-index/fr/2A", Some("/journal-index/fr/2A")),
             ("/marche/boamp-25-1", Some("/notice/fr/boamp-25-1")),
             (
                 "/entite/siren/552081317",
@@ -1151,7 +1313,15 @@ mod tests {
                 Some("/entity/fr/siren/552081317"),
             ),
             ("/notice/eu/boamp-25-1", Some("/notice/fr/boamp-25-1")),
-            ("/notice-index/be/75", Some("/notice-index/fr/75")),
+            (
+                "/notice/fr/jo-dj:DJ/ACCORD-0",
+                Some("/notice/dj/jo-dj:DJ/ACCORD-0"),
+            ),
+            (
+                "/notice/ch/ro:RO/2003/260",
+                Some("/notice/ch/ro:RO/2003/260"),
+            ),
+            ("/journal-index/be/75", Some("/journal-index/fr/75")),
             ("/norm-index/de/in-force", Some("/norm-index/fr/in-force")),
         ];
         for (old, new) in cases {

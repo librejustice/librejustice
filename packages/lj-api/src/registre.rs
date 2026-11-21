@@ -1,6 +1,6 @@
 //! The registry side of the entity page: SIRENE identity, RNE officers and
 //! finances from recherche-entreprises.api.gouv.fr, and the BODACC notices of a
-//! SIREN or the JOAFE notices of an RNA from the base, as the pot's `AnnonceHit`.
+//! SIREN or the JOAFE notices of an RNA from the base, as the pot's `JournalHit`.
 //! Cached 24 h in process (`AppState::registre_cache`); an API down leaves its
 //! section empty, never an error. The JOAFE PDFs stay outgoing links.
 
@@ -9,10 +9,10 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use lj_dtos::{
-    AnnonceHit, EntityAnnonceGroupDto, EntityRegistreResponse, RegistreDirigeantDto,
+    EntityJournalGroupDto, EntityRegistreResponse, JournalHit, RegistreDirigeantDto,
     RegistreEntrepriseDto, RegistreFinanceDto, RegistreLienDto,
 };
-use lj_vocab::{ANNONCE_FOND_BODACC, ANNONCE_FOND_JOAFE};
+use lj_vocab::{JOURNAL_FOND_BODACC, JOURNAL_FOND_JOAFE};
 use serde::Deserialize;
 use tracing::instrument;
 
@@ -26,9 +26,31 @@ pub(crate) const UPSTREAM_TIMEOUT: Duration = Duration::from_secs(3);
 /// before it fails.
 const UPSTREAM_LENT: Duration = Duration::from_millis(1000);
 /// Annonces affichées sur la fiche (le total réel est renvoyé à part).
-const ANNONCES_LIMIT: usize = 10;
+const JOURNALS_LIMIT: usize = 10;
 
+const RECHERCHE_ENTREPRISES_HOST: &str = "recherche-entreprises.api.gouv.fr";
 const RECHERCHE_ENTREPRISES: &str = "https://recherche-entreprises.api.gouv.fr/search";
+
+/// recherche-entreprises resets about one call in 200 before answering it: the GET
+/// goes again once, on a fresh connection, inside the same [`UPSTREAM_TIMEOUT`].
+pub(crate) fn retry_policy() -> reqwest::retry::Builder {
+    reqwest::retry::for_host(RECHERCHE_ENTREPRISES_HOST)
+        .max_retries_per_request(1)
+        .classify_fn(|attempt| {
+            if attempt.error().is_some_and(is_reset) {
+                attempt.retryable()
+            } else {
+                attempt.success()
+            }
+        })
+}
+
+fn is_reset(e: &(dyn std::error::Error + 'static)) -> bool {
+    std::iter::successors(Some(e), |e| e.source()).any(|e| {
+        e.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::ConnectionReset)
+    })
+}
 
 /// Volet registre d'une entité (`GET /entity/{ns}/{id}/registre`). Namespaces
 /// sans volet (`cnb:`, `oacc:`…) → réponse vide. Seules les réponses dont tous
@@ -60,16 +82,16 @@ pub async fn entity_registre(
     };
     // The contracts join the list outside the 24 h cache: one closed or new
     // shows at the next harvest. They come first.
-    let mut groupes = crate::annonces::entity_groups(state, &key).await?;
-    groupes.append(&mut response.annonces);
-    response.annonces = groupes;
+    let mut groupes = crate::journals::entity_groups(state, &key).await?;
+    groupes.append(&mut response.journals);
+    response.journals = groupes;
     Ok(response)
 }
 
 fn empty() -> EntityRegistreResponse {
     EntityRegistreResponse {
         entreprise: None,
-        annonces: Vec::new(),
+        journals: Vec::new(),
         liens: Vec::new(),
     }
 }
@@ -92,13 +114,13 @@ async fn registre_entreprise(state: &AppState, id: &str) -> (EntityRegistreRespo
     }];
     let (entreprise, bodacc) = tokio::join!(
         fetch_recherche_entreprises(state, &siren),
-        crate::annonces_bodacc::pour_entite(state, &siren, ANNONCES_LIMIT)
+        crate::journals_bodacc::pour_entite(state, &siren, JOURNALS_LIMIT)
     );
     let complete = entreprise.is_ok() && bodacc.is_ok();
     (
         EntityRegistreResponse {
             entreprise: entreprise.unwrap_or(None),
-            annonces: groupe_live(ANNONCE_FOND_BODACC, bodacc.unwrap_or_default()),
+            journals: groupe_live(JOURNAL_FOND_BODACC, bodacc.unwrap_or_default()),
             liens,
         },
         complete,
@@ -250,12 +272,12 @@ async fn registre_association(state: &AppState, id: &str) -> (EntityRegistreResp
     if rna.is_empty() {
         return (empty(), true);
     }
-    let fetched = crate::annonces_joafe::pour_entite(state, &rna, ANNONCES_LIMIT).await;
+    let fetched = crate::journals_joafe::pour_entite(state, &rna, JOURNALS_LIMIT).await;
     let complete = fetched.is_ok();
     (
         EntityRegistreResponse {
             entreprise: None,
-            annonces: groupe_live(ANNONCE_FOND_JOAFE, fetched.unwrap_or_default()),
+            journals: groupe_live(JOURNAL_FOND_JOAFE, fetched.unwrap_or_default()),
             liens: Vec::new(),
         },
         complete,
@@ -264,13 +286,13 @@ async fn registre_association(state: &AppState, id: &str) -> (EntityRegistreResp
 
 /// Un fond live en groupe de la fiche : sa clé est le fond, son libellé celui
 /// du pot. Aucune ligne → aucun groupe (une section vide n'est pas une info).
-fn groupe_live(fond: &str, (items, total): (Vec<AnnonceHit>, i64)) -> Vec<EntityAnnonceGroupDto> {
+fn groupe_live(fond: &str, (items, total): (Vec<JournalHit>, i64)) -> Vec<EntityJournalGroupDto> {
     if items.is_empty() {
         return Vec::new();
     }
-    vec![EntityAnnonceGroupDto {
+    vec![EntityJournalGroupDto {
         key: fond.to_string(),
-        label: lj_dtos::annonce_fond_label(fond)
+        label: lj_dtos::journal_fond_label(fond)
             .unwrap_or(fond)
             .to_string(),
         total,

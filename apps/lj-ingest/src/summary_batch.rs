@@ -5,15 +5,19 @@ use std::collections::{HashMap, HashSet};
 
 use anyhow::{anyhow, bail, Result};
 use lj_llm::anthropic::{AnthropicBatches, Batch, BatchRequest, Outcome, Usage};
-use lj_store::repository::{DecisionRepository, MissingSummaryRow, SummaryBatchRow};
+use lj_store::repository::{DecisionRepository, MissingSummaryRow, PickedText, SummaryBatchRow};
 use lj_summary::{
     assemble_rewrite, body_text_from_full_text, wants_second_pass, SummaryEngine,
-    COLLAGE_PROSE_MIN, JURISDICTION_TIERS, SUMMARY_PROMPT_VERSION,
+    COLLAGE_PROSE_MIN, JURISDICTION_TIERS, SUMMARY_LANGUAGES, SUMMARY_PROMPT_VERSION,
 };
 
 use crate::config::Settings;
 
-const ENGINE: SummaryEngine = SummaryEngine::Haiku55BlockBatchV11;
+const ENGINE: SummaryEngine = SummaryEngine::Haiku55BlockBatchV12;
+
+/// Suffix of a second pass's `custom_id`: both passes run at the same level, so the
+/// level no longer tells them apart.
+const SECOND_PASS: &str = "-2";
 
 /// The API caps a batch's requests and bytes, which these bounds stay under.
 const BATCH_REQUESTS_MAX: usize = 10_000;
@@ -32,7 +36,22 @@ fn usd(u: &Usage) -> f64 {
         + u.output_tokens as f64 * USD_PER_TOKEN[3]
 }
 
-pub async fn run(limit: Option<usize>, reverse: bool, wait: bool) -> Result<()> {
+pub async fn run(
+    limit: Option<usize>,
+    reverse: bool,
+    wait: bool,
+    jurisdictions: &[String],
+    skip: Option<&std::path::Path>,
+) -> Result<()> {
+    let skip: HashSet<i64> = match skip {
+        Some(path) => std::fs::read_to_string(path)?
+            .lines()
+            .map(str::trim)
+            .filter(|line| !line.is_empty())
+            .map(str::parse)
+            .collect::<std::result::Result<_, _>>()?,
+        None => HashSet::new(),
+    };
     let settings = Settings::from_env()?;
     let pool =
         lj_pg::db::build_pool(&settings.db_url, 2).map_err(|e| anyhow!("build_pool: {e}"))?;
@@ -48,7 +67,8 @@ pub async fn run(limit: Option<usize>, reverse: bool, wait: bool) -> Result<()> 
 
     collect(&repo, &api).await?;
     if let Some(limit) = limit.filter(|l| *l > 0) {
-        submit_stale(&repo, &api, limit, reverse).await?;
+        let only: Vec<&str> = jurisdictions.iter().map(String::as_str).collect();
+        submit_stale(&repo, &api, limit, reverse, &only, &skip).await?;
     }
     while wait && !repo.open_summary_batches().await?.is_empty() {
         tokio::select! {
@@ -85,7 +105,7 @@ async fn collect(repo: &DecisionRepository<'_>, api: &AnthropicBatches) -> Resul
                 .and_then(|t| t.wire())
                 .expect("the batch engine names its second pass");
             let rows = repo.summary_rows(&redo).await?;
-            submit(repo, api, &rows, second).await?;
+            submit(repo, api, &rows, second, true).await?;
         }
     }
     Ok(())
@@ -100,11 +120,13 @@ async fn write_results(
 ) -> Result<Vec<i64>> {
     let engine = SummaryEngine::from_code(open.engine)
         .ok_or_else(|| anyhow!("summary_batch {} names engine {}", open.id, open.engine))?;
-    let first_pass = Some(open.effort.as_str()) == engine.thinking().wire();
     let (mut written, mut taken, mut failed, mut spent) = (0usize, 0usize, 0usize, 0.0f64);
     let mut redo = Vec::new();
     for result in api.results(batch).await? {
-        let decision_id: i64 = result.custom_id.parse()?;
+        let (decision_id, first_pass) = match result.custom_id.strip_suffix(SECOND_PASS) {
+            Some(id) => (id.parse::<i64>()?, false),
+            None => (result.custom_id.parse::<i64>()?, true),
+        };
         let answer = match result.outcome {
             Outcome::Succeeded(answer) => answer,
             other => {
@@ -163,6 +185,8 @@ async fn submit_stale(
     api: &AnthropicBatches,
     limit: usize,
     reverse: bool,
+    only: &[&str],
+    skip: &HashSet<i64>,
 ) -> Result<()> {
     let in_flight: HashSet<i64> = repo
         .open_summary_batches()
@@ -171,7 +195,7 @@ async fn submit_stale(
         .flat_map(|b| b.decision_ids)
         .collect();
     let (types, tiers): (Vec<&str>, Vec<i32>) = JURISDICTION_TIERS.iter().copied().unzip();
-    let wanted = (limit + in_flight.len()) as i64;
+    let wanted = (limit + in_flight.len() + skip.len()) as i64;
     let candidates: Vec<MissingSummaryRow> = repo
         .iter_summaries_by_jurisdiction(
             SUMMARY_PROMPT_VERSION,
@@ -181,13 +205,17 @@ async fn submit_stale(
             &types,
             &tiers,
             reverse,
-            &[],
+            only,
             false,
+            &[],
         )
         .await?
         .into_iter()
         .flatten()
-        .filter(|row| !in_flight.contains(&row.decision_id))
+        // A request is keyed by decision, so a batch writes the read text alone.
+        .filter(|row| {
+            row.read && !in_flight.contains(&row.decision_id) && !skip.contains(&row.decision_id)
+        })
         .collect();
     let mut submitted = 0usize;
     for group in candidates.chunks(BATCH_REQUESTS_MAX) {
@@ -208,7 +236,7 @@ async fn submit_stale(
             .thinking()
             .wire()
             .expect("the batch engine names its level");
-        submitted += submit(repo, api, &rows, first).await?;
+        submitted += submit(repo, api, &rows, first, false).await?;
         if submitted >= limit {
             break;
         }
@@ -227,27 +255,48 @@ async fn submit(
     api: &AnthropicBatches,
     rows: &[MissingSummaryRow],
     effort: &str,
+    second: bool,
 ) -> Result<usize> {
     let ids: Vec<i64> = rows.iter().map(|r| r.decision_id).collect();
-    let mut texts: HashMap<i64, String> = repo.fetch_full_texts(&ids).await?.into_iter().collect();
+    let mut texts: HashMap<i64, PickedText> = repo
+        .fetch_full_texts(&ids)
+        .await?
+        .into_iter()
+        .map(|text| (text.decision_id, text))
+        .collect();
+    let prompts: HashMap<&str, String> = SUMMARY_LANGUAGES
+        .iter()
+        .filter_map(|(code, _)| Some((*code, ENGINE.system_prompt(code)?)))
+        .collect();
     let mut headers = crate::summary::headers(repo, rows).await?;
     let mut requests = Vec::with_capacity(rows.len());
     for row in rows {
-        let Some(body) = texts
-            .remove(&row.decision_id)
-            .and_then(|t| body_text_from_full_text(&t))
-        else {
+        let Some((text, body)) = texts.remove(&row.decision_id).and_then(|t| {
+            let body = body_text_from_full_text(&t.full_text)?;
+            Some((t, body))
+        }) else {
             tracing::warn!(decision_id = row.decision_id, "summary_no_body");
             continue;
+        };
+        let Some(system) = prompts.get(text.lang.as_str()) else {
+            bail!(
+                "decision {}: no summary is written in {}",
+                row.decision_id,
+                text.lang
+            );
         };
         let header = headers
             .remove(&row.decision_id)
             .expect("one header per row");
         requests.push(BatchRequest {
-            custom_id: row.decision_id.to_string(),
+            custom_id: format!(
+                "{}{}",
+                row.decision_id,
+                if second { SECOND_PASS } else { "" }
+            ),
             model: ENGINE.model(),
             effort,
-            system: ENGINE.prompt(),
+            system,
             user: header.rewrite_input(&body),
         });
     }
@@ -268,7 +317,7 @@ async fn submit(
         let batch = api.create(chunk).await?;
         let ids: Vec<i64> = chunk
             .iter()
-            .map(|r| r.custom_id.parse())
+            .map(|r| r.custom_id.trim_end_matches(SECOND_PASS).parse())
             .collect::<std::result::Result<_, _>>()?;
         repo.insert_summary_batch(&batch.id, ENGINE.code(), effort, &ids)
             .await?;

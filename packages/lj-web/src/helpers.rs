@@ -31,12 +31,15 @@ pub fn format_juridiction(jur: JurisdictionType) -> &'static str {
         JurisdictionType::Tj => "Tribunal judiciaire",
         JurisdictionType::Tcom => "Tribunal de commerce",
         JurisdictionType::Cph => "Conseil de prud'hommes",
+        JurisdictionType::Assises => "Cour d'assises",
+        JurisdictionType::Ccd => "Cour criminelle départementale",
         JurisdictionType::Cedh => "Cour européenne des droits de l'homme",
         JurisdictionType::Cjue => "Cour de justice de l'Union européenne",
         JurisdictionType::Cnda => "Cour nationale du droit d'asile",
         JurisdictionType::Cnil => "Commission nationale de l'informatique et des libertés",
         JurisdictionType::Ddd => "Défenseur des droits",
         JurisdictionType::Adlc => "Autorité de la concurrence",
+        JurisdictionType::Amf => "Autorité des marchés financiers",
         JurisdictionType::Comeu => "Commission européenne",
         JurisdictionType::CourSupreme => "Cour suprême",
         JurisdictionType::CourCassation => "Cour de cassation",
@@ -50,6 +53,7 @@ pub fn format_juridiction(jur: JurisdictionType) -> &'static str {
         JurisdictionType::CourJustice => "Cour de justice",
         JurisdictionType::Ccja => "Cour commune de justice et d'arbitrage",
         JurisdictionType::CourDroitsHomme => "Cour des droits de l'homme",
+        JurisdictionType::AutoriteAdministrative => "Autorité administrative",
     }
 }
 
@@ -181,17 +185,6 @@ pub fn format_score(score: f64) -> String {
 pub const SEARCH_PAGE_SIZE: u32 = 10;
 pub const SEARCH_MAX_PAGES: i64 = 10;
 
-/// French label of a result count. The total is the matched fund's, not the
-/// ranked list's: the court facet shows its full count right beside it, and a
-/// « 400+ » would read poorer than the neighbouring column.
-pub fn format_results_count(total: i64) -> String {
-    match total {
-        0 => "Aucun résultat".to_string(),
-        1 => "1 résultat".to_string(),
-        n => format!("{} résultats", group_thousands(n)),
-    }
-}
-
 /// Encode un terme de requete pour le query string.
 pub fn encode_query(query: &str) -> String {
     let mut out = String::with_capacity(query.len());
@@ -215,15 +208,14 @@ pub fn encode_query(query: &str) -> String {
     out
 }
 
-/// Insere une espace insecable fine tous les 3 chiffres (rendu `toLocaleString
-/// ("fr-FR")` : separateur U+202F).
-pub fn group_thousands(n: i64) -> String {
+/// `n` with its thousands grouped.
+pub fn group_thousands(ui: &crate::i18n::NumbersUi, n: i64) -> String {
     let digits = n.abs().to_string();
     let mut out = String::new();
     let len = digits.len();
     for (i, ch) in digits.chars().enumerate() {
         if i > 0 && (len - i).is_multiple_of(3) {
-            out.push('\u{202F}');
+            out.push(ui.thousands);
         }
         out.push(ch);
     }
@@ -231,14 +223,6 @@ pub fn group_thousands(n: i64) -> String {
         format!("-{out}")
     } else {
         out
-    }
-}
-
-/// « 1 décision », « 12 345 décisions ».
-pub fn decision_count(n: i64) -> String {
-    match n {
-        1 => "1 décision".to_string(),
-        n => format!("{} décisions", group_thousands(n)),
     }
 }
 
@@ -266,13 +250,55 @@ pub fn format_article_num(num: &str) -> String {
     }
 }
 
-/// Formate une date ISO `YYYY-MM-DD` en `j mois aaaa` (FR) : `None`/vide -> `—` ;
-/// valeur non parsable -> renvoyee telle quelle.
-pub fn format_iso_date(value: Option<&str>) -> String {
-    let Some(value) = value.map(str::trim).filter(|s| !s.is_empty()) else {
-        return "—".to_string();
+/// An ISO `YYYY-MM-DD` date written in full; any other value as it came.
+pub fn format_date(ui: &crate::i18n::DatesUi, value: &str) -> String {
+    let mut parts = value.split('-');
+    let (Some(year), Some(month), Some(day), None) =
+        (parts.next(), parts.next(), parts.next(), parts.next())
+    else {
+        return value.to_string();
     };
-    lj_dtos::format_date_fr(value)
+    match (year.parse(), month.parse(), day.parse()) {
+        (Ok(year), Ok(month @ 1..=12), Ok(day @ 1..=31)) => (ui.long_date)(year, month, day),
+        _ => value.to_string(),
+    }
+}
+
+/// `text` with the court's French name, `french`, and its chambers' put in `named`'s language.
+pub fn renamed(named: &lj_dtos::CourtName, text: &str, french: Option<&str>) -> String {
+    let mut out = match french {
+        Some(french) => text.replacen(french, &named.name, 1),
+        None => text.to_string(),
+    };
+    for (french, name) in &named.chambers {
+        out = out.replacen(french.as_str(), name, 1);
+    }
+    out
+}
+
+/// A title the API composed, its French date written as `ui` writes dates.
+pub fn retitle(ui: &crate::i18n::DatesUi, title: &str, date: Option<&str>) -> String {
+    match date.map(str::trim).filter(|d| !d.is_empty()) {
+        Some(date) => title.replacen(&composed_date(date), &format_date(ui, date), 1),
+        None => title.to_string(),
+    }
+}
+
+/// A date as the API writes it in a title, the first of a month in figures: `1 février 2024`.
+fn composed_date(date: &str) -> String {
+    let french = format_date(&crate::i18n::Lang::Fr.ui().dates, date);
+    match french.strip_prefix("1er ") {
+        Some(rest) => format!("1 {rest}"),
+        None => french,
+    }
+}
+
+/// A date that may be missing or blank.
+pub fn format_iso_date(ui: &crate::i18n::DatesUi, value: Option<&str>) -> String {
+    match value.map(str::trim).filter(|s| !s.is_empty()) {
+        Some(value) => format_date(ui, value),
+        None => ui.undated.to_string(),
+    }
 }
 
 /// Today, ISO: the browser's own day, Paris's on the server.
@@ -296,7 +322,8 @@ pub fn today_iso() -> String {
 }
 
 /// `/decision-search?{key}={value}…`, escaped by `ParamsMap`, where a key given twice
-/// adds a value instead of replacing it: that is how a multi-valued facet passes.
+/// adds a value instead of replacing it: that is how a multi-valued facet passes. The
+/// path is written from the jurisdiction, which `ReaderScope::href` puts in front.
 pub fn decisions_href(params: impl IntoIterator<Item = (&'static str, String)>) -> String {
     engine_href("/decision-search", params)
 }
@@ -318,9 +345,9 @@ fn engine_href(path: &str, params: impl IntoIterator<Item = (&'static str, Strin
 /// every département rather than `fr`, so its first code says no more about
 /// where it is open than any other: 107 of the open markets read « Ain » that
 /// way. `None` when no zone is a département.
-pub fn portee_zones(zones: &[FacetTag]) -> Option<String> {
+pub fn portee_zones(ui: &crate::i18n::NoticesUi, zones: &[FacetTag]) -> Option<String> {
     if zones.iter().any(|z| z.key == ZONE_FRANCE) {
-        return Some("France entière".to_string());
+        return Some(ui.whole_country.to_string());
     }
     let deps: Vec<&FacetTag> = zones
         .iter()
@@ -329,14 +356,28 @@ pub fn portee_zones(zones: &[FacetTag]) -> Option<String> {
     match deps.as_slice() {
         [] => None,
         [seul] => Some(seul.label.clone()),
-        plusieurs => Some(format!("{} départements", plusieurs.len())),
+        plusieurs => Some((ui.department_count)(plusieurs.len())),
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{format_article_num, portee_zones};
+    use super::{format_article_num, portee_zones, retitle};
+    use crate::i18n::Lang;
     use lj_dtos::FacetTag;
+
+    #[test]
+    fn a_title_takes_the_reader_s_date() {
+        let title = "Cour d'appel (Bâle-Ville, Suisse), 1 février 2024, VD.2024.111";
+        assert_eq!(
+            retitle(&Lang::De.ui().dates, title, Some("2024-02-01")),
+            "Cour d'appel (Bâle-Ville, Suisse), 1. Februar 2024, VD.2024.111"
+        );
+        assert_eq!(
+            retitle(&Lang::Fr.ui().dates, title, Some("2024-02-01")),
+            "Cour d'appel (Bâle-Ville, Suisse), 1er février 2024, VD.2024.111"
+        );
+    }
 
     fn tag(key: &str, label: &str) -> FacetTag {
         FacetTag {
@@ -351,16 +392,17 @@ mod tests {
             .iter()
             .map(|c| tag(c, "peu importe"))
             .collect();
-        assert_eq!(portee_zones(&france).as_deref(), Some("3 départements"));
+        let ui = &Lang::Fr.ui().notices;
+        assert_eq!(portee_zones(ui, &france).as_deref(), Some("3 départements"));
         assert_eq!(
-            portee_zones(&[tag("fr", "France entière"), tag("01", "Ain")]).as_deref(),
+            portee_zones(ui, &[tag("fr", "France entière"), tag("01", "Ain")]).as_deref(),
             Some("France entière")
         );
         assert_eq!(
-            portee_zones(&[tag("973", "Guyane")]).as_deref(),
+            portee_zones(ui, &[tag("973", "Guyane")]).as_deref(),
             Some("Guyane")
         );
-        assert_eq!(portee_zones(&[tag("sans", "Non précisé")]), None);
+        assert_eq!(portee_zones(ui, &[tag("sans", "Non précisé")]), None);
     }
 
     #[test]

@@ -14,7 +14,8 @@ use crate::error::Result;
 const REBUILD_TAIL: &str = r#"
     , cit AS (
         SELECT paradedb.aggregate('decision_text_bm25',
-                 paradedb.boolean(must => ARRAY[paradedb.term('lead', true)],
+                 paradedb.boolean(must => ARRAY[paradedb.term('counted', true),
+                                                paradedb.term('kind', 'decision')],
                                   must_not => ARRAY[paradedb.exists('deleted_at')]),
                  '{"inst": {"terms": {"field": "legal_instruments", "size": 30}},
                    "art": {"terms": {"field": "legal_article_composite", "size": 300}}}'::json,
@@ -30,42 +31,42 @@ const REBUILD_TAIL: &str = r#"
     ), fresh AS (
             SELECT 'total'::text AS dimension, ''::text AS value,
                    NULL::text AS parent, count(*) AS n
-            FROM decisions WHERE deleted_at IS NULL
+            FROM decisions WHERE deleted_at IS NULL AND kind = 'decision'
         UNION ALL
             SELECT 'jurisdiction_type', jurisdiction_type, NULL, count(*)
-            FROM decisions WHERE deleted_at IS NULL
+            FROM decisions WHERE deleted_at IS NULL AND kind = 'decision'
             GROUP BY jurisdiction_type
         UNION ALL
             SELECT 'jurisdiction_code', jurisdiction_code, jurisdiction_type, count(*)
             FROM decisions
-            WHERE deleted_at IS NULL AND jurisdiction_code IS NOT NULL
+            WHERE deleted_at IS NULL AND kind = 'decision' AND jurisdiction_code IS NOT NULL
             GROUP BY jurisdiction_code, jurisdiction_type
         UNION ALL
             SELECT 'seat', p, nullif(regexp_replace(p, '\.[^.]+$', ''), p), count(*)
             FROM decisions d, unnest(d.seat_paths) p
-            WHERE d.deleted_at IS NULL
+            WHERE d.deleted_at IS NULL AND d.kind = 'decision'
             GROUP BY p
         UNION ALL
             SELECT 'formation', p, NULL, count(*)
             FROM decisions d, unnest(d.formation_paths) p
-            WHERE d.deleted_at IS NULL
+            WHERE d.deleted_at IS NULL AND d.kind = 'decision'
             GROUP BY p
         UNION ALL
             SELECT 'legal_domain', legal_domain_uid, NULL, count(*)
-            FROM decisions WHERE deleted_at IS NULL AND legal_domain_uid IS NOT NULL
+            FROM decisions WHERE deleted_at IS NULL AND kind = 'decision' AND legal_domain_uid IS NOT NULL
             GROUP BY legal_domain_uid
         UNION ALL
             SELECT 'solution', solution_uid, NULL, count(*)
-            FROM decisions WHERE deleted_at IS NULL AND solution_uid IS NOT NULL
+            FROM decisions WHERE deleted_at IS NULL AND kind = 'decision' AND solution_uid IS NOT NULL
             GROUP BY solution_uid
         UNION ALL
             SELECT 'year', extract(year FROM date_lecture)::int::text, NULL, count(*)
-            FROM decisions WHERE deleted_at IS NULL AND date_lecture IS NOT NULL
+            FROM decisions WHERE deleted_at IS NULL AND kind = 'decision' AND date_lecture IS NOT NULL
             GROUP BY 2
         UNION ALL
             SELECT 'publication_codes',
                    array_to_string(publication_codes, ','), NULL, count(*)
-            FROM decisions WHERE deleted_at IS NULL AND publication_codes <> '{}'
+            FROM decisions WHERE deleted_at IS NULL AND kind = 'decision' AND publication_codes <> '{}'
             GROUP BY 2
         UNION ALL
             SELECT 'legal_text_total', '', NULL, count(*) FROM legal_text
@@ -132,7 +133,7 @@ impl DecisionRepository<'_> {
                 &format!(
                     "WITH art_ids AS (
                         SELECT a.text_uid, a.num_key FROM legal_article a
-                         WHERE {valid_a} AND {norm_a}
+                         WHERE {valid_a} AND {norm_a} AND a.num <> ''
                          GROUP BY 1, 2){REBUILD_TAIL}"
                 ),
                 &[],

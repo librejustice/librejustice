@@ -351,8 +351,8 @@ impl<'a> DecisionRepository<'a> {
             .await?)
     }
 
-    /// Page keyset de `legal_article` pour le rebasage **identité** :
-    /// `(id, text_uid, num, num_key, date_debut::text)`, ordonnée par `id`.
+    /// A keyset page of the numbered rows of `legal_article` for the identity
+    /// rekey: `(id, text_uid, num, num_key, date_debut::text)`, by `id`.
     pub async fn article_identity_page(
         &self,
         after_id: i64,
@@ -362,7 +362,7 @@ impl<'a> DecisionRepository<'a> {
             .conn
             .query(
                 "SELECT id, text_uid, num, num_key, date_debut::text
-                 FROM legal_article WHERE id > $1 ORDER BY id LIMIT $2",
+                 FROM legal_article WHERE id > $1 AND num <> '' ORDER BY id LIMIT $2",
                 &[&after_id, &limit],
             )
             .await?;

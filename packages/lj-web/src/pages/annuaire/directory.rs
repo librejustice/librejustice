@@ -7,14 +7,14 @@
 
 use leptos::either::EitherOf3;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use lj_dtos::{EntityDirectoryItemDto, EntityDirectoryResponse};
 
 use crate::components::layout::{CONTENT_COL, GRID_2COL, SHELL};
 use crate::components::own_page_description;
-use crate::helpers::group_thousands;
+use crate::i18n::DirectoryUi;
 #[cfg(feature = "hydrate")]
 use crate::pages::annuaire::common::fetch_named;
 use crate::pages::annuaire::common::{
@@ -69,13 +69,10 @@ pub fn AnnuaireDirectoryPage() -> impl IntoView {
 #[component]
 fn DirectoryLoaded(kind: Kind, page: Signal<i64>) -> impl IntoView {
     let stats = stats_resource();
-    let title = format!("Annuaire des {} - LibreJustice", plural_lower(kind));
-    let description = format!(
-        "{} au registre, classés par volume de contentieux dans la jurisprudence \
-         française. {}",
-        kind.plural(),
-        kind.tagline()
-    );
+    let ui = &crate::i18n::use_ui().directory;
+    let copy = kind.copy(ui);
+    let title = (ui.listing_title)(copy.plural_lower);
+    let description = (ui.listing_description)(copy.plural, copy.tagline);
     let base = format!("{CANONICAL_BASE}/entity-index/fr/{}", kind.slug());
     let canonical = base.clone();
     // Convention listing : indexer la page 1, `noindex` au-delà.
@@ -84,7 +81,7 @@ fn DirectoryLoaded(kind: Kind, page: Signal<i64>) -> impl IntoView {
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=canonical />
+        <crate::seo::Canonical href=canonical />
         {move || robots().map(|r| view! { <Meta name="robots" content=r /> })}
 
         <div class=format!("{SHELL} flex-1")>
@@ -98,17 +95,17 @@ fn DirectoryLoaded(kind: Kind, page: Signal<i64>) -> impl IntoView {
                     <header class="flex flex-col gap-2">
                         <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
                             <A
-                                href="/entity-search"
+                                href=crate::i18n::use_reader_lang().path("/entity-search")
                                 attr:class="text-[var(--color-ink-subtle)] no-underline hover:text-[var(--color-accent)]"
                             >
-                                "Annuaire"
+                                {ui.directory}
                             </A>
                         </p>
-                        <h1 class="font-sans text-3xl text-[var(--color-ink)]">{kind.plural()}</h1>
-                        <p class="max-w-prose text-[var(--color-ink-muted)]">{kind.tagline()}</p>
+                        <h1 class="font-sans text-3xl text-[var(--color-ink)]">{copy.plural}</h1>
+                        <p class="max-w-prose text-[var(--color-ink-muted)]">{copy.tagline}</p>
                     </header>
 
-                    {category_chips(Some(kind))}
+                    {category_chips(ui, Some(kind))}
 
                     <DirectoryList kind=kind page=page />
                 </div>
@@ -122,6 +119,7 @@ fn DirectoryLoaded(kind: Kind, page: Signal<i64>) -> impl IntoView {
 #[component]
 fn DirectoryList(kind: Kind, page: Signal<i64>) -> impl IntoView {
     let slug = kind.slug();
+    let ui = &crate::i18n::use_ui().directory;
     let listing = Resource::new_blocking(
         move || page.get(),
         move |page| sendable(fetch_directory(slug, page)),
@@ -130,13 +128,14 @@ fn DirectoryList(kind: Kind, page: Signal<i64>) -> impl IntoView {
     view! {
         <Suspense fallback=list_skeleton>
             {move || Suspend::new(async move {
-                directory_view(listing.await, slug, page.get())
+                directory_view(ui, listing.await, slug, page.get())
             })}
         </Suspense>
     }
 }
 
 fn directory_view(
+    ui: &'static DirectoryUi,
     result: Result<EntityDirectoryResponse, PageError>,
     slug: &'static str,
     page: i64,
@@ -148,29 +147,27 @@ fn directory_view(
         }
         Err(err) => {
             set_cache_control(err.status);
-            return status_note(format!("Listing indisponible ({}).", err.message));
+            return status_note((ui.listing_unavailable)(
+                &err.failure.text(&crate::i18n::use_ui().shell),
+            ));
         }
     };
     if response.items.is_empty() {
-        return status_note("Aucune entité dans cette catégorie pour l'instant.");
+        return status_note(ui.empty_category);
     }
 
     let total = response.total;
     // Pagination bornée au plafond de profondeur de l'API.
     let total_pages = ((total + PAGE_SIZE - 1) / PAGE_SIZE).clamp(1, MAX_PAGES);
-    let count_label = match total {
-        1 => "1 entité au registre".to_string(),
-        n => format!("{} entités au registre", group_thousands(n)),
-    };
-    let contentieux_label = (response.contentieux > 0)
-        .then(|| format!("dont {} en justice", group_thousands(response.contentieux)));
+    let count_label = (ui.register_count)(total);
+    let contentieux_label = (response.contentieux > 0).then(|| (ui.in_court)(response.contentieux));
     let max = max_decision_count(&response.items);
     let rows = response
         .items
         .into_iter()
-        .map(|item| entity_row(item, max))
+        .map(|item| entity_row(ui, item, max))
         .collect_view();
-    let pagination = pagination_view(slug, page, total_pages);
+    let pagination = pagination_view(ui, slug, page, total_pages);
 
     view! {
         <p class="flex flex-wrap items-baseline gap-2 text-xs uppercase tracking-[0.14em] text-[var(--color-ink-subtle)]">
@@ -183,7 +180,7 @@ fn directory_view(
                     }
                 })}
             <span aria-hidden="true">"·"</span>
-            <span class="normal-case tracking-normal">"classées par nombre de décisions"</span>
+            <span class="normal-case tracking-normal">{ui.sorted_by_decisions}</span>
         </p>
         <ul class="mt-4 flex flex-col gap-3">{rows}</ul>
         {pagination}
@@ -196,7 +193,12 @@ fn page_href(slug: &str, page: i64) -> String {
 }
 
 /// Pagination `<A>` (précédent / position / suivant), SSR-friendly (`?page=`).
-fn pagination_view(slug: &str, page: i64, total_pages: i64) -> Option<AnyView> {
+fn pagination_view(
+    ui: &'static DirectoryUi,
+    slug: &str,
+    page: i64,
+    total_pages: i64,
+) -> Option<AnyView> {
     if total_pages <= 1 {
         return None;
     }
@@ -208,7 +210,7 @@ fn pagination_view(slug: &str, page: i64, total_pages: i64) -> Option<AnyView> {
                 attr:class="inline-flex items-center gap-1 text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
             >
                 <span aria-hidden="true">"←"</span>
-                "Précédent"
+                {ui.previous}
             </A>
         }
         .into_any()
@@ -219,7 +221,7 @@ fn pagination_view(slug: &str, page: i64, total_pages: i64) -> Option<AnyView> {
                 href=page_href(slug, page + 1)
                 attr:class="inline-flex items-center gap-1 text-sm text-[var(--color-ink)] underline-offset-4 hover:text-[var(--color-accent)] hover:underline"
             >
-                "Suivant"
+                {ui.next}
                 <span aria-hidden="true">"→"</span>
             </A>
         }
@@ -228,12 +230,12 @@ fn pagination_view(slug: &str, page: i64, total_pages: i64) -> Option<AnyView> {
     Some(
         view! {
             <nav
-                aria-label="Pagination"
+                aria-label=ui.pagination
                 class="mt-6 flex items-center justify-between border-t border-[var(--color-rule)] pt-4"
             >
                 <div class="min-w-0">{prev}</div>
                 <span class="text-xs tabular-nums text-[var(--color-ink-subtle)]">
-                    {format!("Page {page} sur {total_pages}")}
+                    {(ui.page_of)(page, total_pages)}
                 </span>
                 <div class="min-w-0 text-right">{next}</div>
             </nav>
@@ -250,7 +252,7 @@ enum NamedState {
     Idle,
     Loading,
     Anonymous,
-    Failed(String),
+    Failed(crate::api::Failure),
     Loaded(Vec<EntityDirectoryItemDto>),
 }
 
@@ -263,7 +265,7 @@ fn spawn_named_search(slug: &'static str, q: String, state: RwSignal<NamedState>
                 state.set(NamedState::Loaded(items));
             }
             Err(err) if err.status == 401 => state.set(NamedState::Anonymous),
-            Err(err) => state.set(NamedState::Failed(err.message)),
+            Err(err) => state.set(NamedState::Failed(err.failure)),
         }
     });
 }
@@ -291,26 +293,21 @@ fn named_results(kind: Kind, term: Signal<String>) -> RwSignal<NamedState> {
 fn NamedSearchPage(kind: Kind, term: Signal<String>) -> impl IntoView {
     let stats = stats_resource();
     let state = named_results(kind, term);
-    let title = format!("Rechercher un {} - LibreJustice", singular_lower(kind));
-    let description = format!(
-        "Recherchez un {} par son nom dans la jurisprudence française. {}",
-        singular_lower(kind),
-        kind.tagline()
-    );
+    let ui = &crate::i18n::use_ui().directory;
+    let copy = kind.copy(ui);
+    let title = (ui.named_title)(copy.singular_lower);
+    let description = (ui.named_description)(copy.singular_lower, copy.tagline);
     let canonical = format!("{CANONICAL_BASE}/entity-index/fr/{}", kind.slug());
     let action = format!("/entity-index/fr/{}", kind.slug());
     let login_href = format!("/login?next=%2Fannuaire%2F{}", kind.slug());
-    let placeholder = format!("Nom de l'{}…", singular_lower(kind));
-    let aria = format!("Rechercher un {} par son nom", singular_lower(kind));
-    let empty = format!(
-        "Aucun {} ne correspond à cette recherche.",
-        singular_lower(kind)
-    );
+    let placeholder = (ui.named_placeholder)(copy.singular_lower);
+    let aria = (ui.named_label)(copy.singular_lower);
+    let empty = (ui.named_empty)(copy.singular_lower);
 
     view! {
         <Title text=title />
         <Meta name="description" content=description />
-        <Link rel="canonical" href=canonical />
+        <crate::seo::Canonical href=canonical />
         <Meta name="robots" content="noindex" />
 
         <div class=format!("{SHELL} flex-1")>
@@ -322,16 +319,16 @@ fn NamedSearchPage(kind: Kind, term: Signal<String>) -> impl IntoView {
                     <header class="flex flex-col gap-2">
                         <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
                             <A
-                                href="/entity-search"
+                                href=crate::i18n::use_reader_lang().path("/entity-search")
                                 attr:class="text-[var(--color-ink-subtle)] no-underline hover:text-[var(--color-accent)]"
                             >
-                                "Annuaire"
+                                {ui.directory}
                             </A>
                         </p>
-                        <h1 class="font-sans text-3xl text-[var(--color-ink)]">{kind.plural()}</h1>
+                        <h1 class="font-sans text-3xl text-[var(--color-ink)]">{copy.plural}</h1>
                     </header>
 
-                    {category_chips(Some(kind))}
+                    {category_chips(ui, Some(kind))}
 
                     <form method="get" action=action role="search" class="flex w-full gap-2">
                         <input
@@ -347,20 +344,25 @@ fn NamedSearchPage(kind: Kind, term: Signal<String>) -> impl IntoView {
                             type="submit"
                             class="shrink-0 rounded-lg border border-[var(--color-accent)] bg-[var(--color-accent)] px-4 py-2.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
                         >
-                            "Rechercher"
+                            {ui.search}
                         </button>
                     </form>
 
-                    {move || named_view(state.get(), &login_href, &empty)}
+                    {move || named_view(ui, state.get(), &login_href, &empty)}
                 </div>
             </div>
         </div>
     }
 }
 
-fn named_view(state: NamedState, login_href: &str, empty: &str) -> AnyView {
+fn named_view(
+    ui: &'static DirectoryUi,
+    state: NamedState,
+    login_href: &str,
+    empty: &str,
+) -> AnyView {
     match state {
-        NamedState::Idle => status_note("Saisissez au moins deux caractères."),
+        NamedState::Idle => status_note(ui.min_name),
         NamedState::Loading => list_skeleton().into_any(),
         NamedState::Anonymous => view! {
             <p class="mt-4 text-sm text-[var(--color-ink-subtle)]">
@@ -368,19 +370,21 @@ fn named_view(state: NamedState, login_href: &str, empty: &str) -> AnyView {
                     href=login_href.to_string()
                     attr:class="text-[var(--color-accent)] underline-offset-4 hover:underline"
                 >
-                    "Connectez-vous"
+                    {ui.sign_in}
                 </A>
-                " pour lancer cette recherche."
+                {ui.sign_in_to_search}
             </p>
         }
         .into_any(),
-        NamedState::Failed(message) => status_note(format!("Recherche indisponible ({message}).")),
+        NamedState::Failed(failure) => status_note((ui.search_unavailable)(
+            &failure.text(&crate::i18n::use_ui().shell),
+        )),
         NamedState::Loaded(items) if items.is_empty() => status_note(empty.to_string()),
         NamedState::Loaded(items) => {
             let max = max_decision_count(&items);
             let rows = items
                 .into_iter()
-                .map(|item| entity_row(item, max))
+                .map(|item| entity_row(ui, item, max))
                 .collect_view();
             view! { <ul class="mt-4 flex flex-col gap-3">{rows}</ul> }.into_any()
         }
@@ -392,22 +396,22 @@ fn named_view(state: NamedState, login_href: &str, empty: &str) -> AnyView {
 fn DirectoryUnknown() -> impl IntoView {
     mark_not_found();
     crate::pages::not_found::signaler_lien_mort();
+    let all = crate::i18n::use_ui();
+    let ui = &all.directory;
     view! {
-        <Title text="Catégorie introuvable - LibreJustice" />
+        <Title text=ui.unknown_title />
         <Meta name="robots" content="noindex" />
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col px-4 py-16 sm:px-6 lg:px-8">
             <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                "Introuvable"
+                {all.shell.not_found}
             </p>
-            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">
-                "Cette catégorie d'annuaire n'existe pas"
-            </h1>
+            <h1 class="mt-2 font-sans text-3xl text-[var(--color-ink)]">{ui.unknown_heading}</h1>
             <p class="mt-4 text-sm text-[var(--color-ink-muted)]">
                 <A
-                    href="/entity-search"
+                    href=crate::i18n::use_reader_lang().path("/entity-search")
                     attr:class="text-[var(--color-accent)] underline-offset-4 hover:underline"
                 >
-                    "Retour à l'annuaire"
+                    {ui.back}
                 </A>
             </p>
         </div>
@@ -454,25 +458,3 @@ fn set_cache_control(status: u16) {
 
 #[cfg(not(feature = "ssr"))]
 fn set_cache_control(_status: u16) {}
-
-/// Lowercase singular, for the title and the search labels.
-fn singular_lower(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Entreprises => "entreprise",
-        Kind::PersonnesPubliques => "personne publique",
-        Kind::Associations => "association",
-        Kind::Avocats => "avocat",
-        Kind::Cabinets => "cabinet d'avocats",
-    }
-}
-
-/// Nom pluriel minuscule pour le title (« annuaire des entreprises… »).
-fn plural_lower(kind: Kind) -> &'static str {
-    match kind {
-        Kind::Entreprises => "entreprises",
-        Kind::PersonnesPubliques => "personnes publiques",
-        Kind::Associations => "associations",
-        Kind::Avocats => "avocats",
-        Kind::Cabinets => "cabinets d'avocats",
-    }
-}

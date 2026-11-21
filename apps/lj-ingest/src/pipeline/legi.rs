@@ -232,9 +232,42 @@ fn legi_code_row(code: lj_extract::legi::LegiCode) -> Result<lj_store::repositor
         eli: None,
         nor: code.nor,
         instrument_key: None,
-        body: None,
         status: None,
     })
+}
+
+/// A text version's blocks as pieces of the text, dated by the version.
+fn legi_block_rows(
+    code: &lj_extract::legi::LegiCode,
+    content_checksum: u64,
+) -> Result<Vec<lj_store::repository::LegalArticleRow>> {
+    let date_debut = Some(legi_date(&code.version_debut)?);
+    let date_fin = code.version_fin.as_deref().map(legi_date).transpose()?;
+    Ok(code
+        .blocks
+        .iter()
+        .map(|(key, texte)| lj_store::repository::LegalArticleRow {
+            text_uid: code.legitext.clone(),
+            num: String::new(),
+            num_key: key.to_string(),
+            position: lj_norm::article_order::block_position(key),
+            title_path: None,
+            status: code.version_etat.clone(),
+            date_debut,
+            date_fin,
+            texte: Some(texte.clone()),
+            texte_original: None,
+            lang_original: None,
+            translation: "officiel".to_string(),
+            nota: None,
+            content_checksum,
+            source: "legifrance".to_string(),
+            source_uid: code.version_id.clone(),
+            source_url: None,
+            source_asof: None,
+            source_upstream_url: None,
+        })
+        .collect())
 }
 
 /// Ingère un stock ou un incrément LEGI (`tar.gz` bulk DILA).
@@ -274,9 +307,8 @@ pub async fn ingest_legi(
     } else {
         lj_store::repository::Fraicheur::Autoritaire
     };
-    let mut touches: std::collections::HashSet<String> = std::collections::HashSet::new();
     for (rang, path) in paths.iter().enumerate() {
-        let (u, s, e) = ingest_legi_tarball(&repo, path, textes, fraicheur, &mut touches).await?;
+        let (u, s, e) = ingest_legi_tarball(&repo, path, textes, fraicheur).await?;
         tracing::info!(
             rang = rang + 1,
             total = paths.len(),
@@ -291,8 +323,7 @@ pub async fn ingest_legi(
         .map_err(|e| anyhow!("collapse_empty_legitext_doublons: {e}"))?;
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
     tracing::info!(collapsed, slugged, "ingest_legi collapse doublons");
-    let touches: Vec<String> = touches.into_iter().collect();
-    finir_passe_legi(&repo, &touches).await?;
+    finir_passe_legi(&repo).await?;
     Ok(())
 }
 
@@ -304,10 +335,16 @@ async fn ingest_legi_tarball(
     path: &Path,
     textes: &[String],
     fraicheur: lj_store::repository::Fraicheur,
-    touches: &mut std::collections::HashSet<String>,
 ) -> Result<(usize, usize, usize)> {
     // Messages remontés par le lecteur (membres parsés). Rows boxées (variantes de
     // tailles très inégales). Chaque row voyage avec les arêtes de son bloc <LIENS>.
+    /// A text, its upcoming version dates, its links, and its blocks as pieces.
+    type CodeMsg = (
+        lj_store::repository::LegalTextRow,
+        Vec<chrono::NaiveDate>,
+        Vec<lj_store::repository::LegalLinkRow>,
+        Vec<lj_store::repository::LegalArticleRow>,
+    );
     enum LegiMsg {
         Article(
             Box<(
@@ -315,13 +352,7 @@ async fn ingest_legi_tarball(
                 Vec<lj_store::repository::LegalLinkRow>,
             )>,
         ),
-        Code(
-            Box<(
-                lj_store::repository::LegalTextRow,
-                Vec<chrono::NaiveDate>,
-                Vec<lj_store::repository::LegalLinkRow>,
-            )>,
-        ),
+        Code(Box<CodeMsg>),
         Toc(
             Box<(
                 lj_store::repository::TocOwner,
@@ -329,6 +360,7 @@ async fn ingest_legi_tarball(
             )>,
         ),
         Dat(Vec<String>),
+        Placeholder,
         ParseErr,
     }
 
@@ -363,10 +395,14 @@ async fn ingest_legi_tarball(
                 }
                 let msg = match classify_legi_member(&name) {
                     LegiMember::Article => match lj_extract::legi::parse_legi_article(&raw) {
-                        // A numberless article is not citable and stays out of the
-                        // referential: annexes, placeholders, TNC visas and signatures.
-                        // Same cut as KALI and as the JORFARTI without a NUM.
-                        Ok(art) if art.num_key.is_empty() => return Ok(()),
+                        Ok(art)
+                            if art
+                                .texte
+                                .as_deref()
+                                .is_some_and(lj_extract::legi::is_placeholder) =>
+                        {
+                            LegiMsg::Placeholder
+                        }
                         Ok(mut art) => {
                             let checksum = xxhash_rust::xxh3::xxh3_64(&raw);
                             let liens = std::mem::take(&mut art.liens);
@@ -389,9 +425,15 @@ async fn ingest_legi_tarball(
                         Ok(mut code) => {
                             let liens = std::mem::take(&mut code.liens);
                             let upcoming = std::mem::take(&mut code.versions_a_venir);
-                            let built = legi_code_row(code).and_then(|row| {
-                                Ok((row, upcoming_dates(&upcoming)?, legal_link_rows(liens)?))
-                            });
+                            let built = legi_block_rows(&code, xxhash_rust::xxh3::xxh3_64(&raw))
+                                .and_then(|blocks| {
+                                    Ok((
+                                        legi_code_row(code)?,
+                                        upcoming_dates(&upcoming)?,
+                                        legal_link_rows(liens)?,
+                                        blocks,
+                                    ))
+                                });
                             match built {
                                 Ok(triple) => LegiMsg::Code(Box::new(triple)),
                                 Err(e) => {
@@ -451,11 +493,11 @@ async fn ingest_legi_tarball(
     let mut tocs: Vec<TocItem> = Vec::new();
     let mut dat_paths: Vec<Vec<String>> = Vec::new();
     let (mut upserted, mut skipped, mut errors) = (0usize, 0usize, 0usize);
+    let mut placeholders = 0usize;
 
     while let Some(msg) = rx.recv().await {
         match msg {
             LegiMsg::Article(row) => {
-                touches.insert(row.0.text_uid.clone());
                 articles.push(*row);
                 if articles.len() >= LEGI_BATCH_SIZE {
                     let batch = std::mem::take(&mut articles);
@@ -464,8 +506,9 @@ async fn ingest_legi_tarball(
                 }
             }
             LegiMsg::Code(row) => {
-                touches.insert(row.0.text_uid.clone());
-                codes.push(*row);
+                let (text, upcoming, links, blocks) = *row;
+                codes.push((text, upcoming, links));
+                articles.extend(blocks.into_iter().map(|b| (b, Vec::new())));
                 if codes.len() >= LEGI_BATCH_SIZE {
                     let batch = std::mem::take(&mut codes);
                     flush_legi_codes(repo, batch).await?;
@@ -481,6 +524,7 @@ async fn ingest_legi_tarball(
                 }
             }
             LegiMsg::Dat(paths) => dat_paths.push(paths),
+            LegiMsg::Placeholder => placeholders += 1,
             LegiMsg::ParseErr => errors += 1,
         }
     }
@@ -520,24 +564,21 @@ async fn ingest_legi_tarball(
         upserted,
         skipped,
         deleted,
+        placeholders,
         errors,
         "ingest_legi"
     );
     Ok((upserted, skipped, errors))
 }
 
-/// End-of-pass finishers, after the archive loop and never inside it: the reading
-/// ranks reconcile the whole corpus. `touches` bounds the denormalisation to the texts written.
-async fn finir_passe_legi(repo: &DecisionRepository<'_>, touches: &[String]) -> Result<()> {
-    let retitled = repo
-        .refresh_article_denorm(Some(touches))
-        .await
-        .map_err(|e| anyhow!("refresh_article_denorm: {e}"))?;
+/// End-of-pass finisher, after the archive loop and never inside it: the reading
+/// ranks reconcile the whole corpus.
+async fn finir_passe_legi(repo: &DecisionRepository<'_>) -> Result<()> {
     let (ranked_texts, ranked_rows) = repo
         .refresh_reading_ranks()
         .await
         .map_err(|e| anyhow!("refresh_reading_ranks: {e}"))?;
-    tracing::info!(retitled, ranked_texts, ranked_rows, "reading ranks");
+    tracing::info!(ranked_texts, ranked_rows, "reading ranks");
     Ok(())
 }
 
@@ -682,10 +723,6 @@ async fn backfill_links_tarball(repo: &DecisionRepository<'_>, path: &Path) -> R
                 LegiMember::Article => lj_extract::legi::parse_legi_article(&raw)
                     .map_err(|e| e.to_string())
                     .and_then(|mut art| {
-                        // Article LEGI sans numéro : non ingéré, donc pas d'owner.
-                        if art.num_key.is_empty() {
-                            return Ok(None);
-                        }
                         let liens = std::mem::take(&mut art.liens);
                         let owner = lj_store::repository::LegalLinkOwner {
                             text_uid: art.legitext,
@@ -712,26 +749,20 @@ async fn backfill_links_tarball(repo: &DecisionRepository<'_>, path: &Path) -> R
                 // Les fichiers de structure ne portent pas de bloc <LIENS>.
                 LegiMember::SectionTa | LegiMember::Struct => Ok(None),
                 LegiMember::Ignore => match super::kali::classify_kali_member(&name) {
-                    super::kali::KaliMember::Article => {
-                        lj_extract::kali::parse_kali_article(&raw)
-                            .map_err(|e| e.to_string())
-                            .and_then(|mut art| {
-                                // Article KALI sans numéro : non ingéré → pas d'owner.
-                                if art.num_key.is_empty() {
-                                    return Ok(None);
-                                }
-                                let liens = std::mem::take(&mut art.liens);
-                                let owner = lj_store::repository::LegalLinkOwner {
-                                    text_uid: art.kalicont,
-                                    num_key: art.num_key,
-                                    date_debut: Some(
-                                        legi_date(&art.date_debut).map_err(|e| e.to_string())?,
-                                    ),
-                                };
-                                let rows = legal_link_rows(liens).map_err(|e| e.to_string())?;
-                                Ok(Some((owner, rows)))
-                            })
-                    }
+                    super::kali::KaliMember::Article => lj_extract::kali::parse_kali_article(&raw)
+                        .map_err(|e| e.to_string())
+                        .and_then(|mut art| {
+                            let liens = std::mem::take(&mut art.liens);
+                            let owner = lj_store::repository::LegalLinkOwner {
+                                text_uid: art.kalicont,
+                                num_key: art.num_key,
+                                date_debut: Some(
+                                    legi_date(&art.date_debut).map_err(|e| e.to_string())?,
+                                ),
+                            };
+                            let rows = legal_link_rows(liens).map_err(|e| e.to_string())?;
+                            Ok(Some((owner, rows)))
+                        }),
                     _ => Ok(None),
                 },
             };
@@ -1091,8 +1122,7 @@ pub async fn redate_dila_versions(apply: bool) -> Result<()> {
     if !apply {
         return Ok(());
     }
-    let touches: Vec<String> = touches.into_iter().collect();
-    finir_passe_legi(&repo, &touches).await?;
+    finir_passe_legi(&repo).await?;
     let liens_orphelins = repo
         .prune_orphan_legal_links()
         .await
@@ -1113,6 +1143,40 @@ pub async fn redate_dila_versions(apply: bool) -> Result<()> {
         liens_orphelins,
         "DILA redating pass done"
     );
+    Ok(())
+}
+
+/// Deletes the LEGI versions whose text stands in for an article not yet consolidated,
+/// and reopens the JO rows they closed. Counts only, unless `apply`.
+pub async fn drop_legi_placeholders(apply: bool) -> Result<()> {
+    let settings = Settings::from_env()?;
+    let pool =
+        lj_pg::db::build_pool(&settings.db_url, 1).map_err(|e| anyhow!("build_pool: {e}"))?;
+    let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;
+    conn.batch_execute("SET statement_timeout = 0")
+        .await
+        .map_err(|e| anyhow!("set statement_timeout: {e}"))?;
+    let repo = DecisionRepository::new(&conn);
+    let ids: Vec<i64> = repo
+        .legi_placeholder_candidates()
+        .await
+        .map_err(|e| anyhow!("legi_placeholder_candidates: {e}"))?
+        .into_iter()
+        .filter(|(_, texte)| lj_extract::legi::is_placeholder(texte))
+        .map(|(id, _)| id)
+        .collect();
+    if !apply {
+        tracing::info!(
+            placeholders = ids.len(),
+            "LEGI placeholders found, none deleted"
+        );
+        return Ok(());
+    }
+    let (deleted, reopened) = repo
+        .drop_legal_article_versions(&ids)
+        .await
+        .map_err(|e| anyhow!("drop_legal_article_versions: {e}"))?;
+    tracing::warn!(deleted, reopened, "LEGI placeholders dropped");
     Ok(())
 }
 
@@ -1271,6 +1335,13 @@ fn version_livree(
                 return Ok(None);
             }
             let mut art = lj_extract::legi::parse_legi_article(raw)?;
+            if art
+                .texte
+                .as_deref()
+                .is_some_and(lj_extract::legi::is_placeholder)
+            {
+                return Ok(None);
+            }
             let liens = std::mem::take(&mut art.liens);
             Ok(Some((
                 legi_article_row(art, checksum)?,
@@ -1409,14 +1480,12 @@ pub async fn sync_legi() -> Result<()> {
     let repo = DecisionRepository::new(&conn);
 
     let (mut upserted, mut skipped, mut errors) = (0usize, 0usize, 0usize);
-    let mut touches: std::collections::HashSet<String> = std::collections::HashSet::new();
     for archive in batch.archives.clone() {
         let (u, s, e) = ingest_legi_tarball(
             &repo,
             &archive.path,
             &[],
             lj_store::repository::Fraicheur::Autoritaire,
-            &mut touches,
         )
         .await?;
         upserted += u;
@@ -1443,8 +1512,7 @@ pub async fn sync_legi() -> Result<()> {
         .map_err(|e| anyhow!("prune_orphan_toc_edges: {e}"))?;
 
     let slugged = super::slugs::assign_text_slugs(&repo).await?;
-    let touches: Vec<String> = touches.into_iter().collect();
-    finir_passe_legi(&repo, &touches).await?;
+    finir_passe_legi(&repo).await?;
 
     tracing::info!(
         increments = batch.archives.len(),

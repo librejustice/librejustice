@@ -8,8 +8,9 @@
 use serde_json::Value;
 use tokio_postgres::types::ToSql;
 
-use lj_dtos::{DecisionPart, Domain, JurisdictionType, SearchRequest};
+use lj_dtos::{DecisionPart, Domain, JurisdictionType, SearchRequest, Solution};
 use lj_vocab::passage_zones;
+use lj_vocab::DocumentKind;
 
 /// Param dynamique : on accumule `Box<dyn ToSql>` et on génère les `$n`.
 /// `Send` requis pour que les futures de handler axum restent `Send`.
@@ -45,12 +46,15 @@ pub(crate) fn jt_to_str(t: JurisdictionType) -> &'static str {
         JurisdictionType::Tj => "TJ",
         JurisdictionType::Tcom => "TCOM",
         JurisdictionType::Cph => "CPH",
+        JurisdictionType::Assises => "ASSISES",
+        JurisdictionType::Ccd => "CCD",
         JurisdictionType::Cedh => "CEDH",
         JurisdictionType::Cjue => "CJUE",
         JurisdictionType::Cnda => "CNDA",
         JurisdictionType::Cnil => "CNIL",
         JurisdictionType::Ddd => "DDD",
         JurisdictionType::Adlc => "ADLC",
+        JurisdictionType::Amf => "AMF",
         JurisdictionType::Comeu => "COMEU",
         JurisdictionType::CourSupreme => "COUR_SUPREME",
         JurisdictionType::CourCassation => "COUR_CASSATION",
@@ -64,6 +68,7 @@ pub(crate) fn jt_to_str(t: JurisdictionType) -> &'static str {
         JurisdictionType::CourJustice => "COUR_JUSTICE",
         JurisdictionType::Ccja => "CCJA",
         JurisdictionType::CourDroitsHomme => "COUR_DROITS_HOMME",
+        JurisdictionType::AutoriteAdministrative => "AUTORITE_ADMINISTRATIVE",
     }
 }
 
@@ -82,9 +87,17 @@ pub(crate) fn enum_uids<T: serde::Serialize>(prefix: &str, vs: &[T]) -> Vec<Stri
         .collect()
 }
 
-/// Expansion domaine : une racine sélectionnée matche elle-même et toutes ses
-/// feuilles (codes préfixés `<RACINE>_` dans `Domain::ALL`) ; une racine sans
-/// feuille (FISCAL, EUROPEEN…) ou une feuille matche elle seule.
+/// The uids a selection of solution roots matches: a decision carries a leaf.
+pub(crate) fn solution_uids(roots: &[Solution]) -> Vec<String> {
+    roots
+        .iter()
+        .flat_map(|root| root.leaves())
+        .map(|leaf| format!("solution:{leaf}"))
+        .collect()
+}
+
+/// A selected root matches itself and its leaves, the codes of `Domain::ALL`
+/// prefixed `<ROOT>_`; a leaf, or a root with none, matches itself alone.
 pub(crate) fn legal_domain_uids(selected: &[Domain]) -> Vec<String> {
     let mut out: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for d in selected {
@@ -199,7 +212,7 @@ pub(crate) fn build_facet_filter(
             params,
             next_idx,
             &format!("{ref_alias}.solution_uid = ANY($?)"),
-            Box::new(enum_uids("solution", v)),
+            Box::new(solution_uids(v)),
         );
     }
     if let Some(v) = present(&req.legal_domain) {
@@ -238,16 +251,22 @@ pub(crate) fn build_facet_filter(
                 );
             }
         }
-    }
-    if table == FilterTable::Chunks {
-        if let Some(tags) = passage_tags(req) {
+        if let Some(home) = &req.home {
             add_clause(
-                &mut clauses,
+                &mut ref_clauses,
                 params,
                 next_idx,
-                "c.zones && $?::text[]",
-                Box::new(tags),
+                &format!("{ref_alias}.seat_paths && $?::text[]"),
+                Box::new(crate::jurisdictions::scope_seats(home)),
             );
+        }
+    }
+    if table == FilterTable::Chunks {
+        if let Some(clause) = passage_clause(req, "$?") {
+            match passage_tags(req) {
+                Some(tags) => add_clause(&mut clauses, params, next_idx, &clause, Box::new(tags)),
+                None => clauses.push(clause),
+            }
         }
     }
     if !ref_clauses.is_empty() {
@@ -366,6 +385,10 @@ pub(crate) fn build_array_filter_queries(
     if let Some(v) = nonempty(&req.seat) {
         out.push(term_any("seat_paths", &v, next_idx, params));
     }
+    if let Some(home) = &req.home {
+        let seats = crate::jurisdictions::scope_seats(home);
+        out.push(term_any("seat_paths", &seats, next_idx, params));
+    }
     if let Some(v) = nonempty(&req.formation) {
         out.push(term_any("formation_paths", &v, next_idx, params));
     }
@@ -373,6 +396,9 @@ pub(crate) fn build_array_filter_queries(
         if let Some(expr) = publication_tantivy(v) {
             out.push(expr);
         }
+    }
+    if let Some(kind) = kind(req) {
+        out.push(format!("paradedb.term('kind', '{kind}')"));
     }
     out
 }
@@ -400,25 +426,61 @@ pub(crate) fn term_any(
     }
 }
 
-/// The parts a search runs in, every part when it names none.
-fn parts(req: &SearchRequest) -> &[DecisionPart] {
+/// The decision's parts a search runs in: every part when it names none, none when
+/// it names the conclusions alone.
+fn parts(req: &SearchRequest) -> Vec<DecisionPart> {
     match req.search_in.as_deref() {
-        Some(parts) if !parts.is_empty() => parts,
-        _ => &DecisionPart::ALL,
+        Some(asked) if !asked.is_empty() => DecisionPart::OF_A_DECISION
+            .into_iter()
+            .filter(|p| asked.contains(p))
+            .collect(),
+        _ => DecisionPart::OF_A_DECISION.to_vec(),
     }
+}
+
+/// Whether the search runs in the conclusions.
+pub(crate) fn conclusions(req: &SearchRequest) -> bool {
+    req.search_in
+        .as_deref()
+        .is_some_and(|asked| asked.contains(&DecisionPart::Conclusions))
+}
+
+/// Whether the search runs in the conclusions alone.
+pub(crate) fn conclusions_alone(req: &SearchRequest) -> bool {
+    parts(req).is_empty()
 }
 
 /// Whether the search runs in every part of a decision.
 pub(crate) fn every_part(req: &SearchRequest) -> bool {
-    DecisionPart::ALL.iter().all(|p| parts(req).contains(p))
+    parts(req).len() == DecisionPart::OF_A_DECISION.len()
 }
 
-/// The lexical question over the parts asked, `q` the placeholder of the parsed
-/// query. The judgment alone is `full_text` where no annexes start and
+/// The one kind of document a search holds to, none when it runs in both.
+fn kind(req: &SearchRequest) -> Option<&'static str> {
+    match (conclusions_alone(req), conclusions(req)) {
+        (false, false) => Some(DocumentKind::Decision.as_str()),
+        (true, _) => Some(DocumentKind::Conclusions.as_str()),
+        (false, true) => None,
+    }
+}
+
+/// The lexical question over what the search runs in, `q` the placeholder of the
+/// parsed query. The judgment alone is `full_text` where no annexes start and
 /// `text_before_annexes` where they do; with the annexes it is `full_text` whole.
+/// Conclusions are searched whole, beside the decisions' parts asked.
 pub(crate) fn parts_query(req: &SearchRequest, q: &str) -> String {
-    let parts = parts(req);
     let field = |name: &str| format!("paradedb.parse_with_field('{name}', {q})");
+    let whole = || {
+        format!(
+            "paradedb.boolean(should => ARRAY[{}, {}])",
+            field("full_text"),
+            field("official_summary")
+        )
+    };
+    let parts = parts(req);
+    if parts.is_empty() || (conclusions(req) && every_part(req)) {
+        return whole();
+    }
     let mut should = Vec::new();
     match (
         parts.contains(&DecisionPart::Judgment),
@@ -438,18 +500,31 @@ pub(crate) fn parts_query(req: &SearchRequest, q: &str) -> String {
     if parts.contains(&DecisionPart::Headnote) {
         should.push(field("official_summary"));
     }
-    match should.as_slice() {
+    let decision = match should.as_slice() {
         [one] => one.clone(),
         _ => format!("paradedb.boolean(should => ARRAY[{}])", should.join(", ")),
+    };
+    if !conclusions(req) {
+        return decision;
     }
+    let of_kind = |kind: &str, expr: String| {
+        format!("paradedb.boolean(must => ARRAY[{expr}, paradedb.term('kind', '{kind}')])")
+    };
+    format!(
+        "paradedb.boolean(should => ARRAY[{}, {}])",
+        of_kind(DocumentKind::Decision.as_str(), decision),
+        of_kind(DocumentKind::Conclusions.as_str(), whole())
+    )
 }
 
-/// The passage tags a semantic leg keeps when the search leaves a part out:
-/// `text` for the judgment, `annexes`, and `headnote`, which the base keeps on
-/// the passages of a decision carrying one.
+/// The passage tags a semantic leg keeps when the search leaves a part of the
+/// decision out: `text` for the judgment, `annexes`, and `headnote`, which the base
+/// keeps on the passages of a decision carrying one.
 pub(crate) fn passage_tags(req: &SearchRequest) -> Option<Vec<String>> {
     let parts = parts(req);
-    if parts.contains(&DecisionPart::Judgment) && parts.contains(&DecisionPart::Annexes) {
+    if parts.is_empty()
+        || (parts.contains(&DecisionPart::Judgment) && parts.contains(&DecisionPart::Annexes))
+    {
         return None;
     }
     Some(
@@ -459,10 +534,36 @@ pub(crate) fn passage_tags(req: &SearchRequest) -> Option<Vec<String>> {
                 DecisionPart::Headnote => passage_zones::HEADNOTE,
                 DecisionPart::Judgment => passage_zones::TEXT,
                 DecisionPart::Annexes => passage_zones::ANNEXES,
+                DecisionPart::Conclusions => unreachable!("not a part of a decision"),
             })
             .map(str::to_string)
             .collect(),
     )
+}
+
+/// The passage tags a semantic leg keeps, `tags` the placeholder of [`passage_tags`]:
+/// a conclusions' passages are kept whole.
+pub(crate) fn passage_zones_clause(req: &SearchRequest, tags: &str) -> Option<String> {
+    passage_tags(req)?;
+    let zones = format!("c.zones && {tags}::text[]");
+    Some(if conclusions(req) {
+        format!(
+            "(c.kind = '{}' OR {zones})",
+            DocumentKind::Conclusions.as_str()
+        )
+    } else {
+        zones
+    })
+}
+
+/// The passages a semantic leg keeps: their kind, and their tags as
+/// [`passage_zones_clause`] has them.
+pub(crate) fn passage_clause(req: &SearchRequest, tags: &str) -> Option<String> {
+    let kind = kind(req).map(|kind| format!("c.kind = '{kind}'"));
+    match (kind, passage_zones_clause(req, tags)) {
+        (Some(kind), Some(zones)) => Some(format!("{kind} AND {zones}")),
+        (kind, zones) => kind.or(zones),
+    }
 }
 
 /// Compose l'expression `@@@` d'une jambe BM25 : la requête primaire seule,
@@ -499,12 +600,13 @@ mod tests {
         let uids = legal_domain_uids(&[Domain::Civil]);
         assert!(uids.contains(&"legal_domain:CIVIL".to_string()));
         assert!(uids.contains(&"legal_domain:CIVIL_DROIT_LOCATIF".to_string()));
-        assert_eq!(uids.len(), 16);
+        assert_eq!(uids.len(), 17);
         assert!(uids.iter().all(|u| u.starts_with("legal_domain:CIVIL")));
         assert_eq!(
-            legal_domain_uids(&[Domain::Fiscal]),
-            vec!["legal_domain:FISCAL".to_string()]
+            legal_domain_uids(&[Domain::Criminel]),
+            vec!["legal_domain:CRIMINEL".to_string()]
         );
+        assert_eq!(legal_domain_uids(&[Domain::Europeen]).len(), 6);
         assert_eq!(
             legal_domain_uids(&[Domain::SocialDroitTravail]),
             vec!["legal_domain:SOCIAL_DROIT_TRAVAIL".to_string()]
@@ -557,7 +659,7 @@ mod tests {
         );
         assert_eq!(bm25, "", "le chemin part dans le `@@@`, pas en SQL");
         let index_query = build_array_filter_queries(&req, &mut idx, &mut params);
-        assert_eq!(index_query.len(), 1);
+        assert_eq!(index_query.len(), 2);
         assert!(
             index_query[0].contains("paradedb.term_set"),
             "{index_query:?}"
@@ -582,6 +684,40 @@ mod tests {
         assert_eq!(params.len(), 1);
     }
 
+    /// The jurisdiction holds the search apart from `seat`: a court ticked under
+    /// `fr` narrows within the scope and never widens it to the scope's roots.
+    #[test]
+    fn home_is_its_own_clause_beside_seat() {
+        let req: SearchRequest = serde_json::from_value(serde_json::json!({
+            "query": "x",
+            "seat": ["FR.CA.PARIS"],
+            "home": "fr",
+        }))
+        .unwrap();
+
+        let mut params: Params = Vec::new();
+        let mut idx = 1usize;
+        let index_query = build_array_filter_queries(&req, &mut idx, &mut params);
+        assert_eq!(index_query.len(), 3, "{index_query:?}");
+        assert!(index_query[0].contains("$1::text"), "{index_query:?}");
+        assert!(!index_query[1].contains("$1::text"), "{index_query:?}");
+
+        let mut params: Params = Vec::new();
+        let mut idx = 1usize;
+        let sql = build_facet_filter(
+            &req,
+            &mut idx,
+            &mut params,
+            ArrayFilters::AsSql,
+            FilterTable::Decisions,
+        );
+        assert!(
+            sql.contains("seat_paths && $1::text[]") && sql.contains("seat_paths && $2::text[]"),
+            "{sql}"
+        );
+        assert!(sql.contains(" AND "), "{sql}");
+    }
+
     /// Appartenance multiple : la sélection est l'union des codes cochés, sans
     /// exclusion d'un palier par un autre.
     #[test]
@@ -603,7 +739,7 @@ mod tests {
         );
         assert!(!frag.contains("publication_codes"));
         let queries = build_array_filter_queries(&req, &mut idx, &mut params);
-        assert_eq!(queries.len(), 1);
+        assert_eq!(queries.len(), 2);
         assert_eq!(
             queries[0],
             "paradedb.term_set(terms => ARRAY[paradedb.term('publication_codes', 'r'), \
@@ -631,7 +767,7 @@ mod tests {
     fn chunk_filter_reaches_uid_columns_via_exists() {
         let req: SearchRequest = serde_json::from_value(serde_json::json!({
             "query": "x",
-            "solution": ["REJET"],
+            "solution": ["DISMISSED"],
             "publication": ["PUBLIE_BULLETIN"],
             "jurisdictionCode": ["tj76351"],
         }))
@@ -690,7 +826,7 @@ mod tests {
             (serde_json::json!([]), every.clone()),
             (
                 serde_json::json!(["annexes", "headnote", "judgment"]),
-                every,
+                every.clone(),
             ),
             (serde_json::json!(["headnote"]), f("official_summary")),
             (serde_json::json!(["judgment"]), any(&[&judgment])),
@@ -703,6 +839,23 @@ mod tests {
             (
                 serde_json::json!(["headnote", "annexes"]),
                 any(&[&f("annexes"), &f("official_summary")]),
+            ),
+            (serde_json::json!(["conclusions"]), every.clone()),
+            (
+                serde_json::json!(["conclusions", "annexes", "headnote", "judgment"]),
+                every.clone(),
+            ),
+            (
+                serde_json::json!(["judgment", "conclusions"]),
+                any(&[
+                    &format!(
+                        "paradedb.boolean(must => ARRAY[{}, paradedb.term('kind', 'decision')])",
+                        any(&[&judgment])
+                    ),
+                    &format!(
+                        "paradedb.boolean(must => ARRAY[{every}, paradedb.term('kind', 'conclusions')])"
+                    ),
+                ]),
             ),
         ] {
             assert_eq!(
@@ -729,7 +882,7 @@ mod tests {
             (serde_json::json!(["annexes"]), Some(vec!["annexes"])),
             (
                 serde_json::json!(["annexes", "headnote"]),
-                Some(vec!["annexes", "headnote"]),
+                Some(vec!["headnote", "annexes"]),
             ),
         ] {
             assert_eq!(
@@ -746,7 +899,48 @@ mod tests {
             ArrayFilters::AsSql,
             FilterTable::Chunks,
         );
-        assert_eq!(frag, " AND c.zones && $1::text[]");
+        assert_eq!(frag, " AND c.kind = 'decision' AND c.zones && $1::text[]");
         assert_eq!(params.len(), 1);
+    }
+
+    /// A search holds to decisions unless it asks the conclusions, to them alone
+    /// when it asks no part of a decision, and to neither kind when it asks both;
+    /// the conclusions' passages are kept whole beside the parts asked.
+    #[test]
+    fn conclusions_are_searched_when_asked() {
+        let kind = |parts: serde_json::Value| {
+            build_array_filter_queries(&in_parts(parts), &mut 1, &mut Vec::new())
+        };
+        let term = |kind: &str| vec![format!("paradedb.term('kind', '{kind}')")];
+        assert_eq!(kind(serde_json::Value::Null), term("decision"));
+        assert_eq!(kind(serde_json::json!(["judgment"])), term("decision"));
+        assert_eq!(
+            kind(serde_json::json!(["conclusions"])),
+            term("conclusions")
+        );
+        assert!(kind(serde_json::json!(["judgment", "conclusions"])).is_empty());
+
+        let chunks = |parts: serde_json::Value| {
+            build_facet_filter(
+                &in_parts(parts),
+                &mut 1,
+                &mut Vec::new(),
+                ArrayFilters::AsSql,
+                FilterTable::Chunks,
+            )
+        };
+        assert_eq!(chunks(serde_json::Value::Null), " AND c.kind = 'decision'");
+        assert_eq!(
+            chunks(serde_json::json!(["conclusions"])),
+            " AND c.kind = 'conclusions'"
+        );
+        assert_eq!(
+            chunks(serde_json::json!(["judgment", "annexes", "conclusions"])),
+            ""
+        );
+        assert_eq!(
+            chunks(serde_json::json!(["annexes", "conclusions"])),
+            " AND (c.kind = 'conclusions' OR c.zones && $1::text[])"
+        );
     }
 }

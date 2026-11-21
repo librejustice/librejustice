@@ -11,25 +11,9 @@ use leptos::html;
 use leptos::prelude::*;
 use lj_dtos::UiAction;
 
-use super::mode_select::DECISION_MODES;
+use super::mode_select::decision_modes;
 use crate::helpers::cn;
-
-const OPERATORS: &[(&str, &str)] = &[
-    ("ET", "intersection"),
-    ("OU", "union"),
-    ("SAUF", "exclusion"),
-    ("PROCHE5", "proximité de 5 mots"),
-    ("\"…\"", "expression exacte"),
-    ("*", "troncature"),
-];
-
-const DESIGNATIONS: &[(&str, &str)] = &[
-    ("19-22.015", "numéro de pourvoi ou de requête"),
-    ("1922015", "le même, sans séparateurs"),
-    ("ECLI:FR:CCASS:2022:CO00288", "ECLI"),
-    ("CE 20 octobre 1989", "cour et date"),
-    ("arrêt Nicolo", "nom d'usage"),
-];
+use crate::i18n::use_ui;
 
 /// The engine the help documents: textes has no operators and no semantic mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -99,7 +83,7 @@ pub fn SyntaxHint(
             class=trigger_class
             data-usage=UiAction::SearchSyntaxHelp.as_str()
         >
-            "Aide à la recherche"
+            {use_ui().search.help}
             <span aria-hidden="true" class="opacity-60">
                 "?"
             </span>
@@ -117,12 +101,12 @@ pub fn SyntaxHint(
                         class="font-sans text-sm text-[var(--color-ink)]"
                         style="font-variation-settings: 'wght' 600"
                     >
-                        "Aide à la recherche"
+                        {use_ui().search.help}
                     </h3>
                     <button
                         type="button"
                         on:click=move |_| close_btn()
-                        aria-label="Fermer"
+                        aria-label=use_ui().search.close
                         class="shrink-0 text-lg leading-none text-[var(--color-ink-subtle)] transition-colors hover:text-[var(--color-ink)]"
                     >
                         "✕"
@@ -140,21 +124,22 @@ pub fn SyntaxHint(
 /// The decisions help: the four modes as their pills word them, how to name one
 /// decision, the operators.
 fn decisions_help() -> AnyView {
+    let ui = &use_ui().search;
     view! {
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
-                "Modes de recherche"
+                {ui.help_modes}
             </h4>
             <dl class="flex flex-col gap-1.5 text-xs">
-                {DECISION_MODES
-                    .iter()
+                {decision_modes(ui)
+                    .into_iter()
                     .map(|(_, label, tooltip)| {
                         view! {
                             <div class="flex gap-2">
                                 <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">
-                                    {*label}
+                                    {label}
                                 </dt>
-                                <dd class="text-[var(--color-ink-muted)]">{*tooltip}</dd>
+                                <dd class="text-[var(--color-ink-muted)]">{tooltip}</dd>
                             </div>
                         }
                     })
@@ -163,23 +148,23 @@ fn decisions_help() -> AnyView {
         </section>
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
-                "Trouver une décision précise"
+                {ui.help_find_one}
             </h4>
-            {code_chips(DESIGNATIONS)}
+            {code_chips(ui.help_designations)}
         </section>
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
-                "Tri IA"
+                {ui.ai_sort}
             </h4>
             <p class="text-xs text-[var(--color-ink-muted)]">
-                "Actif par défaut en mode Reformulation : une IA réordonne les 50 premiers résultats selon votre question."
+                {ui.help_ai_sort_text}
             </p>
         </section>
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
-                "Opérateurs booléens"
+                {ui.help_operators_title}
             </h4>
-            {code_chips(OPERATORS)}
+            {code_chips(ui.help_operators)}
         </section>
     }
     .into_any()
@@ -208,42 +193,43 @@ fn code_chips(items: &'static [(&'static str, &'static str)]) -> impl IntoView {
 /// Corps de l'aide textes : classement par mots-clés, sans opérateurs — les
 /// trois gestes qui marchent, puis les filtres.
 fn textes_help() -> AnyView {
+    let ui = &use_ui().search;
     view! {
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
-                "Comment chercher"
+                {ui.help_how}
             </h4>
             <dl class="flex flex-col gap-1.5 text-xs">
                 <div class="flex gap-2">
-                    <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">"Une notion"</dt>
+                    <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">{ui.help_notion}</dt>
                     <dd class="text-[var(--color-ink-muted)]">
-                        "Mots-clés libres : les articles en vigueur les plus pertinents remontent en premier (« congés trimestriels convention collective de 1966 »)."
+                        {ui.help_notion_text}
                     </dd>
                 </div>
                 <div class="flex gap-2">
                     <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">
-                        "Un texte nommé"
+                        {ui.help_named_text}
                     </dt>
                     <dd class="text-[var(--color-ink-muted)]">
-                        "Nommer le code, la convention ou le pays cible ses articles : « préavis de démission code du travail », « code civil du Sénégal »."
+                        {ui.help_named_text_text}
                     </dd>
                 </div>
                 <div class="flex gap-2">
                     <dt class="w-28 shrink-0 font-medium text-[var(--color-ink)]">
-                        "Un n° d'article"
+                        {ui.help_article_number}
                     </dt>
                     <dd class="text-[var(--color-ink-muted)]">
-                        "« L1237-1 » remonte directement l'article et sa page versionnée."
+                        {ui.help_article_number_text}
                     </dd>
                 </div>
             </dl>
         </section>
         <section class="flex flex-col gap-2">
             <h4 class="text-[0.7rem] font-medium uppercase tracking-[0.15em] text-[var(--color-ink-muted)]">
-                "Affiner"
+                {ui.help_refine}
             </h4>
             <p class="text-xs text-[var(--color-ink-muted)]">
-                "Les filtres sous la barre bornent les résultats par juridiction, nature (code, loi, convention collective…), portée et source. Depuis la page d'un code, « Rechercher dans ce code » limite la recherche à ce texte."
+                {ui.help_refine_text}
             </p>
         </section>
     }

@@ -1,5 +1,7 @@
 //! Text slug assignment: the only writer of `legal_text.slug`. Every text
 //! gets a deterministic, immutable and **readable** slug, never a uid inside.
+//! A foreign text is first named by its title before the first comma, where its
+//! register reference starts (`code-civil` for « Code civil (Suisse), RS 210 »).
 //! Cascade on collision: a wider cut of the title, then the date of the text,
 //! then the NOR, then an ordinal, inside the jurisdiction, uniqueness bearing on the
 //! pair since the URL names the jurisdiction in its first segment. The stem of
@@ -39,7 +41,7 @@ fn truncate_slug(full: &str, max: usize) -> String {
 /// in the URL segment, never in the slug (`code-civil`, not
 /// `code-civil-syrien`). An unknown code is a hard error: extend the table
 /// when the text is curated.
-fn country(a2: &str) -> Result<(&'static str, &'static [&'static str])> {
+pub(super) fn country(a2: &str) -> Result<(&'static str, &'static [&'static str])> {
     Ok(match a2 {
         "AM" => ("arm", &["armenien", "armenienne", "armenie"]),
         "AO" => ("ago", &["angola", "angolais", "angolaise"]),
@@ -49,6 +51,7 @@ fn country(a2: &str) -> Result<(&'static str, &'static [&'static str])> {
         "BG" => ("bgr", &["bulgare", "bulgarie"]),
         "BI" => ("bdi", &["burundi", "burundais", "burundaise"]),
         "BJ" => ("ben", &["beninois", "beninoise", "benin"]),
+        "CA" => ("can", &["canadien", "canadienne", "canada"]),
         "CD" => ("cod", &["rd-congo", "rdc", "congolais", "congolaise"]),
         "CF" => ("caf", &["centrafrique", "centrafricain", "centrafricaine"]),
         "CG" => (
@@ -94,6 +97,7 @@ fn country(a2: &str) -> Result<(&'static str, &'static [&'static str])> {
         "NE" => ("ner", &["nigerien", "nigerienne", "niger"]),
         "NG" => ("nga", &["nigerian", "nigeriane", "nigeria"]),
         "NL" => ("nld", &["neerlandais", "neerlandaise", "pays-bas"]),
+        "OHADA" => ("ohada", &["ohada"]),
         "PE" => ("per", &["peruvien", "peruvienne", "perou"]),
         "PF" => ("pyf", &["polynesie-francaise", "polynesien", "polynesie"]),
         "PL" => ("pol", &["polonais", "polonaise", "pologne"]),
@@ -116,6 +120,11 @@ fn country(a2: &str) -> Result<(&'static str, &'static [&'static str])> {
     })
 }
 
+/// What a country marker taken off the end of a slug leaves hanging: `loi-sur-la-preuve-au`.
+const DANGLING: &[&str] = &[
+    "au", "aux", "d", "de", "des", "du", "en", "l", "la", "le", "les",
+];
+
 /// Retire du slug les séquences de tokens pays (bornées aux tirets : `belge`,
 /// `cote-d-ivoire`) et le token alpha-2 minuscule. Les composés dont un seul
 /// token matche (`franco-algerienne`) relèvent de la curation, pas de la passe.
@@ -125,6 +134,7 @@ fn strip_country_tokens(slug: &str, tokens: &[&str], a2: &str) -> String {
     let mut seqs: Vec<Vec<&str>> = tokens.iter().map(|s| s.split('-').collect()).collect();
     seqs.push(vec![&a2_low]);
     seqs.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    let mut tail_removed = false;
     for seq in &seqs {
         let mut i = 0;
         while i + seq.len() <= toks.len() {
@@ -133,10 +143,16 @@ fn strip_country_tokens(slug: &str, tokens: &[&str], a2: &str) -> String {
                 .map(String::as_str)
                 .eq(seq.iter().copied())
             {
+                tail_removed |= i + seq.len() == toks.len();
                 toks.drain(i..i + seq.len());
             } else {
                 i += 1;
             }
+        }
+    }
+    if tail_removed {
+        while toks.last().is_some_and(|t| DANGLING.contains(&t.as_str())) {
+            toks.pop();
         }
     }
     toks.join("-")
@@ -145,8 +161,9 @@ fn strip_country_tokens(slug: &str, tokens: &[&str], a2: &str) -> String {
 /// The slug of a text against the `(jurisdiction, slug)` pairs already taken:
 /// the first free candidate of the cascade truncated, truncated wider, plus
 /// date, plus date plus NOR, then an ordinal. Outside FR/UE/INTL the stem is
-/// stripped of its country markers, which the URL segment carries.
-fn pick_slug(src: &SlugSourceRow, taken: &HashSet<(String, String)>) -> Result<String> {
+/// stripped of its country markers, which the URL segment carries, and the name
+/// before the title's first comma is tried first.
+pub(super) fn pick_slug(src: &SlugSourceRow, taken: &HashSet<(String, String)>) -> Result<String> {
     let (candidates, stem) = cascade(src, |s| lj_fold::slug(s, '-'))?;
     let libre = |cand: &str| !taken.contains(&(src.jurisdiction.clone(), cand.to_string()));
     if let Some(cand) = candidates.into_iter().find(|c| libre(c)) {
@@ -172,19 +189,30 @@ fn cascade(src: &SlugSourceRow, slugify: impl Fn(&str) -> String) -> Result<(Vec
     if src.title.trim().is_empty() {
         bail!("texte {} sans titre : aucun slug dérivable", src.text_uid);
     }
-    let mut full_raw = slugify(&src.title);
-    if !matches!(src.jurisdiction.as_str(), "FR" | "EU" | "INTL") {
-        let (_, tokens) = country(&src.jurisdiction)?;
-        full_raw = strip_country_tokens(&full_raw, tokens, &src.jurisdiction);
-        if full_raw.is_empty() {
-            bail!(
-                "texte {} : titre réduit à son seul marqueur pays, aucun radical",
-                src.text_uid
-            );
-        }
+    let foreign = !matches!(src.jurisdiction.as_str(), "FR" | "EU" | "INTL");
+    let markers = match foreign {
+        true => Some(country(&src.jurisdiction)?.1),
+        false => None,
+    };
+    let stem_of = |title: &str| match markers {
+        Some(tokens) => strip_country_tokens(&slugify(title), tokens, &src.jurisdiction),
+        None => slugify(title),
+    };
+    let full_raw = stem_of(&src.title);
+    if foreign && full_raw.is_empty() {
+        bail!(
+            "texte {} : titre réduit à son seul marqueur pays, aucun radical",
+            src.text_uid
+        );
     }
     let wide = truncate_slug(&full_raw, WIDE_SLUG_LEN);
     let mut candidates = vec![truncate_slug(&full_raw, MAX_SLUG_LEN), wide.clone()];
+    if let Some((name, _)) = src.title.split_once(',').filter(|_| foreign) {
+        let name = truncate_slug(&stem_of(name), MAX_SLUG_LEN);
+        if !name.is_empty() {
+            candidates.insert(0, name);
+        }
+    }
     let mut stem = wide;
     if let Some(date) = slug_date(src) {
         stem = format!("{stem}-{date}");
@@ -201,6 +229,17 @@ fn cascade(src: &SlugSourceRow, slugify: impl Fn(&str) -> String) -> Result<(Vec
 /// cascade [`pick_slug`] contre l'existant et le lot. Renvoie le nombre de
 /// slugs posés.
 pub async fn assign_text_slugs(repo: &DecisionRepository<'_>) -> Result<u64> {
+    repo.begin_slug_pass()
+        .await
+        .map_err(|e| anyhow!("begin_slug_pass: {e}"))?;
+    let written = slug_pass(repo).await;
+    repo.end_slug_pass(written.is_ok())
+        .await
+        .map_err(|e| anyhow!("end_slug_pass: {e}"))?;
+    written
+}
+
+async fn slug_pass(repo: &DecisionRepository<'_>) -> Result<u64> {
     let pending = repo
         .texts_without_slug()
         .await
@@ -334,7 +373,7 @@ pub async fn remint_text_slugs(applique: bool) -> Result<()> {
         .map_err(|e| anyhow!("existing_text_slugs: {e}"))?
         .into_iter()
         .collect();
-    let redirects: std::collections::HashMap<String, String> = repo
+    let redirects: std::collections::HashMap<(String, String), String> = repo
         .text_slug_redirects()
         .await
         .map_err(|e| anyhow!("text_slug_redirects: {e}"))?
@@ -343,7 +382,7 @@ pub async fn remint_text_slugs(applique: bool) -> Result<()> {
 
     let mut bequeathed: std::collections::HashMap<&str, Vec<&str>> =
         std::collections::HashMap::new();
-    for (ancien, uid) in &redirects {
+    for ((_, ancien), uid) in &redirects {
         bequeathed.entry(uid).or_default().push(ancien);
     }
 
@@ -371,14 +410,18 @@ pub async fn remint_text_slugs(applique: bool) -> Result<()> {
         let neuf = pick_slug(src, &taken)?;
         taken.extend(own);
         taken.insert((src.jurisdiction.clone(), neuf.clone()));
+        if redirects
+            .get(&(src.jurisdiction.clone(), stored.clone()))
+            .is_some_and(|uid| uid != &src.text_uid)
+        {
+            bail!(
+                "text {}: the redirect {stored:?} already answers for another text",
+                src.text_uid
+            );
+        }
         plan.push((src.text_uid.clone(), stored.clone(), neuf));
     }
 
-    for (text_uid, ancien, _) in &plan {
-        if redirects.get(ancien).is_some_and(|uid| uid != text_uid) {
-            bail!("texte {text_uid} : la redirection « {ancien} » répond déjà à un autre texte");
-        }
-    }
     for (text_uid, ancien, neuf) in plan.iter().take(20) {
         tracing::info!(text_uid, ancien, neuf, "remint slug");
     }

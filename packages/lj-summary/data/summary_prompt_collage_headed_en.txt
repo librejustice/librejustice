@@ -1,0 +1,58 @@
+You write TWO short sentences, in {target_language}, that will frame a court's official summary. A program pastes that summary between them, word for word: you do not rewrite it, quote it or summarise it. You write only what it lacks at either end.
+
+THE HEADER
+
+The decision comes under a header: [Décision] gives the court, the date and the number; [Nom d'usage], when present, the name the decision is known by. The official summary comes under the line [Titrage], the heading under which the court indexed it. Nothing of the header is copied, except the usage name in the opening.
+
+THE OPENING SENTENCE
+
+70 to 100 characters, never more than 120: beyond that it is cut where it is served alone, as a meta description. Written from the decision. <subject> + <verb> + <object of the dispute>, nothing else, and it stands on its own. Never open with « Cette décision », « Cet arrêt », « Le juge », « Il s'agit », or their equivalent in {target_language}.
+
+When the header carries a [Nom d'usage], the opening gives it, its capitals set back to ordinary case: it is the name the reader searches the decision by. If it names the only party that brought the case, that party is the subject, with its article (« La société <nom> conteste… », « La commune de <nom> demande… »). Otherwise, and always when it joins two parties (« <A> c. <B> », « <A> contre <B> »), the sentence opens on « Dans l'affaire <nom d'usage>, » then <subject> <verb> <object of the dispute>. A name of more than six words is cut to the first name of each party (« <A> et autres contre <B> », « Commission contre <État> »), and an English name is put into {target_language}, « v. » becoming « c. » and « and Others » « et autres » in French. The opening then runs to 150 characters, never more. Without a [Nom d'usage], nobody is named: no name, no initial, no code, only the role.
+
+The verb is one word, with no procedural circumlocution. The object is what is challenged, named by its nature, with at most one complement saying what it bears on. No legal basis, amount, date or place, no court that gave it, no list of its heads: all of that is in the official summary or has no place here.
+
+THE SUBJECT IS WHOEVER BROUGHT THE CASE BEFORE THIS COURT, and you read it at the head of the decision: « sur le pourvoi formé par », « vu la requête présentée par », « sur l'appel de ». It is not whoever lost at first instance, nor whoever's fate is at stake: on an appeal in cassation by the minister against a judgment that discharged a company, the subject is the minister, and what the minister challenges is that judgment. A party that won below defends the decision; it does not challenge it.
+
+You call the subject by the capacity the decision gives it, and by no other: when the decision writes « le pétitionnaire », you do not write « le soumissionnaire ». You add no kinship, profession or capacity the decision does not state.
+
+A natural person is never named, not even by an anonymised name: no title followed by a letter, initials or a bracket, except the usage name the header gives. You call the person by what the person is in this dispute, as the decision writes it; with no capacity written, « le requérant » or its equivalent in {target_language}. A legal person or an authority keeps its name when it is short; a name of more than five words is replaced by the common noun that designates it. Several parties that brought the case together are called by what they have in common, without listing them.
+
+The sentence ends without a full stop: the program sets the punctuation.
+
+THE OUTCOME CLAUSE, ONCE AND NEVER TWICE
+
+The official summary sometimes states itself what the rule does to the case: « une cour d'appel en a exactement déduit que... », « Méconnaît les articles 2 et 3 du code de procédure pénale, l'arrêt qui... », « l'administration ne pouvait légalement... ». When it does, return an EMPTY clause: one clause too many is a repetition the reader pays for.
+
+It states the outcome only if it says what becomes of the challenged decision in this case. A rule stated in general terms does not give the outcome, even when it concludes: the reader still does not know whether the challenged decision falls or stands. In that case, the clause is written.
+
+When it states the rule and is silent on the case, write the outcome, 50 to 110 characters and never more, as a single clause. It names neither the court whose decision is challenged nor its city.
+
+YOU READ IT IN THE OPERATIVE PART, the end of the decision, and nowhere else. You take up the verb it uses: annule, rejette, casse, réforme, décharge, prononce un non-lieu, or the verb the operative part uses in {target_language}. The word follows what the decision does, never the habit of another order of courts: the Conseil d'État sets aside (casse) the judgment of an administrative court of appeal, but it annuls (annule) or varies (réforme) the judgment of an administrative tribunal brought before it on appeal. There is an appeal in cassation, a ground of appeal or a cassation only where the decision itself names one.
+
+ONE angle only, the one the operative part carries:
+
+- the object: « d'où l'annulation de <l'acte ou la décision censurée> », « d'où le rejet de <ce qui est rejeté> »
+- the reach: « annulation partielle, sur <les seules dispositions atteintes> »
+- the ground, and only when the decision names a single one: « <la cause unique retenue>, d'où le rejet »
+
+The angle brackets mark what you fill in by reading the decision. None of these words passes as it stands into your clause, and a clause that could apply to another case is wrong.
+
+When the operative part does not carry a single outcome, return an EMPTY clause: further inquiry ordered, a referral before ruling, joined claims with different fates, a partial discharge with a partial dismissal.
+
+A dismissal is written like an annulment, by what is dismissed, why or how far: the word alone is already served as a badge beside the summary, and the clause brings what the word does not say.
+
+WHAT YOU DO NOT DO
+
+You take up no point of law of the official summary: it will be pasted whole. You do not comment on it, announce what it will say or extend it. If your outcome clause repeats a sentence it already carries, the clause must be empty.
+
+The clause names no natural person either.
+
+ANSWER
+
+TWO LINES, and nothing else, in {target_language}. No preamble, no numbering, no code fence.
+
+The first line is the opening sentence.
+The second line is the outcome clause, and it is EMPTY when the official summary already carries the outcome.
+
+An empty line in second position is a correct and expected answer. Never write « aucune », « vide », « néant », "none" or a dash to mark it: leave the line empty.

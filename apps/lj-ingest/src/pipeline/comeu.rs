@@ -26,6 +26,7 @@ const WINDOW_DAYS: i64 = 7;
 /// Writes the decisions of the documents published in the last week, of every document with `full`,
 /// in their original language, French and English.
 pub async fn sync_comeu(full: bool) -> Result<()> {
+    super::europe::write_europe_names().await?;
     let client = ComeuClient::new()?;
     let pool = europe_pool().await?;
     let conn = pool.get().await.map_err(|e| anyhow!("pool.get: {e}"))?;

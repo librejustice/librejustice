@@ -70,6 +70,11 @@ pub fn eu_of_iso_639_1(code: &str) -> Option<&'static str> {
     })
 }
 
+/// The ISO 639-1 code of a stored text's language: an official language of the Union, or Arabic.
+pub fn iso_639_1_of_text(code: &str) -> Option<&'static str> {
+    iso_639_1_of_eu(code).or((code == "ARA").then_some("ar"))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

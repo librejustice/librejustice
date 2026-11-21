@@ -6,7 +6,7 @@ Free and open source. **~3.9 million decisions, ~2.1 million legal articles in f
 
 ## What you search
 
-- **Case law**: Conseil d'État, Cour de cassation, cours d'appel, administrative and judicial first-instance courts, Conseil constitutionnel, CNIL, CNDA (publicly released decisions only), Défenseur des droits, Autorité de la concurrence, Tribunal des conflits, ECHR, CJEU, European Commission competition decisions. Filters by court, date, outcome and cited articles.
+- **Case law**: Conseil d'État, Cour de cassation, cours d'appel, administrative and judicial first-instance courts, Conseil constitutionnel, CNIL, CNDA (publicly released decisions only), Défenseur des droits, Autorité de la concurrence, Autorité des marchés financiers, Tribunal des conflits, ECHR, CJEU, European Commission competition decisions. Filters by court, date, outcome and cited articles.
 - **Legal texts**: codes and statutes **as they stood on any date** (consolidated versions with per-article history), the full Journal officiel, EU law, treaties and bilateral accords, collective agreements, BOFiP, circulaires, and the codes of 59 foreign countries.
 - **Public notices**: open public procurement opportunities from BOAMP and buyer platforms, deduplicated with submission links and deadlines.
 - **Directory**: lawyers, companies and courts, linked to their litigation.

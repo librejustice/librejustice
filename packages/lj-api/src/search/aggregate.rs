@@ -14,8 +14,8 @@ use tokio_postgres::types::ToSql;
 use lj_dtos::{SearchMode, SearchRequest, SortOrder};
 
 use super::filters::{
-    as_refs, build_array_filter_queries, enum_uids, jt_codes, legal_domain_uids, nonempty, present,
-    term_any, Params,
+    as_refs, build_array_filter_queries, jt_codes, legal_domain_uids, nonempty, present,
+    solution_uids, term_any, Params,
 };
 use super::hydrate::FacetCounters;
 
@@ -27,19 +27,20 @@ use super::hydrate::FacetCounters;
 /// everywhere, citations excepted, truncated by nature. The seat cap is global,
 /// not nested under a court: below the seat vocabulary it truncates the tree with
 /// no error and no log.
-fn agg() -> &'static str {
-    r#"{
+const CONNECTOR_AXES: &str = r#"
   "seat": {"terms": {"field": "seat_paths", "size": 4000}},
   "dom": {"terms": {"field": "legal_domain_uid", "size": 100}},
   "sol": {"terms": {"field": "solution_uid", "size": 50}},
   "form": {"terms": {"field": "formation_paths", "size": 200}},
   "pub": {"terms": {"field": "publication_codes", "size": 50}},
-  "jour": {"date_histogram": {"field": "date_lecture", "fixed_interval": "1d", "min_doc_count": 1}},
   "inst": {"terms": {"field": "legal_instruments", "size": 30}},
-  "art": {"terms": {"field": "legal_article_composite", "size": 300}},
-  "total": {"value_count": {"field": "id"}}
-}"#
-}
+  "total": {"value_count": {"field": "id"}}"#;
+
+/// The panel's own axes, which no connector serves: the days and the articles,
+/// a tenth to a quarter of the count's time.
+const PANEL_ONLY_AXES: &str = r#"
+  "jour": {"date_histogram": {"field": "date_lecture", "fixed_interval": "1d", "min_doc_count": 1}},
+  "art": {"terms": {"field": "legal_article_composite", "size": 300}}"#;
 
 /// Plage de dates en `daterange`, `date_to` inclusive comme le filtre SQL.
 fn date_range(req: &SearchRequest, next_idx: &mut usize, params: &mut Params) -> Option<String> {
@@ -111,13 +112,13 @@ pub(super) fn build_predicate(
     compose(&predicate_parts(req, next_idx, params))
 }
 
-/// Without a question, a decision counts through its lead text alone.
-const LEAD: &str = "paradedb.term('lead', true)";
+/// Without a question, a decision counts through its counted text alone.
+const COUNTED: &str = "paradedb.term('counted', true)";
 
 fn compose(parts: &PredicateParts) -> String {
     let mut must: Vec<String> = parts.question.iter().cloned().collect();
     if must.is_empty() {
-        must.push(LEAD.to_string());
+        must.push(COUNTED.to_string());
     }
     must.extend(parts.filters.iter().cloned());
     format!(
@@ -138,7 +139,7 @@ fn compose_ids(filters: &[String], ids: &[i64], except: Option<&str>) -> String 
         .collect();
     let mut must = vec![
         format!("paradedb.term_set(terms => ARRAY[{}])", terms.join(", ")),
-        LEAD.to_string(),
+        COUNTED.to_string(),
     ];
     must.extend(filters.iter().cloned());
     let mut must_not: Vec<&str> = except.into_iter().collect();
@@ -173,10 +174,7 @@ fn filter_parts(req: &SearchRequest, next_idx: &mut usize, params: &mut Params) 
         ));
     }
     for (field, uids) in [
-        (
-            "solution_uid",
-            present(&req.solution).map(|v| enum_uids("solution", v)),
-        ),
+        ("solution_uid", present(&req.solution).map(solution_uids)),
         (
             "legal_domain_uid",
             present(&req.legal_domain).map(legal_domain_uids),
@@ -211,6 +209,8 @@ pub(crate) enum Scope<'a> {
 pub(crate) enum Aggs<'a> {
     /// The eight axes of the panel, each capped at the head of its vocabulary.
     All,
+    /// The axes a connector serves: the panel without the days and the articles.
+    Connector,
     /// The given keys and nothing else, counted exactly whatever their rank.
     Keys {
         instruments: &'a [String],
@@ -223,7 +223,8 @@ impl Aggs<'_> {
     /// one absent from the buckets is a zero rather than a value out of the top.
     fn tree(&self) -> String {
         match self {
-            Aggs::All => agg().to_string(),
+            Aggs::All => format!("{{{CONNECTOR_AXES},{PANEL_ONLY_AXES}\n}}"),
+            Aggs::Connector => format!("{{{CONNECTOR_AXES}\n}}"),
             Aggs::Keys {
                 instruments,
                 articles,
@@ -384,7 +385,7 @@ pub(crate) async fn aggregate_facets(
     Ok((total, counters))
 }
 
-/// The matched texts beyond the first of each decision, its lead first: a
+/// The matched texts beyond the first of each decision, its counted text first: a
 /// decision matched in several languages counts once.
 async fn duplicate_texts(
     conn: &Client,
@@ -393,7 +394,7 @@ async fn duplicate_texts(
 ) -> std::result::Result<Vec<i64>, tokio_postgres::Error> {
     let sql = format!(
         "SELECT DISTINCT t.decision_id FROM decision_text t \
-         WHERE t.id @@@ paradedb.boolean(must => ARRAY[{predicate}, paradedb.term('lead', false)])"
+         WHERE t.id @@@ paradedb.boolean(must => ARRAY[{predicate}, paradedb.term('counted', false)])"
     );
     let decisions: Vec<i64> = conn
         .query(sql.as_str(), params)
@@ -412,7 +413,7 @@ async fn duplicate_texts(
         "SELECT t.id, t.decision_id FROM decision_text t \
          WHERE t.id @@@ paradedb.boolean(must => ARRAY[{predicate}, \
            paradedb.term_set(terms => ARRAY[{}])]) \
-         ORDER BY t.decision_id, t.lead DESC, t.id",
+         ORDER BY t.decision_id, t.counted DESC, t.id",
         terms.join(", ")
     );
     let mut previous = None;
@@ -543,7 +544,8 @@ mod tests {
         );
         assert_eq!(
             p,
-            "paradedb.boolean(must => ARRAY[paradedb.term('lead', true)], \
+            "paradedb.boolean(must => ARRAY[paradedb.term('counted', true), \
+             paradedb.term('kind', 'decision')], \
              must_not => ARRAY[paradedb.exists('deleted_at')])"
         );
     }
@@ -577,7 +579,7 @@ mod tests {
             must.contains("paradedb.term('decision_id', 9::bigint)"),
             "{must}"
         );
-        assert!(must.contains("paradedb.term('lead', true)"), "{must}");
+        assert!(must.contains("paradedb.term('counted', true)"), "{must}");
         assert!(!must.contains("search_title"), "{must}");
         assert!(must_not.contains("search_title"), "{must_not}");
         assert!(
@@ -603,7 +605,7 @@ mod tests {
             "{p}"
         );
         assert!(p.contains("paradedb.term('decision_id', 7::bigint)"), "{p}");
-        assert!(p.contains("paradedb.term('lead', true)"), "{p}");
+        assert!(p.contains("paradedb.term('counted', true)"), "{p}");
         assert!(
             !p.contains("search_title") && !p.contains("full_text"),
             "{p}"
@@ -665,13 +667,13 @@ mod tests {
     fn les_axes_referentiels_portent_l_uid_complet() {
         let mut params: Params = Vec::new();
         let r = req(serde_json::json!({
-            "query": "", "solution": ["REJET"], "formation": ["FR.TJ.JEX", "FR.CC.RESTREINTE"],
+            "query": "", "solution": ["DISMISSED"], "formation": ["FR.TJ.JEX", "FR.CC.RESTREINTE"],
         }));
         let p = build_predicate(&r, &mut 1, &mut params);
         for field in ["solution_uid", "formation_paths"] {
             assert!(p.contains(&format!("paradedb.term('{field}'")), "{p}");
         }
-        assert_eq!(params.len(), 3);
+        assert_eq!(params.len(), 6);
     }
 
     #[test]
@@ -700,6 +702,25 @@ mod tests {
         assert_eq!(c.publication["publication:INEDIT_BULLETIN"], 3);
         assert_eq!(c.year["2024"], 11);
         assert_eq!(c.year["2025"], 2);
+    }
+
+    #[test]
+    fn the_connector_tree_is_the_panel_without_days_and_articles() {
+        let keys = |aggs: Aggs| -> Vec<String> {
+            let tree: Value = serde_json::from_str(&aggs.tree()).expect("a JSON tree");
+            tree.as_object()
+                .expect("an object")
+                .keys()
+                .cloned()
+                .collect()
+        };
+        let panel = keys(Aggs::All);
+        assert_eq!(panel.len(), 9, "{panel:?}");
+        let connector: Vec<String> = panel
+            .into_iter()
+            .filter(|k| k != "jour" && k != "art")
+            .collect();
+        assert_eq!(keys(Aggs::Connector), connector);
     }
 
     #[test]

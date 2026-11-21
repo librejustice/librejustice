@@ -36,6 +36,8 @@ pub struct Journal {
     /// Journal whose rules this one resolves on (the BOCC and the BOFiP are
     /// received where the JORF is).
     pub defaults_from: Option<&'static str>,
+    /// Seat root of the court that rules on this journal's law, `EU` for the JOUE.
+    pub courts: Option<&'static str>,
 }
 
 static JOURNALS: LazyLock<Vec<Journal>> = LazyLock::new(|| {
@@ -45,13 +47,14 @@ static JOURNALS: LazyLock<Vec<Journal>> = LazyLock::new(|| {
         .filter(|l| !l.trim().is_empty())
         .map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            assert_eq!(f.len(), 5, "journals.tsv: {l}");
+            assert_eq!(f.len(), 6, "journals.tsv: {l}");
             Journal {
                 code: f[0],
                 label: f[1],
                 publisher: f[2],
                 languages: f[3].split(',').collect(),
                 defaults_from: Some(f[4]).filter(|s| !s.is_empty()),
+                courts: Some(f[5]).filter(|s| !s.is_empty()),
             }
         })
         .collect()
@@ -88,12 +91,78 @@ pub fn journal_code(text_uid: &str, jurisdiction: &str) -> String {
         "FR" | "INTL" => "JORF".to_string(),
         "NC" => "JONC".to_string(),
         "PF" => "JOPF".to_string(),
+        "BE" if text_uid.starts_with("BE-VLG/") => "MB-VLG".to_string(),
+        "BE" if text_uid.starts_with("BE-WAL/") => "MB-WAL".to_string(),
+        "BE" if text_uid.starts_with("BE-BRU/") => "MB-BRU".to_string(),
+        "BE" if text_uid.starts_with("BE-CFR/") => "MB-CFR".to_string(),
+        "BE" if text_uid.starts_with("BE-CDE/") => "MB-CDE".to_string(),
         "BE" => "MB".to_string(),
-        "CH" => "RO".to_string(),
+        "CH" => match text_uid
+            .split_once('/')
+            .and_then(|(head, _)| head.strip_prefix("CH-"))
+        {
+            Some(canton) => format!("JO-CH-{canton}"),
+            None => "RO".to_string(),
+        },
+        "CA" => match text_uid
+            .split_once('/')
+            .and_then(|(head, _)| head.strip_prefix("CA-"))
+        {
+            Some(province) => format!("JO-CA-{province}"),
+            None => "CG".to_string(),
+        },
         "DZ" => "JORADP".to_string(),
         "SN" => "JORS".to_string(),
+        "CIMA" => "BO-CIMA".to_string(),
         iso => format!("JO-{iso}"),
     }
+}
+
+/// The place a journal publishes for, inverse of [`journal_code`]: its notices' URL segment.
+pub fn journal_place(code: &str) -> &'static str {
+    match code {
+        "JOUE" => "EU",
+        "JONC" => "NC",
+        "JOPF" => "PF",
+        "RO" => "CH",
+        "CG" => "CA",
+        "JORADP" => "DZ",
+        "JORS" => "SN",
+        "BO-CIMA" => "CIMA",
+        "STCE" | "TRAITES-UA" => "INTL",
+        "MB" => "BE",
+        _ if code.starts_with("MB-") => "BE",
+        _ if code.starts_with("JO-CH-") => "CH",
+        _ if code.starts_with("JO-CA-") => "CA",
+        _ => code
+            .strip_prefix("JO-")
+            .and_then(crate::jurisdictions::from_url_segment)
+            .unwrap_or("FR"),
+    }
+}
+
+/// The journals that print their articles, by code or by the prefix ending in `-` of their
+/// codes, with the source those articles carry.
+const PRINTED_ARTICLES: [(&str, &str); 3] = [
+    ("JORF", "jorf"),
+    ("JO-DJ", "journalofficiel-dj"),
+    ("BO-", "bulletin"),
+];
+
+/// The source of the articles a journal printed itself, beside the consolidations of other sources.
+pub fn journal_article_source(code: &str) -> Option<&'static str> {
+    PRINTED_ARTICLES
+        .iter()
+        .find(|(journal, _)| match journal.ends_with('-') {
+            true => code.starts_with(journal),
+            false => code == *journal,
+        })
+        .map(|(_, source)| *source)
+}
+
+/// Every source of [`journal_article_source`].
+pub fn journal_article_sources() -> Vec<&'static str> {
+    PRINTED_ARTICLES.iter().map(|(_, source)| *source).collect()
 }
 
 /// Where an article applies when its source says nothing.
@@ -925,14 +994,85 @@ mod tests {
     }
 
     #[test]
+    fn a_journal_places_its_notices_where_its_texts_belong() {
+        for (uid, jurisdiction) in [
+            ("JORFTEXT000000306964", "FR"),
+            ("bo_social_x", "FR"),
+            ("EU/REG/2016/679", "EU"),
+            ("SN/CODE-FAMILLE", "SN"),
+            ("DJ/ACCORD-0", "DJ"),
+            ("CA/C-46", "CA"),
+            ("CA-ON/92c06", "CA"),
+            ("CA-QC/A-2.1-r2", "CA"),
+            ("RO/2003/260", "CH"),
+            ("CH-FR/121.1", "CH"),
+            ("BE/CODE-PENAL", "BE"),
+            ("BE-VLG/1002838", "BE"),
+            ("OHADA/AUDCG", "OHADA"),
+            ("x", "CIMA"),
+            ("x", "NC"),
+        ] {
+            assert_eq!(
+                journal_place(&journal_code(uid, jurisdiction)),
+                jurisdiction,
+                "{uid}"
+            );
+        }
+        for journal in journals() {
+            let place = journal_place(journal.code);
+            assert!(
+                crate::jurisdictions::from_url_segment(place).is_some(),
+                "{}",
+                journal.code
+            );
+        }
+        assert_eq!(journal_place("JO-QR-SENAT"), "FR");
+        assert_eq!(journal_place("BODACC"), "FR");
+    }
+
+    #[test]
     fn registry_reads_and_borrows_defaults() {
         assert_eq!(journal_code("LEGITEXT000006070721", "FR"), "JORF");
         assert_eq!(journal_code("KALICONT000005635691", "FR"), "BOCC");
         assert_eq!(journal_code("EU/REG/2016/679", "EU"), "JOUE");
         assert_eq!(journal_code("SN/CODE-FAMILLE", "SN"), "JORS");
         assert_eq!(journal_code("MA/CODE-FAMILLE", "MA"), "JO-MA");
+        assert_eq!(journal_code("CA/C-46", "CA"), "CG");
+        assert_eq!(journal_code("CA-ON/92c06", "CA"), "JO-CA-ON");
+        assert_eq!(journal_code("CA-QC/A-2.1-r2", "CA"), "JO-CA-QC");
+        assert_eq!(journal_code("CA-NB/2011-c23", "CA"), "JO-CA-NB");
+        assert_eq!(journal_code("CH/CODE-CIVIL", "CH"), "RO");
+        assert_eq!(journal_code("BE/CODE-PENAL", "BE"), "MB");
+        assert_eq!(journal_code("BE-VLG/1002838", "BE"), "MB-VLG");
+        assert_eq!(
+            Base::of("MB-VLG", None, None).spans()[0].place,
+            "geo:BE-VLG"
+        );
+        assert_eq!(journal_code("BE-WAL/19610", "BE"), "MB-WAL");
+        assert_eq!(
+            Base::of("MB-WAL", None, None).spans()[0].place,
+            "geo:BE-WAL"
+        );
+        assert_eq!(journal_code("BE-BRU/2004A31182", "BE"), "MB-BRU");
+        assert_eq!(
+            Base::of("MB-BRU", None, None).spans()[0].place,
+            "geo:BE-BRU"
+        );
+        assert_eq!(journal_code("BE-CFR/2019020722", "BE"), "MB-CFR");
+        assert_eq!(
+            Base::of("MB-CDE", None, None).spans()[0].place,
+            "geo:BE-CDE"
+        );
+        assert_eq!(journal_code("CH-FR/121.1", "CH"), "JO-CH-FR");
+        assert_eq!(
+            Base::of("JO-CH-FR", None, None).spans()[0].place,
+            "geo:CH-FR"
+        );
+        assert_eq!(journal_code("CG/CODE-FAMILLE", "CG"), "JO-CG");
         assert_eq!(Base::of("BOCC", None, None), Base::of("JORF", None, None));
         assert_eq!(Base::of("JO-MA", None, None).spans()[0].place, "geo:MA");
+        assert_eq!(Base::of("CG", None, None).spans()[0].place, "geo:CA");
+        assert_eq!(Base::of("JO-CG", None, None).spans()[0].place, "geo:CG");
         assert!(jorf().spans().iter().any(|p| p.place == "geo:FR-ALS"));
         assert!(journal("JOUE").unwrap().languages.contains(&"fr"));
     }

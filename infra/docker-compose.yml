@@ -18,21 +18,27 @@ services:
       POSTGRES_USER: librejustice
       POSTGRES_PASSWORD: ${LIBREJUSTICE_PG_PASSWORD}
       POSTGRES_HOST_AUTH_METHOD: scram-sha-256
+      POSTGRES_INITDB_WALDIR: /var/lib/postgresql-wal/18
     ports:
       - "127.0.0.1:5432:5432"
       - "127.0.0.1:5433:5432"
     volumes:
       - ${LIBREJUSTICE_STATE_DIR}/pgdata:/var/lib/postgresql
+      - ${LIBREJUSTICE_STATE_DIR}/pgwal:/var/lib/postgresql-wal
+      - ${LIBREJUSTICE_STATE_DIR}/pgtext:/var/lib/postgresql-text
       # Un répertoire, jamais deux montages de fichiers : un bind mount de
       # fichier est lié à l'inode de la source, donc une réécriture depuis
       # l'hôte (rename-over) laisse le conteneur sur l'ancien contenu, en
       # silence. Le dossier est rempli par `mise run ensure-pg`.
       - ${LIBREJUSTICE_STATE_DIR}/pg-conf:/etc/postgresql:ro
     command: postgres -c config_file=/etc/postgresql/postgresql.conf
+    # The postmaster restarts every backend when it reaps an orphan killed by a
+    # signal: a probe killed on timeout must never leave a child behind.
+    init: true
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U librejustice -d librejustice"]
-      interval: 5s
-      timeout: 3s
+      test: ["CMD", "pg_isready", "-U", "librejustice", "-d", "librejustice"]
+      interval: 10s
+      timeout: 30s
       retries: 10
 
   # Front résident : il tient `:443` et le certificat d'origine pendant que le
@@ -76,6 +82,17 @@ services:
       # Certificat d'origine de librejustice.fr, terminé ici.
       - ${LIBREJUSTICE_STATE_DIR}/tls/origin:/etc/librejustice/origin:ro
       - ${LIBREJUSTICE_STATE_DIR}/caddy:/data
+
+  # Joined to the caddy container it was created beside: recreating Caddy means recreating this one after it.
+  cloudflared:
+    image: docker.io/cloudflare/cloudflared:2026.10.7
+    container_name: librejustice-cloudflared
+    profiles: ["prod"]
+    restart: unless-stopped
+    network_mode: "service:caddy"
+    environment:
+      TUNNEL_TOKEN: ${LIBREJUSTICE_TUNNEL_TOKEN}
+    command: ["tunnel", "--no-autoupdate", "run"]
 
   embed:
     image: ghcr.io/ggml-org/llama.cpp:server-b11277

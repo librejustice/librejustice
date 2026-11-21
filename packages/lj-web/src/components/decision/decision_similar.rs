@@ -6,8 +6,9 @@ use leptos_router::components::A;
 use lj_dtos::SimilarDecisionHit;
 
 use crate::components::decision_bar::{carry_seed, use_decision_bar, FromSearch, ResultNavSeed};
-use crate::components::ui::{Badge, BadgeTone, ExpandableSummary, Skeleton};
+use crate::components::ui::{shown_summary, Badge, BadgeTone, ExpandableSummary, Skeleton};
 use crate::helpers::{format_decision_jurisdiction, format_iso_date};
+use crate::i18n::use_ui;
 use crate::pages::decision_page::labels::publication_badge;
 use crate::seo::decision::first_sentence;
 
@@ -50,12 +51,13 @@ pub fn DecisionSimilar(
     principe: Vec<SimilarDecisionHit>,
     espece: Vec<SimilarDecisionHit>,
     #[prop(optional)] abstained: bool,
-    #[prop(default = None)] error: Option<String>,
+    #[prop(default = None)] error: Option<crate::api::Failure>,
     #[prop(optional)] loading: bool,
 ) -> impl IntoView {
+    let ui = &use_ui().decision;
     let loading_view = loading.then(|| view! { <SimilarCardsSkeleton /> }.into_any());
 
-    let error_msg = error.clone();
+    let error_msg = error.as_ref().map(|failure| failure.text(&use_ui().shell));
     let error_view = (!loading)
         .then(|| error_msg.clone())
         .flatten()
@@ -71,9 +73,9 @@ pub fn DecisionSimilar(
     let empty_view =
         (!loading && error.is_none() && principe.is_empty() && espece.is_empty()).then(|| {
             let msg = if abstained {
-                "La décision ne tranche aucune question de droit : aucune voisine n'est proposée."
+                ui.similar_abstained
             } else {
-                "Aucun voisin suffisamment proche pour cette décision."
+                ui.similar_none
             };
             view! {
                 <p class="rounded-md border border-[var(--color-rule)] bg-[var(--color-vellum)]/50 p-3 text-sm text-[var(--color-ink-muted)]">
@@ -84,12 +86,12 @@ pub fn DecisionSimilar(
         });
 
     view! {
-        <aside aria-label="Décisions similaires" class="flex flex-col gap-8">
+        <aside aria-label=ui.similar class="flex flex-col gap-8">
             {loading_view}
             {error_view}
             {empty_view}
-            <SimilarSection title="Décisions de principe similaires" hits=principe fold=Fold::Rule />
-            <SimilarSection title="Décisions d'espèce similaires" hits=espece fold=Fold::Head />
+            <SimilarSection title=ui.similar_principle hits=principe fold=Fold::Lines />
+            <SimilarSection title=ui.similar_case hits=espece fold=Fold::Head />
         </aside>
     }
 }
@@ -99,9 +101,9 @@ pub fn DecisionSimilar(
 enum Fold {
     /// To its first sentence.
     Head,
-    /// To what follows the first sentence, where a principle's rule sits, the first one setting
-    /// out the facts.
-    Rule,
+    /// To its first lines, where a principle's rule starts when its first sentence sets out
+    /// the facts.
+    Lines,
 }
 
 /// Un volet : titre + cartes. Rien si le volet est vide.
@@ -123,12 +125,18 @@ fn SimilarSection(title: &'static str, hits: Vec<SimilarDecisionHit>, fold: Fold
 
 #[component]
 fn SimilarCard(hit: SimilarDecisionHit, fold: Fold) -> impl IntoView {
-    let mut title_parts: Vec<String> = vec![format_decision_jurisdiction(
-        hit.jurisdiction_type,
-        hit.jurisdiction_name.as_deref(),
-    )];
+    let dates = &crate::i18n::use_ui().dates;
+    let named = hit
+        .court_names
+        .get(crate::i18n::use_reader_lang().get().code());
+    let mut title_parts: Vec<String> = vec![match named {
+        Some(named) => named.name.clone(),
+        None => {
+            format_decision_jurisdiction(hit.jurisdiction_type, hit.jurisdiction_name.as_deref())
+        }
+    }];
     if let Some(date) = hit.date_lecture.as_deref() {
-        title_parts.push(format_iso_date(Some(date)));
+        title_parts.push(format_iso_date(dates, Some(date)));
     }
     if let Some(docket) = hit.docket_numbers.as_ref().and_then(|d| d.first()) {
         title_parts.push(docket.clone());
@@ -160,20 +168,19 @@ fn SimilarCard(hit: SimilarDecisionHit, fold: Fold) -> impl IntoView {
         );
     };
 
-    let summary_view = hit.summary.clone().map(|summary| {
-        let first = first_sentence(&summary);
-        let rest = summary[first.len()..].trim_start();
-        let (lead, excerpt, full) = match fold {
-            Fold::Rule if rest.chars().any(char::is_alphanumeric) => {
-                (Some(first), rest.to_string(), rest.to_string())
-            }
-            Fold::Rule => (None, summary.clone(), summary),
-            Fold::Head => (None, first, summary),
+    let summary_view = hit.summary.as_deref().map(|summary| {
+        let full = shown_summary(
+            hit.jurisdiction_type,
+            summary,
+            hit.summary_quote.as_ref(),
+            hit.summary_body.as_ref(),
+        )
+        .text;
+        let excerpt = match fold {
+            Fold::Head => first_sentence(&full),
+            Fold::Lines => full.clone(),
         };
-        view! {
-            <ExpandableSummary lead=lead excerpt=excerpt full=full clamp="line-clamp-3" />
-        }
-        .into_any()
+        view! { <ExpandableSummary excerpt=excerpt full=full clamp="line-clamp-3" /> }.into_any()
     });
 
     view! {
@@ -199,7 +206,7 @@ fn SimilarCard(hit: SimilarDecisionHit, fold: Fold) -> impl IntoView {
 fn SimilarMeta(hit: SimilarDecisionHit) -> impl IntoView {
     // Badges depuis les tags référentiels servis.
     let solution = hit.solution.clone();
-    let pub_badge = publication_badge(&hit.publication_codes);
+    let pub_badge = publication_badge(&hit.publication_codes, &use_ui().decision);
 
     if solution.is_none() && pub_badge.is_none() {
         return ().into_any();
@@ -207,7 +214,9 @@ fn SimilarMeta(hit: SimilarDecisionHit) -> impl IntoView {
 
     let solution_badge = solution.map(|t| {
         view! {
-            <Badge tone=BadgeTone::Outline>{t.label}</Badge>
+            <Badge tone=BadgeTone::Outline>
+                {crate::i18n::ReferentialUi::label(use_ui().referential.solution, &t)}
+            </Badge>
         }
         .into_any()
     });

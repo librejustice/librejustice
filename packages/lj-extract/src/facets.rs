@@ -96,6 +96,10 @@ pub fn jurisdiction_ref(
                 Some("Autorité de la concurrence".to_string()),
             ),
         },
+        "AMF" => (
+            "amf".to_string(),
+            Some("Autorité des marchés financiers".to_string()),
+        ),
         "COMEU" => {
             let name = jurisdiction_name?;
             (
@@ -103,6 +107,7 @@ pub fn jurisdiction_ref(
                 Some(name.to_string()),
             )
         }
+        "ASSISES" | "CCD" => return criminal_court(jurisdiction_type, jurisdiction_name?),
         "TJ" | "CA" | "TCOM" | "CPH" => {
             let loc = normalize_location(location?);
             // Les codes TCOM Judilibre sont des numéros nus → préfixe type.
@@ -224,6 +229,220 @@ const TA_CITY_SLUGS: &[&str] = &[
     "st_barthelemy",
     "st_martin",
 ];
+
+/// A court sitting in every département, named after it.
+struct CriminalCourt {
+    kind: &'static str,
+    prefix: &'static str,
+    label: &'static str,
+    words: &'static str,
+}
+
+/// « Cour criminelle » alone also names the same court during its 2019 to 2022 experiment.
+const CRIMINAL_COURTS: [CriminalCourt; 2] = [
+    CriminalCourt {
+        kind: "ASSISES",
+        prefix: "assises",
+        label: "Cour d'assises",
+        words: "cour d assises",
+    },
+    CriminalCourt {
+        kind: "CCD",
+        prefix: "ccd",
+        label: "Cour criminelle départementale",
+        words: "cour criminelle",
+    },
+];
+
+/// The 101 départements by INSEE code, each with the preposition its courts' names take.
+const DEPARTEMENTS: [(&str, &str); 101] = [
+    ("01", "de l'"),
+    ("02", "de l'"),
+    ("03", "de l'"),
+    ("04", "des "),
+    ("05", "des "),
+    ("06", "des "),
+    ("07", "de l'"),
+    ("08", "des "),
+    ("09", "de l'"),
+    ("10", "de l'"),
+    ("11", "de l'"),
+    ("12", "de l'"),
+    ("13", "des "),
+    ("14", "du "),
+    ("15", "du "),
+    ("16", "de la "),
+    ("17", "de la "),
+    ("18", "du "),
+    ("19", "de la "),
+    ("2A", "de la "),
+    ("2B", "de la "),
+    ("21", "de la "),
+    ("22", "des "),
+    ("23", "de la "),
+    ("24", "de la "),
+    ("25", "du "),
+    ("26", "de la "),
+    ("27", "de l'"),
+    ("28", "d'"),
+    ("29", "du "),
+    ("30", "du "),
+    ("31", "de la "),
+    ("32", "du "),
+    ("33", "de la "),
+    ("34", "de l'"),
+    ("35", "d'"),
+    ("36", "de l'"),
+    ("37", "d'"),
+    ("38", "de l'"),
+    ("39", "du "),
+    ("40", "des "),
+    ("41", "de "),
+    ("42", "de la "),
+    ("43", "de la "),
+    ("44", "de la "),
+    ("45", "du "),
+    ("46", "du "),
+    ("47", "de "),
+    ("48", "de la "),
+    ("49", "de "),
+    ("50", "de la "),
+    ("51", "de la "),
+    ("52", "de la "),
+    ("53", "de la "),
+    ("54", "de "),
+    ("55", "de la "),
+    ("56", "du "),
+    ("57", "de la "),
+    ("58", "de la "),
+    ("59", "du "),
+    ("60", "de l'"),
+    ("61", "de l'"),
+    ("62", "du "),
+    ("63", "du "),
+    ("64", "des "),
+    ("65", "des "),
+    ("66", "des "),
+    ("67", "du "),
+    ("68", "du "),
+    ("69", "du "),
+    ("70", "de la "),
+    ("71", "de "),
+    ("72", "de la "),
+    ("73", "de la "),
+    ("74", "de la "),
+    ("75", "de "),
+    ("76", "de la "),
+    ("77", "de "),
+    ("78", "des "),
+    ("79", "des "),
+    ("80", "de la "),
+    ("81", "du "),
+    ("82", "de "),
+    ("83", "du "),
+    ("84", "du "),
+    ("85", "de la "),
+    ("86", "de la "),
+    ("87", "de la "),
+    ("88", "des "),
+    ("89", "de l'"),
+    ("90", "du "),
+    ("91", "de l'"),
+    ("92", "des "),
+    ("93", "de la "),
+    ("94", "du "),
+    ("95", "du "),
+    ("971", "de la "),
+    ("972", "de la "),
+    ("973", "de la "),
+    ("974", "de "),
+    ("976", "de "),
+];
+
+/// La Réunion drops its article, which a court's « de la » already reads.
+fn departement_key(name: &str) -> String {
+    let key = lj_fold::slug(name, ' ');
+    match key.strip_prefix("la ") {
+        Some(rest) => rest.to_string(),
+        None => key,
+    }
+}
+
+/// Longest first, so that « loire atlantique » reads before « loire ».
+fn departement_keys() -> &'static [(Vec<String>, &'static str, &'static str)] {
+    static KEYS: std::sync::OnceLock<Vec<(Vec<String>, &str, &str)>> = std::sync::OnceLock::new();
+    KEYS.get_or_init(|| {
+        let mut keys: Vec<_> = DEPARTEMENTS
+            .iter()
+            .map(|&(code, preposition)| {
+                let name = departement_name(code);
+                let words: Vec<String> = departement_key(name)
+                    .split(' ')
+                    .map(str::to_string)
+                    .collect();
+                (words, code, preposition)
+            })
+            .collect();
+        keys.sort_by_key(|(words, _, _)| std::cmp::Reverse(words.len()));
+        keys
+    })
+}
+
+fn departement_name(code: &str) -> &'static str {
+    lj_norm::referential_labels::departement_label(code)
+        .unwrap_or_else(|| panic!("a département INSEE names: {code}"))
+}
+
+fn criminal_court_ref(court: &CriminalCourt, code: &str, preposition: &str) -> JurisdictionRef {
+    let name = departement_name(code);
+    JurisdictionRef {
+        code: format!(
+            "{}_{}",
+            court.prefix,
+            departement_key(name).replace(' ', "_")
+        ),
+        jurisdiction_type: court.kind.to_string(),
+        city: Some(name.to_string()),
+        label: format!("{} {preposition}{name}", court.label),
+    }
+}
+
+/// The first département a preposition opens after the court's words, whatever qualifies the
+/// court around them: « La cour d'assises d'appel de Paris statuant en appel ».
+fn criminal_court(jurisdiction_type: &str, name: &str) -> Option<JurisdictionRef> {
+    let court = CRIMINAL_COURTS
+        .iter()
+        .find(|c| c.kind == jurisdiction_type)?;
+    let folded = format!(" {} ", lj_fold::slug(name, ' '));
+    let at = folded.find(&format!(" {} ", court.words))? + court.words.len() + 1;
+    let rest: Vec<&str> = folded[at..].split_whitespace().collect();
+    (0..rest.len())
+        .filter(|&i| matches!(rest[i], "de" | "du" | "des" | "d"))
+        .find_map(|i| {
+            let mut words = &rest[i + 1..];
+            if rest[i] == "de" && matches!(words.first(), Some(&"la" | &"l")) {
+                words = &words[1..];
+            }
+            departement_keys()
+                .iter()
+                .find(|(key, _, _)| {
+                    key.len() <= words.len() && key.iter().zip(words).all(|(k, w)| k == w)
+                })
+                .map(|&(_, code, preposition)| criminal_court_ref(court, code, preposition))
+        })
+}
+
+/// Every cour d'assises and cour criminelle départementale, as the referential holds them.
+pub fn criminal_courts() -> Vec<JurisdictionRef> {
+    CRIMINAL_COURTS
+        .iter()
+        .flat_map(|court| {
+            DEPARTEMENTS
+                .iter()
+                .map(move |&(code, preposition)| criminal_court_ref(court, code, preposition))
+        })
+        .collect()
+}
 
 /// Libellé CAA depuis le code cour du numéro de requête (« 12BX02667 » →
 /// « Cour administrative d'appel de Bordeaux ») : les neuf codes officiels,
@@ -400,6 +619,90 @@ mod tests {
         let j = jurisdiction_ref("CAA", None, Some("Commission centrale d’aide sociale")).unwrap();
         assert_eq!(j.code, "ccas");
         assert_eq!(j.label, "Commission centrale d'aide sociale");
+    }
+
+    #[test]
+    fn a_criminal_trial_court_is_placed_by_the_departement_its_heading_names() {
+        let code = |kind, name| jurisdiction_ref(kind, None, Some(name)).map(|j| j.code);
+        for (kind, name, expected) in [
+            (
+                "ASSISES",
+                "Cour d'assises de Paris statuant en appel",
+                "assises_paris",
+            ),
+            (
+                "ASSISES",
+                "La cour d'assises d'appel de Paris statuant en appel a été convaincue",
+                "assises_paris",
+            ),
+            (
+                "ASSISES",
+                "EXTRAIT DES MINUTES DU GREFFE DE LA COUR D'ASSISES DE PARIS",
+                "assises_paris",
+            ),
+            (
+                "ASSISES",
+                "Cour d'assises spécialement composée de Paris",
+                "assises_paris",
+            ),
+            (
+                "ASSISES",
+                "COUR D'ASSISES DE LA HAUTE-GARONNE",
+                "assises_haute_garonne",
+            ),
+            ("ASSISES", "Cour d'assises du Rhône", "assises_rhone"),
+            (
+                "ASSISES",
+                "cour d'assises de Seine-Saint-Denis",
+                "assises_seine_saint_denis",
+            ),
+            ("ASSISES", "COUR D'ASSISES DE LA REUNION", "assises_reunion"),
+            ("ASSISES", "Cour d'assises de l'Eure", "assises_eure"),
+            (
+                "ASSISES",
+                "Cour d'assises d'Eure-et-Loir",
+                "assises_eure_et_loir",
+            ),
+            (
+                "CCD",
+                "COUR CRIMINELLE DÉPARTEMENTALE DE VAUCLUSE",
+                "ccd_vaucluse",
+            ),
+            (
+                "CCD",
+                "Cour criminelle départementale du Vaucluse",
+                "ccd_vaucluse",
+            ),
+            (
+                "CCD",
+                "Cour criminelle de la Seine-Maritime",
+                "ccd_seine_maritime",
+            ),
+        ] {
+            assert_eq!(code(kind, name).as_deref(), Some(expected), "{name}");
+        }
+        assert_eq!(code("ASSISES", "Cour d'assises de la Seine"), None);
+        assert_eq!(
+            code("ASSISES", "Cour criminelle départementale du Var"),
+            None
+        );
+        let paris = jurisdiction_ref("ASSISES", None, Some("COUR D'ASSISES DE PARIS")).unwrap();
+        assert_eq!(paris.label, "Cour d'assises de Paris");
+        assert_eq!(paris.city.as_deref(), Some("Paris"));
+    }
+
+    #[test]
+    fn every_criminal_trial_court_reads_back_its_own_label() {
+        let courts = criminal_courts();
+        assert_eq!(courts.len(), 202);
+        let codes: BTreeSet<&str> = courts.iter().map(|c| c.code.as_str()).collect();
+        assert_eq!(codes.len(), courts.len());
+        for court in &courts {
+            assert_eq!(
+                jurisdiction_ref(&court.jurisdiction_type, None, Some(&court.label)).as_ref(),
+                Some(court),
+            );
+        }
     }
 
     #[test]
@@ -639,6 +942,14 @@ mod tests {
             "INELIGIBILITE",
             "ANNULATION",
             "REFORMATION",
+            "VIOLATION",
+            "NON_VIOLATION",
+            "ANNULATION_PARTIELLE",
+            "NON_ADMISSION",
+            "DECHEANCE",
+            "REGLEMENT_AMIABLE",
+            "RADIATION",
+            "RECEVABLE",
             "AUTRE",
         ] {
             emitted.push(format!("solution:{s}"));

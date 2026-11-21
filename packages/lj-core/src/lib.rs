@@ -19,6 +19,7 @@ pub mod error;
 pub mod formation;
 pub mod forme_juridique;
 pub mod identity;
+pub mod lettered_par;
 pub mod normalizer;
 pub mod official_url;
 pub mod outremer;

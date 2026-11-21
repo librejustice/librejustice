@@ -170,13 +170,11 @@ async fn issues(client: &BulletinClient, since_year: i32) -> Result<Vec<Bulletin
         })
         .await
         .map_err(|e| SourceError::Invalid(format!("pdftotext task: {e}")))??;
-        out.extend(cut_issue(
-            &issue_id(&slug),
-            &pdf,
-            published,
-            &layout,
-            &plain,
-        ));
+        let texts = cut_issue(&issue_id(&slug), &pdf, published, &layout, &plain);
+        if texts.is_empty() {
+            tracing::warn!(issue = %slug, "culture: issue cut to no text");
+        }
+        out.extend(texts);
     }
     Ok(out)
 }
@@ -205,7 +203,7 @@ pub fn cut_issue(
     layout: &str,
     plain: &str,
 ) -> Vec<BulletinNotice> {
-    let toc = table_of_contents(layout);
+    let (toc, toc_page) = table_of_contents(layout);
     let pages: Vec<&str> = plain.split('\u{c}').collect();
     let printed: Vec<Option<u32>> = pages
         .iter()
@@ -223,8 +221,20 @@ pub fn cut_issue(
             Some(k + (n - p) as usize).filter(|&i| i < pages.len())
         })
     };
+    // An issue of 1997 numbers its pages one short of its summary, which sends
+    // the first text onto the summary's own page.
+    let shift = toc
+        .first()
+        .and_then(|e| index_of(e.page))
+        .map_or(0, |f| (toc_page + 1).saturating_sub(f));
+    let index_of = |n: u32| index_of(n).map(|i| (i + shift).min(pages.len() - 1));
     let mut out = Vec::new();
     for (k, e) in toc.iter().enumerate() {
+        if e.title.starts_with("Bulletin d’abonnement")
+            || e.title.starts_with("Bulletin d'abonnement")
+        {
+            continue;
+        }
         let next = toc.get(k + 1);
         let Some(first) = index_of(e.page) else {
             tracing::warn!(issue, page = e.page, "culture: printed page not found");
@@ -235,9 +245,12 @@ pub fn cut_issue(
             .filter(|&l| l >= first)
             .unwrap_or(pages.len() - 1);
         let mut text = pages[first..=last].join("\n");
-        if let Some(start) = title_at(&text, &e.title) {
-            text.drain(..start);
-        }
+        // A title the pages do not print as the summary does leaves no edge to cut on.
+        let Some(start) = title_at(&text, &e.title) else {
+            tracing::info!(issue, title = %e.title, "culture: summary entry not found in its pages");
+            continue;
+        };
+        text.drain(..start);
         let skip = text.chars().next().map_or(0, char::len_utf8);
         if let Some(end) = next.and_then(|n| title_at(&text[skip..], &n.title)) {
             text.truncate(skip + end);
@@ -261,35 +274,79 @@ pub fn cut_issue(
     out
 }
 
-/// Entries end with `Page N` after a run of spaces; a title running over
-/// several lines goes on until its final period.
-fn table_of_contents(layout: &str) -> Vec<TocEntry> {
-    static RE: OnceLock<Regex> = OnceLock::new();
-    let entry =
-        RE.get_or_init(|| Regex::new(r"^(.*?)\s{2,}Page\s+(\d+)\s*$").expect("valid regex"));
-    let lines: Vec<&str> = layout.lines().collect();
-    let Some(start) = lines.iter().position(|l| l.trim() == "SOMMAIRE") else {
-        return Vec::new();
+/// Entries end with `Page N` after a run of spaces, or, in the issues before
+/// 2015, open with it, and then come with the page the summary ends on; a title
+/// runs over its lines until its final period, or a blank line.
+fn table_of_contents(layout: &str) -> (Vec<TocEntry>, usize) {
+    static RE: OnceLock<[Regex; 2]> = OnceLock::new();
+    let [page_last, page_first] = RE.get_or_init(|| {
+        [
+            Regex::new(r"^(.*?)\s{2,}Page\s+(\d+)\s*$").expect("valid regex"),
+            Regex::new(r"^Page\s+(\d+)\s{2,}(\S.*)$").expect("valid regex"),
+        ]
+    });
+    let raw: Vec<&str> = layout.lines().collect();
+    let lines: Vec<&str> = raw.iter().map(|l| l.trim()).collect();
+    let Some(start) = lines.iter().position(|l| *l == "SOMMAIRE") else {
+        return (Vec::new(), 0);
     };
-    let Some(end) = (start..lines.len().min(start + 3000))
-        .rev()
-        .find(|&i| entry.is_match(lines[i].trim()))
-    else {
-        return Vec::new();
+    let window = start..lines.len().min(start + 3000);
+    let Some(leading) = window.clone().find_map(|i| {
+        if page_last.is_match(lines[i]) {
+            Some(false)
+        } else {
+            page_first.is_match(lines[i]).then_some(true)
+        }
+    }) else {
+        return (Vec::new(), 0);
+    };
+    let entry = |line: &str| -> Option<(String, u32)> {
+        let (title, page) = if leading {
+            page_first
+                .captures(line)
+                .map(|c| (c[2].to_string(), c[1].to_string()))?
+        } else {
+            page_last
+                .captures(line)
+                .map(|c| (c[1].to_string(), c[2].to_string()))?
+        };
+        Some((
+            title.split_whitespace().collect::<Vec<_>>().join(" "),
+            page.parse().unwrap_or(0),
+        ))
+    };
+    let Some(end) = window.rev().find(|&i| entry(lines[i]).is_some()) else {
+        return (Vec::new(), 0);
+    };
+    let toc_page = if leading {
+        raw[..=end].iter().filter(|l| l.contains('\u{c}')).count()
+    } else {
+        0
+    };
+    // The last title's own lines follow its page.
+    let end = if leading {
+        (end + 8).min(lines.len() - 1)
+    } else {
+        end
     };
     let mut out: Vec<TocEntry> = Vec::new();
     let mut open = false;
-    for line in &lines[start..=end] {
-        let line = line.trim();
-        if let Some(c) = entry.captures(line) {
-            let title = c[1].split_whitespace().collect::<Vec<_>>().join(" ");
+    for &line in &lines[start..=end] {
+        let parsed = entry(line);
+        // A page set beside an open title's last word rather than its first.
+        if let Some((tail, _)) = parsed.as_ref().filter(|(t, _)| {
+            leading && open && t.ends_with('.') && t.split_whitespace().count() < 3
+        }) {
+            let e = out.last_mut().expect("open implies an entry");
+            e.title.push(' ');
+            e.title.push_str(tail);
+            open = false;
+        } else if let Some((title, page)) = parsed {
             open = !title.ends_with('.');
-            out.push(TocEntry {
-                title,
-                page: c[2].parse().unwrap_or(0),
-            });
+            out.push(TocEntry { title, page });
+        } else if line.is_empty() {
+            open &= !leading;
         } else if open
-            && !line.is_empty()
             && !line.chars().all(|c| c.is_ascii_digit())
             && !line.contains("Bulletin officiel")
         {
@@ -300,18 +357,29 @@ fn table_of_contents(layout: &str) -> Vec<TocEntry> {
             open = !line.ends_with('.');
         }
     }
-    out
+    (out, toc_page)
 }
 
-/// Where the title's first words start in the text, whatever the line breaks.
-fn title_at(text: &str, title: &str) -> Option<usize> {
-    let words: Vec<String> = title
-        .split_whitespace()
-        .take(6)
-        .map(regex::escape)
-        .collect();
-    let re = Regex::new(&words.join(r"\s+")).ok()?;
-    re.find(text).map(|m| m.start())
+/// Where the longest run of the title's first words, six at least, starts in the
+/// text, whatever the line breaks: texts printed side by side share their opening.
+pub(super) fn title_at(text: &str, title: &str) -> Option<usize> {
+    let words: Vec<String> = title.split_whitespace().map(regex::escape).collect();
+    let find = |n: usize| {
+        Regex::new(&words[..n].join(r"\s+"))
+            .ok()?
+            .find(text)
+            .map(|m| m.start())
+    };
+    let (mut lo, mut hi) = (words.len().min(6), words.len());
+    let mut at = find(lo)?;
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        match find(mid) {
+            Some(found) => (at, lo) = (found, mid),
+            None => hi = mid - 1,
+        }
+    }
+    Some(at)
 }
 
 /// Without the page numbers, the issue's running head and repeated blank lines.
@@ -382,6 +450,52 @@ mod tests {
             notices[0].body.as_deref(),
             Some("Arrêté du 2 octobre 2019 portant\ndélégation.")
         );
+    }
+
+    #[test]
+    fn an_old_summary_opens_its_entries_on_their_page() {
+        let layout = "                SOMMAIRE\n\
+            Page 1       Circulaire du 16 janvier 1997 relative aux\n\
+            \x20            archives communales.\n\
+            \n\
+            \x20            Musées\n\
+            Page 2       Décision du 10 avril 1997 relative au tarif du Grand\n\
+            Page 2       Palais.\n\
+            Page 3       Bulletin d’abonnement\n";
+        let plain = "SOMMAIRE\n1\n\u{c}Circulaire du 16 janvier 1997 relative aux\narchives communales.\nTexte.\n2\n\u{c}Décision du 10 avril 1997 relative au tarif\ndu Grand Palais.\n3\n\u{c}Bulletin d’abonnement\n4\n";
+        let notices = cut_issue("100", "https://x/bo.pdf", None, layout, plain);
+        assert_eq!(notices.len(), 2);
+        assert_eq!(
+            notices[0].title,
+            "Circulaire du 16 janvier 1997 relative aux archives communales"
+        );
+        assert_eq!(notices[0].notice_url, "https://x/bo.pdf#page=2");
+        assert_eq!(
+            notices[0].body.as_deref(),
+            Some("Circulaire du 16 janvier 1997 relative aux\narchives communales.\nTexte.")
+        );
+        assert_eq!(
+            notices[1].title,
+            "Décision du 10 avril 1997 relative au tarif du Grand Palais"
+        );
+        assert_eq!(notices[1].text_uid(), "bo_culture_100-2");
+    }
+
+    #[test]
+    fn texts_sharing_their_opening_are_told_apart_by_their_whole_title() {
+        let layout = "SOMMAIRE\n\
+            Arrêté du 18 juillet 2011 portant nomination du président de la commission Littérature.   Page 1\n\
+            Arrêté du 18 juillet 2011 portant nomination du président de la commission Roman.         Page 1\n";
+        let plain = "SOMMAIRE\n\u{c}Arrêté du 18 juillet 2011 portant nomination du\nprésident de la commission Roman.\nM. A.\nArrêté du 18 juillet 2011 portant nomination du\nprésident de la commission Littérature.\nMme B.\n1\n";
+        let notices = cut_issue("200", "https://x/bo.pdf", None, layout, plain);
+        assert_eq!(notices.len(), 2);
+        assert_eq!(
+            notices[0].body.as_deref(),
+            Some("Arrêté du 18 juillet 2011 portant nomination du\nprésident de la commission Littérature.\nMme B.")
+        );
+        assert!(notices[1].body.as_deref().is_some_and(|b| b.starts_with(
+            "Arrêté du 18 juillet 2011 portant nomination du\nprésident de la commission Roman."
+        )));
     }
 
     #[test]

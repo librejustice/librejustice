@@ -48,6 +48,15 @@ pub fn fond_paths(jurisdiction: &str, fond: &str) -> (Vec<String>, bool) {
     (paths, self::fond(jurisdiction, None) == fond)
 }
 
+/// The first-type paths of `jurisdiction` the other fonds gather.
+pub fn other_fond_paths(jurisdiction: &str, fond: &str) -> Vec<String> {
+    table_types(jurisdiction)
+        .into_iter()
+        .map(|kind| format!("{jurisdiction}.{kind}"))
+        .filter(|path| self::fond(jurisdiction, Some(path)) != fond)
+        .collect()
+}
+
 /// The norms search's `jurisdiction` filter for a fond: its order when it holds all of it, else its paths.
 pub fn fond_search_paths(jurisdiction: &str, fond: &str) -> Vec<String> {
     let (paths, untyped) = fond_paths(jurisdiction, fond);
@@ -83,7 +92,7 @@ mod tests {
     use crate::referential_labels::NORM_FONDS;
 
     fn fond_of(jurisdiction: &str, nature: &str) -> &'static str {
-        let paths = jurisdiction_paths(jurisdiction, nature);
+        let paths = jurisdiction_paths("", jurisdiction, nature);
         fond(jurisdiction, paths.get(1).map(String::as_str))
     }
 

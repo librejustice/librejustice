@@ -49,6 +49,21 @@ fn network(address: IpAddr) -> String {
     }
 }
 
+/// The client's IPv4 /24 or IPv6 /48, wider than [`Identity::Network`].
+pub fn client_block(headers: &HeaderMap) -> Option<String> {
+    let raw = headers.get("cf-connecting-ip")?.to_str().ok()?;
+    Some(match raw.parse::<IpAddr>().ok()? {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            format!("{}.{}.{}.0/24", o[0], o[1], o[2])
+        }
+        IpAddr::V6(v6) => {
+            let s = v6.segments();
+            format!("{:x}:{:x}:{:x}::/48", s[0], s[1], s[2])
+        }
+    })
+}
+
 pub fn salt_period(unix_secs: i64) -> i64 {
     (unix_secs - SALT_BOUNDARY_SECS).div_euclid(DAY_SECS)
 }
@@ -119,6 +134,20 @@ mod tests {
         assert_eq!(a, b);
         assert_eq!(a, network("2001:db8:1:2::/64"));
         assert_ne!(a, Identity::resolve(None, &headers("2001:db8:1:3::1")));
+    }
+
+    #[test]
+    fn a_block_is_a_24_or_a_48() {
+        let block = |ip| client_block(&headers(ip));
+        assert_eq!(block("203.0.113.7").as_deref(), Some("203.0.113.0/24"));
+        assert_eq!(block("203.0.113.7"), block("203.0.113.250"));
+        assert_ne!(block("203.0.113.7"), block("203.0.114.7"));
+        assert_eq!(
+            block("2001:db8:1:2:3::1").as_deref(),
+            Some("2001:db8:1::/48")
+        );
+        assert_eq!(block("2001:db8:1:2:3::1"), block("2001:db8:1:ffff::1"));
+        assert_eq!(client_block(&HeaderMap::new()), None);
     }
 
     #[test]

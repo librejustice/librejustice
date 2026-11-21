@@ -17,6 +17,7 @@ use crate::components::search::TextesView;
 
 #[component]
 pub fn TextesPage() -> impl IntoView {
+    let ui = &crate::i18n::use_ui().search;
     crate::pages::cache_public_5_min();
     let query_map = use_query_map();
     // `leptos_meta` garde cette clôture dans un contexte de durée de vie
@@ -30,9 +31,9 @@ pub fn TextesPage() -> impl IntoView {
             .unwrap_or_default();
         let q = q.trim();
         if q.is_empty() {
-            "Textes - LibreJustice".to_string()
+            ui.texts_title.to_string()
         } else {
-            format!("{q} - Textes - LibreJustice")
+            (ui.texts_title_for)(q)
         }
     };
     view! {
@@ -53,7 +54,7 @@ pub fn TextesPage() -> impl IntoView {
 fn TextesPageSkeleton() -> impl IntoView {
     view! {
         <div class=SHELL>
-            <h1 class="sr-only">"Recherche de textes"</h1>
+            <h1 class="sr-only">{crate::i18n::use_ui().search.texts_page_title}</h1>
             <div class=GRID_3COL>
                 <div class="hidden lg:block"></div>
                 <div class=CONTENT_COL>
@@ -84,7 +85,7 @@ fn TextesPageBody() -> impl IntoView {
 
     view! {
         <div class=SHELL>
-            <h1 class="sr-only">"Recherche de textes"</h1>
+            <h1 class="sr-only">{crate::i18n::use_ui().search.texts_page_title}</h1>
             <TextesView />
         </div>
     }

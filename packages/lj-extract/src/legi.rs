@@ -78,6 +78,14 @@ pub struct LegiCode {
     pub derniere_modification: Option<String>,
     pub versions_a_venir: Vec<String>,
     pub liens: Vec<LegiLien>,
+    /// The version this file carries (`META_COMMUN/ID`), its state and its window,
+    /// `date_debut` raw and `date_fin` absorbing the sentinels like [`LegiArticle`].
+    pub version_id: String,
+    pub version_etat: String,
+    pub version_debut: String,
+    pub version_fin: Option<String>,
+    /// The version's own prose around its articles, by piece key.
+    pub blocks: Vec<(&'static str, String)>,
 }
 
 /// Grain de la cible d'un lien, dérivé du préfixe d'ID DILA (`*ARTI`/`*SCTA`)
@@ -146,7 +154,7 @@ pub struct LegiTocEdge {
     pub child_uid: String,
     /// Sections : id chronique stable inter-versions (l'ancre du sommaire).
     pub child_cid: Option<String>,
-    /// Articles : clé d'identité `identity_key(num)`.
+    /// Articles : clé d'identité `identity_key(num)`, none without a number.
     pub child_num_key: Option<String>,
     /// Num d'article ou titre de section.
     pub label: String,
@@ -352,12 +360,21 @@ pub(crate) fn collect_titre_tm(node: &XmlNode) -> Option<String> {
     (!parts.is_empty()).then(|| parts.join(" > "))
 }
 
+/// The text LEGI publishes for an article it has not consolidated yet, standing
+/// in for the article's text.
+pub fn is_placeholder(texte: &str) -> bool {
+    texte
+        .trim()
+        .trim_end_matches('.')
+        .eq_ignore_ascii_case("en cours de traitement")
+}
+
 /// Parse un `LEGIARTI*.xml` (racine `<ARTICLE>`) en [`LegiArticle`]. Erreur
 /// franche ([`CoreError::Xml`]) si `ID`/`DATE_DEBUT`/`cid` manquent — la
 /// frontière de validation source. `NUM` peut être vide (`<NUM/>`) : forme DILA
 /// légitime des TNC — annexes, placeholders d'images, visas/formules/signatures,
-/// et quelques vieilles versions au numéro resté dans la prose. Le pipeline les
-/// écarte : sans num_key ils ne sont ni citables ni servables.
+/// et quelques vieilles versions au numéro resté dans la prose. Its key is then
+/// [`unnumbered_key`].
 pub fn parse_legi_article(raw: &[u8]) -> Result<LegiArticle, CoreError> {
     let root = build_tree(raw).ok_or_else(|| CoreError::Xml("ARTICLE: XML illisible".into()))?;
 
@@ -382,7 +399,10 @@ pub fn parse_legi_article(raw: &[u8]) -> Result<LegiArticle, CoreError> {
     let etat = node_text(find_anywhere(&root, "META_ARTICLE/ETAT")).unwrap_or_default();
     let date_fin = date_or_none(node_text(find_anywhere(&root, "META_ARTICLE/DATE_FIN")));
     let titre_text = find_anywhere(&root, "CONTEXTE").and_then(collect_titre_tm);
-    let num_key = lj_norm::article_key::identity_key(&num);
+    let num_key = match lj_norm::article_key::identity_key(&num) {
+        k if k.is_empty() => unnumbered_key(&root, &legiarti),
+        k => k,
+    };
 
     Ok(LegiArticle {
         legiarti,
@@ -398,6 +418,27 @@ pub fn parse_legi_article(raw: &[u8]) -> Result<LegiArticle, CoreError> {
         liens: collect_liens(&root)?,
         versions: collect_versions(&root),
     })
+}
+
+/// A numberless article's key, shared by its versions and by the JO article it
+/// comes from: the `JORFARTI` its chronicle names, else its oldest version.
+pub(crate) fn unnumbered_key(root: &XmlNode, own: &str) -> String {
+    let liens: Vec<&XmlNode> = find_anywhere(root, "VERSIONS")
+        .into_iter()
+        .flat_map(|b| &b.children)
+        .flat_map(|v| &v.children)
+        .filter(|l| l.tag == "LIEN_ART")
+        .collect();
+    fn id<'a>(l: &&'a XmlNode) -> Option<&'a str> {
+        l.attr("id").filter(|i| !i.is_empty())
+    }
+    liens
+        .iter()
+        .filter(|l| l.attr("origine") == Some("JORF"))
+        .find_map(id)
+        .or_else(|| liens.iter().filter_map(id).chain([own]).min())
+        .unwrap_or(own)
+        .to_lowercase()
 }
 
 /// The `VERSIONS` block, flattened: one entry per `LIEN_ART`, in document order.
@@ -425,11 +466,10 @@ fn collect_versions(root: &XmlNode) -> Vec<LegiVersionRef> {
     out
 }
 
-/// Collecte les enfants directs d'un conteneur `STRUCT`/`STRUCTURE_TA` en
-/// [`LegiTocEdge`]s, dans l'ordre document. Un `LIEN_ART` sans `id` ou sans
-/// `num` est **sauté** (article non numéroté, jamais ingéré) ; un
-/// `LIEN_SECTION_TA` sans `id`/`cid` est une erreur franche : la structure serait
-/// inexploitable.
+/// The direct children of a `STRUCT`/`STRUCTURE_TA` container as [`LegiTocEdge`]s,
+/// in document order. A `LIEN_ART` with no `id` is skipped, one with no `num` has
+/// no `child_num_key`, its article's key being read from the article; a
+/// `LIEN_SECTION_TA` with no `id` or `cid` is a hard error.
 fn collect_toc_edges(container: &XmlNode) -> Result<Vec<LegiTocEdge>, CoreError> {
     let mut edges = Vec::new();
     for c in &container.children {
@@ -439,14 +479,16 @@ fn collect_toc_edges(container: &XmlNode) -> Result<Vec<LegiTocEdge>, CoreError>
         let date_fin = date_or_none(attr("fin"));
         match c.tag.as_str() {
             "LIEN_ART" => {
-                let (Some(id), Some(num)) = (attr("id"), attr("num")) else {
+                let Some(id) = attr("id") else {
                     continue;
                 };
+                let num = attr("num").unwrap_or_default();
                 edges.push(LegiTocEdge {
                     child_kind: TocChildKind::Article,
                     child_uid: id,
                     child_cid: None,
-                    child_num_key: Some(lj_norm::article_key::identity_key(&num)),
+                    child_num_key: Some(lj_norm::article_key::identity_key(&num))
+                        .filter(|k| !k.is_empty()),
                     label: num,
                     etat,
                     date_debut,
@@ -559,6 +601,22 @@ pub fn parse_legi_texte(raw: &[u8]) -> Result<LegiCode, CoreError> {
         &root,
         "META_TEXTE_CHRONICLE/DERNIERE_MODIFICATION",
     ));
+    let version_id = node_text(find_anywhere(&root, "META_COMMUN/ID")).ok_or_else(|| {
+        CoreError::Xml(format!("TEXTE_VERSION {legitext}: META_COMMUN/ID manquant"))
+    })?;
+    let version_debut = node_text(find_anywhere(&root, "META_TEXTE_VERSION/DATE_DEBUT"))
+        .ok_or_else(|| {
+            CoreError::Xml(format!(
+                "TEXTE_VERSION {legitext}: META_TEXTE_VERSION/DATE_DEBUT manquant"
+            ))
+        })?;
+    let blocks = lj_norm::article_order::BLOCKS
+        .iter()
+        .filter_map(|k| {
+            let contenu = find_anywhere(&root, &format!("{}/CONTENU", k.to_uppercase()));
+            Some((*k, clean_contenu(contenu)?))
+        })
+        .collect();
     let versions_a_venir = find_anywhere(&root, "VERSIONS_A_VENIR")
         .map(|n| {
             n.children
@@ -579,12 +637,30 @@ pub fn parse_legi_texte(raw: &[u8]) -> Result<LegiCode, CoreError> {
         derniere_modification,
         versions_a_venir,
         liens: collect_liens(&root)?,
+        version_etat: node_text(find_anywhere(&root, "META_TEXTE_VERSION/ETAT"))
+            .unwrap_or_default(),
+        version_fin: date_or_none(node_text(find_anywhere(
+            &root,
+            "META_TEXTE_VERSION/DATE_FIN",
+        ))),
+        version_id,
+        version_debut,
+        blocks,
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn placeholder_reads_in_both_forms_legi_publishes() {
+        assert!(is_placeholder("en cours de traitement"));
+        assert!(is_placeholder("En cours de traitement."));
+        assert!(!is_placeholder(
+            "La demande en cours de traitement est suspendue."
+        ));
+    }
 
     const ARTICLE_MODIFIE: &str = r#"<ARTICLE>
   <META>
@@ -718,18 +794,29 @@ mod tests {
     }
 
     #[test]
-    fn article_empty_num_parses_with_empty_key() {
-        // Forme DILA légitime des TNC (annexes, placeholders, visas) : `<NUM/>` vide
-        // n'est pas une erreur, le pipeline écarte la ligne sur `num_key` vide.
-        let xml = br#"<ARTICLE>
+    fn an_unnumbered_article_is_keyed_on_its_jo_article_else_its_oldest_version() {
+        let xml = |versions: &str| {
+            format!(
+                r#"<ARTICLE>
   <META_COMMUN><ID>LEGIARTI000000000007</ID></META_COMMUN>
   <META_ARTICLE><NUM/><ETAT>ABROGE</ETAT>
     <DATE_DEBUT>1992-01-02</DATE_DEBUT><DATE_FIN>2020-09-01</DATE_FIN></META_ARTICLE>
   <CONTEXTE><TEXTE cid="JORFTEXT000000000002"/></CONTEXTE>
-</ARTICLE>"#;
-        let a = parse_legi_article(xml).expect("article");
-        assert_eq!(a.num, "");
-        assert_eq!(a.num_key, "");
+  <VERSIONS>{versions}</VERSIONS>
+</ARTICLE>"#
+            )
+        };
+        let key = |versions: &str| {
+            parse_legi_article(xml(versions).as_bytes())
+                .unwrap()
+                .num_key
+        };
+        let legi = r#"<VERSION etat="ABROGE"><LIEN_ART debut="1992-01-02" id="LEGIARTI000000000007" num="" origine="LEGI"/></VERSION>
+<VERSION etat="VIGUEUR"><LIEN_ART debut="2020-09-01" id="LEGIARTI000000000009" num="" origine="LEGI"/></VERSION>"#;
+        let jorf = r#"<VERSION etat=""><LIEN_ART debut="2999-01-01" id="JORFARTI000000000003" num="" origine="JORF"/></VERSION>"#;
+        assert_eq!(key(""), "legiarti000000000007");
+        assert_eq!(key(&legi.replace("07\"", "05\"")), "legiarti000000000005");
+        assert_eq!(key(&format!("{legi}{jorf}")), "jorfarti000000000003");
     }
 
     #[test]
@@ -888,7 +975,7 @@ mod tests {
     <META_COMMUN><ID>LEGITEXT000005615128</ID><NATURE>DECRET</NATURE></META_COMMUN>
     <META_SPEC>
     <META_TEXTE_CHRONICLE><CID>LEGITEXT000005615128</CID></META_TEXTE_CHRONICLE>
-    <META_TEXTE_VERSION>
+    <META_TEXTE_VERSION><DATE_DEBUT>2020-01-01</DATE_DEBUT>
       <TITRE>Décret n°94-46 du 5 janvier 1994</TITRE>
       <LIENS>
         <LIEN cidtexte="JORFTEXT000000646051" datesignatexte="2007-03-19" id="LEGIARTI000006238452" naturetexte="DECRET" num="26" numtexte="2007-358" sens="cible" typelien="ABROGATION">Décret n°2007-358 du 19 mars 2007 - art. 26 (V)</LIEN>
@@ -910,6 +997,30 @@ mod tests {
     }
 
     #[test]
+    fn parse_texte_reads_its_version_blocks() {
+        let xml = r#"<TEXTE_VERSION>
+  <META>
+    <META_COMMUN><ID>LEGITEXT000005615296</ID><NATURE>LOI</NATURE></META_COMMUN>
+    <META_SPEC>
+    <META_TEXTE_CHRONICLE><CID>JORFTEXT000000165840</CID></META_TEXTE_CHRONICLE>
+    <META_TEXTE_VERSION><TITRE>Loi n° 94-126 du 11 février 1994</TITRE><ETAT>VIGUEUR</ETAT>
+      <DATE_DEBUT>1994-02-13</DATE_DEBUT><DATE_FIN>2999-01-01</DATE_FIN></META_TEXTE_VERSION>
+    </META_SPEC>
+  </META>
+  <VISAS><CONTENU/></VISAS>
+  <SIGNATAIRES><CONTENU>Par le Président de la République :<br/>FRANÇOIS MITTERRAND.</CONTENU></SIGNATAIRES>
+  <TP><CONTENU>Travaux préparatoires : loi n° 94-126.</CONTENU></TP>
+</TEXTE_VERSION>"#;
+        let c = parse_legi_texte(xml.as_bytes()).expect("texte");
+        assert_eq!(c.version_id, "LEGITEXT000005615296");
+        assert_eq!(c.version_debut, "1994-02-13");
+        assert_eq!(c.version_fin, None);
+        let keys: Vec<&str> = c.blocks.iter().map(|b| b.0).collect();
+        assert_eq!(keys, ["signataires", "tp"]);
+        assert!(c.blocks[0].1.contains("FRANÇOIS MITTERRAND"));
+    }
+
+    #[test]
     fn typelien_inconnu_garde_le_brut_en_minuscules() {
         assert_eq!(lien_verb("HISTO"), "histo");
         assert_eq!(lien_verb("NOUVEAU_TYPE_DILA"), "nouveau_type_dila");
@@ -925,7 +1036,7 @@ mod tests {
         <CID>LEGITEXT000006074220</CID>
         <DERNIERE_MODIFICATION>2026-06-11</DERNIERE_MODIFICATION>
       </META_TEXTE_CHRONICLE>
-      <META_TEXTE_VERSION>
+      <META_TEXTE_VERSION><DATE_DEBUT>2020-01-01</DATE_DEBUT>
         <TITRE>Code de l'environnement</TITRE><ETAT>VIGUEUR</ETAT>
       </META_TEXTE_VERSION>
     </META_SPEC>
@@ -955,7 +1066,7 @@ mod tests {
         <DATE_TEXTE>1994-01-05</DATE_TEXTE>
         <DERNIERE_MODIFICATION>2007-03-20</DERNIERE_MODIFICATION>
       </META_TEXTE_CHRONICLE>
-      <META_TEXTE_VERSION>
+      <META_TEXTE_VERSION><DATE_DEBUT>2020-01-01</DATE_DEBUT>
         <TITRE>Décret n°94-46 du 5 janvier 1994</TITRE><ETAT>ABROGE</ETAT>
       </META_TEXTE_VERSION>
     </META_SPEC>
@@ -982,7 +1093,7 @@ mod tests {
           <VERSION_A_VENIR>2222-02-22</VERSION_A_VENIR>
         </VERSIONS_A_VENIR>
       </META_TEXTE_CHRONICLE>
-      <META_TEXTE_VERSION><TITRE>Arrêté du 5 mai 2021</TITRE></META_TEXTE_VERSION>
+      <META_TEXTE_VERSION><DATE_DEBUT>2020-01-01</DATE_DEBUT><TITRE>Arrêté du 5 mai 2021</TITRE></META_TEXTE_VERSION>
     </META_SPEC>
   </META>
 </TEXTE_VERSION>"#;
@@ -1000,7 +1111,7 @@ mod tests {
     <META_COMMUN><ID>LEGITEXT000054411191</ID><NATURE>ARRETE</NATURE></META_COMMUN>
     <META_SPEC>
       <META_TEXTE_CHRONICLE><CID>JORFTEXT000054407988</CID><NOR>AGRT2617818A</NOR></META_TEXTE_CHRONICLE>
-      <META_TEXTE_VERSION>
+      <META_TEXTE_VERSION><DATE_DEBUT>2020-01-01</DATE_DEBUT>
         <TITRE>Arrêté du 7 juillet 2026</TITRE>
         <TITREFULL>Arrêté du 7 juillet 2026 relatif à la modification temporaire du cahier des charges de l'appellation d'origine protégée (AOP) « Piment d'Espelette »</TITREFULL>
       </META_TEXTE_VERSION>
@@ -1020,7 +1131,7 @@ mod tests {
     <META_COMMUN><ID>LEGITEXT000006074220</ID><NATURE>CODE</NATURE></META_COMMUN>
     <META_SPEC>
       <META_TEXTE_CHRONICLE><CID>LEGITEXT000006074220</CID></META_TEXTE_CHRONICLE>
-      <META_TEXTE_VERSION><TITRE>Code de l'environnement</TITRE><TITREFULL>Code de l'environnement</TITREFULL></META_TEXTE_VERSION>
+      <META_TEXTE_VERSION><DATE_DEBUT>2020-01-01</DATE_DEBUT><TITRE>Code de l'environnement</TITRE><TITREFULL>Code de l'environnement</TITREFULL></META_TEXTE_VERSION>
     </META_SPEC>
   </META>
 </TEXTE_VERSION>"#;
@@ -1043,7 +1154,7 @@ mod tests {
         // sur l'id de version.
         let xml = br#"<TEXTE_VERSION>
   <META_COMMUN><ID>LEGITEXT000006074220</ID><NATURE>CODE</NATURE></META_COMMUN>
-  <META_TEXTE_VERSION><TITRE>Code de l'environnement</TITRE></META_TEXTE_VERSION>
+  <META_TEXTE_VERSION><DATE_DEBUT>2020-01-01</DATE_DEBUT><TITRE>Code de l'environnement</TITRE></META_TEXTE_VERSION>
 </TEXTE_VERSION>"#;
         assert!(matches!(parse_legi_texte(xml), Err(CoreError::Xml(_))));
     }
@@ -1141,9 +1252,7 @@ mod tests {
     }
 
     #[test]
-    fn lien_art_sans_num_est_saute() {
-        // Annexes non numérotées (TNC) : LIEN_ART sans @num — l'article n'est jamais
-        // ingéré, l'arête est sautée sans invalider le reste du fichier.
+    fn an_unnumbered_lien_art_has_no_key() {
         let xml = br#"<SECTION_TA>
 <ID>LEGISCTA000036164366</ID>
 <STRUCTURE_TA>
@@ -1153,8 +1262,9 @@ mod tests {
 <CONTEXTE><TEXTE cid="JORFTEXT000036162560"/></CONTEXTE>
 </SECTION_TA>"#;
         let toc = parse_legi_section_ta(xml).expect("section_ta");
-        assert_eq!(toc.edges.len(), 1);
-        assert_eq!(toc.edges[0].label, "2");
+        assert_eq!(toc.edges.len(), 2);
+        assert_eq!(toc.edges[0].child_num_key, None);
+        assert_eq!(toc.edges[1].child_num_key.as_deref(), Some("2"));
     }
 
     #[test]

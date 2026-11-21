@@ -407,12 +407,8 @@ pub(super) fn reextract_one(
 ) -> Result<ExtractedFields> {
     let extract = |source_uid: &str, source_fields: &serde_json::Value| {
         let decision = Decision::from_source_fields(full_text, source_fields, source_uid);
-        let full = lj_extract_rows::extracted_fields(&decision, &ctx.snapshots())
+        let fields = lj_extract_rows::reread_fields(&decision, source_fields, &ctx.snapshots())
             .map_err(|e| anyhow!("extract id={decision_id} {source_uid}: {e}"))?;
-        let fields = match lj_extract_rows::prebuilt_from_source_fields(source_uid, source_fields) {
-            Some(pre) => lj_extract_rows::merge_prebuilt(pre, full),
-            None => full,
-        };
         Ok::<_, anyhow::Error>((decision.jurisdiction_type, fields))
     };
     let ((authority_uid, authority_fields), rest) = provenances

@@ -1,7 +1,7 @@
 //! Chronology steps the corpus does not hold. A `decision_links` row whose
 //! target stays pending (`target_decision_id IS NULL`) leaves nothing but its
 //! address: it is read back here into a named step, which the page renders
-//! without a link.
+//! without a link. A case the CEDH communicated is named here too.
 
 use crate::referential::Referential;
 
@@ -28,9 +28,40 @@ pub fn pending_step(
     })
 }
 
+/// The label of a case the CEDH communicated, past two applications the first
+/// one and a count.
+pub fn communicated_label(appnos: &[String]) -> String {
+    match appnos {
+        [] => "Requête communiquée par la CEDH".to_string(),
+        [one] => format!("Requête n° {one} communiquée par la CEDH"),
+        [a, b] => format!("Requêtes nos {a} et {b} communiquées par la CEDH"),
+        [first, rest @ ..] => format!(
+            "Requêtes nos {first} et {} autres communiquées par la CEDH",
+            rest.len()
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_communicated_case_names_one_or_two_applications_then_counts_the_rest() {
+        let apps = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(
+            communicated_label(&apps(&["18260/25"])),
+            "Requête n° 18260/25 communiquée par la CEDH"
+        );
+        assert_eq!(
+            communicated_label(&apps(&["281/15", "34445/15"])),
+            "Requêtes nos 281/15 et 34445/15 communiquées par la CEDH"
+        );
+        assert_eq!(
+            communicated_label(&apps(&["68974/11", "2395/12", "76324/13"])),
+            "Requêtes nos 68974/11 et 2 autres communiquées par la CEDH"
+        );
+    }
     use lj_store::repository::JurisdictionRow;
 
     fn refs() -> Referential {

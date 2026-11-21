@@ -5,28 +5,30 @@ use leptos_router::hooks::{use_navigate, use_query_map};
 use leptos_router::NavigateOptions;
 
 use crate::components::ui::{DropdownSelect, SelectOption};
+use crate::i18n::{use_ui, SearchUi};
 
 use super::compact_search::query_state;
 
-fn options() -> Vec<SelectOption> {
+fn options(ui: &SearchUi) -> Vec<SelectOption> {
     vec![
         SelectOption {
             value: "relevance".into(),
-            label: "Pertinence".into(),
+            label: ui.sort_relevance.into(),
         },
         SelectOption {
             value: "date_desc".into(),
-            label: "Récents".into(),
+            label: ui.sort_newest.into(),
         },
         SelectOption {
             value: "date_asc".into(),
-            label: "Anciens".into(),
+            label: ui.sort_oldest.into(),
         },
     ]
 }
 
 #[component]
 pub fn SortSelect() -> impl IntoView {
+    let ui = &use_ui().search;
     let query_map = use_query_map();
     let navigate = use_navigate();
 
@@ -40,7 +42,7 @@ pub fn SortSelect() -> impl IntoView {
             .unwrap_or(true)
     });
     let options = Signal::derive(move || {
-        let toutes = options();
+        let toutes = options(ui);
         match sans_question.get() {
             true => toutes
                 .into_iter()
@@ -85,7 +87,7 @@ pub fn SortSelect() -> impl IntoView {
             value=current
             on_change=on_change
             options=options
-            aria_label="Trier les résultats"
+            aria_label=ui.sort_label
         />
     }
 }

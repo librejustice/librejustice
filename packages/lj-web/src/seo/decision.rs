@@ -153,7 +153,14 @@ pub fn build_json_ld(detail: &DecisionDetail, title: &str, description: &str) ->
     common.insert("name".into(), json!(title));
     common.insert("headline".into(), json!(title));
     common.insert("url".into(), json!(url));
-    common.insert("inLanguage".into(), json!("fr"));
+    common.insert(
+        "inLanguage".into(),
+        json!(detail
+            .summary_lang
+            .as_deref()
+            .or(detail.lang.as_deref())
+            .unwrap_or("fr")),
+    );
     if !description.is_empty() {
         common.insert("abstract".into(), json!(description));
         common.insert("description".into(), json!(description));

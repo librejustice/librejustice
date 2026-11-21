@@ -6,7 +6,7 @@
 
 use leptos::either::Either;
 use leptos::prelude::*;
-use leptos_meta::{Link, Meta, Title};
+use leptos_meta::{Meta, Title};
 use leptos_router::components::A;
 use leptos_router::hooks::{use_params_map, use_query_map};
 use lj_dtos::PlaceCorpusResponse;
@@ -14,8 +14,9 @@ use lj_dtos::PlaceCorpusResponse;
 use crate::api::ApiClient;
 use crate::components::own_page_description;
 use crate::components::ui::DatePicker;
+use crate::helpers::group_thousands;
 use crate::helpers::{format_iso_date, today_iso};
-use crate::pages::juridictions_page::{fmt_count, set_cache_control, HubError, HubSkeleton};
+use crate::pages::juridictions_page::{set_cache_control, HubError, HubSkeleton};
 use crate::pages::law_page::data::{fetch_places, sendable, PageError};
 use crate::pages::law_page::{place_groups, PlacePicker, NORM_FIRST_YEAR, NORM_YEARS_AHEAD};
 
@@ -61,7 +62,8 @@ pub fn CorpusPage() -> impl IntoView {
 /// « Lu depuis » over the whole vocabulary, which streams in after the corpus.
 #[component]
 fn CorpusPlacePicker(#[prop(into)] date: Signal<Option<String>>) -> impl IntoView {
-    let places = Resource::new(|| (), |_| sendable(fetch_places()));
+    let lang = crate::i18n::use_reader_lang().get();
+    let places = Resource::new(|| (), move |_| sendable(fetch_places(lang)));
     view! {
         <Suspense fallback=|| ()>
             {move || Suspend::new(async move {
@@ -77,17 +79,17 @@ fn CorpusLoaded(
     response: PlaceCorpusResponse,
     #[prop(into)] date: Signal<Option<String>>,
 ) -> impl IntoView {
-    let place_label = response.place.label.clone();
-    let title = format!("Ce qui s'applique en {place_label} - LibreJustice");
-    let le_jour = format_iso_date(Some(&response.date));
-    let description = format!(
-        "Les textes applicables en {place_label} au {le_jour}, par journal officiel puis par nature."
-    );
-    let count = format!(
-        "{} texte{}",
-        fmt_count(response.total),
-        if response.total > 1 { "s" } else { "" },
-    );
+    let numbers = &crate::i18n::use_ui().numbers;
+    let dates = &crate::i18n::use_ui().dates;
+    let ui = &crate::i18n::use_ui().hubs;
+    let norm = &crate::i18n::use_ui().norm;
+    let lang = crate::i18n::use_reader_lang().get();
+    let place_label = crate::i18n::place_name(lang, &response.place.uid, &response.place.label);
+    let place = (crate::i18n::use_ui().shell.located)(&response.place.uid, &place_label);
+    let title = (ui.corpus_title)(&place);
+    let le_jour = format_iso_date(dates, Some(&response.date));
+    let description = (ui.corpus_description)(&place, &le_jour);
+    let count = (ui.n_texts)(&group_thousands(numbers, response.total), response.total);
     let empty = response.journals.is_empty();
 
     view! {
@@ -96,19 +98,18 @@ fn CorpusLoaded(
         // The place and the date are a reader setting, not another document:
         // every variant canonicalises to the default page, as a dated article
         // does.
-        <Link rel="canonical" href="https://librejustice.fr/norm-index/fr/in-force" />
+        <crate::seo::Canonical href="https://librejustice.fr/norm-index/fr/in-force" />
 
         <div class="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 px-4 py-12 sm:px-6 lg:px-8">
             <header class="flex flex-col gap-3">
                 <p class="text-xs uppercase tracking-[0.2em] text-[var(--color-ink-subtle)]">
-                    "Applicabilité"
+                    {ui.applicability}
                 </p>
                 <h1 class="font-sans text-3xl text-[var(--color-ink)]">
-                    {format!("Ce qui s'applique en {place_label}")}
+                    {(ui.corpus_heading)(&place)}
                 </h1>
                 <p class="max-w-prose text-[var(--color-ink-muted)]">
-                    {format!("Au {le_jour}, {count} s'y appliquent. ")}
-                    "Un texte compte dès qu'un de ses articles s'applique. Un groupe trop long n'affiche que quelques titres."
+                    {(ui.corpus_intro)(&le_jour, &count)}
                 </p>
                 <div class="flex flex-wrap items-end gap-4">
                     <CorpusPlacePicker date=date />
@@ -120,7 +121,7 @@ fn CorpusLoaded(
                 Either::Left(
                     view! {
                         <p class="text-[var(--color-ink-muted)]">
-                            "Aucun texte compilé ne nomme ce lieu à cette date."
+                            {ui.corpus_empty}
                         </p>
                     },
                 )
@@ -130,17 +131,22 @@ fn CorpusLoaded(
                         .journals
                         .into_iter()
                         .map(|journal| {
-                            let heading = format!("{} · {}", journal.label, fmt_count(journal.total));
+                            let heading = format!("{} · {}", (norm.journal_name)(&journal.label), group_thousands(numbers, journal.total));
                             let groups = journal
                                 .groups
                                 .into_iter()
                                 .map(|group| {
                                     let shown = group.texts.len() as i64;
                                     let rest = group.total - shown;
+                                    let label = (crate::i18n::use_ui().referential.nature)(
+                                        &group.nature.to_ascii_uppercase(),
+                                    )
+                                    .map_or(group.label, str::to_string);
                                     let items = group
                                         .texts
                                         .into_iter()
-                                        .map(|t| {
+                                        .map(|mut t| {
+                                            crate::i18n::relabel_title(lang, &mut t.title);
                                             view! {
                                                 <li class="py-1.5">
                                                     <A
@@ -156,9 +162,9 @@ fn CorpusLoaded(
                                     view! {
                                         <div class="flex flex-col gap-1">
                                             <h3 class="flex items-baseline justify-between gap-3 text-sm font-medium text-[var(--color-ink)]">
-                                                <span>{group.label}</span>
+                                                <span>{label}</span>
                                                 <span class="tabular-nums text-xs text-[var(--color-ink-subtle)]">
-                                                    {fmt_count(group.total)}
+                                                    {group_thousands(numbers, group.total)}
                                                 </span>
                                             </h3>
                                             <ul class="flex flex-col divide-y divide-[var(--color-rule)]">
@@ -168,7 +174,7 @@ fn CorpusLoaded(
                                                 .then(|| {
                                                     view! {
                                                         <p class="text-xs text-[var(--color-ink-subtle)]">
-                                                            {format!("et {} autres", fmt_count(rest))}
+                                                            {(ui.and_more)(&group_thousands(numbers, rest))}
                                                         </p>
                                                     }
                                                 })}
@@ -195,6 +201,7 @@ fn CorpusLoaded(
 /// The day the corpus is read on; changing it navigates, the place riding along.
 #[component]
 fn CorpusDate(#[prop(into)] date: Signal<Option<String>>, place: String) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().hubs;
     use leptos_router::hooks::use_navigate;
     let suffix = if place == lj_dtos::DEFAULT_READER_PLACE {
         String::new()
@@ -211,12 +218,12 @@ fn CorpusDate(#[prop(into)] date: Signal<Option<String>>, place: String) -> impl
     view! {
         <div class="flex flex-col gap-1">
             <span class="text-xs uppercase tracking-[0.18em] text-[var(--color-ink-subtle)]">
-                "Au"
+                {ui.on}
             </span>
             <DatePicker
                 value=Signal::derive(move || date.get().unwrap_or_else(today_iso))
                 on_change=on_change
-                aria_label="Au"
+                aria_label=ui.on
                 first_year=NORM_FIRST_YEAR
                 years_ahead=NORM_YEARS_AHEAD
             />

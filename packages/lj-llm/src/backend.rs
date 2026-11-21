@@ -8,7 +8,7 @@ use ndarray::Array2;
 use opentelemetry::KeyValue;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use tracing::instrument;
 
 pub const LOG_TARGET: &str = "lj_llm::backend";
@@ -21,6 +21,20 @@ pub const EMBEDDING_DIM: usize = 1024;
 pub const LEGAL_QUERY_INSTRUCTION: &str =
     "Given a French-language legal question, retrieve passages from \
 French court decisions that best answer it.";
+
+/// The query instruction of the norms' passages.
+pub const NORM_QUERY_INSTRUCTION: &str = "Given a French-language legal question, retrieve the articles of French and European legal texts that answer it.";
+
+/// A norm's vector keeps the first dimensions of the model's, which it is
+/// trained to be cut at.
+pub const NORM_EMBEDDING_DIM: usize = 512;
+
+/// `v` cut to its first `dims` dimensions, brought back to unit length.
+pub fn cut_dims(v: &[f32], dims: usize) -> Vec<f32> {
+    let v = &v[..dims];
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    v.iter().map(|x| x / norm).collect()
+}
 
 /// Préfixe une requête de l'instruction (format Qwen3-Embedding asymétrique).
 ///
@@ -44,7 +58,8 @@ pub enum AnyEmbedder {
     Dummy(DummyEmbedder),
     Cloudflare(CloudflareWorkersAIEmbedder),
     OpenAiHttp(OpenAIHttpEmbedder),
-    /// Backends in priority order, each behind its own breaker.
+    /// The chain, each backend behind its own breaker, consecutive hosts sharing
+    /// the load.
     Auto(Vec<Link>),
 }
 
@@ -53,6 +68,7 @@ pub struct Link {
     backend: Backend,
     label: String,
     degraded: AtomicBool,
+    in_flight: AtomicUsize,
 }
 
 enum Backend {
@@ -81,7 +97,12 @@ impl Link {
             backend,
             label,
             degraded: AtomicBool::new(false),
+            in_flight: AtomicUsize::new(0),
         }
+    }
+
+    fn is_host(&self) -> bool {
+        matches!(self.backend, Backend::Local(_))
     }
 
     fn backend(&self) -> &'static str {
@@ -107,6 +128,34 @@ impl Link {
 }
 
 type Leg<'a> = Pin<Box<dyn Future<Output = Result<Array2<f32>>> + Send + 'a>>;
+
+/// A request on its link, counted in flight until it ends or is dropped.
+struct InFlight<'a>(&'a AtomicUsize);
+
+impl Drop for InFlight<'_> {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn counted<'a>(link: &'a Link, leg: Leg<'a>) -> Leg<'a> {
+    link.in_flight.fetch_add(1, Ordering::Relaxed);
+    let in_flight = InFlight(&link.in_flight);
+    Box::pin(async move {
+        let _in_flight = in_flight;
+        leg.await
+    })
+}
+
+/// The order a request walks the chain in: each run of consecutive hosts by
+/// requests in flight, the first listed on a tie, Cloudflare in its place.
+fn order(links: &[Link]) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..links.len()).collect();
+    for run in order.chunk_by_mut(|&a, &b| links[a].is_host() && links[b].is_host()) {
+        run.sort_by_key(|&i| links[i].in_flight.load(Ordering::Relaxed));
+    }
+    order
+}
 type Chain<'a> = Pin<Box<dyn Future<Output = (Result<Array2<f32>>, Served)> + Send + 'a>>;
 
 /// Who served an `auto` embedding. `Refused` is an invalid input, which says
@@ -140,7 +189,8 @@ async fn auto_embed<'a>(
     let any_degraded = links.iter().any(|l| l.degraded.load(Ordering::Relaxed));
     span.record("librejustice.embed.degraded", any_degraded);
 
-    let (out, served) = race(links, 0, leg).await;
+    let walk = order(links);
+    let (out, served) = race(links, &walk, leg).await;
 
     let backend = match served {
         Served::Link(i) => links[i].backend(),
@@ -163,32 +213,37 @@ async fn auto_embed<'a>(
     out
 }
 
-/// Breaker of link `i`: healthy, it is called alone and its first failure
-/// latches it; latched, it races the rest of the chain and winning rearms it.
-/// The last link has nothing to fall back to: called alone, never latched.
-fn race<'a>(links: &'a [Link], i: usize, leg: &'a (dyn Fn(usize) -> Leg<'a> + Sync)) -> Chain<'a> {
+/// Breaker of the link `walk` starts with: healthy, it is called alone and its
+/// first failure latches it; latched, it races the rest of `walk` and winning
+/// rearms it. The last link has nothing to fall back to: called alone, never latched.
+fn race<'a: 'w, 'w>(
+    links: &'a [Link],
+    walk: &'w [usize],
+    leg: &'a (dyn Fn(usize) -> Leg<'a> + Sync),
+) -> Chain<'w> {
     Box::pin(async move {
+        let (&i, rest) = walk.split_first().expect("an embedding chain has a link");
         let link = &links[i];
-        if i + 1 == links.len() {
-            return match leg(i).await {
+        if rest.is_empty() {
+            return match counted(link, leg(i)).await {
                 Ok(v) => (Ok(v), Served::Link(i)),
                 Err(exc) => (Err(exc), Served::Nobody),
             };
         }
         if !link.degraded.load(Ordering::Relaxed) {
-            return match leg(i).await {
+            return match counted(link, leg(i)).await {
                 Ok(v) => (Ok(v), Served::Link(i)),
                 Err(exc) if is_request_fault(&exc) => (Err(exc), Served::Refused),
                 Err(exc) => {
                     link.degraded.store(true, Ordering::Relaxed);
                     tracing::warn!(link = %link.label, error = %exc, "embedding link failed, degraded: falling back");
-                    race(links, i + 1, leg).await
+                    race(links, rest, leg).await
                 }
             };
         }
-        let mut rest = race(links, i + 1, leg);
+        let mut rest = race(links, rest, leg);
         let winner = tokio::select! {
-            r = leg(i) => Winner::Link(r),
+            r = counted(link, leg(i)) => Winner::Link(r),
             r = &mut rest => Winner::Rest(r),
         };
         match winner {
@@ -219,6 +274,31 @@ fn is_request_fault(err: &EmbedError) -> bool {
         err,
         EmbedError::InputTooLong | EmbedError::Invalid(_) | EmbedError::TokenBudgetExceeded { .. }
     )
+}
+
+impl AnyEmbedder {
+    /// The hosts a run spreads its requests over: the first run of hosts of the chain.
+    pub fn width(&self) -> usize {
+        match self {
+            AnyEmbedder::Auto(links) => links.iter().take_while(|l| l.is_host()).count().max(1),
+            _ => 1,
+        }
+    }
+
+    pub fn with_passage_priority(mut self, priority: i64) -> Self {
+        match &mut self {
+            AnyEmbedder::OpenAiHttp(e) => e.passage_priority = priority,
+            AnyEmbedder::Auto(links) => {
+                for link in links {
+                    if let Backend::Local(e) = &mut link.backend {
+                        e.passage_priority = priority;
+                    }
+                }
+            }
+            AnyEmbedder::Dummy(_) | AnyEmbedder::Cloudflare(_) => {}
+        }
+        self
+    }
 }
 
 impl Embedder for AnyEmbedder {
@@ -400,6 +480,59 @@ French court decisions that best answer it."
             .collect()
     }
 
+    /// Links of `kinds`, `h` a host and `c` Cloudflare, each with its requests in flight.
+    fn loaded(kinds: &str, in_flight: &[usize]) -> Vec<Link> {
+        kinds
+            .chars()
+            .zip(in_flight)
+            .enumerate()
+            .map(|(i, (kind, &n))| {
+                let link = match kind {
+                    'h' => Link::local(&crate::hosts::EmbedHost {
+                        url: format!("http://host{i}:8400/v1/embeddings"),
+                        api_key: None,
+                        label: format!("host{i}:8400"),
+                    }),
+                    _ => Link::cloudflare(CloudflareWorkersAIEmbedder::new(
+                        "account",
+                        "token",
+                        CloudflareWorkersAIEmbedder::DEFAULT_MODEL,
+                    )),
+                };
+                link.in_flight.store(n, Ordering::Relaxed);
+                link
+            })
+            .collect()
+    }
+
+    #[test]
+    fn idle_hosts_keep_the_listed_order() {
+        assert_eq!(order(&loaded("hhc", &[0, 0, 0])), [0, 1, 2]);
+    }
+
+    #[test]
+    fn a_run_of_hosts_goes_least_loaded_first_and_cloudflare_shares_nothing() {
+        assert_eq!(order(&loaded("hhhch", &[2, 0, 1, 0, 0])), [1, 2, 0, 3, 4]);
+        assert_eq!(order(&loaded("hch", &[1, 0, 0])), [0, 1, 2]);
+    }
+
+    #[tokio::test]
+    async fn a_busy_primary_hands_the_request_to_the_idle_host() {
+        let links = loaded("hhc", &[1, 0, 0]);
+        let (out, served) = race(&links, &order(&links), &|i| [slow, up, slow][i]()).await;
+        assert!(out.is_ok());
+        assert_eq!(served, Served::Link(1));
+    }
+
+    #[test]
+    fn a_request_counts_in_flight_until_it_is_dropped() {
+        let links = loaded("h", &[0]);
+        let leg = counted(&links[0], slow());
+        assert_eq!(links[0].in_flight.load(Ordering::Relaxed), 1);
+        drop(leg);
+        assert_eq!(links[0].in_flight.load(Ordering::Relaxed), 0);
+    }
+
     fn latched(links: &[Link]) -> Vec<bool> {
         links
             .iter()
@@ -433,7 +566,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn nominal_sert_le_local_sans_armer_le_disjoncteur() {
         let links = chain(&[false, false]);
-        let (out, served) = race(&links, 0, &|i| [up, down][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [up, down][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(0));
         assert_eq!(latched(&links), [false, false]);
@@ -442,7 +575,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn panne_du_local_arme_le_disjoncteur_et_sert_cloudflare() {
         let links = chain(&[false, false]);
-        let (out, served) = race(&links, 0, &|i| [down, up][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [down, up][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(1));
         assert_eq!(latched(&links), [true, false]);
@@ -451,7 +584,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn les_deux_en_panne_ne_designent_aucun_backend() {
         let links = chain(&[false, false]);
-        let (out, served) = race(&links, 0, &|i| [down, down][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [down, down][i]()).await;
         assert!(out.is_err());
         assert_eq!(served, Served::Nobody);
         assert_eq!(latched(&links), [true, false]);
@@ -462,7 +595,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn entree_invalide_ne_degrade_pas() {
         let links = chain(&[false, false]);
-        let (out, served) = race(&links, 0, &|i| [refused, up][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [refused, up][i]()).await;
         assert!(matches!(out, Err(EmbedError::InputTooLong)));
         assert_eq!(served, Served::Refused);
         assert_eq!(latched(&links), [false, false]);
@@ -471,7 +604,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn le_local_qui_regagne_la_course_rearme_le_mode_nominal() {
         let links = chain(&[true, false]);
-        let (out, served) = race(&links, 0, &|i| [up, slow][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [up, slow][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(0));
         assert_eq!(latched(&links), [false, false]);
@@ -482,7 +615,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn degrade_avec_le_local_toujours_ko_reste_degrade() {
         let links = chain(&[true, false]);
-        let (out, served) = race(&links, 0, &|i| [down, up][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [down, up][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(1));
         assert_eq!(latched(&links), [true, false]);
@@ -491,7 +624,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn a_failed_primary_hands_over_to_the_next_host_before_cloudflare() {
         let links = chain(&[false, false, false]);
-        let (out, served) = race(&links, 0, &|i| [down, up, up][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [down, up, up][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(1));
         assert_eq!(latched(&links), [true, false, false]);
@@ -500,7 +633,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn cloudflare_serves_only_once_every_host_is_down() {
         let links = chain(&[false, false, false]);
-        let (out, served) = race(&links, 0, &|i| [down, down, up][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [down, down, up][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(2));
         assert_eq!(latched(&links), [true, true, false]);
@@ -509,7 +642,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn a_latched_primary_that_answers_first_is_rearmed() {
         let links = chain(&[true, false, false]);
-        let (out, served) = race(&links, 0, &|i| [up, slow, slow][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [up, slow, slow][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(0));
         assert_eq!(latched(&links), [false, false, false]);
@@ -519,7 +652,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn a_primary_still_down_leaves_the_second_host_serving() {
         let links = chain(&[true, false, false]);
-        let (out, served) = race(&links, 0, &|i| [down, up, slow][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [down, up, slow][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(1));
         assert_eq!(latched(&links), [true, false, false]);
@@ -528,7 +661,7 @@ French court decisions that best answer it."
     #[tokio::test]
     async fn a_cloudflare_failure_during_an_outage_hands_over_to_the_last_resort() {
         let links = chain(&[true, false, false]);
-        let (out, served) = race(&links, 0, &|i| [down, down, up][i]()).await;
+        let (out, served) = race(&links, &order(&links), &|i| [down, down, up][i]()).await;
         assert!(out.is_ok());
         assert_eq!(served, Served::Link(2));
         assert_eq!(latched(&links), [true, true, false]);

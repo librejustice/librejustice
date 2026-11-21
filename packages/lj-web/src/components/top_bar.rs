@@ -1,12 +1,12 @@
-//! Barre superieure. Deux etats, choisis
-//! reactivement via le contexte `DecisionBar` : barre par defaut (wordmark +
-//! hamburger) ou barre decision (retour + titre + navigation inter-resultats).
+//! Top bar, in two states chosen reactively through the `DecisionBar` context:
+//! the default bar (wordmark + hamburger) or the decision bar (back + title +
+//! navigation between results).
 //!
-//! Les menus du site et le compte vivent dans le hamburger, a toutes les
-//! tailles. Le panneau lit l'`AuthState` reactif : anonyme => lien Connexion ;
-//! connecte => menu compte (Profil / Mon activite / Deconnexion). L'email est
-//! `None` au SSR (session locale) puis peuple cote client : premier rendu =
-//! Connexion, swap apres hydratation.
+//! The site's menus and the account live in the hamburger, at every size. The
+//! panel reads the reactive `AuthState`: anonymous => Connexion link; signed in
+//! => account menu (the email, linking to the profile / Déconnexion). The email
+//! is `None` at SSR (local session) and filled on the client: the first render
+//! shows Connexion, swapped after hydration.
 
 use leptos::either::{Either, EitherOf3};
 use leptos::prelude::*;
@@ -18,7 +18,12 @@ use lj_dtos::UiAction;
 use crate::components::decision_bar::{
     seeded, use_decision_bar, DecisionBarState, ResultNav, ResultNavSeed, WorkbenchSignal,
 };
+use crate::components::jurisdiction_chip::JurisdictionChip;
+use crate::components::language::LanguagePicker;
+use crate::components::theme::ThemePicker;
 use crate::helpers::cn;
+use crate::i18n::use_ui;
+use crate::jurisdiction::use_reader_scope;
 
 #[component]
 pub fn TopBar() -> impl IntoView {
@@ -44,7 +49,7 @@ fn WorkbenchTopBar(session: crate::pages::redact::Session) -> impl IntoView {
         <header class="sticky top-0 z-30 border-b border-[var(--color-rule)] bg-[var(--color-parchment)]/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-[var(--color-parchment)]/80">
             <div class="flex h-14 items-center gap-2 px-4 sm:gap-3 sm:px-6 lg:px-8">
                 <A
-                    href="/"
+                    href=use_reader_scope().href("/")
                     attr:class="hidden shrink-0 items-center text-[var(--color-ink)] no-underline hover:opacity-90 lg:flex"
                 >
                     <Wordmark />
@@ -63,12 +68,15 @@ fn DefaultTopBar() -> impl IntoView {
         <header class="sticky top-0 z-30 border-b border-[var(--color-rule)] bg-[var(--color-parchment)]/95 shadow-sm backdrop-blur supports-[backdrop-filter]:bg-[var(--color-parchment)]/80">
             <div class="mx-auto flex h-14 max-w-7xl items-center justify-between gap-2 px-4 sm:gap-6 sm:px-6 lg:px-8">
                 <A
-                    href="/"
+                    href=use_reader_scope().href("/")
                     attr:class="flex min-w-0 items-center gap-2 text-[var(--color-ink)] no-underline hover:opacity-90"
                 >
                     <Wordmark />
                 </A>
-                <BurgerMenu />
+                <div class="flex shrink-0 items-center gap-2">
+                    <JurisdictionChip />
+                    <BurgerMenu />
+                </div>
             </div>
         </header>
     }
@@ -80,15 +88,17 @@ fn DefaultTopBar() -> impl IntoView {
 fn BackButton(from_search: Option<crate::components::decision_bar::FromSearch>) -> impl IntoView {
     let navigate = StoredValue::new_local(use_navigate());
     let restore_scroll = crate::components::decision_bar::use_restore_scroll();
+    let ui = &use_ui().shell;
     let back_label = if from_search.is_some() {
-        "Résultats"
+        ui.back_to_results
     } else {
-        "Recherche"
+        ui.back_to_search
     };
+    let scope = use_reader_scope();
     let on_back = move |_| {
         let target = match &from_search {
-            Some(fs) => format!("/decision-search{}", fs.search),
-            None => "/decision-search".to_string(),
+            Some(fs) => format!("{}{}", fs.path, fs.search),
+            None => scope.path_untracked("/decision-search"),
         };
         // Pose la position à restaurer AVANT de naviguer : `ResultsBody` la consomme
         // à son montage et scrolle dès que la liste est peinte.
@@ -156,7 +166,7 @@ fn DecisionTopBar(bar: DecisionBarState) -> impl IntoView {
             <div class="mx-auto hidden h-14 max-w-7xl grid-cols-[1fr_minmax(0,44rem)_1fr] items-center gap-2 px-8 lg:grid">
                 <div class="flex items-center gap-3">
                     <A
-                        href="/"
+                        href=use_reader_scope().href("/")
                         attr:class="flex shrink-0 items-center gap-2 text-[var(--color-ink)] no-underline hover:opacity-90"
                     >
                         <Wordmark />
@@ -191,6 +201,7 @@ fn DecisionNavWidget(
     from_search: Option<crate::components::decision_bar::FromSearch>,
 ) -> impl IntoView {
     let navigate = StoredValue::new_local(use_navigate());
+    let ui = &use_ui().shell;
 
     let idx = nav.hit_paths.iter().position(|x| *x == current_path);
     let len = nav.hit_paths.len();
@@ -229,7 +240,7 @@ fn DecisionNavWidget(
                     type="button"
                     on:click=move |_| go(pid.clone())
                     data-usage=UiAction::DecisionResultStep.as_str()
-                    aria-label="Résultat précédent"
+                    aria-label=ui.previous_result
                     class=btn_class
                 >
                     "←"
@@ -247,7 +258,7 @@ fn DecisionNavWidget(
                     type="button"
                     on:click=move |_| go(nid.clone())
                     data-usage=UiAction::DecisionResultStep.as_str()
-                    aria-label="Résultat suivant"
+                    aria-label=ui.next_result
                     class=btn_class
                 >
                     "→"
@@ -297,8 +308,8 @@ pub(crate) fn close_on_outside_or_nav(
     let _ = (open, container_ref);
 }
 
-/// Corps du menu compte (email + Profil / Signets / Déconnexion), affiché
-/// dans le panneau du hamburger (`BurgerMenu`) quand une session est active.
+/// The account menu's body (the email, linking to the profile / Déconnexion),
+/// shown in the hamburger's panel (`BurgerMenu`) while a session is active.
 #[component]
 fn AccountItems(email: String, open: RwSignal<bool>) -> impl IntoView {
     // `StoredValue` (Copy) : `on_sign_out` doit rester `Copy` pour être `Fn`, il
@@ -307,6 +318,9 @@ fn AccountItems(email: String, open: RwSignal<bool>) -> impl IntoView {
     let navigate = StoredValue::new_local(use_navigate());
     #[cfg(feature = "hydrate")]
     let auth = crate::auth::use_auth();
+    #[cfg(feature = "hydrate")]
+    let scope = use_reader_scope();
+    let ui = &use_ui().shell;
     let on_sign_out = move |_| {
         open.set(false);
         #[cfg(feature = "hydrate")]
@@ -314,11 +328,10 @@ fn AccountItems(email: String, open: RwSignal<bool>) -> impl IntoView {
             let nav = navigate.get_value();
             leptos::task::spawn_local(async move {
                 crate::auth::sign_out().await;
-                // Le pilote d'auth relit l'identite, vide le cache de requetes et
-                // remet le theme clair.
+                // Le pilote d'auth relit l'identite et vide le cache de requetes.
                 auth.bump();
                 nav(
-                    "/",
+                    &scope.path_untracked("/"),
                     NavigateOptions {
                         replace: true,
                         ..Default::default()
@@ -329,22 +342,19 @@ fn AccountItems(email: String, open: RwSignal<bool>) -> impl IntoView {
     };
 
     view! {
-        <div class="border-b border-[var(--color-rule)] px-3 py-2.5">
-            <p class="truncate text-xs text-[var(--color-ink-subtle)]">{email}</p>
-        </div>
+        <A
+            href=crate::i18n::use_reader_lang().path("/profile")
+            attr:class="block truncate border-b border-[var(--color-rule)] px-3 py-2.5 text-xs text-[var(--color-ink-subtle)] transition-colors hover:bg-[var(--color-rule)] hover:text-[var(--color-ink)] aria-[current=page]:text-[var(--color-ink)]"
+        >
+            {email}
+        </A>
         <div class="py-1">
-            <DropdownItem href="/profile">"Profil"</DropdownItem>
-            <div data-usage=UiAction::MenuBookmarks.as_str()>
-                <DropdownItem href="/bookmarks">"Signets"</DropdownItem>
-            </div>
-        </div>
-        <div class="border-t border-[var(--color-rule)] py-1">
             <button
                 type="button"
                 on:click=on_sign_out
                 class="w-full px-3 py-1.5 text-left text-sm text-[var(--color-ink-muted)] transition-colors hover:bg-[var(--color-rule)] hover:text-[var(--color-ink)]"
             >
-                "Déconnexion"
+                {ui.sign_out}
             </button>
         </div>
     }
@@ -360,6 +370,9 @@ fn BurgerMenu() -> impl IntoView {
     close_on_outside_or_nav(open, container_ref);
     let auth = crate::auth::use_auth();
     let login_href = login_href();
+    let scope = use_reader_scope();
+    let lang = crate::i18n::use_reader_lang();
+    let ui = &use_ui().shell;
 
     view! {
         <div node_ref=container_ref class="relative shrink-0">
@@ -369,7 +382,7 @@ fn BurgerMenu() -> impl IntoView {
             <button
                 type="button"
                 on:click=move |_| open.update(|o| *o = !*o)
-                aria-label="Menu du site"
+                aria-label=ui.site_menu
                 aria-expanded=move || open.get().then_some("true")
                 class="flex shrink-0 items-center gap-2 rounded-md border border-[var(--color-rule)] px-2.5 py-1.5 text-sm font-medium text-[var(--color-ink-muted)] transition-colors hover:border-[var(--color-ink)] hover:text-[var(--color-ink)]"
             >
@@ -381,24 +394,28 @@ fn BurgerMenu() -> impl IntoView {
                     <span class="lj-burger-line lj-burger-line-top"></span>
                     <span class="lj-burger-line lj-burger-line-bottom"></span>
                 </span>
-                <span class="hidden lg:inline">"Menu"</span>
+                <span class="hidden lg:inline">{ui.menu}</span>
             </button>
             <div
                 data-open=move || open.get().then_some("true")
                 class="lj-panel absolute right-0 top-full z-50 mt-2 w-52 overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] shadow-lg"
             >
                 <div class="py-1">
-                        <DropdownItem href="/">"Accueil"</DropdownItem>
-                        <DropdownItem href="/decision-search">"Décisions"</DropdownItem>
-                        <DropdownItem href="/norm-search">"Textes"</DropdownItem>
-                        <DropdownItem href="/entity-search">"Annuaire"</DropdownItem>
-                        <DropdownItem href="/notice-search">"Annonces"</DropdownItem>
-                        <DropdownItem href="/tools">"Outils"</DropdownItem>
+                        <DropdownItem href=scope.href("/")>{ui.home}</DropdownItem>
+                        <DropdownItem href=scope.href("/decision-search")>{ui.decisions}</DropdownItem>
+                        <DropdownItem href=scope.href("/norm-search")>{ui.texts}</DropdownItem>
+                        <DropdownItem href=lang.path("/entity-search")>{ui.directory}</DropdownItem>
+                        <DropdownItem href=scope.href("/journal-search")>{ui.notices}</DropdownItem>
+                        <DropdownItem href=lang.path("/tools")>{ui.tools}</DropdownItem>
+                    </div>
+                    <div class="border-t border-[var(--color-rule)] py-1">
+                        <ThemePicker />
+                        <LanguagePicker />
                     </div>
                     {move || match auth.email.get() {
                         None => Either::Left(view! {
                             <div class="border-t border-[var(--color-rule)] py-1">
-                                <DropdownItem href=login_href>"Connexion"</DropdownItem>
+                                <DropdownItem href=login_href>{ui.sign_in}</DropdownItem>
                             </div>
                         }),
                         Some(email) => Either::Right(view! {
@@ -418,10 +435,11 @@ fn BurgerMenu() -> impl IntoView {
 fn login_href() -> impl Fn() -> String + Copy + Send + Sync + 'static {
     let location = use_location();
     let (pathname, search) = (location.pathname, location.search);
+    let lang = crate::i18n::use_reader_lang();
     move || {
         let path = pathname.get();
         if path.starts_with("/login") || path.starts_with("/reset-password") {
-            return "/login".to_string();
+            return lang.path("/login");
         }
         let search = search.get();
         let target = if search.is_empty() {
@@ -429,10 +447,10 @@ fn login_href() -> impl Fn() -> String + Copy + Send + Sync + 'static {
         } else {
             format!("{path}?{search}")
         };
-        format!(
+        lang.path(&format!(
             "/login?next={}",
             leptos_router::location::Url::escape(&target)
-        )
+        ))
     }
 }
 

@@ -100,13 +100,14 @@ fn pick() {
 
 #[component]
 fn Pages(session: Session) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let pages = move || session.pages.with(Vec::len);
     view! {
         <div class=GROUP>
             <button
                 type="button"
                 class=ICON
-                aria-label="Page précédente"
+                aria-label=ui.previous_page
                 disabled=move || session.page.get() == 0
                 on:click=move |_| go(session, session.page.get_untracked().saturating_sub(1))
             >
@@ -118,7 +119,7 @@ fn Pages(session: Session) -> impl IntoView {
             <button
                 type="button"
                 class=ICON
-                aria-label="Page suivante"
+                aria-label=ui.next_page
                 disabled=move || { session.page.get() + 1 >= pages() }
                 on:click=move |_| go(session, (session.page.get_untracked() + 1).min(pages() - 1))
             >
@@ -130,6 +131,7 @@ fn Pages(session: Session) -> impl IntoView {
 
 #[component]
 fn Zoom(session: Session) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let zoom_by = move |factor: f64| {
         session.fit.set(false);
         session
@@ -143,17 +145,17 @@ fn Zoom(session: Session) -> impl IntoView {
     };
     view! {
         <div class=GROUP>
-            <button type="button" class=ICON aria-label="Réduire" on:click=move |_| zoom_by(1.0 / 1.2)>
+            <button type="button" class=ICON aria-label=ui.zoom_out on:click=move |_| zoom_by(1.0 / 1.2)>
                 <Magnifier minus=true />
             </button>
             <span class="w-14 text-center text-sm tabular-nums text-[var(--color-ink-muted)]">
-                {move || format!("{} %", (session.zoom.get() * 100.0).round())}
+                {move || (ui.percent)((session.zoom.get() * 100.0).round())}
             </span>
-            <button type="button" class=ICON aria-label="Agrandir" on:click=move |_| zoom_by(1.2)>
+            <button type="button" class=ICON aria-label=ui.zoom_in on:click=move |_| zoom_by(1.2)>
                 <Magnifier />
             </button>
             <button type="button" class=format!("{TAB} {TAB_OFF}") on:click=on_fit>
-                "Ajuster"
+                {ui.fit}
             </button>
         </div>
     }
@@ -161,6 +163,7 @@ fn Zoom(session: Session) -> impl IntoView {
 
 #[component]
 fn Views(session: Session) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let tab = move |view: View| {
         let on = session.view.get() == view;
         format!("{TAB} {}", if on { TAB_ON } else { TAB_OFF })
@@ -169,7 +172,7 @@ fn Views(session: Session) -> impl IntoView {
         <Show when=move || { session.characters.get() > 0 }>
             <div class=GROUP>
                 <button type="button" class=move || tab(View::Pages) on:click=move |_| session.view.set(View::Pages)>
-                    "Original"
+                    {ui.original}
                 </button>
                 <button
                     type="button"
@@ -179,7 +182,7 @@ fn Views(session: Session) -> impl IntoView {
                         session.view.set(View::Text);
                     }
                 >
-                    "Texte"
+                    {ui.text}
                 </button>
             </div>
         </Show>
@@ -188,6 +191,7 @@ fn Views(session: Session) -> impl IntoView {
 
 #[component]
 fn DrawToggle(session: Session) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     view! {
         <Show when=move || session.format.get().has_pixels()>
             <button
@@ -211,7 +215,7 @@ fn DrawToggle(session: Session) -> impl IntoView {
                         })
                 }
             >
-                "Masquer une zone"
+                {ui.mask_area}
             </button>
         </Show>
     }
@@ -219,10 +223,11 @@ fn DrawToggle(session: Session) -> impl IntoView {
 
 #[component]
 fn OtherFile() -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     view! {
         <button type="button" class=BUTTON on:click=move |_| pick()
         >
-            "Autre fichier"
+            {ui.other_file}
         </button>
     }
 }
@@ -231,6 +236,7 @@ fn OtherFile() -> impl IntoView {
 /// drawing and another file, in one panel.
 #[component]
 fn Options(session: Session) -> impl IntoView {
+    let ui = &crate::i18n::use_ui().redact;
     let open = RwSignal::new(false);
     let container = NodeRef::<leptos::html::Div>::new();
     #[cfg(feature = "hydrate")]
@@ -264,7 +270,7 @@ fn Options(session: Session) -> impl IntoView {
                 aria-expanded=move || open.get().then_some("true")
                 on:click=move |_| open.update(|o| *o = !*o)
             >
-                "Options"
+                {ui.options}
                 <svg
                     viewBox="0 0 24 24"
                     class="h-3.5 w-3.5 transition-transform"
@@ -284,21 +290,21 @@ fn Options(session: Session) -> impl IntoView {
                 class="lj-panel absolute right-0 top-full z-50 mt-2 w-60 overflow-hidden rounded-md border border-[var(--color-rule)] bg-[var(--color-parchment)] shadow-lg"
             >
                 <div class="flex items-center justify-between gap-2 px-3 py-2">
-                    <span class="text-sm text-[var(--color-ink-muted)]">"Zoom"</span>
+                    <span class="text-sm text-[var(--color-ink-muted)]">{ui.zoom}</span>
                     <div class="flex items-center">
-                        <button type="button" class=ICON aria-label="Réduire" on:click=move |_| zoom_by(1.0 / 1.2)>
+                        <button type="button" class=ICON aria-label=ui.zoom_out on:click=move |_| zoom_by(1.0 / 1.2)>
                             <Magnifier minus=true />
                         </button>
                         <span class="w-12 text-center text-sm tabular-nums text-[var(--color-ink)]">
-                            {move || format!("{} %", (session.zoom.get() * 100.0).round())}
+                            {move || (ui.percent)((session.zoom.get() * 100.0).round())}
                         </span>
-                        <button type="button" class=ICON aria-label="Agrandir" on:click=move |_| zoom_by(1.2)>
+                        <button type="button" class=ICON aria-label=ui.zoom_in on:click=move |_| zoom_by(1.2)>
                             <Magnifier />
                         </button>
                     </div>
                 </div>
                 <button type="button" class=ITEM on:click=on_fit>
-                    "Ajuster à la fenêtre"
+                    {ui.fit_window}
                 </button>
                 <Show when=move || { session.characters.get() > 0 }>
                     <div class="border-t border-[var(--color-rule)] px-3 py-2">
@@ -308,7 +314,7 @@ fn Options(session: Session) -> impl IntoView {
                                 class=move || view_item(View::Pages)
                                 on:click=move |_| session.view.set(View::Pages)
                             >
-                                "Original"
+                                {ui.original}
                             </button>
                             <button
                                 type="button"
@@ -318,7 +324,7 @@ fn Options(session: Session) -> impl IntoView {
                                     session.view.set(View::Text);
                                 }
                             >
-                                "Texte"
+                                {ui.text}
                             </button>
                         </div>
                     </div>
@@ -342,7 +348,7 @@ fn Options(session: Session) -> impl IntoView {
                                     });
                             }
                         >
-                            "Masquer une zone"
+                            {ui.mask_area}
                             <Show when=move || session.mode.get() == Mode::Draw>
                                 <svg
                                     viewBox="0 0 24 24"
@@ -367,7 +373,7 @@ fn Options(session: Session) -> impl IntoView {
                             pick();
                         }
                     >
-                        "Autre fichier"
+                        {ui.other_file}
                     </button>
                 </div>
             </div>

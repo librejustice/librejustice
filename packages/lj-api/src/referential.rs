@@ -53,7 +53,7 @@ pub struct Referential {
     /// location, folded label. The three key spaces do not overlap, so the map
     /// stays flat. Only reader: [`crate::chronology`].
     courts: HashMap<String, String>,
-    /// Court label under its seat path, derived by the same rule the extraction
+    /// Court code under its seat path, derived by the same rule the extraction
     /// uses, so a node of the tree and an indexed path can never disagree.
     court_paths: HashMap<String, String>,
     /// Every case name the fonds carries. A content query offers many candidate
@@ -63,6 +63,7 @@ pub struct Referential {
     names: lj_core::case_names::NameIndex,
     name_ids: Vec<i64>,
     seat_words: std::collections::HashSet<String>,
+    court_names: HashMap<String, std::collections::BTreeMap<String, lj_dtos::CourtName>>,
 }
 
 impl Referential {
@@ -75,6 +76,7 @@ impl Referential {
         seats.sort_unstable();
         Self {
             case_names: Default::default(),
+            court_names: Default::default(),
             names: Default::default(),
             name_ids: Default::default(),
             seat_words: jurisdictions
@@ -94,7 +96,7 @@ impl Referential {
                     (
                         lj_core::chamber::jurisdiction_trunk(&j.jurisdiction_type, Some(&j.code))
                             .join("."),
-                        j.label.clone(),
+                        j.code.clone(),
                     )
                 })
                 .collect(),
@@ -134,7 +136,22 @@ impl Referential {
 
     /// Libellé d'une cour sous son chemin de siège.
     pub fn court_label_of_path(&self, path: &str) -> Option<&str> {
-        self.court_paths.get(path).map(String::as_str)
+        let code = self.court_paths.get(path)?;
+        self.jurisdictions.get(code).map(|j| j.label.as_str())
+    }
+
+    /// A court's name in each language its row holds, under its seat path.
+    pub fn court_names_of_path(&self, path: &str) -> std::collections::BTreeMap<String, String> {
+        self.court_paths
+            .get(path)
+            .and_then(|code| self.court_names.get(code))
+            .map(|names| {
+                names
+                    .iter()
+                    .map(|(lang, named)| (lang.clone(), named.name.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Le fonds porte-t-il ce nœud de siège ?
@@ -192,6 +209,25 @@ impl Referential {
     pub fn with_case_names(mut self, keys: Vec<String>) -> Self {
         self.case_names = keys.into_iter().collect();
         self
+    }
+
+    pub fn with_court_names(mut self, rows: Vec<(String, serde_json::Value)>) -> Result<Self> {
+        for (code, names) in rows {
+            let names = serde_json::from_value(names)
+                .map_err(|e| ApiError::Internal(format!("jurisdiction.names of {code}: {e}")))?;
+            self.court_names.insert(code, names);
+        }
+        Ok(self)
+    }
+
+    /// A court's names in other languages, none for a court the referential names in French only.
+    pub fn court_names(
+        &self,
+        code: Option<&str>,
+    ) -> std::collections::BTreeMap<String, lj_dtos::CourtName> {
+        code.and_then(|c| self.court_names.get(c))
+            .cloned()
+            .unwrap_or_default()
     }
 
     pub fn with_named_decisions(mut self, named: Vec<(i64, Vec<String>)>) -> Self {
@@ -512,10 +548,12 @@ async fn load(state: &AppState) -> Result<Arc<Referential>> {
     let seats = repo.load_seat_paths().await.map_err(ApiError::Store)?;
     let case_names = repo.case_name_key_set().await.map_err(ApiError::Store)?;
     let named = repo.named_decisions().await.map_err(ApiError::Store)?;
+    let court_names = repo.load_court_names().await.map_err(ApiError::Store)?;
     Ok(Arc::new(
         Referential::new(values, jurisdictions, seats)
             .with_case_names(case_names)
-            .with_named_decisions(named),
+            .with_named_decisions(named)
+            .with_court_names(court_names)?,
     ))
 }
 

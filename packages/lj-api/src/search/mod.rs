@@ -21,6 +21,8 @@ mod legs;
 mod query;
 pub mod suggest;
 
+pub use browse::keep_homes_warm;
+
 use std::collections::{HashMap, HashSet};
 
 use deadpool_postgres::Client;
@@ -246,7 +248,7 @@ async fn nocache(
         let (retrieval, mode) = retrieve(state, req, resolution, leg_limit, vchord_probes).await?;
         let retrieval_ms = t0.elapsed().as_secs_f64() * 1000.0;
         (
-            std::sync::Arc::new(rank_results(state, retrieval, mode).await?),
+            std::sync::Arc::new(rank_results(state, retrieval, mode, reader(req)).await?),
             retrieval_ms,
         )
     };
@@ -362,10 +364,11 @@ pub async fn time_ann_leg(
 async fn hydrate_all(
     state: &AppState,
     fused: &[(i64, f64, LegHit)],
+    lang: &str,
 ) -> Result<HashMap<i64, DecisionMeta>> {
     let decision_ids: Vec<i64> = fused.iter().map(|(d, _, _)| *d).collect();
     let meta_conn = client(state).await?;
-    hydrate_decisions(&meta_conn, &decision_ids)
+    hydrate_decisions(&meta_conn, &decision_ids, lang)
         .await
         .map_err(ApiError::Store)
 }
@@ -385,8 +388,9 @@ pub(crate) async fn hits_for_decision_ids(
     decision_ids: &[i64],
     query: &str,
     refs: &crate::referential::Referential,
+    lang: &str,
 ) -> Result<Vec<(i64, SearchHit)>> {
-    let meta = hydrate_decisions(conn, decision_ids)
+    let meta = hydrate_decisions(conn, decision_ids, lang)
         .await
         .map_err(ApiError::Store)?;
     let page: Vec<(i64, f64, LegHit)> = decision_ids
@@ -426,6 +430,8 @@ struct Retrieval {
     pinned: Vec<i64>,
     /// The card holds a sample: the reference retrieval carries more than it shows.
     pinned_more: bool,
+    /// A leg the base cancelled is missing from the fusion.
+    partial: bool,
 }
 
 /// How many decisions the card above a content list holds.
@@ -667,6 +673,7 @@ async fn retrieve(
             lexicales: std::collections::HashSet::new(),
             pinned: Vec::new(),
             pinned_more: false,
+            partial: false,
         };
         return Ok((empty, mode));
     }
@@ -790,6 +797,7 @@ async fn retrieve_reference(
         lexicales: std::collections::HashSet::new(),
         pinned: Vec::new(),
         pinned_more: false,
+        partial: false,
     })
 }
 
@@ -818,6 +826,7 @@ async fn retrieve_boolean(
         lexicales: bm25_scores.keys().copied().collect(),
         pinned: Vec::new(),
         pinned_more: false,
+        partial: false,
     })
 }
 
@@ -855,13 +864,13 @@ async fn retrieve_hybrid(
     };
     let query_vec: Vec<f32> = query_arr.iter().copied().collect();
 
-    // Les connexions des jambes sont relâchées dès le `try_join` fini, AVANT
+    // Les connexions des jambes sont relâchées dès le `join` fini, AVANT
     // `compute_adaptive_weights` qui en reprend 2 : le pic reste à
     // `PEAK_CONNS_PER_SEARCH`.
-    let (bm25_scores, ann_hits) = {
+    let (bm25, ann) = {
         let bm25_conn = client(state).await?;
         let mut ann_conn = client(state).await?;
-        tokio::try_join!(bm25_leg(&bm25_conn, req, leg_limit), async {
+        tokio::join!(bm25_leg(&bm25_conn, req, leg_limit), async {
             match &constraint {
                 Some(c) => {
                     ann_within(&mut ann_conn, req, c, &query_vec, leg_limit, vchord_probes).await
@@ -869,8 +878,9 @@ async fn retrieve_hybrid(
                 None => ann_leg(&mut ann_conn, req, &query_vec, leg_limit, vchord_probes).await,
             }
         })
-        .map_err(ApiError::Store)?
     };
+    let (bm25_scores, ann_hits, partial) =
+        finished_legs(bm25, ann, crate::error::cancelled_by_base).map_err(ApiError::Store)?;
 
     let ann_best = pool_max_per_decision(&ann_hits, leg_limit as usize);
     let weights = compute_adaptive_weights(state, &req.query, &bm25_scores, &ann_hits).await?;
@@ -888,13 +898,35 @@ async fn retrieve_hybrid(
         lexicales: bm25_scores.keys().copied().collect(),
         pinned: Vec::new(),
         pinned_more: false,
+        partial,
     })
+}
+
+/// The legs that finished, a leg the base cancelled dropping out of the fusion
+/// with `true`. No leg finished, or another failure, fails the search.
+fn finished_legs<B: Default, A: Default, E: std::fmt::Display>(
+    bm25: std::result::Result<B, E>,
+    ann: std::result::Result<A, E>,
+    cancelled: impl Fn(&E) -> bool,
+) -> std::result::Result<(B, A, bool), E> {
+    match (bm25, ann) {
+        (Ok(bm25), Ok(ann)) => Ok((bm25, ann, false)),
+        (Ok(bm25), Err(e)) if cancelled(&e) => {
+            tracing::warn!(leg = "ann", error = %e, "search leg cancelled by the base, answered without it");
+            Ok((bm25, A::default(), true))
+        }
+        (Err(e), Ok(ann)) if cancelled(&e) => {
+            tracing::warn!(leg = "bm25", error = %e, "search leg cancelled by the base, answered without it");
+            Ok((B::default(), ann, true))
+        }
+        (Err(e), _) | (_, Err(e)) => Err(e),
+    }
 }
 
 /// Clé du cache rerank : `(query, ensemble TRIÉ du top-[`RERANK_K`])`. Trié parce
 /// que la sortie du rerank ne dépend que du set de documents et de la query — deux
 /// récupérations au même top-50 partagent l'ordre LLM.
-fn rerank_cache_key(query: &str, top_ids: &[i64]) -> String {
+fn rerank_cache_key(query: &str, lang: &str, top_ids: &[i64]) -> String {
     let mut ids = top_ids.to_vec();
     ids.sort_unstable();
     let joined = ids
@@ -902,7 +934,7 @@ fn rerank_cache_key(query: &str, top_ids: &[i64]) -> String {
         .map(|d| d.to_string())
         .collect::<Vec<_>>()
         .join(",");
-    format!("{query}|{joined}")
+    format!("{query}|{lang}|{joined}")
 }
 
 fn score_key(query: &str, decision_id: i64) -> String {
@@ -996,7 +1028,7 @@ async fn reranked_order(
     // Single-flight : `optionally_get_with` ne laisse qu'un appelant exécuter le
     // rerank pour une clé donnée. Le `None` — mode IA renoncé, échec, budget épuisé —
     // n'est pas mis en cache.
-    let key = rerank_cache_key(&req.query, &top_ids);
+    let key = rerank_cache_key(&req.query, reader(req), &top_ids);
     let order = state
         .rerank_cache
         .optionally_get_with(key, llm_order(state, req, items, budget_key, budget))
@@ -1129,10 +1161,14 @@ pub struct RankedResults {
     /// décrive la récupération qui a servi CETTE liste.
     hors_question: Vec<i64>,
     comptage: tokio::sync::OnceCell<(i64, SearchFacets)>,
+    /// The count a connector serves, apart so that the panel's stays whole.
+    connector_count: tokio::sync::OnceCell<(i64, SearchFacets)>,
     /// Decisions the query designates, hydrated once with the bundle.
     pinned: Vec<PinnedDecision>,
     /// The card holds a sample: the reference retrieval carries more than it shows.
     pinned_more: bool,
+    /// Ranked without a leg the base cancelled: served once, never cached.
+    partial: bool,
     /// Tier 2 — pages déjà highlightées, mémoïsées par `(ai_mode, sort, offset,
     /// limit)`. `ai_mode` est dans la clé car le rerank change l'ordre, donc le contenu
     /// de la page. `std::sync::Mutex` : verrou jamais tenu à travers un `await`.
@@ -1214,6 +1250,11 @@ pub(crate) fn facets_weight(f: &SearchFacets) -> usize {
             .sum::<usize>()
 }
 
+/// The language a request's summaries are served in, French when it names none.
+pub(crate) fn reader(req: &SearchRequest) -> &str {
+    req.lang.as_deref().unwrap_or("fr")
+}
+
 /// Clé de cache du bundle retrieval : query, filtres, mode. Exclut
 /// `offset`/`limit`, `sort` et `ai_mode` — une seule entrée sert les deux modes,
 /// toutes les pages et tous les tris.
@@ -1233,12 +1274,14 @@ async fn rank_results(
     state: &AppState,
     retrieval: Retrieval,
     query_mode: QueryMode,
+    lang: &str,
 ) -> Result<RankedResults> {
     let Retrieval {
         fused,
         lexicales,
         pinned,
         pinned_more,
+        partial,
     } = retrieval;
     let all_ids: Vec<i64> = fused.iter().map(|(d, _, _)| *d).collect();
     let hors_question: Vec<i64> = all_ids
@@ -1256,7 +1299,7 @@ async fn rank_results(
                 .await
                 .map_err(ApiError::Store)
         },
-        hydrate_all(state, &fused),
+        hydrate_all(state, &fused, lang),
     )?;
     let pinned = pinned_decisions(state, &pinned).await?;
 
@@ -1267,8 +1310,10 @@ async fn rank_results(
         decision_paths,
         hors_question,
         comptage: tokio::sync::OnceCell::new(),
+        connector_count: tokio::sync::OnceCell::new(),
         pinned,
         pinned_more,
+        partial,
         page_memo: std::sync::Mutex::new(HashMap::new()),
     })
 }
@@ -1279,22 +1324,26 @@ async fn pinned_decisions(state: &AppState, ids: &[i64]) -> Result<Vec<PinnedDec
         return Ok(Vec::new());
     }
     let conn = client(state).await?;
-    let meta = hydrate_decisions(&conn, ids)
+    let meta = hydrate_decisions(&conn, ids, "fr")
         .await
         .map_err(ApiError::Store)?;
     let refs = referential(state).await?;
     Ok(ids
         .iter()
         .filter_map(|d| meta.get(d))
-        .map(|m| PinnedDecision {
-            id: m.public_id.clone(),
-            jurisdiction_type: lj_dtos::JurisdictionType::from_code(&m.jurisdiction_type)
-                .expect("a stored jurisdiction_type is a known variant"),
-            jurisdiction_code: m.jurisdiction_code.clone(),
-            title: display_title(m, &refs),
-            seat: display_seat(m, &refs),
-            solution: opt_tag(&m.solution_uid, &refs),
-            formation: crate::titles::formation_tags(&m.formation_paths),
+        .map(|m| {
+            let seat_parts = display_seat(m, &refs);
+            PinnedDecision {
+                id: m.public_id.clone(),
+                jurisdiction_type: lj_dtos::JurisdictionType::from_code(&m.jurisdiction_type)
+                    .expect("a stored jurisdiction_type is a known variant"),
+                jurisdiction_code: m.jurisdiction_code.clone(),
+                title: display_title(m, &refs),
+                seat: seat_parts.as_ref().and_then(crate::titles::french_seat),
+                seat_parts,
+                solution: opt_tag(&m.solution_uid, &refs),
+                formation: crate::titles::formation_tags(&m.formation_paths),
+            }
         })
         .collect())
 }
@@ -1325,21 +1374,29 @@ async fn comptage<'a>(
     req: &SearchRequest,
     ranked: &'a RankedResults,
 ) -> Result<&'a (i64, SearchFacets)> {
-    ranked
-        .comptage
-        .get_or_try_init(|| async {
-            let conn = client(state).await?;
-            let refs = referential(state).await?;
-            let served: Vec<i64> = ranked.fused.iter().map(|(d, _, _)| *d).collect();
-            let scope = match ranked.query_mode {
-                QueryMode::Reference => Scope::Served(&served),
-                _ => Scope::Question(&ranked.hors_question),
-            };
-            let req = &counted(req, ranked.query_mode);
-            let (total, counters) = aggregate_facets(&conn, req, scope, Aggs::All).await?;
-            Ok((total, facets_from_counters(&counters, &refs)))
-        })
-        .await
+    count_into(&ranked.comptage, Aggs::All, state, req, ranked).await
+}
+
+async fn count_into<'a>(
+    cell: &'a tokio::sync::OnceCell<(i64, SearchFacets)>,
+    aggs: Aggs<'static>,
+    state: &AppState,
+    req: &SearchRequest,
+    ranked: &RankedResults,
+) -> Result<&'a (i64, SearchFacets)> {
+    cell.get_or_try_init(|| async {
+        let conn = client(state).await?;
+        let refs = referential(state).await?;
+        let served: Vec<i64> = ranked.fused.iter().map(|(d, _, _)| *d).collect();
+        let scope = match ranked.query_mode {
+            QueryMode::Reference => Scope::Served(&served),
+            _ => Scope::Question(&ranked.hors_question),
+        };
+        let req = &counted(req, ranked.query_mode);
+        let (total, counters) = aggregate_facets(&conn, req, scope, aggs).await?;
+        Ok((total, facets_from_counters(&counters, &refs)))
+    })
+    .await
 }
 
 /// Tier 2: applies the effective relevance order (reranked in AI mode, else the
@@ -1435,25 +1492,25 @@ async fn ranked_results_cached(
     budget_key: Option<&crate::ratelimit::CallerKey>,
 ) -> Result<std::sync::Arc<RankedResults>> {
     let key = ranked_cache_key(req);
-    let mut own_err: Option<ApiError> = None;
+    let mut own: Option<Result<std::sync::Arc<RankedResults>>> = None;
     let mut computed = false;
     let hit = state
         .search_cache
         .optionally_get_with(key, async {
             computed = true;
             match rank_uncached(state, req, leg_limit, vchord_probes, budget_key).await {
-                Ok(ranked) => Some(ranked),
-                Err(err) => {
-                    own_err = Some(err);
+                Ok(ranked) if !ranked.partial => Some(ranked),
+                served => {
+                    own = Some(served);
                     None
                 }
             }
         })
         .await;
     crate::cache_metrics::record_access("recherche", !computed);
-    match (hit, own_err) {
+    match (hit, own) {
         (Some(ranked), _) => Ok(ranked),
-        (None, Some(err)) => Err(err),
+        (None, Some(served)) => served,
         (None, None) => rank_uncached(state, req, leg_limit, vchord_probes, budget_key).await,
     }
 }
@@ -1482,7 +1539,7 @@ async fn rank_uncached(
     let resolution = resolve(state, req).await?;
     let (retrieval, mode) = retrieve(state, req, resolution, leg_limit, vchord_probes).await?;
     Ok(std::sync::Arc::new(
-        rank_results(state, retrieval, mode).await?,
+        rank_results(state, retrieval, mode, reader(req)).await?,
     ))
 }
 
@@ -1605,9 +1662,7 @@ pub async fn count(
     req: &SearchRequest,
     budget_key: Option<&crate::ratelimit::CallerKey>,
 ) -> Result<lj_dtos::SearchCountResponse> {
-    if query_lacks_searchable_terms(&req.query) || dated_listing(state, req).await? {
-        let refs = referential(state).await?;
-        let counts = browse::totals_and_facets(state, req, &refs).await?;
+    if let Some(counts) = listing_count(state, req).await? {
         return Ok(lj_dtos::SearchCountResponse {
             total: counts.0,
             facets: counts.1.clone(),
@@ -1626,6 +1681,51 @@ pub async fn count(
         total: *total,
         facets: facets.clone(),
     })
+}
+
+/// A search without a question, or with one in date order, is counted as a listing.
+async fn listing_count(
+    state: &AppState,
+    req: &SearchRequest,
+) -> Result<Option<std::sync::Arc<(i64, SearchFacets)>>> {
+    if !(query_lacks_searchable_terms(&req.query) || dated_listing(state, req).await?) {
+        return Ok(None);
+    }
+    let refs = referential(state).await?;
+    Ok(Some(browse::totals_and_facets(state, req, &refs).await?))
+}
+
+/// [`count`] with the axes a connector serves.
+async fn connector_count(
+    state: &AppState,
+    req: &SearchRequest,
+    budget_key: Option<&crate::ratelimit::CallerKey>,
+) -> Result<(i64, SearchFacets)> {
+    if let Some(counts) = listing_count(state, req).await? {
+        return Ok((counts.0, counts.1.clone()));
+    }
+    let ranked = ranked_results_cached(
+        state,
+        req,
+        state.settings.leg_limit as i64,
+        state.settings.vchord_probes,
+        budget_key,
+    )
+    .await?;
+    let (total, facets) = match ranked.comptage.get() {
+        Some(panel) => panel,
+        None => {
+            count_into(
+                &ranked.connector_count,
+                Aggs::Connector,
+                state,
+                req,
+                &ranked,
+            )
+            .await?
+        }
+    };
+    Ok((*total, facets.clone()))
 }
 
 /// Catalogue candidates for a text typed in the « Textes cités » panel, capped
@@ -1792,8 +1892,9 @@ pub async fn suggest_instruments(
     })
 }
 
-/// Recherche d'un appelant qui ne reviendra pas chercher son décompte : MCP,
-/// dont le schéma de sortie exige `total` et `facets`.
+/// The search of a caller that will not come back for its count: the connector
+/// and the public door, whose output schema requires `total`. A count the base
+/// cannot finish leaves the decisions served as the total, without facets.
 pub async fn search_with_count(
     state: &AppState,
     req: &SearchRequest,
@@ -1801,10 +1902,20 @@ pub async fn search_with_count(
     budget_key: Option<&crate::ratelimit::CallerKey>,
 ) -> Result<SearchResponse> {
     let mut resp = search(state, req, caller, budget_key).await?;
-    if resp.total.is_none() {
-        let compte = count(state, req, budget_key).await?;
-        resp.total = Some(compte.total);
-        resp.facets = Some(compte.facets);
+    if resp.total.is_some() {
+        return Ok(resp);
+    }
+    match connector_count(state, req, budget_key).await {
+        Ok((total, facets)) => {
+            resp.total = Some(total);
+            resp.facets = Some(facets);
+        }
+        Err(err) if err.is_db_busy() => {
+            let served = resp.all_hit_paths.len() as i64;
+            tracing::warn!(error = %err, served, "search count abandoned, total set to the decisions served");
+            resp.total = Some(served);
+        }
+        Err(err) => return Err(err),
     }
     Ok(resp)
 }
@@ -1815,6 +1926,38 @@ mod tests {
 
     fn req(query: &str, mode: &str) -> SearchRequest {
         serde_json::from_value(serde_json::json!({ "query": query, "mode": mode })).unwrap()
+    }
+
+    #[test]
+    fn a_leg_the_base_cancelled_drops_out_and_the_other_answers() {
+        type Leg<T> = std::result::Result<T, &'static str>;
+        let cancelled = |e: &&str| *e == "57014";
+        let bm25: fn() -> Leg<i32> = || Ok(1);
+        let ann: fn() -> Leg<Vec<i32>> = || Ok(vec![2]);
+        assert_eq!(
+            finished_legs(bm25(), ann(), cancelled),
+            Ok((1, vec![2], false))
+        );
+        assert_eq!(
+            finished_legs(bm25(), Leg::<Vec<i32>>::Err("57014"), cancelled),
+            Ok((1, vec![], true))
+        );
+        assert_eq!(
+            finished_legs(Leg::<i32>::Err("57014"), ann(), cancelled),
+            Ok((0, vec![2], true))
+        );
+        assert_eq!(
+            finished_legs(
+                Leg::<i32>::Err("57014"),
+                Leg::<Vec<i32>>::Err("57014"),
+                cancelled
+            ),
+            Err("57014")
+        );
+        assert_eq!(
+            finished_legs(bm25(), Leg::<Vec<i32>>::Err("42P01"), cancelled),
+            Err("42P01")
+        );
     }
 
     #[test]

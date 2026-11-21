@@ -51,7 +51,28 @@ pub const FORMATION_SEED: &[(&str, &str)] = &[
     ("formation:RESTREINTE", "Formation restreinte"),
     ("formation:SECTION", "Formation de section"),
     ("formation:PLENIERE", "Formation plénière"),
+    ("formation:APPEL", "Statuant en appel"),
+    ("formation:SPECIALE", "Spécialement composée"),
 ];
+
+/// A special cour d'assises hearing an appeal is filed as special.
+pub fn criminal_formation(
+    jurisdiction_type: Option<&str>,
+    formation: Option<&str>,
+) -> Option<&'static str> {
+    if jurisdiction_type != Some("ASSISES") {
+        return None;
+    }
+    let folded = lj_fold::slug(formation?, ' ');
+    let words: Vec<&str> = folded.split(' ').collect();
+    if words.iter().any(|w| w.starts_with("special")) {
+        Some("formation:SPECIALE")
+    } else if words.contains(&"appel") {
+        Some("formation:APPEL")
+    } else {
+        None
+    }
+}
 
 /// Offices nouveaux portés par ce parse. Même contrat de seed.
 pub const OFFICE_SEED_EXTRA: &[(&str, &str)] =
@@ -603,6 +624,7 @@ const FORMATION_PHRASES: &[(&str, &str)] = &[
     ("assemblee pleniere", "solemn:ASSEMBLEE_PLENIERE"),
     ("assemblee du contentieux", "solemn:ASSEMBLEE"),
     ("formation specialisee", "solemn:SPECIALISEE"),
+    ("formation consultative", "solemn:AVIS"),
     // Two courts that do not name themselves alike do not share a variant: the
     // Cassation sits in « chambre mixte », the commercial courts in a
     // « formation mixte ».
@@ -1233,6 +1255,15 @@ pub fn parse_formation(
     axes
 }
 
+/// Whether `d` is an opinion of the Conseil d'État's consultative formation.
+pub fn consultative(d: &lj_core::decision::Decision) -> bool {
+    d.jurisdiction_type.as_deref() == Some("CE")
+        && parse_formation(Some("CE"), None, None, None, d.formation.as_deref())
+            .chamber
+            .solemn
+            == Some(Solemn::Avis)
+}
+
 /// Suffixe RNSM Cassation (rejet non spécialement motivé) : qualificatif de
 /// publication, pas un axe de formation.
 fn strip_rnsm(part: &str) -> String {
@@ -1781,6 +1812,7 @@ mod tests {
                 Solemn::ChambreMixte,
             ),
             (composed("TCOM", "Formation mixte"), Solemn::FormationMixte),
+            (composed("CE", "Formation consultative"), Solemn::Avis),
         ];
         for (axes, solemn) in cas {
             assert_eq!(axes.chamber.solemn, Some(solemn), "{solemn:?}");

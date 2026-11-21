@@ -36,16 +36,7 @@ pub struct ArticleTextWrite {
     pub cites: Vec<TextLegalCitationRow>,
 }
 
-/// A body to write over the one read, with the spans of the new body.
-pub struct BodyTextWrite {
-    pub text_uid: String,
-    pub stored: String,
-    pub body: String,
-    pub cases: Vec<TextCaseCitationRow>,
-    pub cites: Vec<TextLegalCitationRow>,
-}
-
-/// A span owner: an article version, or a body when both keys are `None`.
+/// A span owner: an article version.
 type Owner<'a> = (&'a str, Option<&'a str>, Option<NaiveDate>);
 
 impl DecisionRepository<'_> {
@@ -123,8 +114,16 @@ impl DecisionRepository<'_> {
                            = (v.text_uid, v.num_key, v.date_debut)
                        AND a.content_checksum = v.checksum
                        AND (a.texte IS DISTINCT FROM v.texte OR a.nota IS DISTINCT FROM v.nota)
-                     RETURNING a.text_uid, a.num_key, a.date_debut",
+                     RETURNING a.text_uid, a.num_key, a.date_debut, a.id",
                     &[&uids, &nums, &dates, &checksums, &textes, &notas],
+                )
+                .await?;
+            // The passages are keyed on the checksum, which this rewrite keeps.
+            let rewritten: Vec<i64> = rows.iter().map(|r| r.get(3)).collect();
+            self.conn
+                .execute(
+                    "DELETE FROM legal_article_passage WHERE article_id = ANY($1)",
+                    &[&rewritten],
                 )
                 .await?;
             let written: HashSet<(String, String, NaiveDate)> = rows
@@ -156,75 +155,6 @@ impl DecisionRepository<'_> {
             let cites: Vec<(&str, &TextLegalCitationRow)> = kept
                 .iter()
                 .flat_map(|w| w.cites.iter().map(|r| (w.drift.text_uid.as_str(), r)))
-                .collect();
-            self.replace_owner_spans(&owners, &cases, &cites).await?;
-            Ok(written.len() as u64)
-        }
-        .await;
-        self.end_transaction(done).await
-    }
-
-    /// `text_uid` of the texts under `prefix` that carry a body.
-    pub async fn legal_text_uids_with_body(&self, prefix: &str) -> Result<Vec<String>> {
-        let rows = self
-            .conn
-            .query(
-                "SELECT text_uid FROM legal_text
-                 WHERE body IS NOT NULL AND starts_with(text_uid, $1)",
-                &[&prefix],
-            )
-            .await?;
-        Ok(rows.iter().map(|r| r.get(0)).collect())
-    }
-
-    /// `(text_uid, body)` of those of `uids` that carry a body.
-    pub async fn legal_text_bodies_of(&self, uids: &[String]) -> Result<Vec<(String, String)>> {
-        let rows = self
-            .conn
-            .query(
-                "SELECT text_uid, body FROM legal_text
-                 WHERE text_uid = ANY($1) AND body IS NOT NULL",
-                &[&uids],
-            )
-            .await?;
-        Ok(rows.iter().map(|r| (r.get(0), r.get(1))).collect())
-    }
-
-    /// Writes each body over the one read and the spans of those written, in one
-    /// transaction; a body changed since it was read is left alone.
-    #[tracing::instrument(name = "db.rewrite_legal_text_bodies", skip_all, fields(db.system = "postgresql"))]
-    pub async fn rewrite_legal_text_bodies(&self, writes: &[BodyTextWrite]) -> Result<u64> {
-        let uids: Vec<&str> = writes.iter().map(|w| w.text_uid.as_str()).collect();
-        let stored: Vec<&str> = writes.iter().map(|w| w.stored.as_str()).collect();
-        let bodies: Vec<&str> = writes.iter().map(|w| w.body.as_str()).collect();
-        self.conn.batch_execute("BEGIN").await?;
-        let done: Result<u64> = async {
-            let rows = self
-                .conn
-                .query(
-                    "UPDATE legal_text t SET body = v.body
-                     FROM unnest($1::text[], $2::text[], $3::text[]) AS v(text_uid, stored, body)
-                     WHERE t.text_uid = v.text_uid AND t.body = v.stored
-                     RETURNING t.text_uid",
-                    &[&uids, &stored, &bodies],
-                )
-                .await?;
-            let written: HashSet<String> = rows.iter().map(|r| r.get(0)).collect();
-            let kept: Vec<&BodyTextWrite> = writes
-                .iter()
-                .filter(|w| written.contains(&w.text_uid))
-                .collect();
-            let owners: Vec<Owner> = kept
-                .iter()
-                .map(|w| (w.text_uid.as_str(), None, None))
-                .collect();
-            let cases: Vec<(&str, &TextCaseCitationRow)> = kept
-                .iter()
-                .flat_map(|w| w.cases.iter().map(|r| (w.text_uid.as_str(), r)))
-                .collect();
-            let cites: Vec<(&str, &TextLegalCitationRow)> = kept
-                .iter()
-                .flat_map(|w| w.cites.iter().map(|r| (w.text_uid.as_str(), r)))
                 .collect();
             self.replace_owner_spans(&owners, &cases, &cites).await?;
             Ok(written.len() as u64)
